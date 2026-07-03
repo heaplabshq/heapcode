@@ -1,0 +1,94 @@
+{
+  "name": "cortex-code",
+  "displayName": "Cortex Code",
+  "description": "Model-agnostic AI coding assistant. Works with any OpenAI-compatible API — Ollama, OpenAI, OpenRouter, Groq, LM Studio, vLLM, and more.",
+  "version": "0.1.0",
+  "publisher": "cortexcode",
+  "private": true,
+  "license": "SEE LICENSE FILE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/siddharth7631/cortexcode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Chat", "Programming Languages"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cortex",
+          "title": "Cortex",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cortex": [
+        {
+          "type": "webview",
+          "id": "cortex.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cortex.openChat",
+        "title": "Cortex: Open Chat"
+      },
+      {
+        "command": "cortex.setApiKey",
+        "title": "Cortex: Set API Key"
+      },
+      {
+        "command": "cortex.clearApiKey",
+        "title": "Cortex: Clear API Key"
+      }
+    ],
+    "configuration": {
+      "title": "Cortex Code",
+      "properties": {
+        "cortex.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/v1",
+          "markdownDescription": "Base URL of any OpenAI-compatible endpoint (must include the version path, e.g. `/v1`). Defaults to local Ollama."
+        },
+        "cortex.model": {
+          "type": "string",
+          "default": "llama3.2",
+          "description": "Model id to use for chat."
+        },
+        "cortex.temperature": {
+          "type": "number",
+          "default": 0.3,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature."
+        },
+        "cortex.maxTokens": {
+          "type": "number",
+          "default": 4096,
+          "description": "Maximum tokens to generate per response."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package --no-dependencies --skip-license -o cortex-code.vsix"
+  },
+  "dependencies": {
+    "@cortex/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^3.1.0",
+    "esbuild": "^0.23.1",
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+out/
+coverage/
+*.vsix
+*.log
+.DS_Store
+packages/vscode/media/webview/

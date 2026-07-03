@@ -39,6 +39,9 @@ function scriptedProvider(responses: ChatResponse[]): Provider & { requests: Cha
     completion() {
       throw new Error('not used');
     },
+    embeddings() {
+      throw new Error('not used');
+    },
     listModels: () => Promise.resolve([]),
   };
 }

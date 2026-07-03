@@ -113,6 +113,14 @@
       {
         "command": "cortex.triggerCompletion",
         "title": "Cortex: Trigger Completion"
+      },
+      {
+        "command": "cortex.buildIndex",
+        "title": "Cortex: Build/Refresh Semantic Index"
+      },
+      {
+        "command": "cortex.clearIndex",
+        "title": "Cortex: Clear Semantic Index"
       }
     ],
     "submenus": [
@@ -264,6 +272,11 @@
           "enum": ["auto", "manual"],
           "default": "auto",
           "markdownDescription": "`auto`: suggest while typing. `manual`: only on Alt+\\ (Cortex: Trigger Completion)."
+        },
+        "cortex.rag.autoIndex": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Index the workspace in the background for semantic search. No-op until the active profile has an `embeddingsModel` (e.g. `nomic-embed-text` on Ollama). Respects `.cortexignore`."
         },
         "cortex.agent.enable": {
           "type": "boolean",

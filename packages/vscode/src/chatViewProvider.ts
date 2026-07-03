@@ -17,6 +17,7 @@ import { collectSelection, resolveMentions } from './contextCollector.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
 import type { AgentController } from './agent/controller.js';
 import type { ProfileManager } from './profileManager.js';
+import type { RagIndexer } from './rag/indexer.js';
 
 const SYSTEM_PROMPT =
   'You are Cortex, an expert AI programming assistant inside the user\'s IDE. ' +
@@ -34,6 +35,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Set right after construction (controller needs this.post, we need controller). */
   agent?: AgentController;
+  rag?: RagIndexer;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -196,7 +198,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async buildUserMessage(text: string): Promise<StoredMessage> {
     const slash = parseSlashCommand(text, this.allPrompts());
     let body: string;
-    const { blocks, unresolved } = await resolveMentions(text);
+    const { blocks, unresolved } = await resolveMentions(
+      text,
+      this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
+    );
 
     if (slash) {
       const selection = collectSelection();

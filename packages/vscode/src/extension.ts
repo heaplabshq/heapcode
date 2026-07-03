@@ -8,6 +8,7 @@ import { generateCommitMessage } from './gitCommit.js';
 import { JsonConversationStore } from './historyStore.js';
 import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager } from './profileManager.js';
+import { RagIndexer } from './rag/indexer.js';
 
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Cortex Code');
@@ -16,9 +17,40 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new JsonConversationStore(storageDir);
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log);
   const permissions = new PermissionEngine(context.workspaceState);
-  chatProvider.agent = new AgentController(profiles, permissions, log, (msg) =>
-    chatProvider.postToWebview(msg),
+  const rag = new RagIndexer(profiles, storageDir, log);
+  chatProvider.rag = rag;
+  chatProvider.agent = new AgentController(
+    profiles,
+    permissions,
+    log,
+    (msg) => chatProvider.postToWebview(msg),
+    rag,
   );
+
+  const ragStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+  ragStatus.command = 'cortex.buildIndex';
+  const updateRagStatus = () => {
+    const s = rag.status();
+    switch (s.state) {
+      case 'no-embedder':
+        ragStatus.text = '$(database) no index';
+        ragStatus.tooltip =
+          'Cortex semantic index — configure an embeddings model first (status bar → Select model → Embeddings)';
+        break;
+      case 'indexing':
+        ragStatus.text = `$(sync~spin) indexing ${s.files}`;
+        ragStatus.tooltip = 'Cortex: indexing workspace…';
+        break;
+      case 'error':
+        ragStatus.text = '$(database) index error';
+        ragStatus.tooltip = 'Cortex: indexing failed — see the output panel. Click to retry.';
+        break;
+      default:
+        ragStatus.text = `$(database) ${s.chunks}`;
+        ragStatus.tooltip = `Cortex semantic index: ${s.files} files / ${s.chunks} chunks. Click to re-index.`;
+    }
+    ragStatus.show();
+  };
 
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = 'cortex.menu';
@@ -43,6 +75,11 @@ export function activate(context: vscode.ExtensionContext): void {
     profiles,
     statusBar,
     completionStatus,
+    rag,
+    ragStatus,
+    rag.onStatus(updateRagStatus),
+    vscode.commands.registerCommand('cortex.buildIndex', () => rag.buildIndex()),
+    vscode.commands.registerCommand('cortex.clearIndex', () => rag.clear()),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider),
     profiles.onDidChange(updateStatusBar),
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -89,6 +126,12 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   registerInlineEdit(context, profiles, log);
+
+  updateRagStatus();
+  if (vscode.workspace.getConfiguration('cortex.rag').get<boolean>('autoIndex', true)) {
+    // Background, off the activation path.
+    setTimeout(() => void rag.buildIndex().then(updateRagStatus), 5_000);
+  }
 
   updateStatusBar();
   log.appendLine('Cortex Code activated.');

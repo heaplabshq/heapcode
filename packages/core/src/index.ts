@@ -6,6 +6,8 @@ export * from './providers/factory.js';
 export * from './providers/presets.js';
 export * from './providers/sse.js';
 export * from './config/profiles.js';
+export * from './rag/chunker.js';
+export * from './rag/store.js';
 export * from './agent/tools.js';
 export * from './agent/textProtocol.js';
 export * from './agent/prompts.js';

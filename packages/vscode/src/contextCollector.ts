@@ -69,7 +69,10 @@ export interface MentionResult {
 }
 
 /** Resolve @mentions in a chat message into context blocks. */
-export async function resolveMentions(text: string): Promise<MentionResult> {
+export async function resolveMentions(
+  text: string,
+  retrieve?: (query: string) => Promise<string>,
+): Promise<MentionResult> {
   const mentioned = new Set([...text.matchAll(/@(\w+)/g)].map((m) => m[1]!.toLowerCase()));
   const blocks: ContextBlock[] = [];
   const unresolved: string[] = [];
@@ -83,7 +86,13 @@ export async function resolveMentions(text: string): Promise<MentionResult> {
   if (mentioned.has('file')) push(collectActiveFile(), 'file');
   if (mentioned.has('problems')) push(collectProblems(), 'problems');
   if (mentioned.has('folder') || mentioned.has('workspace')) {
-    push(await collectFolder(), 'folder');
+    // Semantic retrieval when an index exists; else the file listing.
+    const retrieved = retrieve ? await retrieve(text) : '';
+    if (retrieved) {
+      blocks.push({ label: 'Relevant code (semantic search)', content: retrieved, priority: 2 });
+    } else {
+      push(await collectFolder(), 'folder');
+    }
   }
 
   return { blocks, unresolved };

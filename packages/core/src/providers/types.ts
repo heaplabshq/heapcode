@@ -64,6 +64,16 @@ export interface CompletionResponse {
   text: string;
 }
 
+export interface EmbeddingsRequest {
+  model: string;
+  input: string[];
+  signal?: AbortSignal;
+}
+
+export interface EmbeddingsResponse {
+  embeddings: number[][];
+}
+
 export interface ModelInfo {
   id: string;
 }
@@ -79,5 +89,6 @@ export interface Provider {
   chat(req: ChatRequest): Promise<ChatResponse>;
   streamChat(req: ChatRequest): AsyncIterable<ChatChunk>;
   completion(req: CompletionRequest): Promise<CompletionResponse>;
+  embeddings(req: EmbeddingsRequest): Promise<EmbeddingsResponse>;
   listModels(): Promise<ModelInfo[]>;
 }

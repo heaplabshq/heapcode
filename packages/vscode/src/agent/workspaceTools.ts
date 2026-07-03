@@ -104,6 +104,17 @@ export const agentToolDefinitions: ToolDefinition[] = [
     permission: 'destructive',
   },
   {
+    name: 'semantic_search',
+    description:
+      'Search the codebase by meaning (embeddings), e.g. "where is authentication handled". Falls back to text search when no index exists.',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'Natural-language query' } },
+      required: ['query'],
+    },
+    permission: 'read',
+  },
+  {
     name: 'run_command',
     description:
       'Run a shell command in the workspace root (npm/pnpm/git/tests/etc). Returns stdout, stderr, and exit code.',
@@ -123,6 +134,7 @@ export class WorkspaceToolExecutor {
     private readonly root: vscode.Uri,
     private readonly checkpoint: SessionCheckpoint,
     private readonly commandTimeoutMs: number,
+    private readonly semanticSearch?: (query: string) => Promise<string>,
   ) {}
 
   /** Human-readable "what will happen", shown in the permission prompt. */
@@ -182,6 +194,17 @@ export class WorkspaceToolExecutor {
       }
       case 'search':
         return ok(await this.search(a.pattern ?? '', a.glob));
+      case 'semantic_search': {
+        const query = a.query ?? '';
+        if (this.semanticSearch) {
+          const formatted = await this.semanticSearch(query);
+          if (formatted) return ok(formatted);
+        }
+        // No index — degrade to word-based text search.
+        const words = query.split(/\W+/).filter((w) => w.length > 3);
+        if (words.length === 0) return ok('No semantic index and query too short for text search.');
+        return ok(await this.search(words.join('|')));
+      }
       case 'get_diagnostics': {
         const all = a.path
           ? [[this.resolve(a.path), vscode.languages.getDiagnostics(this.resolve(a.path))] as const]

@@ -6,6 +6,8 @@ import type {
   ChatResponse,
   CompletionRequest,
   CompletionResponse,
+  EmbeddingsRequest,
+  EmbeddingsResponse,
   ModelInfo,
   Provider,
   ProviderConfig,
@@ -206,6 +208,19 @@ export class OpenAICompatibleProvider implements Provider {
     if (!res.ok) throw await describeHttpError(res);
     const json = (await res.json()) as { choices?: Array<{ text?: string | null }> };
     return { text: json.choices?.[0]?.text ?? '' };
+  }
+
+  async embeddings(req: EmbeddingsRequest): Promise<EmbeddingsResponse> {
+    const res = await this.fetchOrThrow(this.url('/embeddings'), {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify({ model: req.model, input: req.input }),
+      signal: req.signal ?? null,
+    });
+    if (!res.ok) throw await describeHttpError(res);
+    const json = (await res.json()) as { data?: Array<{ embedding?: number[]; index?: number }> };
+    const data = [...(json.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    return { embeddings: data.map((d) => d.embedding ?? []) };
   }
 
   async listModels(): Promise<ModelInfo[]> {

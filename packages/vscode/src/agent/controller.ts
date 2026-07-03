@@ -5,6 +5,7 @@ import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
 import type { ProfileManager } from '../profileManager.js';
+import type { RagIndexer } from '../rag/indexer.js';
 
 export class AgentController {
   private abort?: AbortController;
@@ -15,6 +16,7 @@ export class AgentController {
     private readonly permissions: PermissionEngine,
     private readonly log: vscode.OutputChannel,
     private readonly post: (msg: ExtensionToWebview) => void,
+    private readonly rag?: RagIndexer,
   ) {}
 
   get running(): boolean {
@@ -50,6 +52,7 @@ export class AgentController {
       root,
       this.checkpoint,
       cfg.get<number>('commandTimeout', 60) * 1000,
+      this.rag ? (query) => this.rag!.queryFormatted(query) : undefined,
     );
     this.abort = new AbortController();
     this.post({ type: 'agentStatus', status: 'running', changedFiles: [] });

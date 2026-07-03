@@ -1,5 +1,12 @@
 import { OpenAICompatibleProvider } from './openaiCompatible.js';
-import type { ChatRequest, CompletionRequest, ModelInfo, ProviderConfig } from './types.js';
+import type {
+  ChatRequest,
+  CompletionRequest,
+  EmbeddingsRequest,
+  EmbeddingsResponse,
+  ModelInfo,
+  ProviderConfig,
+} from './types.js';
 
 const DEFAULT_API_VERSION = '2024-06-01';
 
@@ -36,6 +43,22 @@ export class AzureOpenAIProvider extends OpenAICompatibleProvider {
       ...(this.config.apiKey ? { 'api-key': this.config.apiKey } : {}),
       ...this.config.headers,
     };
+  }
+
+  override async embeddings(req: EmbeddingsRequest): Promise<EmbeddingsResponse> {
+    const url = this.url(
+      `/openai/deployments/${encodeURIComponent(req.model)}/embeddings?api-version=${this.apiVersion}`,
+    );
+    const res = await this.fetchOrThrow(url, {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify({ input: req.input }),
+      signal: req.signal ?? null,
+    });
+    if (!res.ok) throw new Error(`Embeddings failed with status ${res.status}`);
+    const json = (await res.json()) as { data?: Array<{ embedding?: number[]; index?: number }> };
+    const data = [...(json.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    return { embeddings: data.map((d) => d.embedding ?? []) };
   }
 
   override async listModels(): Promise<ModelInfo[]> {

@@ -51,8 +51,11 @@ export const builtinPrompts: readonly PromptTemplate[] = [
   },
 ];
 
-export function findPrompt(command: string): PromptTemplate | undefined {
-  return builtinPrompts.find((p) => p.command === command);
+export function findPrompt(
+  command: string,
+  prompts: readonly PromptTemplate[] = builtinPrompts,
+): PromptTemplate | undefined {
+  return prompts.find((p) => p.command === command);
 }
 
 export function renderTemplate(template: string, vars: Record<string, string>): string {
@@ -67,10 +70,11 @@ export function renderTemplate(template: string, vars: Record<string, string>): 
  */
 export function parseSlashCommand(
   text: string,
+  prompts: readonly PromptTemplate[] = builtinPrompts,
 ): { prompt: PromptTemplate; input: string } | undefined {
-  const match = /^\/(\w+)\s*([\s\S]*)$/.exec(text.trim());
+  const match = /^\/([\w-]+)\s*([\s\S]*)$/.exec(text.trim());
   if (!match) return undefined;
-  const prompt = findPrompt(match[1]!.toLowerCase());
+  const prompt = findPrompt(match[1]!.toLowerCase(), prompts);
   if (!prompt) return undefined;
   return { prompt, input: match[2]!.trim() };
 }

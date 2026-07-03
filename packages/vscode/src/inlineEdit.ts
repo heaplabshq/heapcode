@@ -15,6 +15,9 @@ const CONTEXT_LINES = 40;
 
 const proposals = new Map<string, string>();
 
+/** The review in progress; resolved by the diff title-bar buttons, the notification, or closing the tab. */
+let pendingReview: ((accepted: boolean) => void) | undefined;
+
 class ProposalContentProvider implements vscode.TextDocumentContentProvider {
   provideTextDocumentContent(uri: vscode.Uri): string {
     return proposals.get(uri.path) ?? '';
@@ -29,6 +32,8 @@ export function registerInlineEdit(
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new ProposalContentProvider()),
     vscode.commands.registerCommand('cortex.inlineEdit', () => inlineEdit(profiles, log)),
+    vscode.commands.registerCommand('cortex.acceptEdit', () => pendingReview?.(true)),
+    vscode.commands.registerCommand('cortex.rejectEdit', () => pendingReview?.(false)),
   );
 }
 
@@ -137,16 +142,50 @@ export async function proposeEdit(
   const proposalUri = vscode.Uri.from({ scheme: SCHEME, path: `/${key}` });
   const versionBeforeReview = document.version;
 
+  // Only one review at a time — cancel any previous one.
+  pendingReview?.(false);
+
   await vscode.commands.executeCommand('vscode.diff', document.uri, proposalUri, title, {
     preview: true,
   });
 
-  const choice = await vscode.window.showInformationMessage(
-    `Apply edit to ${vscode.workspace.asRelativePath(document.uri, false)}?`,
-    { modal: false },
-    'Accept',
-    'Reject',
-  );
+  const accepted = await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      tabListener.dispose();
+      resolve(value);
+    };
+    pendingReview = settle;
+
+    // Closing the diff tab by hand counts as Reject.
+    const tabListener = vscode.window.tabGroups.onDidChangeTabs((e) => {
+      for (const tab of e.closed) {
+        const input = tab.input;
+        if (
+          input instanceof vscode.TabInputTextDiff &&
+          input.modified.toString() === proposalUri.toString()
+        ) {
+          settle(false);
+        }
+      }
+    });
+
+    // Notification as a secondary affordance; primary is the ✓/✗ in the diff title bar.
+    void vscode.window
+      .showInformationMessage(
+        `Apply edit to ${vscode.workspace.asRelativePath(document.uri, false)}? Use ✓ / ✗ in the diff editor's title bar.`,
+        'Accept',
+        'Reject',
+      )
+      .then((choice) => {
+        if (choice === 'Accept') settle(true);
+        else if (choice === 'Reject') settle(false);
+        // dismissed → keep waiting for the title-bar buttons or tab close
+      });
+  });
+  pendingReview = undefined;
 
   await closeDiffTab(proposalUri);
   proposals.delete(`/${key}`);
@@ -157,7 +196,7 @@ export async function proposeEdit(
     preview: false,
   });
 
-  if (choice !== 'Accept') return;
+  if (!accepted) return;
 
   if (document.version !== versionBeforeReview) {
     void vscode.window.showWarningMessage(

@@ -95,6 +95,16 @@
         "command": "cortex.generateCommitMessage",
         "title": "Cortex: Generate Commit Message",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "cortex.acceptEdit",
+        "title": "Accept Cortex Edit",
+        "icon": "$(check)"
+      },
+      {
+        "command": "cortex.rejectEdit",
+        "title": "Reject Cortex Edit",
+        "icon": "$(close)"
       }
     ],
     "submenus": [
@@ -125,6 +135,18 @@
           "command": "cortex.generateCommitMessage",
           "group": "navigation",
           "when": "scmProvider == git"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "cortex.acceptEdit",
+          "group": "navigation@1",
+          "when": "resourceScheme == cortex-proposal"
+        },
+        {
+          "command": "cortex.rejectEdit",
+          "group": "navigation@2",
+          "when": "resourceScheme == cortex-proposal"
         }
       ]
     },

@@ -5,10 +5,9 @@ const SYSTEM =
   'The user\'s code is split at the cursor into BEFORE and AFTER sections. ' +
   'Output ONLY the new characters that belong exactly at the cursor — the text a ' +
   'programmer would type next. Rules:\n' +
-  '- NEVER repeat any line from BEFORE or AFTER.\n' +
-  '- NEVER re-print the file, imports, or earlier code.\n' +
+  '- Continue from the cursor; do not re-print the file, imports, or earlier code.\n' +
   '- No markdown, no code fences, no explanations, no comments about the task.\n' +
-  '- Usually 1-6 lines. If nothing sensible fits, output nothing.';
+  '- Usually 1-6 lines of code.';
 
 /** Completion prompt for models without a FIM format. */
 export function buildChatCompletionMessages(opts: {

@@ -22,10 +22,11 @@ export function cleanCompletion(raw: string, opts: CleanOptions): string {
   text = text.replace(/\n?```\s*$/, '');
 
   // Trim a head that repeats the tail of the prefix (model re-typed the
-  // text leading up to the cursor).
+  // text leading up to the cursor). Minimum 2 chars — 1-char "overlaps"
+  // are usually coincidence and would corrupt the completion.
   const prefixTail = (opts.prefix ?? '').slice(-400);
   if (prefixTail.trim()) {
-    for (let k = Math.min(text.length, prefixTail.length); k >= 3; k--) {
+    for (let k = Math.min(text.length, prefixTail.length); k >= 2; k--) {
       const head = text.slice(0, k);
       if (!head.trim()) continue;
       if (prefixTail.endsWith(head)) {
@@ -35,14 +36,22 @@ export function cleanCompletion(raw: string, opts: CleanOptions): string {
     }
   }
 
-  // Reject wholesale regurgitation: a non-trivial first line that already
-  // exists verbatim earlier in the file means the model re-printed the file
-  // instead of continuing it.
+  // Reject wholesale regurgitation — but only when it's unambiguous: the
+  // completion's first TWO non-empty lines appear consecutively in the file.
+  // A single repeated line is often legitimate (`return (`, `</div>`, …).
   if (opts.prefix) {
-    const firstLine = text.split('\n').find((l) => l.trim())?.trim();
-    if (firstLine && firstLine.length > 4) {
-      const prefixLines = new Set(opts.prefix.split('\n').map((l) => l.trim()));
-      if (prefixLines.has(firstLine)) return '';
+    const completionLines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (completionLines.length >= 2) {
+      const prefixLines = opts.prefix.split('\n').map((l) => l.trim());
+      for (let i = 0; i < prefixLines.length - 1; i++) {
+        if (
+          prefixLines[i] === completionLines[0] &&
+          prefixLines[i + 1] === completionLines[1] &&
+          completionLines[0]!.length > 4
+        ) {
+          return '';
+        }
+      }
     }
   }
 

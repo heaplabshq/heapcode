@@ -125,7 +125,14 @@ export class CortexCompletionProvider implements vscode.InlineCompletionItemProv
 
     if (token.isCancellationRequested) return;
     const text = cleanCompletion(raw, { prefix, suffix, maxLines });
-    if (!text) return;
+    if (!text) {
+      this.log.appendLine(
+        raw.trim()
+          ? `[completion] filtered out (${raw.length} chars of regurgitation/noise)`
+          : '[completion] model returned empty output',
+      );
+      return;
+    }
 
     this.cache.set(document.uri.toString(), prefix, text);
     return [new vscode.InlineCompletionItem(text, new vscode.Range(position, position))];

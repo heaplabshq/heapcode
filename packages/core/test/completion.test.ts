@@ -71,11 +71,17 @@ describe('cleanCompletion', () => {
     expect(out).toContain('const x = 1');
   });
 
-  it('rejects regurgitation of existing file content', () => {
+  it('rejects regurgitation of existing file content (2+ consecutive repeated lines)', () => {
     const prefix =
       "import { cn } from '@/lib/utils'\nimport { scoreTier } from '@/lib/format'\n\nconst SIZES = {\n  sm: 'h-10',\n";
     const raw = "```jsx\nimport { cn } from '@/lib/utils'\nimport { scoreTier } from '@/lib/format'";
     expect(cleanCompletion(raw, { prefix, suffix: '', maxLines: 12 })).toBe('');
+  });
+
+  it('keeps a completion whose first line merely repeats a common line', () => {
+    const prefix = 'function A() {\n  return (\n    <div>a</div>\n  );\n}\n\nfunction B() {\n  ';
+    const raw = 'return (\n    <span>b</span>\n  );';
+    expect(cleanCompletion(raw, { prefix, suffix: '\n}', maxLines: 12 })).toBe(raw);
   });
 
   it('trims a head that re-types the text right before the cursor', () => {

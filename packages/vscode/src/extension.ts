@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { AgentController } from './agent/controller.js';
+import { McpManager } from './agent/mcp.js';
 import { PermissionEngine } from './agent/permissions.js';
+import { openMemoryFile } from './memory.js';
 import { ChatViewProvider } from './chatViewProvider.js';
 import { CortexCodeActionProvider } from './codeActions.js';
 import { CortexCompletionProvider } from './completionProvider.js';
@@ -18,6 +20,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log);
   const permissions = new PermissionEngine(context.workspaceState);
   const rag = new RagIndexer(profiles, storageDir, log);
+  const mcp = new McpManager(log);
   chatProvider.rag = rag;
   chatProvider.agent = new AgentController(
     profiles,
@@ -25,6 +28,7 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
     (msg) => chatProvider.postToWebview(msg),
     rag,
+    mcp,
   );
 
   const ragStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
@@ -77,9 +81,11 @@ export function activate(context: vscode.ExtensionContext): void {
     completionStatus,
     rag,
     ragStatus,
+    mcp,
     rag.onStatus(updateRagStatus),
     vscode.commands.registerCommand('cortex.buildIndex', () => rag.buildIndex()),
     vscode.commands.registerCommand('cortex.clearIndex', () => rag.clear()),
+    vscode.commands.registerCommand('cortex.openMemory', () => openMemoryFile()),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider),
     profiles.onDidChange(updateStatusBar),
     vscode.workspace.onDidChangeConfiguration((e) => {

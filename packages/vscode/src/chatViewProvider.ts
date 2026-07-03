@@ -14,6 +14,7 @@ import {
   type WebviewToExtension,
 } from '@cortex/core';
 import { collectSelection, resolveMentions } from './contextCollector.js';
+import { loadProjectInstructions } from './memory.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
 import type { AgentController } from './agent/controller.js';
 import type { ProfileManager } from './profileManager.js';
@@ -250,12 +251,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.abortController = new AbortController();
     let assistant = '';
+    const instructions = await loadProjectInstructions();
 
     try {
       const stream = provider.streamChat({
         model: profile.model,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          {
+            role: 'system',
+            content: instructions ? `${SYSTEM_PROMPT}\n\n${instructions}` : SYSTEM_PROMPT,
+          },
           ...this.conversation.messages.map((m) => ({ role: m.role, content: m.content })),
         ],
         temperature: profile.temperature,

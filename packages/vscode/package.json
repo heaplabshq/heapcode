@@ -13,7 +13,11 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["AI", "Chat", "Programming Languages"],
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -121,6 +125,10 @@
       {
         "command": "cortex.clearIndex",
         "title": "Cortex: Clear Semantic Index"
+      },
+      {
+        "command": "cortex.openMemory",
+        "title": "Cortex: Open Project Memory"
       }
     ],
     "submenus": [
@@ -137,14 +145,38 @@
         }
       ],
       "cortex.submenu": [
-        { "command": "cortex.inlineEdit", "group": "1_edit@1" },
-        { "command": "cortex.explain", "group": "2_ask@1" },
-        { "command": "cortex.fix", "group": "2_ask@2" },
-        { "command": "cortex.refactor", "group": "2_ask@3" },
-        { "command": "cortex.optimize", "group": "2_ask@4" },
-        { "command": "cortex.reviewCode", "group": "2_ask@5" },
-        { "command": "cortex.generateTests", "group": "3_generate@1" },
-        { "command": "cortex.generateDocs", "group": "3_generate@2" }
+        {
+          "command": "cortex.inlineEdit",
+          "group": "1_edit@1"
+        },
+        {
+          "command": "cortex.explain",
+          "group": "2_ask@1"
+        },
+        {
+          "command": "cortex.fix",
+          "group": "2_ask@2"
+        },
+        {
+          "command": "cortex.refactor",
+          "group": "2_ask@3"
+        },
+        {
+          "command": "cortex.optimize",
+          "group": "2_ask@4"
+        },
+        {
+          "command": "cortex.reviewCode",
+          "group": "2_ask@5"
+        },
+        {
+          "command": "cortex.generateTests",
+          "group": "3_generate@1"
+        },
+        {
+          "command": "cortex.generateDocs",
+          "group": "3_generate@2"
+        }
       ],
       "scm/title": [
         {
@@ -188,21 +220,56 @@
           "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. API keys are NOT stored here — use the *Cortex: Set API Key* command (OS keychain). Presets: `openai`, `ollama`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
           "items": {
             "type": "object",
-            "required": ["name", "preset", "baseUrl", "model"],
+            "required": [
+              "name",
+              "preset",
+              "baseUrl",
+              "model"
+            ],
             "properties": {
-              "name": { "type": "string" },
+              "name": {
+                "type": "string"
+              },
               "preset": {
                 "type": "string",
-                "enum": ["openai", "ollama", "azure-openai", "openrouter", "together", "groq", "nvidia-nim", "lmstudio", "vllm", "localai", "custom"]
+                "enum": [
+                  "openai",
+                  "ollama",
+                  "azure-openai",
+                  "openrouter",
+                  "together",
+                  "groq",
+                  "nvidia-nim",
+                  "lmstudio",
+                  "vllm",
+                  "localai",
+                  "custom"
+                ]
               },
-              "baseUrl": { "type": "string" },
-              "model": { "type": "string" },
-              "completionModel": { "type": "string" },
-              "embeddingsModel": { "type": "string" },
-              "temperature": { "type": "number" },
-              "maxTokens": { "type": "number" },
-              "headers": { "type": "object" },
-              "capabilities": { "type": "object" }
+              "baseUrl": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "completionModel": {
+                "type": "string"
+              },
+              "embeddingsModel": {
+                "type": "string"
+              },
+              "temperature": {
+                "type": "number"
+              },
+              "maxTokens": {
+                "type": "number"
+              },
+              "headers": {
+                "type": "object"
+              },
+              "capabilities": {
+                "type": "object"
+              }
             }
           }
         },
@@ -217,11 +284,20 @@
           "markdownDescription": "User prompt library. Each item: `{ command, title, template }` — usable as `/command` in chat. Templates support `{input}` (text after the command) and `{selection}` (current editor selection).",
           "items": {
             "type": "object",
-            "required": ["command", "template"],
+            "required": [
+              "command",
+              "template"
+            ],
             "properties": {
-              "command": { "type": "string" },
-              "title": { "type": "string" },
-              "template": { "type": "string" }
+              "command": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "template": {
+                "type": "string"
+              }
             }
           }
         },
@@ -269,9 +345,27 @@
         },
         "cortex.completion.triggerMode": {
           "type": "string",
-          "enum": ["auto", "manual"],
+          "enum": [
+            "auto",
+            "manual"
+          ],
           "default": "auto",
           "markdownDescription": "`auto`: suggest while typing. `manual`: only on Alt+\\ (Cortex: Trigger Completion)."
+        },
+        "cortex.mcpServers": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "MCP servers exposed to the agent. Keyed by name. stdio: `{ \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/path\"] }` — remote: `{ \"url\": \"https://…\", \"transport\": \"http\" }` (or `sse`). MCP tools go through the same permission prompts as other agent actions.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "command": { "type": "string" },
+              "args": { "type": "array", "items": { "type": "string" } },
+              "env": { "type": "object" },
+              "url": { "type": "string" },
+              "transport": { "type": "string", "enum": ["http", "sse"] }
+            }
+          }
         },
         "cortex.rag.autoIndex": {
           "type": "boolean",
@@ -300,7 +394,16 @@
         },
         "cortex.completion.template": {
           "type": "string",
-          "enum": ["auto", "chat", "qwen", "codegemma", "deepseek", "starcoder", "codellama", "codestral"],
+          "enum": [
+            "auto",
+            "chat",
+            "qwen",
+            "codegemma",
+            "deepseek",
+            "starcoder",
+            "codellama",
+            "codestral"
+          ],
           "default": "auto",
           "markdownDescription": "FIM prompt format. `auto` detects from the model id; `chat` forces the chat-based fallback for models without FIM support."
         }
@@ -314,7 +417,8 @@
     "package": "vsce package --no-dependencies --skip-license -o cortex-code.vsix"
   },
   "dependencies": {
-    "@cortex/core": "workspace:*"
+    "@cortex/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
     "@types/vscode": "1.90.0",

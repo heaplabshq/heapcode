@@ -1,11 +1,18 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { runAgent, resolveCapabilities, type ExtensionToWebview } from '@cortex/core';
+import {
+  runAgent,
+  resolveCapabilities,
+  type ExtensionToWebview,
+  type ToolCall,
+} from '@cortex/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
 import type { ProfileManager } from '../profileManager.js';
 import type { RagIndexer } from '../rag/indexer.js';
+import type { McpManager } from './mcp.js';
+import { loadProjectInstructions } from '../memory.js';
 
 export class AgentController {
   private abort?: AbortController;
@@ -17,6 +24,7 @@ export class AgentController {
     private readonly log: vscode.OutputChannel,
     private readonly post: (msg: ExtensionToWebview) => void,
     private readonly rag?: RagIndexer,
+    private readonly mcp?: McpManager,
   ) {}
 
   get running(): boolean {
@@ -60,27 +68,34 @@ export class AgentController {
       `[agent] start (${capabilities.nativeToolCalls ? 'native tools' : 'text fallback'}): ${task}`,
     );
 
+    await this.mcp?.ensureConnected();
+    const mcpTools = this.mcp?.getToolDefinitions() ?? [];
+    const instructions = await loadProjectInstructions();
+    const fullTask = instructions ? `${instructions}\n\n---\n\nTask: ${task}` : task;
+
     try {
       const outcome = await runAgent({
         provider,
         model: profile.model,
-        task,
+        task: fullTask,
         workspaceName: path.basename(root.fsPath),
-        tools: agentToolDefinitions,
+        tools: [...agentToolDefinitions, ...mcpTools],
         nativeToolCalls: capabilities.nativeToolCalls,
-        execute: (call) => executor.execute(call),
+        execute: async (call) => {
+          if (this.mcp?.isMcpTool(call.name)) {
+            const content = await this.mcp.call(call.name, call.args);
+            return { id: call.id, name: call.name, content };
+          }
+          return executor.execute(call);
+        },
         requestPermission: (call, tool) =>
-          this.permissions.request(call, tool, executor.describe(call)),
+          this.permissions.request(call, tool, this.describe(call, executor)),
         events: {
           onText: (text) => this.post({ type: 'agentText', text }),
           onToolCall: (call) => {
-            this.log.appendLine(`[agent] tool: ${executor.describe(call)}`);
-            this.post({
-              type: 'agentToolCall',
-              id: call.id,
-              name: call.name,
-              description: executor.describe(call),
-            });
+            const description = this.describe(call, executor);
+            this.log.appendLine(`[agent] tool: ${description}`);
+            this.post({ type: 'agentToolCall', id: call.id, name: call.name, description });
           },
           onToolResult: (result) =>
             this.post({
@@ -103,6 +118,13 @@ export class AgentController {
     } finally {
       this.abort = undefined;
     }
+  }
+
+  private describe(call: ToolCall, executor: WorkspaceToolExecutor): string {
+    if (this.mcp?.isMcpTool(call.name)) {
+      return `MCP tool ${call.name.replace(/^mcp__/, '').replace('__', ': ')} ${JSON.stringify(call.args).slice(0, 120)}`;
+    }
+    return executor.describe(call);
   }
 
   stop(): void {

@@ -1,13 +1,34 @@
-export type ChatRole = 'system' | 'user' | 'assistant';
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export interface ToolCallRequest {
+  id: string;
+  name: string;
+  /** Parsed arguments; empty object if the model sent invalid JSON. */
+  args: Record<string, unknown>;
+  argsParseError?: string;
+}
 
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  /** Tool calls made by an assistant message. */
+  toolCalls?: ToolCallRequest[];
+  /** For role 'tool': which call this result answers. */
+  toolCallId?: string;
+}
+
+export interface ToolSpec {
+  name: string;
+  description: string;
+  /** JSON schema for the arguments object. */
+  parameters: Record<string, unknown>;
 }
 
 export interface ChatRequest {
   model: string;
   messages: ChatMessage[];
+  /** Advertise tools (OpenAI function-calling format on the wire). */
+  tools?: ToolSpec[];
   temperature?: number;
   maxTokens?: number;
   topP?: number;
@@ -20,6 +41,7 @@ export interface ChatChunk {
 
 export interface ChatResponse {
   content: string;
+  toolCalls?: ToolCallRequest[];
   finishReason?: string;
 }
 

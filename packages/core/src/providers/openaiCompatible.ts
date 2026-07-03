@@ -15,8 +15,16 @@ interface OpenAIChatCompletionChunk {
   choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
 }
 
+interface OpenAIToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 interface OpenAIChatCompletion {
-  choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>;
+  choices?: Array<{
+    message?: { content?: string | null; tool_calls?: OpenAIToolCall[] };
+    finish_reason?: string | null;
+  }>;
 }
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -61,9 +69,30 @@ export class OpenAICompatibleProvider implements Provider {
   protected chatBody(req: ChatRequest, stream: boolean): string {
     return JSON.stringify({
       model: req.model,
-      // Strip any extra fields (e.g. UI metadata) — send only what the spec defines.
-      messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
+      // Map to the wire format explicitly — send only what the spec defines.
+      messages: req.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(m.toolCalls && m.toolCalls.length > 0
+          ? {
+              tool_calls: m.toolCalls.map((c) => ({
+                id: c.id,
+                type: 'function',
+                function: { name: c.name, arguments: JSON.stringify(c.args) },
+              })),
+            }
+          : {}),
+        ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}),
+      })),
       stream,
+      ...(req.tools && req.tools.length > 0
+        ? {
+            tools: req.tools.map((t) => ({
+              type: 'function',
+              function: { name: t.name, description: t.description, parameters: t.parameters },
+            })),
+          }
+        : {}),
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
       ...(req.topP !== undefined ? { top_p: req.topP } : {}),
@@ -117,8 +146,21 @@ export class OpenAICompatibleProvider implements Provider {
     if (!res.ok) throw await describeHttpError(res);
     const json = (await res.json()) as OpenAIChatCompletion;
     const choice = json.choices?.[0];
+    const toolCalls = (choice?.message?.tool_calls ?? [])
+      .filter((c) => c.function?.name)
+      .map((c, i) => {
+        let args: Record<string, unknown> = {};
+        let argsParseError: string | undefined;
+        try {
+          args = JSON.parse(c.function?.arguments || '{}') as Record<string, unknown>;
+        } catch (err) {
+          argsParseError = err instanceof Error ? err.message : String(err);
+        }
+        return { id: c.id ?? `call_${i}`, name: c.function!.name!, args, argsParseError };
+      });
     return {
       content: choice?.message?.content ?? '',
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: choice?.finish_reason ?? undefined,
     };
   }

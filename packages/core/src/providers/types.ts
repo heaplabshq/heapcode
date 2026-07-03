@@ -25,8 +25,13 @@ export interface ChatResponse {
 
 export interface CompletionRequest {
   model: string;
-  /** Raw prompt — for FIM models this is the rendered FIM template. */
+  /** Raw prompt — for template-based FIM this is the rendered FIM string. */
   prompt: string;
+  /**
+   * Native FIM: servers that support it (Ollama, Mistral, OpenAI legacy)
+   * apply the model's own FIM template server-side. Preferred when available.
+   */
+  suffix?: string;
   maxTokens?: number;
   temperature?: number;
   stop?: string[];

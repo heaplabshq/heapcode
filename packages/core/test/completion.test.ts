@@ -153,4 +153,15 @@ describe('provider.completion', () => {
       stream: false,
     });
   });
+
+  it('passes the suffix param for native server-side FIM', async () => {
+    server = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { choices: [{ text: 'mid' }] },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await provider.completion({ model: 'm', prompt: 'before', suffix: 'after' });
+    expect(server.requests[0]!.body).toMatchObject({ prompt: 'before', suffix: 'after' });
+  });
 });

@@ -154,6 +154,7 @@ export class OpenAICompatibleProvider implements Provider {
         model: req.model,
         prompt: req.prompt,
         stream: false,
+        ...(req.suffix !== undefined ? { suffix: req.suffix } : {}),
         ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
         ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
         ...(req.stop && req.stop.length > 0 ? { stop: req.stop.slice(0, 4) } : {}),

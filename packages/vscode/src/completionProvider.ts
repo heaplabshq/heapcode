@@ -82,11 +82,29 @@ export class CortexCompletionProvider implements vscode.InlineCompletionItemProv
     const singleLine = lineSuffix.trim().length > 0;
     const maxLines = singleLine ? 1 : cfg.get<number>('maxLines', 12);
 
+    // Ollama applies the model's own FIM template server-side via the
+    // `suffix` param — more reliable than hand-rendered FIM token strings.
+    const nativeFim = profile.preset === 'ollama' && templateSetting === 'auto' && template;
+
     const crossFile = collectCrossFileContext(document);
     const started = Date.now();
+    let mode: string;
     let raw: string;
     try {
-      if (template) {
+      if (nativeFim) {
+        mode = 'fim:native';
+        const res = await provider.completion({
+          model,
+          prompt: crossFile + prefix,
+          suffix,
+          maxTokens: cfg.get<number>('maxTokens', 200),
+          temperature: 0,
+          stop: singleLine ? ['\n'] : undefined,
+          signal: abort.signal,
+        });
+        raw = res.text;
+      } else if (template) {
+        mode = `fim:${template.id}`;
         const res = await provider.completion({
           model,
           prompt: template.render(crossFile + prefix, suffix),
@@ -97,6 +115,7 @@ export class CortexCompletionProvider implements vscode.InlineCompletionItemProv
         });
         raw = res.text;
       } else {
+        mode = 'chat';
         const res = await provider.chat({
           model,
           messages: buildChatCompletionMessages({
@@ -120,7 +139,7 @@ export class CortexCompletionProvider implements vscode.InlineCompletionItemProv
     const elapsed = Date.now() - started;
     this.latency.record(elapsed);
     this.log.appendLine(
-      `[completion] ${elapsed}ms · ${template ? `fim:${template.id}` : 'chat'} · ${model} · ${this.latency.summary()}`,
+      `[completion] ${elapsed}ms · ${mode} · ${model} · ${this.latency.summary()}`,
     );
 
     if (token.isCancellationRequested) return;
@@ -128,7 +147,7 @@ export class CortexCompletionProvider implements vscode.InlineCompletionItemProv
     if (!text) {
       this.log.appendLine(
         raw.trim()
-          ? `[completion] filtered out (${raw.length} chars of regurgitation/noise)`
+          ? `[completion] filtered (${raw.length} chars): "${preview(raw)}"`
           : '[completion] model returned empty output',
       );
       return;
@@ -175,4 +194,8 @@ function commentOut(text: string, languageId: string): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function preview(text: string): string {
+  return text.slice(0, 140).replace(/\n/g, '\\n');
 }

@@ -168,17 +168,56 @@ export class ProfileManager {
 
   async selectModelFlow(): Promise<void> {
     const profile = this.getActiveProfile();
-    let modelId: string | undefined;
 
+    type Role = 'model' | 'completionModel' | 'embeddingsModel';
+    const rolePick = await vscode.window.showQuickPick(
+      [
+        {
+          label: '$(comment-discussion) Chat',
+          description: profile.model || 'not set',
+          detail: 'Chat, inline edit, commit messages',
+          role: 'model' as Role,
+        },
+        {
+          label: '$(zap) Completion',
+          description: profile.completionModel || `inherits chat (${profile.model || 'not set'})`,
+          detail: 'Ghost text — pick a FIM-capable coder model (qwen2.5-coder, starcoder2…)',
+          role: 'completionModel' as Role,
+        },
+        {
+          label: '$(search) Embeddings',
+          description: profile.embeddingsModel || 'not set',
+          detail: 'Semantic search / RAG (used from M5)',
+          role: 'embeddingsModel' as Role,
+        },
+      ],
+      { title: `Cortex: Select model — which role? (${profile.name})` },
+    );
+    if (!rolePick) return;
+    const role = rolePick.role;
+
+    let modelId: string | undefined;
     try {
       const { provider } = await this.createActiveProvider();
       const models = await provider.listModels();
       if (models.length > 0) {
-        const picked = await vscode.window.showQuickPick(
-          models.map((m) => ({ label: m.id, description: m.id === profile.model ? 'current' : '' })),
-          { title: `Cortex: Select model (${profile.name})`, matchOnDescription: true },
-        );
-        modelId = picked?.label;
+        const current = profile[role];
+        const items: vscode.QuickPickItem[] = models.map((m) => ({
+          label: m.id,
+          description: m.id === current ? 'current' : '',
+        }));
+        if (role !== 'model') {
+          items.unshift({
+            label: '$(discard) Inherit from chat model',
+            description: 'clear this role',
+          });
+        }
+        const picked = await vscode.window.showQuickPick(items, {
+          title: `Cortex: ${rolePick.label.replace(/\$\([\w-]+\) /, '')} model (${profile.name})`,
+          matchOnDescription: true,
+        });
+        if (!picked) return;
+        modelId = picked.label.startsWith('$(discard)') ? '' : picked.label;
       }
     } catch (err) {
       this.log.appendLine(`[profiles] listModels failed: ${String(err)}`);
@@ -186,18 +225,23 @@ export class ProfileManager {
 
     // Azure returns [], and unreachable/unlistable endpoints land here too.
     modelId ??= await vscode.window.showInputBox({
-      title: `Model id for profile "${profile.name}"`,
-      value: profile.model,
+      title: `Model id for "${profile.name}" (${role})`,
+      value: profile[role] ?? '',
       prompt:
         profile.preset === 'azure-openai'
           ? 'Your Azure deployment name'
           : 'Could not list models from the endpoint — enter the model id manually',
     });
-    if (!modelId) return;
+    if (modelId === undefined) return;
 
-    const profiles = this.getProfiles().map((p) =>
-      p.name === profile.name ? { ...p, model: modelId } : p,
-    );
+    const profiles = this.getProfiles().map((p) => {
+      if (p.name !== profile.name) return p;
+      const next = { ...p };
+      if (role === 'model') next.model = modelId;
+      else if (modelId === '') delete next[role];
+      else next[role] = modelId;
+      return next;
+    });
     await this.saveProfiles(profiles);
     this.notifyChanged();
   }

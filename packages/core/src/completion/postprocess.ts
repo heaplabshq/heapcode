@@ -1,4 +1,6 @@
 export interface CleanOptions {
+  /** Text before the cursor; used to detect and trim regenerated code. */
+  prefix?: string;
   /** Text after the cursor; used to trim regenerated overlap. */
   suffix: string;
   /** 1 for single-line completions. */
@@ -7,15 +9,42 @@ export interface CleanOptions {
 
 /**
  * Normalizes raw model output into an insertable completion.
- * Returns '' when the completion is useless (empty, or just repeats
- * what's already after the cursor).
+ * Returns '' when the completion is useless: empty, repeating what's already
+ * after the cursor, or regurgitating existing file content (chat-fallback
+ * models love re-printing the file from the top).
  */
 export function cleanCompletion(raw: string, opts: CleanOptions): string {
   let text = raw.replace(/\r\n/g, '\n');
 
-  // Chat models sometimes fence the answer despite instructions.
-  const fenced = /^\s*```[\w+.-]*[ \t]*\n([\s\S]*?)```\s*$/.exec(text);
-  if (fenced) text = fenced[1]!;
+  // Strip markdown fences — including unterminated ones (output truncated
+  // by token/line limits before the closing fence).
+  text = text.replace(/^\s*```[\w+.-]*[ \t]*\n?/, '');
+  text = text.replace(/\n?```\s*$/, '');
+
+  // Trim a head that repeats the tail of the prefix (model re-typed the
+  // text leading up to the cursor).
+  const prefixTail = (opts.prefix ?? '').slice(-400);
+  if (prefixTail.trim()) {
+    for (let k = Math.min(text.length, prefixTail.length); k >= 3; k--) {
+      const head = text.slice(0, k);
+      if (!head.trim()) continue;
+      if (prefixTail.endsWith(head)) {
+        text = text.slice(k);
+        break;
+      }
+    }
+  }
+
+  // Reject wholesale regurgitation: a non-trivial first line that already
+  // exists verbatim earlier in the file means the model re-printed the file
+  // instead of continuing it.
+  if (opts.prefix) {
+    const firstLine = text.split('\n').find((l) => l.trim())?.trim();
+    if (firstLine && firstLine.length > 4) {
+      const prefixLines = new Set(opts.prefix.split('\n').map((l) => l.trim()));
+      if (prefixLines.has(firstLine)) return '';
+    }
+  }
 
   // Enforce line limit.
   const lines = text.split('\n');

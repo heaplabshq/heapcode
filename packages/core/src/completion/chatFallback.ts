@@ -1,9 +1,14 @@
 import type { ChatMessage } from '../providers/types.js';
 
 const SYSTEM =
-  'You are a code completion engine. Given the code before and after the cursor, ' +
-  'reply with ONLY the text to insert at the cursor position. ' +
-  'No explanations, no markdown fences, no repetition of code that already exists.';
+  'You are a code completion engine, not a chat assistant. ' +
+  'The user\'s code is split at the cursor into BEFORE and AFTER sections. ' +
+  'Output ONLY the new characters that belong exactly at the cursor — the text a ' +
+  'programmer would type next. Rules:\n' +
+  '- NEVER repeat any line from BEFORE or AFTER.\n' +
+  '- NEVER re-print the file, imports, or earlier code.\n' +
+  '- No markdown, no code fences, no explanations, no comments about the task.\n' +
+  '- Usually 1-6 lines. If nothing sensible fits, output nothing.';
 
 /** Completion prompt for models without a FIM format. */
 export function buildChatCompletionMessages(opts: {

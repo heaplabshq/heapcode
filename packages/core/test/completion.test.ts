@@ -63,6 +63,28 @@ describe('cleanCompletion', () => {
   it('rejects whitespace-only output', () => {
     expect(cleanCompletion('  \n \n', { suffix: '', maxLines: 12 })).toBe('');
   });
+
+  it('strips an unterminated fence (output truncated before closing ```)', () => {
+    const raw = "```jsx\nimport { cn } from '@/lib/utils'\nconst x = 1";
+    const out = cleanCompletion(raw, { suffix: '', maxLines: 12 });
+    expect(out).not.toContain('```');
+    expect(out).toContain('const x = 1');
+  });
+
+  it('rejects regurgitation of existing file content', () => {
+    const prefix =
+      "import { cn } from '@/lib/utils'\nimport { scoreTier } from '@/lib/format'\n\nconst SIZES = {\n  sm: 'h-10',\n";
+    const raw = "```jsx\nimport { cn } from '@/lib/utils'\nimport { scoreTier } from '@/lib/format'";
+    expect(cleanCompletion(raw, { prefix, suffix: '', maxLines: 12 })).toBe('');
+  });
+
+  it('trims a head that re-types the text right before the cursor', () => {
+    // Cursor sits after "  ret"; model replied with the whole word "return…".
+    const prefix = 'function add(a, b) {\n  ret';
+    expect(cleanCompletion('return a + b;', { prefix, suffix: '\n}', maxLines: 12 })).toBe(
+      'urn a + b;',
+    );
+  });
 });
 
 describe('PrefixCache', () => {

@@ -17,10 +17,13 @@ interface OpenAIChatCompletion {
   choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>;
 }
 
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+
 /**
  * Client for any OpenAI-compatible endpoint: OpenAI, Ollama (/v1), OpenRouter,
  * Groq, Together, vLLM, LM Studio, LocalAI, NVIDIA NIM, custom endpoints.
- * Provider-specific quirks (Azure auth, etc.) belong in thin subclasses.
+ * Provider-specific quirks (Azure auth/URLs, etc.) belong in thin subclasses.
  */
 export class OpenAICompatibleProvider implements Provider {
   constructor(protected readonly config: ProviderConfig) {
@@ -33,23 +36,12 @@ export class OpenAICompatibleProvider implements Provider {
     return this.config.baseUrl.replace(/\/+$/, '') + path;
   }
 
-  /**
-   * fetch() throws a generic "fetch failed" TypeError on network errors, with
-   * the real reason (ECONNREFUSED, ETIMEDOUT, DNS failure…) buried in `cause`.
-   * Surface it, or users can't tell a wrong URL from a down server.
-   */
-  protected async fetchOrThrow(url: string, init: RequestInit): Promise<Response> {
-    try {
-      return await fetch(url, init);
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') throw err;
-      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
-      const detail =
-        cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err));
-      throw new ProviderError(
-        `Cannot reach ${this.config.baseUrl} (${detail}). Check the base URL and that the server is running and accessible from this machine.`,
-      );
-    }
+  protected chatUrl(_req: ChatRequest): string {
+    return this.url('/chat/completions');
+  }
+
+  protected modelsUrl(): string {
+    return this.url('/models');
   }
 
   protected headers(): Record<string, string> {
@@ -63,7 +55,8 @@ export class OpenAICompatibleProvider implements Provider {
   protected chatBody(req: ChatRequest, stream: boolean): string {
     return JSON.stringify({
       model: req.model,
-      messages: req.messages,
+      // Strip any extra fields (e.g. UI metadata) — send only what the spec defines.
+      messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
       stream,
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
@@ -71,8 +64,45 @@ export class OpenAICompatibleProvider implements Provider {
     });
   }
 
+  /**
+   * fetch() with two reliability layers:
+   * 1. Network errors ("fetch failed") get their real cause (ECONNREFUSED,
+   *    ETIMEDOUT, DNS…) surfaced, or users can't tell a wrong URL from a down server.
+   * 2. 429/5xx responses are retried with exponential backoff (honoring
+   *    Retry-After), up to 3 attempts. Streams only retry before first byte.
+   */
+  protected async fetchOrThrow(url: string, init: RequestInit): Promise<Response> {
+    for (let attempt = 1; ; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(url, init);
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') throw err;
+        const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+        const detail =
+          cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err));
+        throw new ProviderError(
+          `Cannot reach ${this.config.baseUrl} (${detail}). Check the base URL and that the server is running and accessible from this machine.`,
+        );
+      }
+
+      if (res.ok || !RETRYABLE_STATUS.has(res.status) || attempt >= MAX_ATTEMPTS) {
+        return res;
+      }
+
+      const retryAfter = Number(res.headers.get('retry-after'));
+      const backoff =
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : 400 * 2 ** (attempt - 1) + Math.random() * 200;
+      await new Promise((r) => setTimeout(r, Math.min(backoff, 10_000)));
+      const signal = init.signal as AbortSignal | null | undefined;
+      if (signal?.aborted) return res;
+    }
+  }
+
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    const res = await this.fetchOrThrow(this.url('/chat/completions'), {
+    const res = await this.fetchOrThrow(this.chatUrl(req), {
       method: 'POST',
       headers: this.headers(),
       body: this.chatBody(req, false),
@@ -88,7 +118,7 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   async *streamChat(req: ChatRequest): AsyncIterable<ChatChunk> {
-    const res = await this.fetchOrThrow(this.url('/chat/completions'), {
+    const res = await this.fetchOrThrow(this.chatUrl(req), {
       method: 'POST',
       headers: this.headers(),
       body: this.chatBody(req, true),
@@ -111,7 +141,7 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const res = await this.fetchOrThrow(this.url('/models'), { headers: this.headers() });
+    const res = await this.fetchOrThrow(this.modelsUrl(), { headers: this.headers() });
     if (!res.ok) throw await describeHttpError(res);
     const json = (await res.json()) as { data?: Array<{ id?: string }> };
     return (json.data ?? [])

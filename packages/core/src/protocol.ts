@@ -1,16 +1,43 @@
+import type { ConversationMeta } from './history/types.js';
+
 /**
  * Typed message protocol between the VS Code extension host and the webview UI.
  * Single source of truth — both sides import these types.
  */
 
+export interface DisplayMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface SlashCommandInfo {
+  command: string;
+  title: string;
+}
+
+/** Commands the webview may ask the extension to run (allowlist). */
+export type WebviewCommand = 'selectProfile' | 'selectModel' | 'setApiKey';
+
 export type WebviewToExtension =
   | { type: 'ready' }
   | { type: 'send'; text: string }
   | { type: 'stop' }
-  | { type: 'clear' };
+  | { type: 'newChat' }
+  | { type: 'listHistory' }
+  | { type: 'openConversation'; id: string }
+  | { type: 'deleteConversation'; id: string }
+  | { type: 'runCommand'; command: WebviewCommand };
 
 export type ExtensionToWebview =
-  | { type: 'config'; baseUrl: string; model: string }
+  | {
+      type: 'config';
+      profile: string;
+      model: string;
+      slashCommands: SlashCommandInfo[];
+    }
   | { type: 'chunk'; text: string }
   | { type: 'done' }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'history'; items: ConversationMeta[] }
+  | { type: 'conversation'; id: string; messages: DisplayMessage[] }
+  | { type: 'newChatStarted' };

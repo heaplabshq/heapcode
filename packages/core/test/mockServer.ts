@@ -10,8 +10,10 @@ export interface MockServer {
 
 export type MockBehavior =
   | { kind: 'sse'; chunks: string[]; delayMs?: number; omitDone?: boolean }
-  | { kind: 'json'; status: number; body: unknown }
-  | { kind: 'hang-after-first-chunk'; firstChunk: string };
+  | { kind: 'json'; status: number; body: unknown; headers?: Record<string, string> }
+  | { kind: 'hang-after-first-chunk'; firstChunk: string }
+  /** Serves responses[i] for the i-th request (last one repeats). */
+  | { kind: 'sequence'; responses: Array<Exclude<MockBehavior, { kind: 'sequence' }>> };
 
 /** Minimal OpenAI-compatible fake for offline, deterministic tests. */
 export async function startMockServer(behavior: MockBehavior): Promise<MockServer> {
@@ -27,25 +29,32 @@ export async function startMockServer(behavior: MockBehavior): Promise<MockServe
         headers: req.headers,
       });
 
-      if (behavior.kind === 'json') {
-        res.writeHead(behavior.status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(behavior.body));
+      let active = behavior;
+      if (active.kind === 'sequence') {
+        const index = Math.min(requests.length - 1, active.responses.length - 1);
+        active = active.responses[index]!;
+      }
+
+      if (active.kind === 'json') {
+        res.writeHead(active.status, { 'content-type': 'application/json', ...active.headers });
+        res.end(JSON.stringify(active.body));
         return;
       }
 
       res.writeHead(200, { 'content-type': 'text/event-stream' });
 
-      if (behavior.kind === 'hang-after-first-chunk') {
-        res.write(sseChunk(behavior.firstChunk));
+      if (active.kind === 'hang-after-first-chunk') {
+        res.write(sseChunk(active.firstChunk));
         return; // never ends — used to test cancellation
       }
 
+      const sse = active;
       const writeAll = async () => {
-        for (const text of behavior.chunks) {
+        for (const text of sse.chunks) {
           res.write(sseChunk(text));
-          if (behavior.delayMs) await new Promise((r) => setTimeout(r, behavior.delayMs));
+          if (sse.delayMs) await new Promise((r) => setTimeout(r, sse.delayMs));
         }
-        if (!behavior.omitDone) res.write('data: [DONE]\n\n');
+        if (!sse.omitDone) res.write('data: [DONE]\n\n');
         res.end();
       };
       void writeAll();

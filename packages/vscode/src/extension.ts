@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { AgentController } from './agent/controller.js';
+import { PermissionEngine } from './agent/permissions.js';
 import { ChatViewProvider } from './chatViewProvider.js';
 import { CortexCodeActionProvider } from './codeActions.js';
 import { CortexCompletionProvider } from './completionProvider.js';
@@ -13,6 +15,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log);
+  const permissions = new PermissionEngine(context.workspaceState);
+  chatProvider.agent = new AgentController(profiles, permissions, log, (msg) =>
+    chatProvider.postToWebview(msg),
+  );
 
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = 'cortex.menu';

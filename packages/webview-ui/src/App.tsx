@@ -3,10 +3,21 @@ import type { ConversationMeta, ExtensionToWebview, SlashCommandInfo } from '@co
 import { postToExtension } from './vscodeApi.js';
 import { renderMarkdown } from './markdown.js';
 
+interface ToolChip {
+  id: string;
+  name: string;
+  description: string;
+  done: boolean;
+  ok?: boolean;
+  summary?: string;
+}
+
 interface UiMessage {
   role: 'user' | 'assistant';
   content: string;
   error?: boolean;
+  tool?: ToolChip;
+  agentStatus?: { state: string; changedFiles: string[] };
 }
 
 interface Config {
@@ -22,6 +33,8 @@ export function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [view, setView] = useState<'chat' | 'history'>('chat');
   const [history, setHistory] = useState<ConversationMeta[]>([]);
+  const [mode, setMode] = useState<'chat' | 'agent'>('chat');
+  const [agentRunning, setAgentRunning] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -80,6 +93,41 @@ export function App() {
           setView('chat');
           setStreaming(false);
           break;
+        case 'agentText':
+          setMessages((prev) => [...prev, { role: 'assistant', content: msg.text }]);
+          break;
+        case 'agentToolCall':
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: '',
+              tool: { id: msg.id, name: msg.name, description: msg.description, done: false },
+            },
+          ]);
+          break;
+        case 'agentToolResult':
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.tool && m.tool.id === msg.id && !m.tool.done
+                ? { ...m, tool: { ...m.tool, done: true, ok: msg.ok, summary: msg.summary } }
+                : m,
+            ),
+          );
+          break;
+        case 'agentStatus':
+          setAgentRunning(msg.status === 'running');
+          if (msg.status !== 'running') {
+            setMessages((prev) => [
+              ...prev,
+              {
+                role: 'assistant',
+                content: '',
+                agentStatus: { state: msg.status, changedFiles: msg.changedFiles },
+              },
+            ]);
+          }
+          break;
       }
     };
     window.addEventListener('message', onMessage);
@@ -99,7 +147,13 @@ export function App() {
 
   const send = () => {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || agentRunning) return;
+    if (mode === 'agent') {
+      setMessages((prev) => [...prev, { role: 'user', content: text }]);
+      setInput('');
+      postToExtension({ type: 'agentStart', task: text });
+      return;
+    }
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: text },
@@ -202,22 +256,55 @@ export function App() {
               </p>
             </div>
           )}
-          {messages.map((m, i) => (
-            <div key={i} className={`message ${m.role}${m.error ? ' error' : ''}`}>
-              {m.role === 'assistant' ? (
-                m.content === '' && streaming && i === messages.length - 1 ? (
-                  <span className="thinking">…</span>
+          {messages.map((m, i) => {
+            if (m.tool) {
+              return (
+                <div key={i} className={`tool-chip${m.tool.done ? (m.tool.ok ? ' ok' : ' fail') : ''}`}>
+                  <span className="tool-icon">{m.tool.done ? (m.tool.ok ? '✓' : '✗') : '⏳'}</span>
+                  <span className="tool-desc" title={m.tool.summary ?? ''}>
+                    {m.tool.description}
+                  </span>
+                </div>
+              );
+            }
+            if (m.agentStatus) {
+              const { state, changedFiles } = m.agentStatus;
+              return (
+                <div key={i} className={`agent-banner ${state === 'done' ? 'ok' : 'warn'}`}>
+                  <span>
+                    Agent {state === 'done' ? 'finished' : state}
+                    {changedFiles.length > 0 && ` — ${changedFiles.length} file(s) changed`}
+                  </span>
+                  {changedFiles.length > 0 && (
+                    <button className="ghost" onClick={() => postToExtension({ type: 'agentRevert' })}>
+                      Revert all
+                    </button>
+                  )}
+                </div>
+              );
+            }
+            return (
+              <div key={i} className={`message ${m.role}${m.error ? ' error' : ''}`}>
+                {m.role === 'assistant' ? (
+                  m.content === '' && streaming && i === messages.length - 1 ? (
+                    <span className="thinking">…</span>
+                  ) : (
+                    <div
+                      className="markdown"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
+                    />
+                  )
                 ) : (
-                  <div
-                    className="markdown"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
-                  />
-                )
-              ) : (
-                <div className="user-text">{m.content}</div>
-              )}
+                  <div className="user-text">{m.content}</div>
+                )}
+              </div>
+            );
+          })}
+          {agentRunning && (
+            <div className="agent-banner running">
+              <span>Agent working…</span>
             </div>
-          ))}
+          )}
         </div>
       )}
 
@@ -239,6 +326,22 @@ export function App() {
             ))}
           </div>
         )}
+        <div className="mode-row">
+          <button
+            className={`mode-tab${mode === 'chat' ? ' active' : ''}`}
+            onClick={() => setMode('chat')}
+            disabled={agentRunning}
+          >
+            Chat
+          </button>
+          <button
+            className={`mode-tab${mode === 'agent' ? ' active' : ''}`}
+            onClick={() => setMode('agent')}
+            disabled={streaming}
+          >
+            Agent
+          </button>
+        </div>
         <div className="composer-row">
           <textarea
             ref={inputRef}
@@ -254,16 +357,25 @@ export function App() {
                 send();
               }
             }}
-            placeholder="Ask Cortex…  ( / for commands, @ to attach context )"
+            placeholder={
+              mode === 'agent'
+                ? 'Describe a task for the agent… (it can read, edit, and run commands)'
+                : 'Ask Cortex…  ( / for commands, @ to attach context )'
+            }
             rows={3}
           />
-          {streaming ? (
-            <button className="primary" onClick={() => postToExtension({ type: 'stop' })}>
+          {streaming || agentRunning ? (
+            <button
+              className="primary"
+              onClick={() =>
+                postToExtension(agentRunning ? { type: 'agentStop' } : { type: 'stop' })
+              }
+            >
               Stop
             </button>
           ) : (
             <button className="primary" onClick={send} disabled={!input.trim()}>
-              Send
+              {mode === 'agent' ? 'Run' : 'Send'}
             </button>
           )}
         </div>

@@ -28,7 +28,12 @@ export type WebviewToExtension =
   | { type: 'deleteConversation'; id: string }
   | { type: 'runCommand'; command: WebviewCommand }
   | { type: 'insertCode'; code: string }
-  | { type: 'applyCode'; code: string };
+  | { type: 'applyCode'; code: string }
+  | { type: 'agentStart'; task: string }
+  | { type: 'agentStop' }
+  | { type: 'agentRevert' };
+
+export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error';
 
 export type ExtensionToWebview =
   | {
@@ -44,4 +49,8 @@ export type ExtensionToWebview =
   | { type: 'userMessage'; text: string }
   | { type: 'history'; items: ConversationMeta[] }
   | { type: 'conversation'; id: string; messages: DisplayMessage[] }
-  | { type: 'newChatStarted' };
+  | { type: 'newChatStarted' }
+  | { type: 'agentText'; text: string }
+  | { type: 'agentToolCall'; id: string; name: string; description: string }
+  | { type: 'agentToolResult'; id: string; ok: boolean; summary: string }
+  | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: string[] };

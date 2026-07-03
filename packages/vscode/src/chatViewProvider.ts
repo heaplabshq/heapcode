@@ -15,6 +15,7 @@ import {
 } from '@cortex/core';
 import { collectSelection, resolveMentions } from './contextCollector.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
+import type { AgentController } from './agent/controller.js';
 import type { ProfileManager } from './profileManager.js';
 
 const SYSTEM_PROMPT =
@@ -31,12 +32,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private conversation: Conversation = newConversation();
   private abortController?: AbortController;
 
+  /** Set right after construction (controller needs this.post, we need controller). */
+  agent?: AgentController;
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly profiles: ProfileManager,
     private readonly store: ConversationStore,
     private readonly log: vscode.OutputChannel,
   ) {}
+
+  postToWebview(msg: ExtensionToWebview): void {
+    this.post(msg);
+  }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -140,6 +148,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'applyCode':
         await applyCodeToEditor(msg.code, this.log);
+        break;
+      case 'agentStart':
+        await this.agent?.start(msg.task);
+        break;
+      case 'agentStop':
+        this.agent?.stop();
+        break;
+      case 'agentRevert':
+        await this.agent?.revert();
         break;
     }
   }

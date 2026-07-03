@@ -265,6 +265,26 @@
           "default": "auto",
           "markdownDescription": "`auto`: suggest while typing. `manual`: only on Alt+\\ (Cortex: Trigger Completion)."
         },
+        "cortex.agent.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable agent mode."
+        },
+        "cortex.agent.maxIterations": {
+          "type": "number",
+          "default": 25,
+          "description": "Maximum plan→act→observe iterations per agent session."
+        },
+        "cortex.agent.safeMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask for permission on every non-read action, ignoring session/always grants."
+        },
+        "cortex.agent.commandTimeout": {
+          "type": "number",
+          "default": 60,
+          "description": "Terminal command timeout in seconds for agent-run commands."
+        },
         "cortex.completion.template": {
           "type": "string",
           "enum": ["auto", "chat", "qwen", "codegemma", "deepseek", "starcoder", "codellama", "codestral"],

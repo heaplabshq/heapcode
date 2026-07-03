@@ -1,5 +1,5 @@
 import { OpenAICompatibleProvider } from './openaiCompatible.js';
-import type { ChatRequest, ModelInfo, ProviderConfig } from './types.js';
+import type { ChatRequest, CompletionRequest, ModelInfo, ProviderConfig } from './types.js';
 
 const DEFAULT_API_VERSION = '2024-06-01';
 
@@ -21,6 +21,12 @@ export class AzureOpenAIProvider extends OpenAICompatibleProvider {
   protected override chatUrl(req: ChatRequest): string {
     return this.url(
       `/openai/deployments/${encodeURIComponent(req.model)}/chat/completions?api-version=${this.apiVersion}`,
+    );
+  }
+
+  protected override completionsUrl(req: CompletionRequest): string {
+    return this.url(
+      `/openai/deployments/${encodeURIComponent(req.model)}/completions?api-version=${this.apiVersion}`,
     );
   }
 

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { ChatViewProvider } from './chatViewProvider.js';
 import { CortexCodeActionProvider } from './codeActions.js';
+import { CortexCompletionProvider } from './completionProvider.js';
 import { generateCommitMessage } from './gitCommit.js';
 import { JsonConversationStore } from './historyStore.js';
 import { registerInlineEdit } from './inlineEdit.js';
@@ -15,11 +16,19 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = 'cortex.menu';
+  const completionStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+  completionStatus.command = 'cortex.toggleCompletion';
   const updateStatusBar = () => {
     const profile = profiles.getActiveProfile();
     statusBar.text = `$(sparkle) ${profile.name} · ${profile.model || 'no model'}`;
     statusBar.tooltip = `Cortex Code — ${profile.baseUrl}\nClick to switch profile or model`;
     statusBar.show();
+    const completionsOn = vscode.workspace
+      .getConfiguration('cortex.completion')
+      .get<boolean>('enable', true);
+    completionStatus.text = completionsOn ? '$(zap) CC' : '$(circle-slash) CC';
+    completionStatus.tooltip = `Cortex completions: ${completionsOn ? 'on' : 'off'} — click to toggle`;
+    completionStatus.show();
     chatProvider.postConfig();
   };
 
@@ -27,6 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
     profiles,
     statusBar,
+    completionStatus,
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider),
     profiles.onDidChange(updateStatusBar),
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -57,6 +67,18 @@ export function activate(context: vscode.ExtensionContext): void {
       [{ scheme: 'file' }, { scheme: 'untitled' }],
       new CortexCodeActionProvider(),
       CortexCodeActionProvider.metadata,
+    ),
+
+    vscode.languages.registerInlineCompletionItemProvider(
+      [{ scheme: 'file' }, { scheme: 'untitled' }],
+      new CortexCompletionProvider(profiles, log),
+    ),
+    vscode.commands.registerCommand('cortex.toggleCompletion', async () => {
+      const cfg = vscode.workspace.getConfiguration('cortex.completion');
+      await cfg.update('enable', !cfg.get<boolean>('enable', true), vscode.ConfigurationTarget.Global);
+    }),
+    vscode.commands.registerCommand('cortex.triggerCompletion', () =>
+      vscode.commands.executeCommand('editor.action.inlineSuggest.trigger'),
     ),
   );
 

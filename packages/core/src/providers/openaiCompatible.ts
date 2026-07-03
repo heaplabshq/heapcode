@@ -4,6 +4,8 @@ import type {
   ChatChunk,
   ChatRequest,
   ChatResponse,
+  CompletionRequest,
+  CompletionResponse,
   ModelInfo,
   Provider,
   ProviderConfig,
@@ -38,6 +40,10 @@ export class OpenAICompatibleProvider implements Provider {
 
   protected chatUrl(_req: ChatRequest): string {
     return this.url('/chat/completions');
+  }
+
+  protected completionsUrl(_req: CompletionRequest): string {
+    return this.url('/completions');
   }
 
   protected modelsUrl(): string {
@@ -138,6 +144,25 @@ export class OpenAICompatibleProvider implements Provider {
       const content = chunk.choices?.[0]?.delta?.content;
       if (content) yield { content };
     }
+  }
+
+  async completion(req: CompletionRequest): Promise<CompletionResponse> {
+    const res = await this.fetchOrThrow(this.completionsUrl(req), {
+      method: 'POST',
+      headers: this.headers(),
+      body: JSON.stringify({
+        model: req.model,
+        prompt: req.prompt,
+        stream: false,
+        ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        ...(req.stop && req.stop.length > 0 ? { stop: req.stop.slice(0, 4) } : {}),
+      }),
+      signal: req.signal ?? null,
+    });
+    if (!res.ok) throw await describeHttpError(res);
+    const json = (await res.json()) as { choices?: Array<{ text?: string | null }> };
+    return { text: json.choices?.[0]?.text ?? '' };
   }
 
   async listModels(): Promise<ModelInfo[]> {

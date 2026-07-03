@@ -105,6 +105,14 @@
         "command": "cortex.rejectEdit",
         "title": "Reject Cortex Edit",
         "icon": "$(close)"
+      },
+      {
+        "command": "cortex.toggleCompletion",
+        "title": "Cortex: Toggle Completions"
+      },
+      {
+        "command": "cortex.triggerCompletion",
+        "title": "Cortex: Trigger Completion"
       }
     ],
     "submenus": [
@@ -156,6 +164,11 @@
         "key": "ctrl+i",
         "mac": "cmd+i",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "cortex.triggerCompletion",
+        "key": "alt+\\",
+        "when": "editorTextFocus && !editorReadonly"
       }
     ],
     "configuration": {
@@ -225,6 +238,38 @@
           "type": "number",
           "default": 4096,
           "description": "Maximum tokens to generate per response."
+        },
+        "cortex.completion.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline (ghost text) code completions."
+        },
+        "cortex.completion.delay": {
+          "type": "number",
+          "default": 250,
+          "description": "Debounce in ms before requesting a completion."
+        },
+        "cortex.completion.maxLines": {
+          "type": "number",
+          "default": 12,
+          "description": "Maximum lines per multi-line completion."
+        },
+        "cortex.completion.maxTokens": {
+          "type": "number",
+          "default": 200,
+          "description": "Max tokens to generate per completion."
+        },
+        "cortex.completion.triggerMode": {
+          "type": "string",
+          "enum": ["auto", "manual"],
+          "default": "auto",
+          "markdownDescription": "`auto`: suggest while typing. `manual`: only on Alt+\\ (Cortex: Trigger Completion)."
+        },
+        "cortex.completion.template": {
+          "type": "string",
+          "enum": ["auto", "chat", "qwen", "codegemma", "deepseek", "starcoder", "codellama", "codestral"],
+          "default": "auto",
+          "markdownDescription": "FIM prompt format. `auto` detects from the model id; `chat` forces the chat-based fallback for models without FIM support."
         }
       }
     }

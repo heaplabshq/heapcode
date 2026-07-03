@@ -23,6 +23,20 @@ export interface ChatResponse {
   finishReason?: string;
 }
 
+export interface CompletionRequest {
+  model: string;
+  /** Raw prompt — for FIM models this is the rendered FIM template. */
+  prompt: string;
+  maxTokens?: number;
+  temperature?: number;
+  stop?: string[];
+  signal?: AbortSignal;
+}
+
+export interface CompletionResponse {
+  text: string;
+}
+
 export interface ModelInfo {
   id: string;
 }
@@ -37,5 +51,6 @@ export interface ProviderConfig {
 export interface Provider {
   chat(req: ChatRequest): Promise<ChatResponse>;
   streamChat(req: ChatRequest): AsyncIterable<ChatChunk>;
+  completion(req: CompletionRequest): Promise<CompletionResponse>;
   listModels(): Promise<ModelInfo[]>;
 }

@@ -53,12 +53,12 @@
       "properties": {
         "cortex.baseUrl": {
           "type": "string",
-          "default": "http://localhost:11434/v1",
+          "default": "http://192.168.29.92:11434/v1",
           "markdownDescription": "Base URL of any OpenAI-compatible endpoint (must include the version path, e.g. `/v1`). Defaults to local Ollama."
         },
         "cortex.model": {
           "type": "string",
-          "default": "llama3.2",
+          "default": "fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:latest",
           "description": "Model id to use for chat."
         },
         "cortex.temperature": {

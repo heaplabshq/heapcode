@@ -56,6 +56,21 @@ describe('OpenAICompatibleProvider.streamChat', () => {
     await expect(run).rejects.toThrowError(/Authentication failed \(401\).*bad key/);
   });
 
+  it('surfaces the network cause when the server is unreachable', async () => {
+    // Grab an ephemeral port and free it again → connecting yields ECONNREFUSED.
+    const closed = await startMockServer({ kind: 'sse', chunks: [] });
+    await closed.close();
+    const provider = new OpenAICompatibleProvider({ baseUrl: closed.baseUrl });
+
+    const run = async () => {
+      for await (const _ of provider.streamChat({ model: 'm', messages: [] })) {
+        // no-op
+      }
+    };
+    await expect(run).rejects.toThrowError(ProviderError);
+    await expect(run).rejects.toThrowError(/Cannot reach http:\/\/127\.0\.0\.1:\d+\/v1 \(ECONNREFUSED\)/);
+  });
+
   it('cancels an in-flight stream via AbortSignal', async () => {
     server = await startMockServer({ kind: 'hang-after-first-chunk', firstChunk: 'partial' });
     const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });

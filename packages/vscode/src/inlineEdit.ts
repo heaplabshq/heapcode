@@ -135,6 +135,7 @@ export async function proposeEdit(
   const key = `${randomUUID()}/${document.uri.path.split('/').pop() ?? 'file'}`;
   proposals.set(`/${key}`, proposedContent);
   const proposalUri = vscode.Uri.from({ scheme: SCHEME, path: `/${key}` });
+  const versionBeforeReview = document.version;
 
   await vscode.commands.executeCommand('vscode.diff', document.uri, proposalUri, title, {
     preview: true,
@@ -149,15 +150,30 @@ export async function proposeEdit(
 
   await closeDiffTab(proposalUri);
   proposals.delete(`/${key}`);
+  // Put focus back on the real file — never leave it on the virtual proposal,
+  // or a reflexive Cmd+S turns into a "Save As" prompt.
+  await vscode.window.showTextDocument(document, {
+    viewColumn: editor.viewColumn,
+    preview: false,
+  });
 
-  if (choice === 'Accept') {
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(document.uri, range, newCode);
-    const applied = await vscode.workspace.applyEdit(edit);
-    if (!applied) {
-      void vscode.window.showErrorMessage('Cortex: failed to apply the edit.');
-    }
+  if (choice !== 'Accept') return;
+
+  if (document.version !== versionBeforeReview) {
+    void vscode.window.showWarningMessage(
+      'Cortex: the file changed while you were reviewing — edit not applied. Run it again.',
+    );
+    return;
   }
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, range, newCode);
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    void vscode.window.showErrorMessage('Cortex: failed to apply the edit.');
+    return;
+  }
+  await document.save();
 }
 
 /** Apply a chat code block: replace the selection, else fuzzy-locate it in the file. */

@@ -97,8 +97,35 @@ body {
 .markdown pre {
   background: var(--vscode-textCodeBlock-background);
   padding: 8px;
-  border-radius: 4px;
+  border-radius: 0 0 4px 4px;
   overflow-x: auto;
+  margin: 0;
+}
+
+.codeblock {
+  margin: 8px 0;
+}
+
+.codeblock-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+  background: var(--vscode-textCodeBlock-background);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  border-radius: 4px 4px 0 0;
+  padding: 2px 4px;
+}
+
+.codeblock-actions button {
+  font-size: 0.78em;
+  padding: 1px 8px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+}
+
+.codeblock-actions button:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
 }
 
 .markdown code {

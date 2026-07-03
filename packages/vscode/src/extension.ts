@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import { ChatViewProvider } from './chatViewProvider.js';
+import { CortexCodeActionProvider } from './codeActions.js';
+import { generateCommitMessage } from './gitCommit.js';
 import { JsonConversationStore } from './historyStore.js';
+import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager } from './profileManager.js';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -38,7 +41,26 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('cortex.addProfile', () => profiles.addProfileFlow()),
     vscode.commands.registerCommand('cortex.selectModel', () => profiles.selectModelFlow()),
     vscode.commands.registerCommand('cortex.setApiKey', () => profiles.setApiKeyFlow()),
+
+    vscode.commands.registerCommand('cortex.explain', () => chatProvider.sendFromCommand('/explain')),
+    vscode.commands.registerCommand('cortex.fix', () => chatProvider.sendFromCommand('/fix @problems')),
+    vscode.commands.registerCommand('cortex.refactor', () => chatProvider.sendFromCommand('/refactor')),
+    vscode.commands.registerCommand('cortex.optimize', () => chatProvider.sendFromCommand('/optimize')),
+    vscode.commands.registerCommand('cortex.generateTests', () => chatProvider.sendFromCommand('/test')),
+    vscode.commands.registerCommand('cortex.generateDocs', () => chatProvider.sendFromCommand('/docs')),
+    vscode.commands.registerCommand('cortex.reviewCode', () => chatProvider.sendFromCommand('/review')),
+    vscode.commands.registerCommand('cortex.generateCommitMessage', () =>
+      generateCommitMessage(profiles, log),
+    ),
+
+    vscode.languages.registerCodeActionsProvider(
+      [{ scheme: 'file' }, { scheme: 'untitled' }],
+      new CortexCodeActionProvider(),
+      CortexCodeActionProvider.metadata,
+    ),
   );
+
+  registerInlineEdit(context, profiles, log);
 
   updateStatusBar();
   log.appendLine('Cortex Code activated.');

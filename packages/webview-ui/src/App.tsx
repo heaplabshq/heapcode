@@ -58,6 +58,15 @@ export function App() {
             return next;
           });
           break;
+        case 'userMessage':
+          setView('chat');
+          setStreaming(true);
+          setMessages((prev) => [
+            ...prev,
+            { role: 'user', content: msg.text },
+            { role: 'assistant', content: '' },
+          ]);
+          break;
         case 'history':
           setHistory(msg.items);
           break;
@@ -104,6 +113,24 @@ export function App() {
   const openHistory = () => {
     postToExtension({ type: 'listHistory' });
     setView('history');
+  };
+
+  /** Delegated handler for Copy/Insert/Apply buttons injected into code blocks. */
+  const onMessagesClick = (e: React.MouseEvent) => {
+    const button = (e.target as HTMLElement).closest('button[data-action]');
+    if (!button) return;
+    const code = button.closest('.codeblock')?.querySelector('pre code')?.textContent ?? '';
+    if (!code) return;
+    const action = button.getAttribute('data-action');
+    if (action === 'copy') {
+      void navigator.clipboard.writeText(code);
+      button.textContent = 'Copied';
+      setTimeout(() => (button.textContent = 'Copy'), 1200);
+    } else if (action === 'insert') {
+      postToExtension({ type: 'insertCode', code });
+    } else if (action === 'apply') {
+      postToExtension({ type: 'applyCode', code });
+    }
   };
 
   return (
@@ -163,7 +190,7 @@ export function App() {
           ))}
         </div>
       ) : (
-        <div className="messages" ref={scrollRef}>
+        <div className="messages" ref={scrollRef} onClick={onMessagesClick}>
           {messages.length === 0 && (
             <div className="empty">
               <p>Ask anything about your code.</p>

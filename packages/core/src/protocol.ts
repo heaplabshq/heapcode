@@ -26,7 +26,9 @@ export type WebviewToExtension =
   | { type: 'listHistory' }
   | { type: 'openConversation'; id: string }
   | { type: 'deleteConversation'; id: string }
-  | { type: 'runCommand'; command: WebviewCommand };
+  | { type: 'runCommand'; command: WebviewCommand }
+  | { type: 'insertCode'; code: string }
+  | { type: 'applyCode'; code: string };
 
 export type ExtensionToWebview =
   | {
@@ -38,6 +40,8 @@ export type ExtensionToWebview =
   | { type: 'chunk'; text: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
+  /** A user turn initiated from the extension (context menu, code action). */
+  | { type: 'userMessage'; text: string }
   | { type: 'history'; items: ConversationMeta[] }
   | { type: 'conversation'; id: string; messages: DisplayMessage[] }
   | { type: 'newChatStarted' };

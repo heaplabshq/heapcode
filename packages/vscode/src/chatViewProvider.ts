@@ -14,6 +14,7 @@ import {
   type WebviewToExtension,
 } from '@cortex/core';
 import { collectSelection, resolveMentions } from './contextCollector.js';
+import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
 import type { ProfileManager } from './profileManager.js';
 
 const SYSTEM_PROMPT =
@@ -25,6 +26,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'cortex.chatView';
 
   private view?: vscode.WebviewView;
+  private viewReady = false;
+  private pendingSends: string[] = [];
   private conversation: Conversation = newConversation();
   private abortController?: AbortController;
 
@@ -43,6 +46,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     view.webview.html = this.getHtml(view.webview);
     view.webview.onDidReceiveMessage((msg: WebviewToExtension) => void this.onMessage(msg));
+    view.onDidDispose(() => {
+      this.view = undefined;
+      this.viewReady = false;
+    });
+  }
+
+  /**
+   * Entry point for context-menu commands and code actions: opens the chat
+   * view (waiting for it to boot if needed) and runs `text` as a user turn.
+   */
+  async sendFromCommand(text: string): Promise<void> {
+    await vscode.commands.executeCommand('cortex.chatView.focus');
+    if (this.viewReady) {
+      this.post({ type: 'userMessage', text });
+      await this.handleSend(text);
+    } else {
+      this.pendingSends.push(text);
+    }
   }
 
   /** Built-in prompts plus user prompts from `cortex.customPrompts` (later wins on collision). */
@@ -74,9 +95,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async onMessage(msg: WebviewToExtension): Promise<void> {
     switch (msg.type) {
-      case 'ready':
+      case 'ready': {
+        this.viewReady = true;
         this.postConfig();
+        const pending = this.pendingSends;
+        this.pendingSends = [];
+        for (const text of pending) {
+          this.post({ type: 'userMessage', text });
+          await this.handleSend(text);
+        }
         break;
+      }
       case 'send':
         await this.handleSend(msg.text);
         break;
@@ -106,6 +135,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (command) void vscode.commands.executeCommand(command);
         break;
       }
+      case 'insertCode':
+        await insertCodeAtCursor(msg.code);
+        break;
+      case 'applyCode':
+        await applyCodeToEditor(msg.code, this.log);
+        break;
     }
   }
 

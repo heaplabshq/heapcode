@@ -58,6 +58,82 @@
       {
         "command": "cortex.setApiKey",
         "title": "Cortex: Set API Key (Active Profile)"
+      },
+      {
+        "command": "cortex.inlineEdit",
+        "title": "Cortex: Edit Selection"
+      },
+      {
+        "command": "cortex.explain",
+        "title": "Cortex: Explain"
+      },
+      {
+        "command": "cortex.fix",
+        "title": "Cortex: Fix"
+      },
+      {
+        "command": "cortex.refactor",
+        "title": "Cortex: Refactor"
+      },
+      {
+        "command": "cortex.optimize",
+        "title": "Cortex: Optimize"
+      },
+      {
+        "command": "cortex.generateTests",
+        "title": "Cortex: Generate Tests"
+      },
+      {
+        "command": "cortex.generateDocs",
+        "title": "Cortex: Generate Docs"
+      },
+      {
+        "command": "cortex.reviewCode",
+        "title": "Cortex: Review Code"
+      },
+      {
+        "command": "cortex.generateCommitMessage",
+        "title": "Cortex: Generate Commit Message",
+        "icon": "$(sparkle)"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "cortex.submenu",
+        "label": "Cortex"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "cortex.submenu",
+          "group": "1_modification@100"
+        }
+      ],
+      "cortex.submenu": [
+        { "command": "cortex.inlineEdit", "group": "1_edit@1" },
+        { "command": "cortex.explain", "group": "2_ask@1" },
+        { "command": "cortex.fix", "group": "2_ask@2" },
+        { "command": "cortex.refactor", "group": "2_ask@3" },
+        { "command": "cortex.optimize", "group": "2_ask@4" },
+        { "command": "cortex.reviewCode", "group": "2_ask@5" },
+        { "command": "cortex.generateTests", "group": "3_generate@1" },
+        { "command": "cortex.generateDocs", "group": "3_generate@2" }
+      ],
+      "scm/title": [
+        {
+          "command": "cortex.generateCommitMessage",
+          "group": "navigation",
+          "when": "scmProvider == git"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "cortex.inlineEdit",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {

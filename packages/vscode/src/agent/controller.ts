@@ -100,6 +100,8 @@ export class AgentController {
           this.permissions.request(call, tool, this.describe(call, executor)),
         events: {
           onText: (text) => this.post({ type: 'agentText', text }),
+          onTextDelta: (text) => this.post({ type: 'agentTextDelta', text }),
+          onTextEnd: () => this.post({ type: 'agentTextEnd' }),
           onPlan: (text) => this.post({ type: 'agentPlan', text }),
           onToolCall: (call) => {
             const description = this.describe(call, executor);

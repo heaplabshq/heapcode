@@ -7,12 +7,15 @@ import { DENIED_RESULT_TEXT, type ToolCall, type ToolDefinition, type ToolResult
 export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error';
 
 export interface AgentEvents {
-  /** Assistant narration/summary text. */
+  /** Assistant narration/summary text (complete message, non-streamed path). */
   onText(text: string): void;
   onToolCall(call: ToolCall): void;
   onToolResult(result: ToolResult): void;
   /** The upfront numbered plan (when planning is enabled). */
   onPlan?(text: string): void;
+  /** Streamed narration tokens; a message ends with onTextEnd. */
+  onTextDelta?(text: string): void;
+  onTextEnd?(): void;
 }
 
 export interface AgentOptions {
@@ -69,16 +72,39 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   // Prefer streaming transport: reasoning models produce bytes immediately but
   // can exceed any sane non-streaming timeout on their full response.
+  const buildRequest = (msgs: ChatMessage[], withTools: boolean) => ({
+    model,
+    messages: msgs,
+    tools: withTools && nativeToolCalls ? tools : undefined,
+    temperature: opts.temperature ?? 0.2,
+    maxTokens: opts.maxTokens,
+    signal,
+  });
+
   const respond = (msgs: ChatMessage[], withTools: boolean) => {
-    const request = {
-      model,
-      messages: msgs,
-      tools: withTools && nativeToolCalls ? tools : undefined,
-      temperature: opts.temperature ?? 0.2,
-      maxTokens: opts.maxTokens,
-      signal,
-    };
+    const request = buildRequest(msgs, withTools);
     return provider.chatStreamed ? provider.chatStreamed(request) : provider.chat(request);
+  };
+
+  /**
+   * Streamed turn with live narration deltas. Only for native-tool-call mode —
+   * fallback-mode content contains raw <tool> blocks that must stay buffered.
+   * Returns whether narration was already delivered via deltas.
+   */
+  const respondLive = async (
+    msgs: ChatMessage[],
+    withTools: boolean,
+  ): Promise<{ response: Awaited<ReturnType<typeof respond>>; streamed: boolean }> => {
+    if (provider.chatStreamed && nativeToolCalls) {
+      let streamed = false;
+      const response = await provider.chatStreamed(buildRequest(msgs, withTools), (text) => {
+        streamed = true;
+        events.onTextDelta?.(text);
+      });
+      if (streamed) events.onTextEnd?.();
+      return { response, streamed };
+    }
+    return { response: await respond(msgs, withTools), streamed: false };
   };
   const systemPrompt = nativeToolCalls
     ? buildNativeAgentSystemPrompt(opts.workspaceName)
@@ -125,8 +151,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   /** One extra no-tools turn so every session ends with a human-readable conclusion. */
   const summarize = async (prompt: string): Promise<void> => {
     try {
-      const res = await respond([...messages, { role: 'user', content: prompt }], false);
-      if (res.content.trim()) events.onText(res.content);
+      const { response, streamed } = await respondLive(
+        [...messages, { role: 'user', content: prompt }],
+        false,
+      );
+      if (!streamed && response.content.trim()) events.onText(response.content);
     } catch {
       // Summary is best-effort — never turn a finished session into an error.
     }
@@ -152,11 +181,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       if (signal?.aborted) return 'stopped';
 
-      const response = await respond(messages, true);
+      const { response, streamed } = await respondLive(messages, true);
 
       if (nativeToolCalls) {
         if (response.toolCalls && response.toolCalls.length > 0) {
-          if (response.content.trim()) events.onText(response.content);
+          if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({
             role: 'assistant',
             content: response.content,
@@ -179,13 +208,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         // instead of ending the session prematurely.
         if (looksUnfinished(response.content) && nudges < MAX_NUDGES) {
           nudges++;
-          if (response.content.trim()) events.onText(response.content);
+          if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
           messages.push({ role: 'user', content: CONTINUE_NUDGE });
           continue;
         }
-        if (response.content.trim()) events.onText(response.content);
-        else await summarize('Summarize what you did and whether the task is complete.');
+        if (!streamed && response.content.trim()) events.onText(response.content);
+        else if (!response.content.trim()) {
+          await summarize('Summarize what you did and whether the task is complete.');
+        }
         return 'done';
       }
 

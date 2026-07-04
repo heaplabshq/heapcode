@@ -90,6 +90,8 @@ export type ExtensionToWebview =
       allowPersist: boolean;
     }
   | { type: 'agentText'; text: string }
+  | { type: 'agentTextDelta'; text: string }
+  | { type: 'agentTextEnd' }
   | { type: 'agentPlan'; text: string }
   | {
       type: 'agentToolCall';

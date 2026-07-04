@@ -62,11 +62,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post(msg);
   }
 
+  private agentStreamBuffer = '';
+
   /** Persist agent transcript entries so history reloads show the full session. */
   private recordAgentMessage(msg: ExtensionToWebview): void {
     switch (msg.type) {
       case 'agentText':
         this.conversation.messages.push({ role: 'assistant', content: msg.text });
+        break;
+      case 'agentTextDelta':
+        this.agentStreamBuffer += msg.text;
+        break;
+      case 'agentTextEnd':
+        if (this.agentStreamBuffer.trim()) {
+          this.conversation.messages.push({ role: 'assistant', content: this.agentStreamBuffer });
+        }
+        this.agentStreamBuffer = '';
         break;
       case 'agentPlan':
         this.conversation.messages.push({
@@ -96,6 +107,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'agentStatus':
         if (msg.status !== 'running') {
+          if (this.agentStreamBuffer.trim()) {
+            this.conversation.messages.push({ role: 'assistant', content: this.agentStreamBuffer });
+            this.agentStreamBuffer = '';
+          }
           this.conversation.messages.push({
             role: 'assistant',
             content: '',

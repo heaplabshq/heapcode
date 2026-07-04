@@ -65,6 +65,8 @@ interface UiMessage {
   permission?: PermissionCard;
   agentStatus?: { state: string; changedFiles: string[] };
   attachedFiles?: string[];
+  /** Live agent narration still receiving deltas. */
+  agentStreaming?: boolean;
 }
 
 interface ModelMenu {
@@ -222,6 +224,22 @@ export function App() {
           break;
         case 'agentText':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text }]);
+          break;
+        case 'agentTextDelta':
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.agentStreaming) {
+              next[next.length - 1] = { ...last, content: last.content + msg.text };
+              return next;
+            }
+            return [...next, { role: 'assistant', content: msg.text, agentStreaming: true }];
+          });
+          break;
+        case 'agentTextEnd':
+          setMessages((prev) =>
+            prev.map((m) => (m.agentStreaming ? { ...m, agentStreaming: false } : m)),
+          );
           break;
         case 'agentPlan':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text, plan: true }]);

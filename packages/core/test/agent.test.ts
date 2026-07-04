@@ -178,6 +178,55 @@ describe('runAgent — native tool calls', () => {
     expect(provider.requests.length).toBe(1);
   });
 
+  it('streams narration deltas without duplicating them as onText', async () => {
+    const responses: ChatResponse[] = [
+      { content: 'Reading now.', toolCalls: [{ id: 'c1', name: 'read_file', args: {} }] },
+      { content: 'Task is complete: all done.' },
+    ];
+    let call = 0;
+    const requests: ChatRequest[] = [];
+    const provider: Provider = {
+      chat: () => Promise.reject(new Error('chat should not be used when chatStreamed exists')),
+      chatStreamed(req: ChatRequest, onDelta?: (t: string) => void) {
+        requests.push(structuredClone(req));
+        const res = responses[Math.min(call++, responses.length - 1)]!;
+        // Simulate token streaming.
+        for (const word of res.content.split(/(?<= )/)) onDelta?.(word);
+        return Promise.resolve(res);
+      },
+      streamChat() {
+        throw new Error('not used');
+      },
+      completion() {
+        throw new Error('not used');
+      },
+      embeddings() {
+        throw new Error('not used');
+      },
+      listModels: () => Promise.resolve([]),
+    };
+
+    const deltas: string[] = [];
+    const ends: number[] = [];
+    const h = harness();
+    const outcome = await runAgent({
+      ...h.options,
+      events: {
+        ...h.options.events,
+        onTextDelta: (t: string) => deltas.push(t),
+        onTextEnd: () => ends.push(deltas.length),
+      },
+      provider,
+      nativeToolCalls: true,
+    });
+
+    expect(outcome).toBe('done');
+    expect(deltas.join('')).toBe('Reading now.Task is complete: all done.');
+    expect(ends.length).toBe(2); // one finalize per streamed message
+    expect(h.texts).toEqual([]); // nothing double-emitted via onText
+    expect(h.calls.map((c) => c.name)).toEqual(['read_file']);
+  });
+
   it('stops at maxIterations', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },

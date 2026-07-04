@@ -86,7 +86,7 @@ describe('runAgent — native tool calls', () => {
     // Second request must contain the tool result message.
     const second = provider.requests[1]!;
     expect(second.messages.some((m) => m.role === 'tool' && m.content === 'ok:read_file')).toBe(true);
-    expect(second.tools?.length).toBe(2);
+    expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish']);
   });
 
   it('reports permission denial to the model instead of failing', async () => {
@@ -195,6 +195,46 @@ describe('runAgent — native tool calls', () => {
     const nudge = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
     expect(nudge.content).toContain('token limit');
     expect(h.calls.map((c) => c.name)).toEqual(['write_file']);
+  });
+
+  it('ends the session when the model calls finish(summary)', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      {
+        content: '',
+        toolCalls: [{ id: 'c2', name: 'finish', args: { summary: 'Read the file; no changes needed.' } }],
+      },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    expect(h.texts).toEqual(['Read the file; no changes needed.']);
+    // finish is advertised to the model but never executed as a workspace tool.
+    expect(h.calls.map((c) => c.name)).toEqual(['read_file']);
+    expect(provider.requests[0]!.tools!.some((t) => t.name === 'finish')).toBe(true);
+  });
+
+  it('reminds once about finish() on an ambiguous tool-free reply, then accepts', async () => {
+    const provider = scriptedProvider([
+      { content: 'Interesting workspace layout.' }, // ambiguous: not unfinished, not finished
+      { content: 'Interesting workspace layout.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    expect(provider.requests.length).toBe(2); // one reminder round-trip
+    const reminder = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
+    expect(reminder.content).toContain('finish tool');
+  });
+
+  it('ends the fallback session on a finish block', async () => {
+    const provider = scriptedProvider([
+      { content: '<tool name="finish">\n{"summary": "Done — created the file."}\n</tool>' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
+    expect(outcome).toBe('done');
+    expect(h.texts).toEqual(['Done — created the file.']);
   });
 
   it('accepts a genuine completion without nudging', async () => {

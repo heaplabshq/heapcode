@@ -18,8 +18,9 @@ const COMMON =
 export function buildNativeAgentSystemPrompt(workspaceName: string): string {
   return (
     `${COMMON}\n\nWorkspace: ${workspaceName}. ` +
-    'Use the provided tools. When the task is complete (or impossible), reply WITHOUT any tool call: ' +
-    'a short summary of what you did and the result.'
+    'Use the provided tools. Every reply must contain a tool call. ' +
+    'When the task is complete (or impossible), call the `finish` tool with a summary — ' +
+    'that is the ONLY way to end the session.'
   );
 }
 
@@ -33,7 +34,8 @@ export function buildFallbackAgentSystemPrompt(
     '<tool name="TOOL_NAME">\n{"arg": "value"}\n</tool>\n\n' +
     `Available tools:\n\n${formatToolsForPrompt(tools)}\n\n` +
     'The result arrives in the next message as <tool_result>. ' +
-    'When the task is complete (or impossible), reply WITHOUT any <tool> block: ' +
-    'a short summary of what you did and the result.'
+    'Every reply must contain a tool call. When the task is complete (or impossible), call:\n' +
+    '<tool name="finish">\n{"summary": "what was done and the outcome"}\n</tool>\n' +
+    'That is the ONLY way to end the session.'
   );
 }

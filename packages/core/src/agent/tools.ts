@@ -23,3 +23,25 @@ export interface ToolResult {
 
 export const DENIED_RESULT_TEXT =
   'The user denied permission for this action. Do not retry it; try a different approach or finish.';
+
+/**
+ * Structural termination (the Cline/OpenHands pattern): the session ends when
+ * the model CALLS finish — "no tool call" becomes a protocol violation to
+ * remind about, not a phrase to interpret.
+ */
+export const FINISH_TOOL: ToolDefinition = {
+  name: 'finish',
+  description:
+    'Call this when the task is fully complete (or impossible to complete). This ends the session.',
+  parameters: {
+    type: 'object',
+    properties: {
+      summary: {
+        type: 'string',
+        description: 'What was done, the outcome, and anything the user should know.',
+      },
+    },
+    required: ['summary'],
+  },
+  permission: 'read',
+};

@@ -2,7 +2,13 @@ import type { ChatMessage, Provider } from '../providers/types.js';
 import { isAbortError } from '../providers/errors.js';
 import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt } from './prompts.js';
 import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol.js';
-import { DENIED_RESULT_TEXT, type ToolCall, type ToolDefinition, type ToolResult } from './tools.js';
+import {
+  DENIED_RESULT_TEXT,
+  FINISH_TOOL,
+  type ToolCall,
+  type ToolDefinition,
+  type ToolResult,
+} from './tools.js';
 
 export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error';
 
@@ -48,6 +54,17 @@ const CONTINUE_NUDGE =
 
 const MAX_NUDGES = 4;
 
+const FINISH_REMINDER =
+  'If the task is fully complete, call the finish tool with a summary. ' +
+  'Otherwise, continue working by calling the next tool.';
+
+/** A tool-free reply that reads as a real completion — accept without ceremony. */
+function looksFinished(text: string): boolean {
+  return /\b(task (is |was )?(now )?complete|completed successfully|all done|everything (is )?(done|in place)|nothing (more|else|further) to do|no changes (were )?(needed|required))\b/i.test(
+    text,
+  );
+}
+
 const TRUNCATED_NUDGE =
   'Your reply was cut off by the output token limit. Continue the work with SMALLER steps: ' +
   'write large files in sections (write_file for the first part, then edit_file to extend), ' +
@@ -74,13 +91,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   } = opts;
 
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
+  const toolsWithFinish = [...tools, FINISH_TOOL];
 
   // Prefer streaming transport: reasoning models produce bytes immediately but
   // can exceed any sane non-streaming timeout on their full response.
   const buildRequest = (msgs: ChatMessage[], withTools: boolean) => ({
     model,
     messages: msgs,
-    tools: withTools && nativeToolCalls ? tools : undefined,
+    tools: withTools && nativeToolCalls ? toolsWithFinish : undefined,
     temperature: opts.temperature ?? 0.2,
     maxTokens: opts.maxTokens,
     signal,
@@ -113,7 +131,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   };
   const systemPrompt = nativeToolCalls
     ? buildNativeAgentSystemPrompt(opts.workspaceName)
-    : buildFallbackAgentSystemPrompt(opts.workspaceName, tools);
+    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish);
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -152,6 +170,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   let repairs = 0;
   let nudges = 0;
+  let finishReminderSent = false;
 
   /** One extra no-tools turn so every session ends with a human-readable conclusion. */
   const summarize = async (prompt: string): Promise<void> => {
@@ -189,6 +208,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       const { response, streamed } = await respondLive(messages, true);
 
       if (nativeToolCalls) {
+        // Structural termination: finish(summary) ends the session.
+        const finishCall = response.toolCalls?.find((c) => c.name === FINISH_TOOL.name);
+        if (finishCall) {
+          if (!streamed && response.content.trim()) events.onText(response.content);
+          const summary = String(finishCall.args.summary ?? '').trim();
+          if (summary) events.onText(summary);
+          else if (!response.content.trim()) {
+            await summarize('Summarize what you did and whether the task is complete.');
+          }
+          return 'done';
+        }
         if (response.toolCalls && response.toolCalls.length > 0) {
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({
@@ -227,6 +257,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: CONTINUE_NUDGE });
           continue;
         }
+        // Tool-free and not clearly finished: protocol violation — remind once
+        // that ending goes through finish(summary).
+        if (!looksFinished(response.content) && !finishReminderSent) {
+          finishReminderSent = true;
+          if (!streamed && response.content.trim()) events.onText(response.content);
+          messages.push({ role: 'assistant', content: response.content });
+          messages.push({ role: 'user', content: FINISH_REMINDER });
+          continue;
+        }
         if (!streamed && response.content.trim()) events.onText(response.content);
         else if (!response.content.trim()) {
           await summarize('Summarize what you did and whether the task is complete.');
@@ -256,6 +295,12 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       }
 
       const first = parsed.calls[0]!;
+      if (first.name === FINISH_TOOL.name) {
+        if (parsed.narration) events.onText(parsed.narration);
+        const summary = String(first.args?.summary ?? '').trim();
+        if (summary) events.onText(summary);
+        return 'done';
+      }
       if (parsed.narration) events.onText(parsed.narration);
       messages.push({ role: 'assistant', content: response.content });
 

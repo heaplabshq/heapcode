@@ -61,6 +61,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   shadowGit?: ShadowGit;
 
   private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
+  private pendingQuestions = new Map<string, (answer: string | undefined) => void>();
   private terminal?: vscode.Terminal;
 
   constructor(
@@ -184,6 +185,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } catch (err) {
       this.log.appendLine(`[perm] in-chat request failed: ${err instanceof Error ? err.message : err}`);
       return undefined; // modal fallback
+    }
+  }
+
+  /** ask_user tool: question card in the chat, awaiting the user's answer. */
+  async askAgentQuestion(question: string, options?: string[]): Promise<string | undefined> {
+    try {
+      await vscode.commands.executeCommand('cortex.chatView.focus');
+      for (let i = 0; i < 20 && !this.viewReady; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (!this.view || !this.viewReady) return undefined;
+      const id = randomUUID();
+      return await new Promise<string | undefined>((resolve) => {
+        const timeout = setTimeout(() => {
+          if (this.pendingQuestions.delete(id)) resolve(undefined);
+        }, 300_000);
+        this.pendingQuestions.set(id, (answer) => {
+          clearTimeout(timeout);
+          this.pendingQuestions.delete(id);
+          resolve(answer);
+        });
+        this.post({ type: 'agentQuestion', id, question, options });
+      });
+    } catch {
+      return undefined;
     }
   }
 
@@ -339,6 +365,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         resolve?.(msg.choice);
         break;
       }
+      case 'agentQuestionResponse':
+        this.pendingQuestions.get(msg.id)?.(msg.answer);
+        break;
       case 'listModels': {
         const active = this.profiles.getActiveProfile();
         let models: string[] = [];

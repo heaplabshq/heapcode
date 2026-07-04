@@ -62,6 +62,7 @@ export type WebviewToExtension =
   | { type: 'setModel'; model: string }
   | { type: 'setProfile'; name: string }
   | { type: 'permissionResponse'; id: string; choice: PermissionChoice }
+  | { type: 'agentQuestionResponse'; id: string; answer: string }
   | { type: 'openInTerminal'; command: string }
   | { type: 'openReference'; text: string }
   | { type: 'agentStart'; task: string; files?: string[] }
@@ -107,6 +108,8 @@ export type ExtensionToWebview =
       permission: string;
       allowPersist: boolean;
     }
+  /** The agent's ask_user tool: a question card in the chat. */
+  | { type: 'agentQuestion'; id: string; question: string; options?: string[] }
   | { type: 'agentText'; text: string }
   | { type: 'agentTextDelta'; text: string }
   | { type: 'agentTextEnd' }

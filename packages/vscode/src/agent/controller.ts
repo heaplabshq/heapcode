@@ -20,6 +20,9 @@ export class AgentController {
   private abort?: AbortController;
   private checkpoint?: SessionCheckpoint;
 
+  /** ask_user tool: forwards the agent's question to the chat UI; set by extension.ts. */
+  askUser?: (question: string, options?: string[]) => Promise<string | undefined>;
+
   constructor(
     private readonly profiles: ProfileManager,
     private readonly permissions: PermissionEngine,
@@ -86,6 +89,19 @@ export class AgentController {
         tools: [...agentToolDefinitions, ...mcpTools],
         nativeToolCalls: capabilities.nativeToolCalls,
         execute: async (call) => {
+          if (call.name === 'ask_user') {
+            const options = Array.isArray(call.args.options)
+              ? call.args.options.map(String)
+              : undefined;
+            const answer = await this.askUser?.(String(call.args.question ?? ''), options);
+            return {
+              id: call.id,
+              name: call.name,
+              content: answer?.trim()
+                ? `User answered: ${answer}`
+                : 'The user did not answer. Proceed with your best judgment.',
+            };
+          }
           if (this.mcp?.isMcpTool(call.name)) {
             const content = await this.mcp.call(call.name, call.args);
             return { id: call.id, name: call.name, content };

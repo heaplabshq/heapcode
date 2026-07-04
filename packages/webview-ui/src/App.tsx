@@ -57,6 +57,13 @@ interface PermissionCard {
   decided?: PermissionChoice;
 }
 
+interface QuestionCard {
+  id: string;
+  question: string;
+  options?: string[];
+  answered?: string;
+}
+
 interface UiMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -64,6 +71,7 @@ interface UiMessage {
   tool?: ToolChip;
   plan?: boolean;
   permission?: PermissionCard;
+  question?: QuestionCard;
   agentStatus?: { state: string; changedFiles: ChangedFile[] };
   attachedFiles?: string[];
   /** Live agent narration still receiving deltas. */
@@ -112,6 +120,56 @@ function ContextMeter({ used, window: win }: { used: number; window: number }) {
         {Math.round(pct * 100)}%
       </span>
     </span>
+  );
+}
+
+/** The agent's ask_user tool: option buttons plus a free-text answer field. */
+function QuestionCardView({
+  q,
+  onAnswer,
+}: {
+  q: QuestionCard;
+  onAnswer: (answer: string) => void;
+}) {
+  const [text, setText] = useState('');
+  return (
+    <div className="question-card">
+      <div className="question-head">Cortex has a question</div>
+      <div className="question-text">{q.question}</div>
+      {q.answered !== undefined ? (
+        <div className="question-answered">↳ {q.answered}</div>
+      ) : (
+        <>
+          {q.options && q.options.length > 0 && (
+            <div className="question-options">
+              {q.options.map((opt) => (
+                <button key={opt} className="ghost" onClick={() => onAnswer(opt)}>
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="question-input-row">
+            <input
+              className="question-input"
+              value={text}
+              placeholder="Type an answer…"
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && text.trim()) onAnswer(text.trim());
+              }}
+            />
+            <button
+              className="primary"
+              disabled={!text.trim()}
+              onClick={() => onAnswer(text.trim())}
+            >
+              Answer
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -289,6 +347,16 @@ export function App() {
                 permission: msg.permission,
                 allowPersist: msg.allowPersist,
               },
+            },
+          ]);
+          break;
+        case 'agentQuestion':
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: '',
+              question: { id: msg.id, question: msg.question, options: msg.options },
             },
           ]);
           break;
@@ -697,6 +765,25 @@ export function App() {
                     </div>
                   )}
                 </div>
+              );
+            }
+            if (m.question) {
+              const q = m.question;
+              return (
+                <QuestionCardView
+                  key={i}
+                  q={q}
+                  onAnswer={(answer) => {
+                    postToExtension({ type: 'agentQuestionResponse', id: q.id, answer });
+                    setMessages((prev) =>
+                      prev.map((x) =>
+                        x.question?.id === q.id
+                          ? { ...x, question: { ...x.question, answered: answer } }
+                          : x,
+                      ),
+                    );
+                  }}
+                />
               );
             }
             if (m.note) {

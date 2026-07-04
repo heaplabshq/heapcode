@@ -41,6 +41,8 @@ export function activate(context: vscode.ExtensionContext): void {
     rag,
     mcp,
   );
+  chatProvider.agent.askUser = (question, options) =>
+    chatProvider.askAgentQuestion(question, options);
 
   const ragStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
   ragStatus.command = 'cortex.buildIndex';

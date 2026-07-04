@@ -409,7 +409,7 @@
         },
         "cortex.agent.maxIterations": {
           "type": "number",
-          "default": 25,
+          "default": 50,
           "description": "Maximum plan→act→observe iterations per agent session."
         },
         "cortex.agent.safeMode": {

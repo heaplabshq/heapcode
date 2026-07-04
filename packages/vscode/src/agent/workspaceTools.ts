@@ -12,9 +12,11 @@ import type { SessionCheckpoint } from './checkpoint.js';
 
 const MAX_READ_CHARS = 50_000;
 const MAX_OUTPUT_CHARS = 8_000;
-const MAX_SEARCH_RESULTS = 100;
+const MAX_SEARCH_RESULTS = 40;
 const MAX_SEARCH_FILES = 2_000;
+const MAX_FETCH_CHARS = 20_000;
 const IGNORE_GLOB = '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**';
+const CWD_MARKER = '__CORTEX_CWD__';
 
 export const agentToolDefinitions: ToolDefinition[] = [
   {
@@ -126,7 +128,8 @@ export const agentToolDefinitions: ToolDefinition[] = [
   {
     name: 'run_command',
     description:
-      'Run a shell command in the workspace root (npm/pnpm/git/tests/etc). Returns stdout, stderr, and exit code.',
+      'Run a shell command (npm/pnpm/git/tests/etc). Returns stdout, stderr, and exit code. ' +
+      'The working directory persists between calls (cd carries over); it starts at the workspace root.',
     parameters: {
       type: 'object',
       properties: {
@@ -135,6 +138,109 @@ export const agentToolDefinitions: ToolDefinition[] = [
       required: ['command'],
     },
     permission: 'execute',
+  },
+  {
+    name: 'get_symbols',
+    description:
+      'Outline of a file from the language server: functions, classes, methods with their line ranges. Much cheaper than reading the whole file.',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Workspace-relative path' } },
+      required: ['path'],
+    },
+    permission: 'read',
+  },
+  {
+    name: 'find_references',
+    description:
+      'Find all usages of a symbol across the workspace (language-server powered — exact, not text search).',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File where the symbol appears' },
+        symbol: { type: 'string', description: 'The identifier to look up' },
+        line: { type: 'number', description: 'Optional 1-based line to disambiguate' },
+      },
+      required: ['path', 'symbol'],
+    },
+    permission: 'read',
+  },
+  {
+    name: 'go_to_definition',
+    description: 'Find where a symbol used in a file is defined (language-server powered).',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File where the symbol is used' },
+        symbol: { type: 'string', description: 'The identifier to resolve' },
+        line: { type: 'number', description: 'Optional 1-based line to disambiguate' },
+      },
+      required: ['path', 'symbol'],
+    },
+    permission: 'read',
+  },
+  {
+    name: 'fetch_url',
+    description:
+      'Fetch a web page or API over HTTP(S) — documentation, READMEs, API responses. HTML is reduced to readable text.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'http(s):// URL' } },
+      required: ['url'],
+    },
+    permission: 'execute',
+  },
+  {
+    name: 'multi_edit',
+    description:
+      'Apply several search/replace edits to one file atomically (all succeed or none are written). Same matching rules as edit_file.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        edits: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              search: { type: 'string', description: 'Existing code to replace' },
+              replace: { type: 'string', description: 'New code' },
+            },
+            required: ['search', 'replace'],
+          },
+        },
+      },
+      required: ['path', 'edits'],
+    },
+    permission: 'write',
+  },
+  {
+    name: 'create_directory',
+    description: 'Create a directory (and any missing parents).',
+    parameters: {
+      type: 'object',
+      properties: { path: { type: 'string' } },
+      required: ['path'],
+    },
+    permission: 'write',
+  },
+  {
+    name: 'ask_user',
+    description:
+      'Ask the user a clarifying question when blocked on a decision only they can make (ambiguous requirements, destructive trade-offs). Use sparingly — prefer sensible defaults.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string' },
+        options: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional short answer choices',
+        },
+      },
+      required: ['question'],
+    },
+    permission: 'read',
   },
 ];
 
@@ -169,12 +275,17 @@ function nearbyHint(content: string, search: string): string {
 }
 
 export class WorkspaceToolExecutor {
+  /** run_command working directory — persists across calls within a session. */
+  private cwd: string;
+
   constructor(
     private readonly root: vscode.Uri,
     private readonly checkpoint: SessionCheckpoint,
     private readonly commandTimeoutMs: number,
     private readonly semanticSearch?: (query: string) => Promise<string>,
-  ) {}
+  ) {
+    this.cwd = root.fsPath;
+  }
 
   /** Human-readable "what will happen", shown in permission prompts and tool chips. */
   describe(call: ToolCall): string {
@@ -205,6 +316,22 @@ export class WorkspaceToolExecutor {
         return `Delete ${a.path}`;
       case 'run_command':
         return `Run: ${a.command}`;
+      case 'get_symbols':
+        return `Outline ${a.path}`;
+      case 'find_references':
+        return `Find references to ${a.symbol} (from ${a.path})`;
+      case 'go_to_definition':
+        return `Find definition of ${a.symbol} (from ${a.path})`;
+      case 'fetch_url':
+        return `Fetch ${a.url}`;
+      case 'multi_edit': {
+        const count = Array.isArray(call.args.edits) ? call.args.edits.length : 0;
+        return `Edit ${a.path} (${count} edits)`;
+      }
+      case 'create_directory':
+        return `Create directory ${a.path}`;
+      case 'ask_user':
+        return `Ask: ${String(a.question ?? '').slice(0, 80)}`;
       default:
         return `${call.name} ${JSON.stringify(call.args)}`;
     }
@@ -315,6 +442,64 @@ export class WorkspaceToolExecutor {
       }
       case 'run_command':
         return this.runCommand(a.command ?? '');
+      case 'get_symbols': {
+        const uri = this.resolve(a.path);
+        const symbols = await vscode.commands.executeCommand<
+          (vscode.DocumentSymbol | vscode.SymbolInformation)[]
+        >('vscode.executeDocumentSymbolProvider', uri);
+        if (!symbols || symbols.length === 0) {
+          return ok('No symbols found (no language server for this file type, or an empty file).');
+        }
+        return ok(formatSymbols(symbols).join('\n'));
+      }
+      case 'find_references':
+      case 'go_to_definition': {
+        const uri = this.resolve(a.path);
+        const pos = await findSymbolPosition(uri, a.symbol ?? '', Number(call.args.line) || undefined);
+        if (!pos) return fail(`Symbol "${a.symbol}" not found in ${a.path}.`);
+        const command =
+          call.name === 'find_references'
+            ? 'vscode.executeReferenceProvider'
+            : 'vscode.executeDefinitionProvider';
+        const locations = await vscode.commands.executeCommand<
+          (vscode.Location | vscode.LocationLink)[]
+        >(command, uri, pos);
+        if (!locations || locations.length === 0) {
+          return ok(
+            `No ${call.name === 'find_references' ? 'references' : 'definition'} found for "${a.symbol}".`,
+          );
+        }
+        return ok(await formatLocations(locations.slice(0, 50)));
+      }
+      case 'fetch_url':
+        return fetchUrl(a.url ?? '').then(ok, (err: Error) => fail(err.message));
+      case 'multi_edit': {
+        const uri = this.resolve(a.path);
+        const edits = Array.isArray(call.args.edits)
+          ? (call.args.edits as Array<{ search?: unknown; replace?: unknown }>)
+          : [];
+        if (edits.length === 0) return fail('No edits given.');
+        let text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+        // Apply all in memory first — nothing is written unless every edit lands.
+        for (let i = 0; i < edits.length; i++) {
+          const next = applySearchReplace(text, String(edits[i]!.search ?? ''), String(edits[i]!.replace ?? ''));
+          if (next === undefined) {
+            return fail(
+              `Edit ${i + 1}/${edits.length}: "search" not found in ${a.path} (earlier edits were NOT applied). ` +
+                `${nearbyHint(text, String(edits[i]!.search ?? ''))}` +
+                'Provide the exact existing code for each edit.',
+            );
+          }
+          text = next;
+        }
+        await this.checkpoint.recordBeforeChange(uri);
+        await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
+        return ok(`Applied ${edits.length} edits to ${a.path}.`);
+      }
+      case 'create_directory': {
+        await vscode.workspace.fs.createDirectory(this.resolve(a.path));
+        return ok(`Created ${a.path}.`);
+      }
       default:
         return fail(`Tool "${call.name}" is not implemented.`);
     }
@@ -348,15 +533,21 @@ export class WorkspaceToolExecutor {
         continue;
       }
       const lines = text.split('\n');
+      const rel = vscode.workspace.asRelativePath(file, false);
       for (let i = 0; i < lines.length && results.length < MAX_SEARCH_RESULTS; i++) {
         if (regex.test(lines[i]!)) {
-          results.push(
-            `${vscode.workspace.asRelativePath(file, false)}:${i + 1}: ${lines[i]!.trim().slice(0, 200)}`,
-          );
+          // ±2 lines of context — usually enough to judge a hit without a read_file round-trip.
+          const from = Math.max(0, i - 2);
+          const to = Math.min(lines.length - 1, i + 2);
+          const block: string[] = [`${rel}:${i + 1}:`];
+          for (let j = from; j <= to; j++) {
+            block.push(`${j === i ? '>' : ' '} ${j + 1}\t${lines[j]!.slice(0, 200)}`);
+          }
+          results.push(block.join('\n'));
         }
       }
     }
-    return results.join('\n') || 'No matches.';
+    return results.join('\n--\n') || 'No matches.';
   }
 
   private runCommand(command: string): Promise<ToolResult> {
@@ -368,10 +559,13 @@ export class WorkspaceToolExecutor {
         isError: true,
       });
     }
+    // POSIX: echo the final $PWD behind a marker so `cd` persists to the next call.
+    const trackCwd = process.platform !== 'win32';
+    const wrapped = trackCwd ? `${command}\n__cortex_ec=$?; echo "${CWD_MARKER}$PWD"; exit $__cortex_ec` : command;
     return new Promise((resolvePromise) => {
-      const child = spawn(command, {
+      const child = spawn(wrapped, {
         shell: true,
-        cwd: this.root.fsPath,
+        cwd: this.cwd,
         env: process.env,
       });
       let out = '';
@@ -391,6 +585,18 @@ export class WorkspaceToolExecutor {
 
       child.on('close', (code) => {
         clearTimeout(timeout);
+        const markerAt = out.lastIndexOf(CWD_MARKER);
+        if (markerAt !== -1) {
+          const nextCwd = out.slice(markerAt + CWD_MARKER.length).split('\n')[0]!.trim();
+          out = out.slice(0, markerAt);
+          // Jail the persisted cwd to the workspace.
+          if (
+            nextCwd === this.root.fsPath ||
+            nextCwd.startsWith(this.root.fsPath + path.sep)
+          ) {
+            this.cwd = nextCwd;
+          }
+        }
         let content = out.trim() || '(no output)';
         if (content.length > MAX_OUTPUT_CHARS) {
           content =
@@ -411,4 +617,122 @@ export class WorkspaceToolExecutor {
       });
     });
   }
+}
+
+/** Flatten a DocumentSymbol tree (or SymbolInformation list) into outline lines. */
+function formatSymbols(
+  symbols: (vscode.DocumentSymbol | vscode.SymbolInformation)[],
+  indent = '',
+): string[] {
+  const lines: string[] = [];
+  for (const s of symbols) {
+    const kind = vscode.SymbolKind[s.kind] ?? 'Symbol';
+    if ('range' in s && 'children' in s) {
+      lines.push(
+        `${indent}${kind} ${s.name} (lines ${s.range.start.line + 1}-${s.range.end.line + 1})`,
+      );
+      if (lines.length < 400 && s.children.length > 0) {
+        lines.push(...formatSymbols(s.children, indent + '  '));
+      }
+    } else {
+      const loc = (s as vscode.SymbolInformation).location;
+      lines.push(`${indent}${kind} ${s.name} (line ${loc.range.start.line + 1})`);
+    }
+    if (lines.length >= 400) break;
+  }
+  return lines;
+}
+
+/** Position of an identifier in a file — on `line` when given, else its first occurrence. */
+async function findSymbolPosition(
+  uri: vscode.Uri,
+  symbol: string,
+  line?: number,
+): Promise<vscode.Position | undefined> {
+  if (!symbol) return undefined;
+  const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  const lines = text.split('\n');
+  const pattern = new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+  const search = (i: number): vscode.Position | undefined => {
+    const col = lines[i]?.search(pattern) ?? -1;
+    return col >= 0 ? new vscode.Position(i, col) : undefined;
+  };
+  if (line && line >= 1 && line <= lines.length) {
+    const hit = search(line - 1);
+    if (hit) return hit;
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const hit = search(i);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** "path:line: source-line" for reference/definition results. */
+async function formatLocations(
+  locations: (vscode.Location | vscode.LocationLink)[],
+): Promise<string> {
+  const out: string[] = [];
+  const cache = new Map<string, string[]>();
+  for (const loc of locations) {
+    const uri = 'targetUri' in loc ? loc.targetUri : loc.uri;
+    const range = 'targetUri' in loc ? loc.targetRange : loc.range;
+    const rel = vscode.workspace.asRelativePath(uri, false);
+    let lines = cache.get(uri.toString());
+    if (!lines) {
+      try {
+        lines = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri)).split('\n');
+      } catch {
+        lines = [];
+      }
+      cache.set(uri.toString(), lines);
+    }
+    const lineText = lines[range.start.line]?.trim().slice(0, 160) ?? '';
+    out.push(`${rel}:${range.start.line + 1}: ${lineText}`);
+  }
+  return out.join('\n');
+}
+
+/** Fetch a URL; HTML is reduced to readable text. Throws with a useful message. */
+async function fetchUrl(url: string): Promise<string> {
+  if (!/^https?:\/\//i.test(url)) throw new Error('Only http(s) URLs are supported.');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'user-agent': 'CortexCode-Agent', accept: 'text/html, text/plain, application/json, */*' },
+      redirect: 'follow',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
+    const type = res.headers.get('content-type') ?? '';
+    let body = await res.text();
+    if (type.includes('html')) body = htmlToText(body);
+    if (body.length > MAX_FETCH_CHARS) body = body.slice(0, MAX_FETCH_CHARS) + '\n…[truncated]';
+    return body.trim() || '(empty response)';
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`Timed out fetching ${url}`);
+    }
+    throw err instanceof Error ? err : new Error(String(err));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Crude but dependency-free HTML → text: drop script/style, strip tags, decode entities. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr)[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n');
 }

@@ -98,7 +98,7 @@ export const providerPresets: readonly ProviderPreset[] = [
     defaultBaseUrl: 'https://integrate.api.nvidia.com/v1',
     requiresApiKey: true,
     local: false,
-    capabilities: caps(),
+    capabilities: caps({maxContext: 128_000}),
   },
   {
     id: 'lmstudio',

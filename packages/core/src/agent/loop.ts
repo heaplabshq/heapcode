@@ -66,6 +66,20 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   } = opts;
 
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
+
+  // Prefer streaming transport: reasoning models produce bytes immediately but
+  // can exceed any sane non-streaming timeout on their full response.
+  const respond = (msgs: ChatMessage[], withTools: boolean) => {
+    const request = {
+      model,
+      messages: msgs,
+      tools: withTools && nativeToolCalls ? tools : undefined,
+      temperature: opts.temperature ?? 0.2,
+      maxTokens: opts.maxTokens,
+      signal,
+    };
+    return provider.chatStreamed ? provider.chatStreamed(request) : provider.chat(request);
+  };
   const systemPrompt = nativeToolCalls
     ? buildNativeAgentSystemPrompt(opts.workspaceName)
     : buildFallbackAgentSystemPrompt(opts.workspaceName, tools);
@@ -111,13 +125,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   /** One extra no-tools turn so every session ends with a human-readable conclusion. */
   const summarize = async (prompt: string): Promise<void> => {
     try {
-      const res = await provider.chat({
-        model,
-        messages: [...messages, { role: 'user', content: prompt }],
-        temperature: opts.temperature ?? 0.2,
-        maxTokens: opts.maxTokens,
-        signal,
-      });
+      const res = await respond([...messages, { role: 'user', content: prompt }], false);
       if (res.content.trim()) events.onText(res.content);
     } catch {
       // Summary is best-effort — never turn a finished session into an error.
@@ -126,13 +134,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   try {
     if (opts.plan) {
-      const planRes = await provider.chat({
-        model,
-        messages: [...messages, { role: 'user', content: PLAN_REQUEST }],
-        temperature: opts.temperature ?? 0.2,
-        maxTokens: opts.maxTokens,
-        signal,
-      });
+      const planRes = await respond([...messages, { role: 'user', content: PLAN_REQUEST }], false);
       const planText = planRes.content.trim();
       if (planText) {
         events.onPlan?.(planText);
@@ -150,14 +152,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       if (signal?.aborted) return 'stopped';
 
-      const response = await provider.chat({
-        model,
-        messages,
-        tools: nativeToolCalls ? tools : undefined,
-        temperature: opts.temperature ?? 0.2,
-        maxTokens: opts.maxTokens,
-        signal,
-      });
+      const response = await respond(messages, true);
 
       if (nativeToolCalls) {
         if (response.toolCalls && response.toolCalls.length > 0) {

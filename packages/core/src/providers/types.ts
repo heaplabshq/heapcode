@@ -88,6 +88,12 @@ export interface ProviderConfig {
 export interface Provider {
   chat(req: ChatRequest): Promise<ChatResponse>;
   streamChat(req: ChatRequest): AsyncIterable<ChatChunk>;
+  /**
+   * Streaming transport returning the full response (content + aggregated
+   * tool calls). Preferred for agent turns: reasoning models can take longer
+   * than any sane non-streaming timeout, but produce bytes immediately.
+   */
+  chatStreamed?(req: ChatRequest, onDelta?: (text: string) => void): Promise<ChatResponse>;
   completion(req: CompletionRequest): Promise<CompletionResponse>;
   embeddings(req: EmbeddingsRequest): Promise<EmbeddingsResponse>;
   listModels(): Promise<ModelInfo[]>;

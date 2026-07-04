@@ -96,6 +96,49 @@ describe('OpenAICompatibleProvider.streamChat', () => {
   });
 });
 
+describe('OpenAICompatibleProvider.chatStreamed', () => {
+  it('aggregates streamed content and split tool-call deltas', async () => {
+    server = await startMockServer({
+      kind: 'sse-raw',
+      events: [
+        JSON.stringify({ choices: [{ delta: { content: 'Let me ' } }] }),
+        JSON.stringify({ choices: [{ delta: { content: 'read it.' } }] }),
+        JSON.stringify({
+          choices: [
+            { delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'read_file', arguments: '{"pa' } }] } },
+          ],
+        }),
+        JSON.stringify({
+          choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'th": "a.ts"}' } }] } }],
+        }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }),
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const deltas: string[] = [];
+    const res = await provider.chatStreamed(
+      { model: 'm', messages: [{ role: 'user', content: 'q' }] },
+      (t) => deltas.push(t),
+    );
+
+    expect(res.content).toBe('Let me read it.');
+    expect(deltas.join('')).toBe('Let me read it.');
+    expect(res.toolCalls).toEqual([
+      { id: 'c1', name: 'read_file', args: { path: 'a.ts' }, argsParseError: undefined },
+    ]);
+    expect(res.finishReason).toBe('tool_calls');
+    expect((server.requests[0]!.body as { stream: boolean }).stream).toBe(true);
+  });
+
+  it('fails fast when the endpoint never sends headers', async () => {
+    server = await startMockServer({ kind: 'hang' });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl, timeoutMs: 300 });
+    await expect(provider.chatStreamed({ model: 'm', messages: [] })).rejects.toThrowError(
+      /No response from/,
+    );
+  });
+});
+
 describe('OpenAICompatibleProvider.chat', () => {
   it('returns the full message content', async () => {
     server = await startMockServer({

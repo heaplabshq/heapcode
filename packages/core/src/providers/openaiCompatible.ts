@@ -13,8 +13,17 @@ import type {
   ProviderConfig,
 } from './types.js';
 
+interface OpenAIStreamToolCall {
+  index?: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 interface OpenAIChatCompletionChunk {
-  choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
+  choices?: Array<{
+    delta?: { content?: string | null; tool_calls?: OpenAIStreamToolCall[] };
+    finish_reason?: string | null;
+  }>;
 }
 
 interface OpenAIToolCall {
@@ -245,6 +254,84 @@ export class OpenAICompatibleProvider implements Provider {
     const json = (await res.json()) as { data?: Array<{ embedding?: number[]; index?: number }> };
     const data = [...(json.data ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
     return { embeddings: data.map((d) => d.embedding ?? []) };
+  }
+
+  async chatStreamed(
+    req: ChatRequest,
+    onDelta?: (text: string) => void,
+  ): Promise<ChatResponse> {
+    // Timeout applies to time-to-first-byte only; total stream time is unbounded.
+    const ttfbMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const internal = new AbortController();
+    const signal = req.signal ? AbortSignal.any([req.signal, internal.signal]) : internal.signal;
+    const ttfbTimer = setTimeout(() => internal.abort(), ttfbMs);
+
+    let res: Response;
+    try {
+      res = await this.fetchOrThrow(
+        this.chatUrl(req),
+        { method: 'POST', headers: this.headers(), body: this.chatBody(req, true), signal },
+        0,
+      );
+    } catch (err) {
+      if (internal.signal.aborted && !req.signal?.aborted) {
+        throw new ProviderError(
+          `No response from ${this.config.baseUrl} within ${Math.round(ttfbMs / 1000)}s.`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(ttfbTimer);
+    }
+    if (!res.ok) throw await describeHttpError(res);
+    if (!res.body) throw new ProviderError('Response has no body.');
+
+    let content = '';
+    let finishReason: string | undefined;
+    const toolSlots = new Map<number, { id?: string; name: string; args: string }>();
+
+    for await (const data of sseEvents(res.body)) {
+      if (data === '[DONE]') break;
+      let chunk: OpenAIChatCompletionChunk;
+      try {
+        chunk = JSON.parse(data) as OpenAIChatCompletionChunk;
+      } catch {
+        continue;
+      }
+      const choice = chunk.choices?.[0];
+      if (choice?.delta?.content) {
+        content += choice.delta.content;
+        onDelta?.(choice.delta.content);
+      }
+      for (const tc of choice?.delta?.tool_calls ?? []) {
+        const slot = toolSlots.get(tc.index ?? 0) ?? { name: '', args: '' };
+        if (tc.id) slot.id = tc.id;
+        if (tc.function?.name) slot.name += tc.function.name;
+        if (tc.function?.arguments) slot.args += tc.function.arguments;
+        toolSlots.set(tc.index ?? 0, slot);
+      }
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+    }
+
+    const toolCalls = [...toolSlots.entries()]
+      .sort(([a], [b]) => a - b)
+      .filter(([, s]) => s.name)
+      .map(([index, s]) => {
+        let args: Record<string, unknown> = {};
+        let argsParseError: string | undefined;
+        try {
+          args = JSON.parse(s.args || '{}') as Record<string, unknown>;
+        } catch (err) {
+          argsParseError = err instanceof Error ? err.message : String(err);
+        }
+        return { id: s.id ?? `call_${index}`, name: s.name, args, argsParseError };
+      });
+
+    return {
+      content,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      finishReason,
+    };
   }
 
   async listModels(): Promise<ModelInfo[]> {

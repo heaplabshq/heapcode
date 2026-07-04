@@ -14,6 +14,8 @@ export type MockBehavior =
   | { kind: 'hang-after-first-chunk'; firstChunk: string }
   /** Accepts the request and never responds — for timeout tests. */
   | { kind: 'hang' }
+  /** Emits the given payloads verbatim as `data:` lines, then [DONE]. */
+  | { kind: 'sse-raw'; events: string[] }
   /** Serves responses[i] for the i-th request (last one repeats). */
   | { kind: 'sequence'; responses: Array<Exclude<MockBehavior, { kind: 'sequence' }>> };
 
@@ -48,6 +50,15 @@ export async function startMockServer(behavior: MockBehavior): Promise<MockServe
       }
 
       res.writeHead(200, { 'content-type': 'text/event-stream' });
+
+      if (active.kind === 'sse-raw') {
+        for (const payload of active.events) {
+          res.write(`data: ${payload}\n\n`);
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
 
       if (active.kind === 'hang-after-first-chunk') {
         res.write(sseChunk(active.firstChunk));

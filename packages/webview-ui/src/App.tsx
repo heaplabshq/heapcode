@@ -67,6 +67,24 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
+
+  // Model menu dismissal: Esc anywhere, or clicking outside the picker.
+  useEffect(() => {
+    if (!modelMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setModelMenu(null);
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      if (!modelPickerRef.current?.contains(e.target as Node)) setModelMenu(null);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onMouseDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onMouseDown);
+    };
+  }, [modelMenu]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<ExtensionToWebview>) => {
@@ -596,7 +614,7 @@ export function App() {
               <option value="chat">Ask</option>
               <option value="agent">Agent</option>
             </select>
-            <div className="model-picker">
+            <div className="model-picker" ref={modelPickerRef}>
               {modelMenu && (
                 <div className="model-menu">
                   <div className="menu-section">Provider</div>

@@ -21,6 +21,11 @@ export interface ProviderProfileConfig {
   embeddingsModel?: string;
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Model context window in tokens (prompt + output). Drives the context
+   * usage meter and automatic conversation compaction. Default 32768.
+   */
+  contextWindow?: number;
   /** Per-request timeout for non-streaming calls (ms). Default 120000. */
   timeoutMs?: number;
   headers?: Record<string, string>;

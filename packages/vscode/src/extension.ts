@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { AgentController } from './agent/controller.js';
+import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
 import { McpManager } from './agent/mcp.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { openMemoryFile } from './memory.js';
@@ -132,6 +132,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   registerInlineEdit(context, profiles, log);
+  registerAgentDiffProvider(context);
 
   updateRagStatus();
   if (vscode.workspace.getConfiguration('cortex.rag').get<boolean>('autoIndex', true)) {

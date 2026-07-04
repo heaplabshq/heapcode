@@ -64,7 +64,7 @@ export async function generateCommitMessage(
       try {
         const { provider, profile } = await profiles.createActiveProvider();
         const result = await provider.chat({
-          model: profile.model,
+          model: profile.editModel || profile.model,
           messages: buildCommitMessages(diff),
           temperature: 0.2,
           maxTokens: 500,

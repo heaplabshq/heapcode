@@ -252,7 +252,13 @@
               "model": {
                 "type": "string"
               },
+              "editModel": {
+                "type": "string"
+              },
               "completionModel": {
+                "type": "string"
+              },
+              "agentModel": {
                 "type": "string"
               },
               "embeddingsModel": {
@@ -376,6 +382,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable agent mode."
+        },
+        "cortex.agent.planFirst": {
+          "type": "boolean",
+          "default": true,
+          "description": "Agent writes a numbered plan first, then executes it step by step."
         },
         "cortex.agent.maxIterations": {
           "type": "number",

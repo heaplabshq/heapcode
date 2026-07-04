@@ -13,11 +13,14 @@ const IGNORE_GLOB = '**/{node_modules,dist,build,target,.git,coverage,vendor,out
 export const agentToolDefinitions: ToolDefinition[] = [
   {
     name: 'read_file',
-    description: 'Read a file. Returns content with line numbers.',
+    description:
+      'Read a file (or a line range of it). Returns content with line numbers.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Workspace-relative path' },
+        start_line: { type: 'number', description: 'Optional 1-based first line' },
+        end_line: { type: 'number', description: 'Optional 1-based last line (inclusive)' },
       },
       required: ['path'],
     },
@@ -137,14 +140,29 @@ export class WorkspaceToolExecutor {
     private readonly semanticSearch?: (query: string) => Promise<string>,
   ) {}
 
-  /** Human-readable "what will happen", shown in the permission prompt. */
+  /** Human-readable "what will happen", shown in permission prompts and tool chips. */
   describe(call: ToolCall): string {
-    const a = call.args as Record<string, string | undefined>;
+    const a = call.args as Record<string, string | number | undefined>;
     switch (call.name) {
+      case 'read_file':
+        return a.start_line || a.end_line
+          ? `Read ${a.path} (lines ${a.start_line ?? 1}–${a.end_line ?? 'end'})`
+          : `Read ${a.path}`;
+      case 'list_dir':
+        return `List ${a.path === '.' || !a.path ? 'workspace root' : a.path}`;
+      case 'search':
+        return `Search for /${a.pattern}/${a.glob ? ` in ${a.glob}` : ''}`;
+      case 'semantic_search':
+        return `Semantic search: "${a.query}"`;
+      case 'get_diagnostics':
+        return a.path ? `Check problems in ${a.path}` : 'Check workspace problems';
       case 'write_file':
         return `Write ${String(a.content ?? '').split('\n').length} lines to ${a.path}`;
-      case 'edit_file':
-        return `Edit ${a.path} (replace a matched section)`;
+      case 'edit_file': {
+        const searchLines = String(a.search ?? '').split('\n').length;
+        const replaceLines = String(a.replace ?? '').split('\n').length;
+        return `Edit ${a.path} (replace ${searchLines} lines with ${replaceLines})`;
+      }
       case 'rename_file':
         return `Rename ${a.path} → ${a.newPath}`;
       case 'delete_file':
@@ -170,7 +188,10 @@ export class WorkspaceToolExecutor {
       case 'read_file': {
         const uri = this.resolve(a.path);
         const bytes = await vscode.workspace.fs.readFile(uri);
-        let text = new TextDecoder().decode(bytes);
+        const allLines = new TextDecoder().decode(bytes).split('\n');
+        const start = Math.max(1, Number(a.start_line) || 1);
+        const end = Math.min(allLines.length, Number(a.end_line) || allLines.length);
+        let text = allLines.slice(start - 1, end).join('\n');
         let truncated = false;
         if (text.length > MAX_READ_CHARS) {
           text = text.slice(0, MAX_READ_CHARS);
@@ -178,7 +199,7 @@ export class WorkspaceToolExecutor {
         }
         const numbered = text
           .split('\n')
-          .map((l, i) => `${i + 1}\t${l}`)
+          .map((l, i) => `${start + i}\t${l}`)
           .join('\n');
         return ok(numbered + (truncated ? '\n…[truncated]' : ''));
       }

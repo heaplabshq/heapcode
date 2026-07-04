@@ -118,8 +118,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'send':
-        await this.handleSend(msg.text);
+        await this.handleSend(msg.text, msg.files);
         break;
+      case 'pickContextFiles': {
+        const files = await vscode.workspace.findFiles(
+          '**/*',
+          '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**',
+          5000,
+        );
+        const picked = await vscode.window.showQuickPick(
+          files.map((f) => vscode.workspace.asRelativePath(f, false)).sort(),
+          { title: 'Cortex: Attach files as context', canPickMany: true },
+        );
+        if (picked && picked.length > 0) this.post({ type: 'contextFiles', files: picked });
+        break;
+      }
       case 'stop':
         this.abortController?.abort();
         break;
@@ -152,14 +165,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'applyCode':
         await applyCodeToEditor(msg.code, this.log);
         break;
-      case 'agentStart':
-        await this.agent?.start(msg.task);
+      case 'agentStart': {
+        const task =
+          msg.files && msg.files.length > 0
+            ? `${msg.task}\n\nStart by reading these attached files: ${msg.files.join(', ')}`
+            : msg.task;
+        await this.agent?.start(task);
         break;
+      }
       case 'agentStop':
         this.agent?.stop();
         break;
       case 'agentRevert':
         await this.agent?.revert();
+        break;
+      case 'agentDiffFile':
+        await this.agent?.diffFile(msg.path);
+        break;
+      case 'agentRevertFile':
+        await this.agent?.revertFile(msg.path);
+        break;
+      case 'agentKeepFile':
+        this.agent?.keepFile(msg.path);
         break;
     }
   }
@@ -196,13 +223,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * library, resolves @mentions to context blocks, and auto-attaches the
    * selection for slash commands (that's almost always the intent).
    */
-  private async buildUserMessage(text: string): Promise<StoredMessage> {
+  private async buildUserMessage(text: string, files?: string[]): Promise<StoredMessage> {
     const slash = parseSlashCommand(text, this.allPrompts());
     let body: string;
     const { blocks, unresolved } = await resolveMentions(
       text,
       this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
     );
+
+    // Explicitly attached files (📎) — highest-priority context after selection.
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (root && files) {
+      for (const rel of files.slice(0, 8)) {
+        try {
+          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, rel));
+          blocks.push({
+            label: `Attached file (${rel})`,
+            content: new TextDecoder().decode(bytes).slice(0, 20_000),
+            priority: 1.5,
+          });
+        } catch {
+          unresolved.push(rel);
+        }
+      }
+    }
 
     if (slash) {
       const selection = collectSelection();
@@ -233,7 +277,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return { role: 'user', content: body + context.text, display: text };
   }
 
-  private async handleSend(text: string): Promise<void> {
+  private async handleSend(text: string, files?: string[]): Promise<void> {
     const { provider, profile } = await this.profiles.createActiveProvider();
     if (!profile.model) {
       this.post({
@@ -243,7 +287,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const userMessage = await this.buildUserMessage(text);
+    const userMessage = await this.buildUserMessage(text, files);
     this.conversation.messages.push(userMessage);
     if (this.conversation.messages.length === 1) {
       this.conversation.title = text.slice(0, 60);

@@ -169,25 +169,38 @@ export class ProfileManager {
   async selectModelFlow(): Promise<void> {
     const profile = this.getActiveProfile();
 
-    type Role = 'model' | 'completionModel' | 'embeddingsModel';
+    type Role = 'model' | 'editModel' | 'completionModel' | 'agentModel' | 'embeddingsModel';
+    const inherits = `inherits chat (${profile.model || 'not set'})`;
     const rolePick = await vscode.window.showQuickPick(
       [
         {
           label: '$(comment-discussion) Chat',
           description: profile.model || 'not set',
-          detail: 'Chat, inline edit, commit messages',
+          detail: 'Conversations in the sidebar',
           role: 'model' as Role,
         },
         {
-          label: '$(zap) Completion',
-          description: profile.completionModel || `inherits chat (${profile.model || 'not set'})`,
+          label: '$(edit) Edit',
+          description: profile.editModel || inherits,
+          detail: 'Inline edit (Ctrl+I), apply-to-file, commit messages',
+          role: 'editModel' as Role,
+        },
+        {
+          label: '$(zap) Autocomplete',
+          description: profile.completionModel || inherits,
           detail: 'Ghost text — pick a FIM-capable coder model (qwen2.5-coder, starcoder2…)',
           role: 'completionModel' as Role,
         },
         {
+          label: '$(hubot) Agent',
+          description: profile.agentModel || inherits,
+          detail: 'Agent mode — pick a strong tool-calling model',
+          role: 'agentModel' as Role,
+        },
+        {
           label: '$(search) Embeddings',
           description: profile.embeddingsModel || 'not set',
-          detail: 'Semantic search / RAG (used from M5)',
+          detail: 'Semantic search / RAG index',
           role: 'embeddingsModel' as Role,
         },
       ],

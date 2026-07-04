@@ -11,6 +11,8 @@ export interface AgentEvents {
   onText(text: string): void;
   onToolCall(call: ToolCall): void;
   onToolResult(result: ToolResult): void;
+  /** The upfront numbered plan (when planning is enabled). */
+  onPlan?(text: string): void;
 }
 
 export interface AgentOptions {
@@ -25,11 +27,17 @@ export interface AgentOptions {
   /** Resolve to false to deny; a denial is reported to the model, not fatal. */
   requestPermission(call: ToolCall, tool: ToolDefinition): Promise<boolean>;
   events: AgentEvents;
+  /** Ask for a numbered plan first, then execute it step by step. */
+  plan?: boolean;
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
 }
+
+const PLAN_REQUEST =
+  'Before doing anything, write a concise numbered plan (3-8 steps) for this task. ' +
+  'Plain text only — do NOT call any tools yet.';
 
 const MAX_REPAIRS = 3;
 
@@ -86,7 +94,45 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   let repairs = 0;
 
+  /** One extra no-tools turn so every session ends with a human-readable conclusion. */
+  const summarize = async (prompt: string): Promise<void> => {
+    try {
+      const res = await provider.chat({
+        model,
+        messages: [...messages, { role: 'user', content: prompt }],
+        temperature: opts.temperature ?? 0.2,
+        maxTokens: opts.maxTokens,
+        signal,
+      });
+      if (res.content.trim()) events.onText(res.content);
+    } catch {
+      // Summary is best-effort — never turn a finished session into an error.
+    }
+  };
+
   try {
+    if (opts.plan) {
+      const planRes = await provider.chat({
+        model,
+        messages: [...messages, { role: 'user', content: PLAN_REQUEST }],
+        temperature: opts.temperature ?? 0.2,
+        maxTokens: opts.maxTokens,
+        signal,
+      });
+      const planText = planRes.content.trim();
+      if (planText) {
+        events.onPlan?.(planText);
+        messages.push({ role: 'user', content: PLAN_REQUEST });
+        messages.push({ role: 'assistant', content: planText });
+        messages.push({
+          role: 'user',
+          content:
+            'Good. Now execute the plan step by step using tools, starting with step 1. ' +
+            'Briefly state which step you are on as you go.',
+        });
+      }
+    }
+
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       if (signal?.aborted) return 'stopped';
 
@@ -121,6 +167,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           continue;
         }
         if (response.content.trim()) events.onText(response.content);
+        else await summarize('Summarize what you did and whether the task is complete.');
         return 'done';
       }
 
@@ -134,6 +181,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           continue;
         }
         if (response.content.trim()) events.onText(response.content);
+        else await summarize('Summarize what you did and whether the task is complete.');
         return 'done';
       }
 
@@ -164,6 +212,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       });
       messages.push({ role: 'user', content: formatToolResult(result.name, result.content) });
     }
+    await summarize(
+      'You hit the iteration limit. Summarize the progress so far, what remains, and suggested next steps. Do not call any tools.',
+    );
     return 'max-iterations';
   } catch (err) {
     if (isAbortError(err)) return 'stopped';

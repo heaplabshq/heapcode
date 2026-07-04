@@ -246,8 +246,103 @@ body {
 
 .mode-row {
   display: flex;
+  align-items: center;
   gap: 2px;
   padding: 6px 10px 0;
+}
+
+.attach-btn {
+  font-size: 0.82em;
+  padding: 1px 8px;
+}
+
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px 0;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8em;
+  padding: 1px 4px 1px 8px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.attach-remove {
+  padding: 0 4px;
+  font-size: 0.9em;
+  color: inherit;
+  background: transparent;
+}
+
+.attach-note {
+  margin-top: 4px;
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
+.tool-label {
+  flex-shrink: 0;
+  font-size: 0.85em;
+  opacity: 0.65;
+}
+
+.plan-card {
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.plan-title {
+  font-weight: 600;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.8;
+  margin-bottom: 4px;
+}
+
+.banner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.agent-banner {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.changed-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.file-link {
+  flex: 1;
+  text-align: left;
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+}
+
+.file-link:hover {
+  text-decoration: underline;
 }
 
 .mode-tab {

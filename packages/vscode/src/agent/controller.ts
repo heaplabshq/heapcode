@@ -76,7 +76,7 @@ export class AgentController {
     try {
       const outcome = await runAgent({
         provider,
-        model: profile.model,
+        model: profile.agentModel || profile.model,
         task: fullTask,
         workspaceName: path.basename(root.fsPath),
         tools: [...agentToolDefinitions, ...mcpTools],
@@ -92,6 +92,7 @@ export class AgentController {
           this.permissions.request(call, tool, this.describe(call, executor)),
         events: {
           onText: (text) => this.post({ type: 'agentText', text }),
+          onPlan: (text) => this.post({ type: 'agentPlan', text }),
           onToolCall: (call) => {
             const description = this.describe(call, executor);
             this.log.appendLine(`[agent] tool: ${description}`);
@@ -103,8 +104,10 @@ export class AgentController {
               id: result.id,
               ok: !result.isError,
               summary: result.content.slice(0, 300),
+              label: resultLabel(result.name, result.content, result.isError),
             }),
         },
+        plan: cfg.get<boolean>('planFirst', true),
         maxIterations: cfg.get<number>('maxIterations', 25),
         maxTokens: profile.maxTokens,
         signal: this.abort.signal,
@@ -141,5 +144,74 @@ export class AgentController {
           : 'Nothing to revert.',
     });
     this.post({ type: 'agentStatus', status: 'done', changedFiles: [] });
+  }
+
+  /** Native diff: checkpointed original (left) vs the agent's result (right). */
+  async diffFile(relPath: string): Promise<void> {
+    const entry = this.checkpoint?.entryFor(relPath);
+    if (!entry) return;
+    agentOriginals.set(relPath, entry.original ?? new Uint8Array());
+    const originalUri = vscode.Uri.from({ scheme: ORIGINAL_SCHEME, path: `/${relPath}` });
+    await vscode.commands.executeCommand(
+      'vscode.diff',
+      originalUri,
+      entry.uri,
+      `Cortex Agent: ${relPath}`,
+      { preview: true },
+    );
+  }
+
+  async revertFile(relPath: string): Promise<void> {
+    const ok = await this.checkpoint?.revertFile(relPath);
+    if (ok) this.post({ type: 'agentText', text: `Reverted ${relPath}.` });
+    this.postChangedFiles();
+  }
+
+  keepFile(relPath: string): void {
+    this.checkpoint?.keepFile(relPath);
+    this.postChangedFiles();
+  }
+
+  private postChangedFiles(): void {
+    this.post({
+      type: 'agentStatus',
+      status: 'done',
+      changedFiles: this.checkpoint?.changedFiles() ?? [],
+    });
+  }
+}
+
+const ORIGINAL_SCHEME = 'cortex-agent-original';
+const agentOriginals = new Map<string, Uint8Array>();
+
+export function registerAgentDiffProvider(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(ORIGINAL_SCHEME, {
+      provideTextDocumentContent(uri: vscode.Uri): string {
+        const bytes = agentOriginals.get(uri.path.slice(1));
+        return bytes ? new TextDecoder().decode(bytes) : '';
+      },
+    }),
+  );
+}
+
+function resultLabel(name: string, content: string, isError?: boolean): string {
+  if (isError) return content.split('\n')[0]!.slice(0, 80);
+  switch (name) {
+    case 'read_file':
+      return `${content.split('\n').length} lines`;
+    case 'search':
+    case 'semantic_search':
+      return content === 'No matches.' ? 'no matches' : `${content.split('\n').length} result(s)`;
+    case 'list_dir':
+      return `${content.split('\n').length} entries`;
+    case 'get_diagnostics':
+      return content.startsWith('No errors') ? 'clean' : `${content.split('\n').length} problem(s)`;
+    case 'run_command': {
+      const match = /^exit code: (\S+)/.exec(content);
+      return match ? `exit ${match[1]}` : 'done';
+    }
+    default:
+      return 'done';
   }
 }

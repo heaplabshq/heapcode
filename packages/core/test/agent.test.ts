@@ -117,6 +117,41 @@ describe('runAgent — native tool calls', () => {
     expect(toolMsg!.content).toContain('Invalid JSON');
   });
 
+  it('plans first, then executes, when plan is enabled', async () => {
+    const provider = scriptedProvider([
+      { content: '1. Read the file\n2. Fix the bug' },
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'Fixed.' },
+    ]);
+    const plans: string[] = [];
+    const h = harness();
+    const outcome = await runAgent({
+      ...h.options,
+      events: { ...h.options.events, onPlan: (t: string) => plans.push(t) },
+      provider,
+      nativeToolCalls: true,
+      plan: true,
+    });
+    expect(outcome).toBe('done');
+    expect(plans).toEqual(['1. Read the file\n2. Fix the bug']);
+    // The execution request carries the plan in its transcript.
+    const second = provider.requests[1]!;
+    expect(second.messages.some((m) => m.content.includes('2. Fix the bug'))).toBe(true);
+  });
+
+  it('requests a wrap-up summary when the final reply is empty', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: {} }] },
+      { content: '' }, // finishes silently…
+      { content: 'Summary: read the file, nothing to change.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    expect(h.texts).toEqual(['Summary: read the file, nothing to change.']);
+    expect(provider.requests.length).toBe(3);
+  });
+
   it('stops at maxIterations', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },

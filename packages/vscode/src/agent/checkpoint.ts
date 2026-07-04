@@ -25,6 +25,38 @@ export class SessionCheckpoint {
     );
   }
 
+  /** Find the checkpoint entry for a workspace-relative path. */
+  entryFor(relPath: string): { uri: vscode.Uri; original: Uint8Array | null } | undefined {
+    for (const [key, original] of this.originals) {
+      const uri = vscode.Uri.parse(key);
+      if (vscode.workspace.asRelativePath(uri, false) === relPath) return { uri, original };
+    }
+    return undefined;
+  }
+
+  /** Revert a single file and drop it from the checkpoint. */
+  async revertFile(relPath: string): Promise<boolean> {
+    const entry = this.entryFor(relPath);
+    if (!entry) return false;
+    try {
+      if (entry.original === null) {
+        await vscode.workspace.fs.delete(entry.uri, { useTrash: false });
+      } else {
+        await vscode.workspace.fs.writeFile(entry.uri, entry.original);
+      }
+    } catch {
+      return false;
+    }
+    this.originals.delete(entry.uri.toString());
+    return true;
+  }
+
+  /** Accept a single file's changes (drop it from the checkpoint). */
+  keepFile(relPath: string): void {
+    const entry = this.entryFor(relPath);
+    if (entry) this.originals.delete(entry.uri.toString());
+  }
+
   get size(): number {
     return this.originals.size;
   }

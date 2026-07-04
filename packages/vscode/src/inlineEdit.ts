@@ -80,7 +80,7 @@ async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): 
       try {
         const { provider, profile } = await profiles.createActiveProvider();
         const result = await provider.chat({
-          model: profile.model,
+          model: profile.editModel || profile.model,
           messages: buildInlineEditMessages({
             instruction,
             selectedCode,

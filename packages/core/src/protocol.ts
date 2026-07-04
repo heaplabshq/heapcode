@@ -20,7 +20,7 @@ export type WebviewCommand = 'selectProfile' | 'selectModel' | 'setApiKey';
 
 export type WebviewToExtension =
   | { type: 'ready' }
-  | { type: 'send'; text: string }
+  | { type: 'send'; text: string; files?: string[] }
   | { type: 'stop' }
   | { type: 'newChat' }
   | { type: 'listHistory' }
@@ -29,9 +29,13 @@ export type WebviewToExtension =
   | { type: 'runCommand'; command: WebviewCommand }
   | { type: 'insertCode'; code: string }
   | { type: 'applyCode'; code: string }
-  | { type: 'agentStart'; task: string }
+  | { type: 'pickContextFiles' }
+  | { type: 'agentStart'; task: string; files?: string[] }
   | { type: 'agentStop' }
-  | { type: 'agentRevert' };
+  | { type: 'agentRevert' }
+  | { type: 'agentDiffFile'; path: string }
+  | { type: 'agentRevertFile'; path: string }
+  | { type: 'agentKeepFile'; path: string };
 
 export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error';
 
@@ -50,7 +54,9 @@ export type ExtensionToWebview =
   | { type: 'history'; items: ConversationMeta[] }
   | { type: 'conversation'; id: string; messages: DisplayMessage[] }
   | { type: 'newChatStarted' }
+  | { type: 'contextFiles'; files: string[] }
   | { type: 'agentText'; text: string }
+  | { type: 'agentPlan'; text: string }
   | { type: 'agentToolCall'; id: string; name: string; description: string }
-  | { type: 'agentToolResult'; id: string; ok: boolean; summary: string }
+  | { type: 'agentToolResult'; id: string; ok: boolean; summary: string; label: string }
   | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: string[] };

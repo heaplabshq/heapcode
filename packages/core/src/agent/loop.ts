@@ -48,9 +48,14 @@ const CONTINUE_NUDGE =
 
 const MAX_NUDGES = 4;
 
+const TRUNCATED_NUDGE =
+  'Your reply was cut off by the output token limit. Continue the work with SMALLER steps: ' +
+  'write large files in sections (write_file for the first part, then edit_file to extend), ' +
+  'and keep each tool call comfortably small.';
+
 /** Narration that announces more work while stopping — the premature-finish signature. */
 function looksUnfinished(text: string): boolean {
-  return /\b(not (yet )?(complete|done|finished)|next step|will (now|then|proceed)|proceed(ing)? to|i need to|i am now|remaining steps?|continuing (with|to))\b/i.test(
+  return /\b(not (yet )?(complete|done|finished)|next step|will (now|then|proceed)|proceed(ing)? to|i need to|i am now|remaining steps?|continuing (with|to)|now (executing|creating|writing|implementing|building|adding|moving|starting)|executing steps?|let me (now )?(create|write|implement|add|start)|going to (create|write|implement|add|start)|starting (with|on|step))\b/i.test(
     text,
   );
 }
@@ -202,6 +207,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
               : await execTool({ id: requested.id, name: requested.name, args: requested.args });
             messages.push({ role: 'tool', content: result.content, toolCallId: result.id });
           }
+          continue;
+        }
+        // Truncated reply (output token cap) → the model never got to its tool
+        // call. Push it to continue in smaller steps.
+        if (response.finishReason === 'length' && nudges < MAX_NUDGES) {
+          nudges++;
+          if (!streamed && response.content.trim()) events.onText(response.content);
+          messages.push({ role: 'assistant', content: response.content });
+          messages.push({ role: 'user', content: TRUNCATED_NUDGE });
           continue;
         }
         // Tool-free reply that announces more work → nudge it to keep going

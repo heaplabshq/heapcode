@@ -168,6 +168,35 @@ describe('runAgent — native tool calls', () => {
     expect(nudge.content).toContain('continue working');
   });
 
+  it('nudges the exact phrasing from the field report ("Now executing steps 2-5")', async () => {
+    const provider = scriptedProvider([
+      {
+        content:
+          'The workspace is empty. Now executing steps 2-5: creating the complete single-file HTML page.',
+      },
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'index.html', content: 'x' } }] },
+      { content: 'Task is complete.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    expect(h.calls.map((c) => c.name)).toEqual(['write_file']);
+  });
+
+  it('nudges to continue in smaller steps when the reply was truncated (finish_reason=length)', async () => {
+    const provider = scriptedProvider([
+      { content: '<!DOCTYPE html><html>… giant partial output', finishReason: 'length' },
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'index.html', content: 'x' } }] },
+      { content: 'Task is complete.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    const nudge = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
+    expect(nudge.content).toContain('token limit');
+    expect(h.calls.map((c) => c.name)).toEqual(['write_file']);
+  });
+
   it('accepts a genuine completion without nudging', async () => {
     const provider = scriptedProvider([
       { content: 'Task is complete: everything was already in place, no changes needed.' },

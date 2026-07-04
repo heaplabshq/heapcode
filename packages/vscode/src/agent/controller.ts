@@ -127,7 +127,9 @@ export class AgentController {
         },
         plan: cfg.get<boolean>('planFirst', true),
         maxIterations: cfg.get<number>('maxIterations', 25),
-        maxTokens: profile.maxTokens,
+        // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
+        // which truncates large write_file calls mid-generation.
+        maxTokens: profile.maxTokens ?? 16_384,
         signal: this.abort.signal,
       });
       this.log.appendLine(`[agent] finished: ${outcome}`);

@@ -349,9 +349,23 @@ export class OpenAICompatibleProvider implements Provider {
   async listModels(): Promise<ModelInfo[]> {
     const res = await this.fetchOrThrow(this.modelsUrl(), { headers: this.headers() });
     if (!res.ok) throw await describeHttpError(res);
-    const json = (await res.json()) as { data?: Array<{ id?: string }> };
+    // Context-length field name varies: context_length (OpenRouter, Together),
+    // max_model_len (vLLM), max_context_length (LM Studio), context_window (Groq).
+    const json = (await res.json()) as {
+      data?: Array<{
+        id?: string;
+        context_length?: number;
+        max_model_len?: number;
+        max_context_length?: number;
+        context_window?: number;
+      }>;
+    };
     return (json.data ?? [])
-      .filter((m): m is { id: string } => typeof m.id === 'string')
-      .map((m) => ({ id: m.id }));
+      .filter((m): m is { id: string } & Record<string, number | undefined> => typeof m.id === 'string')
+      .map((m) => {
+        const ctx =
+          m.context_length ?? m.max_model_len ?? m.max_context_length ?? m.context_window;
+        return typeof ctx === 'number' && ctx > 0 ? { id: m.id, contextLength: ctx } : { id: m.id };
+      });
   }
 }

@@ -76,6 +76,8 @@ export interface EmbeddingsResponse {
 
 export interface ModelInfo {
   id: string;
+  /** Context window in tokens, when the provider reports it in /models. */
+  contextLength?: number;
 }
 
 export interface ProviderConfig {

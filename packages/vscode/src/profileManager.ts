@@ -3,6 +3,7 @@ import {
   createProvider,
   getPreset,
   providerPresets,
+  resolveContextWindow,
   type PresetId,
   type Provider,
   type ProviderProfileConfig,
@@ -66,6 +67,33 @@ export class ProfileManager {
     const profile = this.getActiveProfile();
     const apiKey = await this.getApiKey(profile);
     return { provider: createProvider(profile, apiKey), profile };
+  }
+
+  /** Model-reported context length, looked up once per endpoint+model. */
+  private readonly modelContextCache = new Map<string, number | undefined>();
+
+  /**
+   * Effective context window for a model on this profile:
+   * explicit profile setting → model-reported length (/models, cached) →
+   * preset default → 32768. Never throws; offline endpoints just fall back.
+   */
+  async contextWindowFor(profile: ProviderProfileConfig, model: string): Promise<number> {
+    if (profile.contextWindow) return profile.contextWindow;
+    const key = `${profile.baseUrl}|${model}`;
+    if (!this.modelContextCache.has(key)) {
+      let reported: number | undefined;
+      try {
+        const provider = createProvider(profile, await this.getApiKey(profile));
+        reported = (await provider.listModels()).find((m) => m.id === model)?.contextLength;
+        if (reported) {
+          this.log.appendLine(`[profiles] ${model}: provider reports ${reported}-token context window`);
+        }
+      } catch {
+        // unreachable or unlistable endpoint — preset default below
+      }
+      this.modelContextCache.set(key, reported);
+    }
+    return this.modelContextCache.get(key) ?? resolveContextWindow(profile);
   }
 
   private async saveProfiles(profiles: ProviderProfileConfig[]): Promise<void> {

@@ -10,6 +10,8 @@ import type { ToolDisplay } from '../protocol.js';
  */
 export interface StoredMessage extends ChatMessage {
   display?: string;
+  /** Shadow-git commit of the workspace state just before this (user) turn ran. */
+  checkpoint?: string;
   ui?: {
     plan?: boolean;
     tool?: ToolDisplay & { id?: string };

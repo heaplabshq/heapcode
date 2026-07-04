@@ -149,6 +149,9 @@ export class AgentController {
         signal: this.abort.signal,
       });
       this.log.appendLine(`[agent] finished: ${outcome}`);
+      // Snapshot the agent's final version of each touched file — this is
+      // what makes Reapply possible after a revert or a manual undo.
+      await this.checkpoint.captureFinals();
       this.post({
         type: 'agentStatus',
         status: outcome,
@@ -190,10 +193,10 @@ export class AgentController {
       type: 'agentText',
       text:
         reverted.length > 0
-          ? `Reverted ${reverted.length} file(s): ${reverted.join(', ')}`
+          ? `Reverted ${reverted.length} file(s): ${reverted.join(', ')}. Use Reapply to bring any back.`
           : 'Nothing to revert.',
     });
-    this.post({ type: 'agentStatus', status: 'done', changedFiles: [] });
+    this.postChangedFiles();
   }
 
   /** Native diff: checkpointed original (left) vs the agent's result (right). */
@@ -214,6 +217,16 @@ export class AgentController {
   async revertFile(relPath: string): Promise<void> {
     const ok = await this.checkpoint?.revertFile(relPath);
     if (ok) this.post({ type: 'agentText', text: `Reverted ${relPath}.` });
+    this.postChangedFiles();
+  }
+
+  /** Restore the agent's version (after a Revert or a manual undo). */
+  async reapplyFile(relPath: string): Promise<void> {
+    const ok = await this.checkpoint?.reapplyFile(relPath);
+    this.post({
+      type: 'agentText',
+      text: ok ? `Reapplied the agent's version of ${relPath}.` : `Could not reapply ${relPath}.`,
+    });
     this.postChangedFiles();
   }
 

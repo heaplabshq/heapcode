@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  ChangedFile,
   ConversationMeta,
   ExtensionToWebview,
   FileEditInfo,
@@ -63,7 +64,7 @@ interface UiMessage {
   tool?: ToolChip;
   plan?: boolean;
   permission?: PermissionCard;
-  agentStatus?: { state: string; changedFiles: string[] };
+  agentStatus?: { state: string; changedFiles: ChangedFile[] };
   attachedFiles?: string[];
   /** Live agent narration still receiving deltas. */
   agentStreaming?: boolean;
@@ -141,6 +142,8 @@ export function App() {
   const [modelMenu, setModelMenu] = useState<ModelMenu | null>(null);
   const [toolStreamChars, setToolStreamChars] = useState(0);
   const [contextUsage, setContextUsage] = useState<{ used: number; window: number } | null>(null);
+  /** Ordinal (Nth user message) being edited; sending truncates + resends from there. */
+  const [editing, setEditing] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -228,6 +231,13 @@ export function App() {
             ...prev,
             { role: 'user', content: msg.text },
             { role: 'assistant', content: '' },
+          ]);
+          break;
+        case 'userTurn':
+          setView('chat');
+          setMessages((prev) => [
+            ...prev,
+            { role: 'user', content: msg.text, attachedFiles: msg.files },
           ]);
           break;
         case 'history':
@@ -465,6 +475,14 @@ export function App() {
     nearBottomRef.current = true;
     const files = contextFiles();
     setAttached([]); // attachments are per-message, like Copilot
+    if (editing !== null) {
+      // Edited prompt: the extension truncates the conversation, restores the
+      // workspace checkpoint, re-renders, and resends — no local append here.
+      postToExtension({ type: 'editUserMessage', ordinal: editing, text, files, mode });
+      setEditing(null);
+      setInput('');
+      return;
+    }
     if (mode === 'agent') {
       setMessages((prev) => [...prev, { role: 'user', content: text, attachedFiles: files }]);
       setInput('');
@@ -735,28 +753,47 @@ export function App() {
                     )}
                   </div>
                   {changedFiles.map((f) => (
-                    <div key={f} className="changed-file">
+                    <div key={f.path} className={`changed-file${f.reverted ? ' reverted' : ''}`}>
                       <button
                         className="file-link"
                         title="Show diff"
-                        onClick={() => postToExtension({ type: 'agentDiffFile', path: f })}
+                        onClick={() => postToExtension({ type: 'agentDiffFile', path: f.path })}
                       >
-                        {f}
+                        {f.path}
                       </button>
-                      <button
-                        className="ghost"
-                        title="Keep this file's changes"
-                        onClick={() => postToExtension({ type: 'agentKeepFile', path: f })}
-                      >
-                        Keep
-                      </button>
-                      <button
-                        className="ghost danger"
-                        title="Revert this file"
-                        onClick={() => postToExtension({ type: 'agentRevertFile', path: f })}
-                      >
-                        Revert
-                      </button>
+                      {f.reverted ? (
+                        <button
+                          className="ghost"
+                          title="Bring the agent's version back"
+                          onClick={() => postToExtension({ type: 'agentReapplyFile', path: f.path })}
+                        >
+                          Reapply
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            className="ghost"
+                            title="Keep this file's changes"
+                            onClick={() => postToExtension({ type: 'agentKeepFile', path: f.path })}
+                          >
+                            Keep
+                          </button>
+                          <button
+                            className="ghost"
+                            title="Restore the agent's version (if you edited or undid it manually)"
+                            onClick={() => postToExtension({ type: 'agentReapplyFile', path: f.path })}
+                          >
+                            Reapply
+                          </button>
+                          <button
+                            className="ghost danger"
+                            title="Revert this file"
+                            onClick={() => postToExtension({ type: 'agentRevertFile', path: f.path })}
+                          >
+                            Revert
+                          </button>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -779,6 +816,20 @@ export function App() {
                     <div className="user-text">{m.content}</div>
                     {m.attachedFiles && (
                       <div className="attach-note">📎 {m.attachedFiles.join(', ')}</div>
+                    )}
+                    {!busy && (
+                      <button
+                        className="ghost edit-msg"
+                        title="Edit this message — reverts the code and conversation to this point and resends"
+                        onClick={() => {
+                          const ordinal = messages.slice(0, i).filter((x) => x.role === 'user').length;
+                          setEditing(ordinal);
+                          setInput(m.content);
+                          inputRef.current?.focus();
+                        }}
+                      >
+                        ✎
+                      </button>
                     )}
                   </>
                 )}
@@ -826,6 +877,21 @@ export function App() {
           </div>
         )}
         <div className="composer-box">
+          {editing !== null && (
+            <div className="editing-bar">
+              ✎ Editing an earlier message — sending reverts the conversation (and any code the
+              agent changed after it) to that point.
+              <button
+                className="ghost"
+                onClick={() => {
+                  setEditing(null);
+                  setInput('');
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           <div className="context-row">
             <button
               className="ghost attach-btn"
@@ -865,6 +931,11 @@ export function App() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
+              if (e.key === 'Escape' && editing !== null) {
+                setEditing(null);
+                setInput('');
+                return;
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 if (slashMatches.length === 1 && input.trim() === `/${slashMatches[0]!.command}`) {

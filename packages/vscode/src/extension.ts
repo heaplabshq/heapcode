@@ -12,6 +12,7 @@ import { trackActiveEditor } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager } from './profileManager.js';
 import { RagIndexer } from './rag/indexer.js';
+import { ShadowGit } from './agent/shadowGit.js';
 
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Cortex Code');
@@ -24,6 +25,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const rag = new RagIndexer(profiles, storageDir, log);
   const mcp = new McpManager(log);
   chatProvider.rag = rag;
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (workspaceRoot?.scheme === 'file') {
+    chatProvider.shadowGit = new ShadowGit(
+      workspaceRoot.fsPath,
+      vscode.Uri.joinPath(storageDir, 'shadow-git'),
+      log,
+    );
+  }
   chatProvider.agent = new AgentController(
     profiles,
     permissions,

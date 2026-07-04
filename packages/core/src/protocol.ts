@@ -19,6 +19,13 @@ export interface FileEditInfo {
   removed: number;
 }
 
+/** A file the agent changed this session, with its Keep/Revert/Reapply state. */
+export interface ChangedFile {
+  path: string;
+  /** Currently showing the pre-agent content (user clicked Revert). */
+  reverted: boolean;
+}
+
 export interface DisplayMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -62,7 +69,14 @@ export type WebviewToExtension =
   | { type: 'agentRevert' }
   | { type: 'agentDiffFile'; path: string }
   | { type: 'agentRevertFile'; path: string }
-  | { type: 'agentKeepFile'; path: string };
+  | { type: 'agentReapplyFile'; path: string }
+  | { type: 'agentKeepFile'; path: string }
+  /**
+   * Edit the Nth user message (0-based, counting user turns): truncates the
+   * conversation there, restores the workspace to that turn's checkpoint,
+   * and resends the new text.
+   */
+  | { type: 'editUserMessage'; ordinal: number; text: string; files?: string[]; mode: 'chat' | 'agent' };
 
 export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error';
 
@@ -78,6 +92,8 @@ export type ExtensionToWebview =
   | { type: 'error'; message: string }
   /** A user turn initiated from the extension (context menu, code action). */
   | { type: 'userMessage'; text: string }
+  /** Display-only user turn (no assistant placeholder) — used when resending an edited prompt in agent mode. */
+  | { type: 'userTurn'; text: string; files?: string[] }
   | { type: 'history'; items: ConversationMeta[] }
   | { type: 'conversation'; id: string; messages: DisplayMessage[] }
   | { type: 'newChatStarted' }
@@ -114,7 +130,7 @@ export type ExtensionToWebview =
       label: string;
       fileEdit?: FileEditInfo;
     }
-  | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: string[] }
+  | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: ChangedFile[] }
   /** Estimated prompt tokens vs the model's context window (chat + agent). */
   | { type: 'contextUsage'; used: number; window: number }
   /** Older turns were summarized to fit the context window. */

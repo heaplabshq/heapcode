@@ -101,6 +101,41 @@ button.ghost:not(:disabled):hover {
   font-size: 10px;
 }
 
+.turn.user {
+  position: relative;
+}
+
+.edit-msg {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  opacity: 0;
+  font-size: 12px;
+}
+
+.turn.user:hover .edit-msg {
+  opacity: 0.7;
+}
+
+.edit-msg:hover {
+  opacity: 1 !important;
+}
+
+.editing-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.changed-file.reverted .file-link {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
 .system-note {
   text-align: center;
   font-size: 11px;

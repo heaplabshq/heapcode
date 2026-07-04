@@ -29,6 +29,7 @@ import {
 import { loadProjectInstructions } from './memory.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
 import type { AgentController } from './agent/controller.js';
+import type { ShadowGit } from './agent/shadowGit.js';
 import type { ProfileManager } from './profileManager.js';
 import type { RagIndexer } from './rag/indexer.js';
 
@@ -56,6 +57,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Set right after construction (controller needs this.post, we need controller). */
   agent?: AgentController;
   rag?: RagIndexer;
+  /** Workspace checkpoints for prompt editing; unset when git is unavailable. */
+  shadowGit?: ShadowGit;
 
   private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
   private terminal?: vscode.Terminal;
@@ -439,38 +442,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'applyCode':
         await applyCodeToEditor(msg.code, this.profiles, this.log);
         break;
-      case 'agentStart': {
-        let task = msg.task.trim() === '/init' ? INIT_TASK : msg.task;
-        if (msg.files && msg.files.length > 0) {
-          const plainFiles = msg.files.filter((f) => !isFolderAttachment(f));
-          const folders = msg.files.filter(isFolderAttachment);
-          if (plainFiles.length > 0) {
-            task +=
-              `\n\nThe user attached these files as likely-relevant context: ${plainFiles.join(', ')}. ` +
-              'Read them, but do not limit yourself to them — explore the workspace as the task requires.';
-          }
-          for (const folder of folders.slice(0, 3)) {
-            const listing = await listFolderFiles(folder);
-            task +=
-              `\n\nThe user attached the folder "${folder}" as context — everything under it, ` +
-              `including nested subfolders, is in scope. It contains:\n${listing.slice(0, 200).join('\n')}` +
-              `${listing.length > 200 ? `\n…and ${listing.length - 200} more files` : ''}\n` +
-              'Read whichever of these files the task requires.';
-          }
-        }
-        // Follow-ups ("done?", "now also…") need the conversation so far —
-        // agent sessions are otherwise blank-slate.
-        const prior = this.recentConversationContext();
-        if (prior) {
-          task = `Conversation so far (for context):\n${prior}\n\n---\n\nNew task: ${task}`;
-        }
-        this.conversation.messages.push({ role: 'user', content: task, display: msg.task });
-        if (this.conversation.messages.length === 1) {
-          this.conversation.title = msg.task.slice(0, 60);
-        }
-        await this.agent?.start(task);
+      case 'agentStart':
+        await this.startAgentTask(msg.task, msg.files);
         break;
-      }
+      case 'editUserMessage':
+        await this.editUserMessage(msg.ordinal, msg.text, msg.files, msg.mode);
+        break;
       case 'openInTerminal': {
         if (!this.terminal || this.terminal.exitStatus) {
           this.terminal = vscode.window.createTerminal('Cortex');
@@ -495,9 +472,116 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'agentRevertFile':
         await this.agent?.revertFile(msg.path);
         break;
+      case 'agentReapplyFile':
+        await this.agent?.reapplyFile(msg.path);
+        break;
       case 'agentKeepFile':
         this.agent?.keepFile(msg.path);
         break;
+    }
+  }
+
+  /** Agent turn: checkpoint the workspace, expand attachments, run the agent. */
+  private async startAgentTask(rawTask: string, files?: string[]): Promise<void> {
+    let task = rawTask.trim() === '/init' ? INIT_TASK : rawTask;
+    if (files && files.length > 0) {
+      const plainFiles = files.filter((f) => !isFolderAttachment(f));
+      const folders = files.filter(isFolderAttachment);
+      if (plainFiles.length > 0) {
+        task +=
+          `\n\nThe user attached these files as likely-relevant context: ${plainFiles.join(', ')}. ` +
+          'Read them, but do not limit yourself to them — explore the workspace as the task requires.';
+      }
+      for (const folder of folders.slice(0, 3)) {
+        const listing = await listFolderFiles(folder);
+        task +=
+          `\n\nThe user attached the folder "${folder}" as context — everything under it, ` +
+          `including nested subfolders, is in scope. It contains:\n${listing.slice(0, 200).join('\n')}` +
+          `${listing.length > 200 ? `\n…and ${listing.length - 200} more files` : ''}\n` +
+          'Read whichever of these files the task requires.';
+      }
+    }
+    // Follow-ups ("done?", "now also…") need the conversation so far —
+    // agent sessions are otherwise blank-slate.
+    const prior = this.recentConversationContext();
+    if (prior) {
+      task = `Conversation so far (for context):\n${prior}\n\n---\n\nNew task: ${task}`;
+    }
+    const checkpoint = await this.shadowGit?.snapshot(`before: ${rawTask.slice(0, 80)}`);
+    this.conversation.messages.push({ role: 'user', content: task, display: rawTask, checkpoint });
+    if (this.conversation.messages.length === 1) {
+      this.conversation.title = rawTask.slice(0, 60);
+    }
+    await this.agent?.start(task);
+  }
+
+  /**
+   * Edit a previous prompt: truncate the conversation at that user turn,
+   * restore the workspace to the checkpoint taken before the first agent
+   * turn from that point on, and resend the new text.
+   */
+  private async editUserMessage(
+    ordinal: number,
+    text: string,
+    files: string[] | undefined,
+    mode: 'chat' | 'agent',
+  ): Promise<void> {
+    let index = -1;
+    let seen = -1;
+    for (let i = 0; i < this.conversation.messages.length; i++) {
+      if (this.conversation.messages[i]!.role === 'user' && !this.conversation.messages[i]!.ui) {
+        seen++;
+        if (seen === ordinal) {
+          index = i;
+          break;
+        }
+      }
+    }
+    if (index === -1) {
+      this.post({ type: 'error', message: 'Could not locate that message to edit.' });
+      return;
+    }
+
+    this.abortController?.abort();
+    this.agent?.stop();
+
+    // The checkpoint on the edited turn — or the next one after it — is the
+    // workspace state before any agent work from this point on.
+    const checkpoint = this.conversation.messages
+      .slice(index)
+      .find((m) => m.checkpoint)?.checkpoint;
+    if (checkpoint) {
+      const restored = await this.shadowGit?.restore(checkpoint);
+      if (restored && restored.length > 0) {
+        this.post({
+          type: 'agentText',
+          text: `Restored ${restored.length} file(s) to the state before this message.`,
+        });
+      }
+    }
+
+    this.conversation.messages = this.conversation.messages.slice(0, index);
+    await this.store.save(this.conversation);
+    this.post({
+      type: 'conversation',
+      id: this.conversation.id,
+      messages: this.conversation.messages.map(
+        (m): DisplayMessage => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.display ?? m.content,
+          plan: m.ui?.plan,
+          tool: m.ui?.tool,
+          status: m.ui?.status,
+        }),
+      ),
+    });
+
+    if (mode === 'agent') {
+      this.post({ type: 'userTurn', text, files });
+      await this.startAgentTask(text, files);
+    } else {
+      this.post({ type: 'userMessage', text });
+      await this.handleSend(text, files);
     }
   }
 

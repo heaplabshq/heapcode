@@ -10,7 +10,10 @@ const COMMON =
   'Rules: paths are relative to the workspace root. Never invent file contents — read first. ' +
   'If a permission is denied, adapt or finish. Be brief in narration; do the work with tools. ' +
   'NEVER paste file contents or full code blocks into your replies — apply changes with the ' +
-  'edit_file/write_file tools instead. Narration should be 1-3 sentences about what you are doing.';
+  'edit_file/write_file tools instead. Narration should be 1-3 sentences about what you are doing. ' +
+  'CRITICAL: never stop to report progress or announce what you will do next — DO it by calling ' +
+  'the tool in the same reply. A reply without a tool call means the task is FINISHED; it must ' +
+  'contain only the final summary of what was accomplished.';
 
 export function buildNativeAgentSystemPrompt(workspaceName: string): string {
   return (

@@ -39,6 +39,19 @@ const PLAN_REQUEST =
   'Before doing anything, write a concise numbered plan (3-8 steps) for this task. ' +
   'Plain text only — do NOT call any tools yet.';
 
+const CONTINUE_NUDGE =
+  'You are not done — continue working. Call the next tool NOW in your reply. ' +
+  'Do not describe what you will do; do it. Reply without a tool call ONLY when the task is fully complete.';
+
+const MAX_NUDGES = 4;
+
+/** Narration that announces more work while stopping — the premature-finish signature. */
+function looksUnfinished(text: string): boolean {
+  return /\b(not (yet )?(complete|done|finished)|next step|will (now|then|proceed)|proceed(ing)? to|i need to|i am now|remaining steps?|continuing (with|to))\b/i.test(
+    text,
+  );
+}
+
 const MAX_REPAIRS = 3;
 
 export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
@@ -93,6 +106,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   };
 
   let repairs = 0;
+  let nudges = 0;
 
   /** One extra no-tools turn so every session ends with a human-readable conclusion. */
   const summarize = async (prompt: string): Promise<void> => {
@@ -166,6 +180,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           }
           continue;
         }
+        // Tool-free reply that announces more work → nudge it to keep going
+        // instead of ending the session prematurely.
+        if (looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+          nudges++;
+          if (response.content.trim()) events.onText(response.content);
+          messages.push({ role: 'assistant', content: response.content });
+          messages.push({ role: 'user', content: CONTINUE_NUDGE });
+          continue;
+        }
         if (response.content.trim()) events.onText(response.content);
         else await summarize('Summarize what you did and whether the task is complete.');
         return 'done';
@@ -178,6 +201,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           repairs++;
           messages.push({ role: 'assistant', content: response.content });
           messages.push({ role: 'user', content: REPAIR_PROMPT });
+          continue;
+        }
+        if (looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+          nudges++;
+          if (response.content.trim()) events.onText(response.content);
+          messages.push({ role: 'assistant', content: response.content });
+          messages.push({ role: 'user', content: CONTINUE_NUDGE });
           continue;
         }
         if (response.content.trim()) events.onText(response.content);

@@ -217,6 +217,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postActiveFile();
   }
 
+  /** Last few conversational turns (no tool chips/status), for agent follow-ups. */
+  private recentConversationContext(): string {
+    const turns = this.conversation.messages
+      .filter((m) => !m.ui?.tool && !m.ui?.status && (m.display ?? m.content).trim())
+      .slice(-6)
+      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${(m.display ?? m.content).slice(0, 400)}`);
+    return turns.join('\n').slice(0, 2400);
+  }
+
   /**
    * Open a code reference mentioned in chat: a workspace file path directly,
    * else the first content match (e.g. a CSS selector or symbol name).
@@ -377,6 +386,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           task +=
             `\n\nThe user attached these files as likely-relevant context: ${msg.files.join(', ')}. ` +
             'Read them, but do not limit yourself to them — explore the workspace as the task requires.';
+        }
+        // Follow-ups ("done?", "now also…") need the conversation so far —
+        // agent sessions are otherwise blank-slate.
+        const prior = this.recentConversationContext();
+        if (prior) {
+          task = `Conversation so far (for context):\n${prior}\n\n---\n\nNew task: ${task}`;
         }
         this.conversation.messages.push({ role: 'user', content: task, display: msg.task });
         if (this.conversation.messages.length === 1) {

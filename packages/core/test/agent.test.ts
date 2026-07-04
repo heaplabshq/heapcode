@@ -152,6 +152,32 @@ describe('runAgent — native tool calls', () => {
     expect(provider.requests.length).toBe(3);
   });
 
+  it('nudges the model to continue when it narrates without acting', async () => {
+    const provider = scriptedProvider([
+      { content: 'I listed the files. The task is not complete; the next step will be reading a.ts.' },
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'Task is complete: read the file and confirmed the change.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(outcome).toBe('done');
+    expect(h.calls.map((c) => c.name)).toEqual(['read_file']); // work continued after the nudge
+    const nudge = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
+    expect(nudge.role).toBe('user');
+    expect(nudge.content).toContain('continue working');
+  });
+
+  it('accepts a genuine completion without nudging', async () => {
+    const provider = scriptedProvider([
+      { content: 'Task is complete: everything was already in place, no changes needed.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    expect(provider.requests.length).toBe(1);
+  });
+
   it('stops at maxIterations', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },

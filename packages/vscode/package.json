@@ -255,6 +255,9 @@
               "editModel": {
                 "type": "string"
               },
+              "applyModel": {
+                "type": "string"
+              },
               "completionModel": {
                 "type": "string"
               },

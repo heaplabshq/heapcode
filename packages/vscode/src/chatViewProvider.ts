@@ -98,6 +98,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       model: profile.model,
       slashCommands: this.allPrompts().map((p) => ({ command: p.command, title: p.title })),
     });
+    this.postActiveFile();
+  }
+
+  postActiveFile(): void {
+    const editor = vscode.window.activeTextEditor;
+    const path =
+      editor && editor.document.uri.scheme === 'file'
+        ? vscode.workspace.asRelativePath(editor.document.uri, false)
+        : null;
+    this.post({ type: 'activeFile', path });
   }
 
   private post(msg: ExtensionToWebview): void {
@@ -163,7 +173,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await insertCodeAtCursor(msg.code);
         break;
       case 'applyCode':
-        await applyCodeToEditor(msg.code, this.log);
+        await applyCodeToEditor(msg.code, this.profiles, this.log);
         break;
       case 'agentStart': {
         const task =

@@ -91,6 +91,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('cortex')) updateStatusBar();
     }),
+    vscode.window.onDidChangeActiveTextEditor(() => chatProvider.postActiveFile()),
 
     vscode.commands.registerCommand('cortex.openChat', () => {
       void vscode.commands.executeCommand('workbench.view.extension.cortex');

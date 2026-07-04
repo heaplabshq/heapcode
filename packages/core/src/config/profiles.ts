@@ -10,8 +10,10 @@ export interface ProviderProfileConfig {
   baseUrl: string;
   /** Chat model id (for Azure: the deployment name). */
   model: string;
-  /** Inline edits, apply, commit messages. Inherits chat when unset. */
+  /** Inline edits, commit messages. Inherits chat when unset. */
   editModel?: string;
+  /** Fast-apply merge model (e.g. FastApply-1.5B) for applying code blocks to files. */
+  applyModel?: string;
   /** Ghost-text autocomplete. Inherits chat when unset. */
   completionModel?: string;
   /** Agent mode. Inherits chat when unset. */

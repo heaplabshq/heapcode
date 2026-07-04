@@ -169,7 +169,13 @@ export class ProfileManager {
   async selectModelFlow(): Promise<void> {
     const profile = this.getActiveProfile();
 
-    type Role = 'model' | 'editModel' | 'completionModel' | 'agentModel' | 'embeddingsModel';
+    type Role =
+      | 'model'
+      | 'editModel'
+      | 'applyModel'
+      | 'completionModel'
+      | 'agentModel'
+      | 'embeddingsModel';
     const inherits = `inherits chat (${profile.model || 'not set'})`;
     const rolePick = await vscode.window.showQuickPick(
       [
@@ -182,8 +188,14 @@ export class ProfileManager {
         {
           label: '$(edit) Edit',
           description: profile.editModel || inherits,
-          detail: 'Inline edit (Ctrl+I), apply-to-file, commit messages',
+          detail: 'Inline edit (Ctrl+I), commit messages',
           role: 'editModel' as Role,
+        },
+        {
+          label: '$(git-merge) Apply',
+          description: profile.applyModel || 'not set — uses selection/insert fallback',
+          detail: 'Fast-apply merge model for "Apply" on code blocks (e.g. FastApply-1.5B)',
+          role: 'applyModel' as Role,
         },
         {
           label: '$(zap) Autocomplete',

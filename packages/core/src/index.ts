@@ -15,6 +15,7 @@ export * from './agent/loop.js';
 export * from './context/contextManager.js';
 export * from './prompts/builtins.js';
 export * from './prompts/edit.js';
+export * from './prompts/apply.js';
 export * from './completion/fim.js';
 export * from './completion/postprocess.js';
 export * from './completion/cache.js';

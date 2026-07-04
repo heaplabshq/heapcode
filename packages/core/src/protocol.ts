@@ -55,6 +55,7 @@ export type ExtensionToWebview =
   | { type: 'conversation'; id: string; messages: DisplayMessage[] }
   | { type: 'newChatStarted' }
   | { type: 'contextFiles'; files: string[] }
+  | { type: 'activeFile'; path: string | null }
   | { type: 'agentText'; text: string }
   | { type: 'agentPlan'; text: string }
   | { type: 'agentToolCall'; id: string; name: string; description: string }

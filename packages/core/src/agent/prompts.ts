@@ -8,7 +8,9 @@ const COMMON =
   '2. Act: make the changes with the editing tools. Prefer small, targeted edits.\n' +
   '3. Verify: run tests or checks when available and fix what breaks.\n' +
   'Rules: paths are relative to the workspace root. Never invent file contents — read first. ' +
-  'If a permission is denied, adapt or finish. Be brief in narration; do the work with tools.';
+  'If a permission is denied, adapt or finish. Be brief in narration; do the work with tools. ' +
+  'NEVER paste file contents or full code blocks into your replies — apply changes with the ' +
+  'edit_file/write_file tools instead. Narration should be 1-3 sentences about what you are doing.';
 
 export function buildNativeAgentSystemPrompt(workspaceName: string): string {
   return (

@@ -39,7 +39,10 @@ export function App() {
   const [mode, setMode] = useState<'chat' | 'agent'>('chat');
   const [agentRunning, setAgentRunning] = useState(false);
   const [attached, setAttached] = useState<string[]>([]);
+  const [currentFile, setCurrentFile] = useState<string | null>(null);
+  const [includeCurrentFile, setIncludeCurrentFile] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -49,11 +52,14 @@ export function App() {
         case 'config':
           setConfig({ profile: msg.profile, model: msg.model, slashCommands: msg.slashCommands });
           break;
+        case 'activeFile':
+          setCurrentFile(msg.path);
+          break;
         case 'chunk':
           setMessages((prev) => {
             const next = [...prev];
             const last = next[next.length - 1];
-            if (last?.role === 'assistant') {
+            if (last?.role === 'assistant' && !last.tool && !last.agentStatus) {
               next[next.length - 1] = { ...last, content: last.content + msg.text };
             }
             return next;
@@ -67,7 +73,7 @@ export function App() {
           setMessages((prev) => {
             const next = [...prev];
             const last = next[next.length - 1];
-            if (last?.role === 'assistant' && last.content === '') {
+            if (last?.role === 'assistant' && last.content === '' && !last.tool) {
               next[next.length - 1] = { role: 'assistant', content: msg.message, error: true };
             } else {
               next.push({ role: 'assistant', content: msg.message, error: true });
@@ -132,8 +138,6 @@ export function App() {
           setAgentRunning(msg.status === 'running');
           if (msg.status !== 'running') {
             setMessages((prev) => {
-              // Update the previous status banner in place (file review actions
-              // re-post status); append only if the last banner is stale.
               const next = [...prev];
               const last = next[next.length - 1];
               if (last?.agentStatus) {
@@ -161,9 +165,19 @@ export function App() {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
+  // Auto-scroll only while the reader is already at the bottom — scrolling up
+  // to read pauses following, scrolling back down resumes it.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    if (nearBottomRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    }
   }, [messages]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
 
   const slashMatches = useMemo(() => {
     if (!config || !input.startsWith('/') || input.includes(' ') || input.includes('\n')) return [];
@@ -171,10 +185,20 @@ export function App() {
     return config.slashCommands.filter((c) => c.command.startsWith(term));
   }, [input, config]);
 
+  const contextFiles = (): string[] | undefined => {
+    const files = [
+      ...(includeCurrentFile && currentFile ? [currentFile] : []),
+      ...attached.filter((f) => f !== currentFile),
+    ];
+    return files.length > 0 ? files : undefined;
+  };
+
   const send = () => {
     const text = input.trim();
     if (!text || streaming || agentRunning) return;
-    const files = attached.length > 0 ? attached : undefined;
+    nearBottomRef.current = true;
+    const files = contextFiles();
+    setAttached([]); // attachments are per-message, like Copilot
     if (mode === 'agent') {
       setMessages((prev) => [...prev, { role: 'user', content: text, attachedFiles: files }]);
       setInput('');
@@ -214,6 +238,8 @@ export function App() {
     }
   };
 
+  const busy = streaming || agentRunning;
+
   return (
     <div className="app">
       <header className="header">
@@ -224,13 +250,6 @@ export function App() {
         >
           {config?.profile ?? '…'}
         </button>
-        <button
-          className="chip model"
-          title="Select model"
-          onClick={() => postToExtension({ type: 'runCommand', command: 'selectModel' })}
-        >
-          {config?.model || 'no model'}
-        </button>
         <span className="spacer" />
         <button
           className="ghost"
@@ -239,11 +258,7 @@ export function App() {
         >
           {view === 'history' ? 'Back' : 'History'}
         </button>
-        <button
-          className="ghost"
-          onClick={() => postToExtension({ type: 'newChat' })}
-          disabled={streaming}
-        >
+        <button className="ghost" onClick={() => postToExtension({ type: 'newChat' })} disabled={busy}>
           New
         </button>
       </header>
@@ -271,15 +286,13 @@ export function App() {
           ))}
         </div>
       ) : (
-        <div className="messages" ref={scrollRef} onClick={onMessagesClick}>
+        <div className="messages" ref={scrollRef} onScroll={onScroll} onClick={onMessagesClick}>
           {messages.length === 0 && (
             <div className="empty">
-              <p>Ask anything about your code.</p>
+              <p>Ask about your code, or switch to Agent for autonomous tasks.</p>
               <p className="hint">
-                <code>/explain</code>, <code>/fix</code>, <code>/review</code>… for prompts.
-                <br />
-                <code>@selection</code> <code>@file</code> <code>@problems</code>{' '}
-                <code>@folder</code> to attach context.
+                <code>/</code> for commands · <code>@selection</code> <code>@file</code>{' '}
+                <code>@problems</code> <code>@workspace</code> for context · 📎 to attach files
               </p>
             </div>
           )}
@@ -350,7 +363,8 @@ export function App() {
               );
             }
             return (
-              <div key={i} className={`message ${m.role}${m.error ? ' error' : ''}`}>
+              <div key={i} className={`turn ${m.role}${m.error ? ' error' : ''}`}>
+                <div className="turn-author">{m.role === 'user' ? 'You' : 'Cortex'}</div>
                 {m.role === 'assistant' ? (
                   m.content === '' && streaming && i === messages.length - 1 ? (
                     <span className="thinking">…</span>
@@ -397,32 +411,29 @@ export function App() {
             ))}
           </div>
         )}
-        <div className="mode-row">
-          <button
-            className={`mode-tab${mode === 'chat' ? ' active' : ''}`}
-            onClick={() => setMode('chat')}
-            disabled={agentRunning}
-          >
-            Chat
-          </button>
-          <button
-            className={`mode-tab${mode === 'agent' ? ' active' : ''}`}
-            onClick={() => setMode('agent')}
-            disabled={streaming}
-          >
-            Agent
-          </button>
-          <span className="spacer" />
-          <button
-            className="ghost attach-btn"
-            title="Attach files as context"
-            onClick={() => postToExtension({ type: 'pickContextFiles' })}
-          >
-            📎 Add context
-          </button>
-        </div>
-        {attached.length > 0 && (
-          <div className="attach-row">
+        <div className="composer-box">
+          <div className="context-row">
+            <button
+              className="ghost attach-btn"
+              title="Attach files as context"
+              onClick={() => postToExtension({ type: 'pickContextFiles' })}
+            >
+              📎
+            </button>
+            {currentFile && (
+              <button
+                className={`attach-chip current${includeCurrentFile ? '' : ' off'}`}
+                title={
+                  includeCurrentFile
+                    ? `${currentFile} is included as context — click to exclude`
+                    : `${currentFile} excluded — click to include`
+                }
+                onClick={() => setIncludeCurrentFile((v) => !v)}
+              >
+                {currentFile.split('/').pop()}
+                <span className="chip-tag">current file</span>
+              </button>
+            )}
             {attached.map((f) => (
               <span key={f} className="attach-chip" title={f}>
                 {f.split('/').pop()}
@@ -435,8 +446,6 @@ export function App() {
               </span>
             ))}
           </div>
-        )}
-        <div className="composer-row">
           <textarea
             ref={inputRef}
             value={input}
@@ -452,26 +461,44 @@ export function App() {
               }
             }}
             placeholder={
-              mode === 'agent'
-                ? 'Describe a task for the agent… (it can read, edit, and run commands)'
-                : 'Ask Cortex…  ( / for commands, @ to attach context )'
+              mode === 'agent' ? 'Describe a task for the agent…' : 'Ask Cortex…'
             }
             rows={3}
           />
-          {streaming || agentRunning ? (
-            <button
-              className="primary"
-              onClick={() =>
-                postToExtension(agentRunning ? { type: 'agentStop' } : { type: 'stop' })
-              }
+          <div className="composer-footer">
+            <select
+              className="mode-select"
+              value={mode}
+              onChange={(e) => setMode(e.target.value as 'chat' | 'agent')}
+              disabled={busy}
+              title="Mode"
             >
-              Stop
+              <option value="chat">Ask</option>
+              <option value="agent">Agent</option>
+            </select>
+            <button
+              className="model-chip"
+              title="Select model"
+              onClick={() => postToExtension({ type: 'runCommand', command: 'selectModel' })}
+            >
+              {config?.model || 'no model'} ▾
             </button>
-          ) : (
-            <button className="primary" onClick={send} disabled={!input.trim()}>
-              {mode === 'agent' ? 'Run' : 'Send'}
-            </button>
-          )}
+            <span className="spacer" />
+            {busy ? (
+              <button
+                className="primary send"
+                onClick={() =>
+                  postToExtension(agentRunning ? { type: 'agentStop' } : { type: 'stop' })
+                }
+              >
+                ◼ Stop
+              </button>
+            ) : (
+              <button className="primary send" onClick={send} disabled={!input.trim()}>
+                ➤
+              </button>
+            )}
+          </div>
         </div>
       </footer>
     </div>

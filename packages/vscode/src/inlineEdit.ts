@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import {
+  buildApplyMessages,
   buildInlineEditMessages,
   extractFirstCodeBlock,
+  extractUpdatedCode,
   findBestMatch,
   isAbortError,
   minIndent,
@@ -215,14 +217,42 @@ export async function proposeEdit(
   await document.save();
 }
 
-/** Apply a chat code block: replace the selection, else fuzzy-locate it in the file. */
-export async function applyCodeToEditor(code: string, log: vscode.OutputChannel): Promise<void> {
+const MAX_APPLY_FILE_CHARS = 40_000;
+
+/**
+ * Apply a chat code block to the active file.
+ * Preferred: a fast-apply merge model (profile.applyModel) merges the snippet
+ * into the whole file. Fallbacks: replace the selection, else insert at cursor.
+ */
+export async function applyCodeToEditor(
+  code: string,
+  profiles: ProfileManager,
+  log: vscode.OutputChannel,
+): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     void vscode.window.showWarningMessage('Cortex: open a file to apply code.');
     return;
   }
   const document = editor.document;
+  const profile = profiles.getActiveProfile();
+
+  if (profile.applyModel && document.getText().length <= MAX_APPLY_FILE_CHARS) {
+    const merged = await runApplyModel(document.getText(), code, profiles, log);
+    if (merged !== undefined && merged.trim() && merged !== document.getText()) {
+      const fullRange = new vscode.Range(
+        new vscode.Position(0, 0),
+        document.lineAt(document.lineCount - 1).range.end,
+      );
+      await proposeEdit(editor, fullRange, merged, 'Cortex: apply changes');
+      return;
+    }
+    if (merged !== undefined) {
+      void vscode.window.showInformationMessage('Cortex: apply model produced no changes.');
+      return;
+    }
+    // Apply model failed — fall through to the simple paths.
+  }
 
   if (!editor.selection.isEmpty) {
     const selected = document.getText(editor.selection);
@@ -237,6 +267,46 @@ export async function applyCodeToEditor(code: string, log: vscode.OutputChannel)
     log.appendLine('[apply] code block already present in file; inserting at cursor instead');
   }
   await editor.edit((builder) => builder.insert(editor.selection.active, code));
+}
+
+async function runApplyModel(
+  original: string,
+  snippet: string,
+  profiles: ProfileManager,
+  log: vscode.OutputChannel,
+): Promise<string | undefined> {
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Cortex: merging changes (apply model)…',
+      cancellable: true,
+    },
+    async (_progress, token) => {
+      const abort = new AbortController();
+      token.onCancellationRequested(() => abort.abort());
+      try {
+        const { provider, profile } = await profiles.createActiveProvider();
+        const res = await provider.chat({
+          model: profile.applyModel!,
+          messages: buildApplyMessages(original, snippet),
+          temperature: 0,
+          // The model must re-emit the whole file — budget generously.
+          maxTokens: Math.max(4096, Math.ceil(original.length / 2)),
+          signal: abort.signal,
+        });
+        const merged = extractUpdatedCode(res.content) ?? extractFirstCodeBlock(res.content);
+        if (merged === undefined) {
+          log.appendLine('[apply] apply model returned no <updated-code> block; falling back');
+        }
+        return merged;
+      } catch (err) {
+        if (!isAbortError(err)) {
+          log.appendLine(`[apply] apply model failed: ${err instanceof Error ? err.message : err}`);
+        }
+        return undefined;
+      }
+    },
+  );
 }
 
 export async function insertCodeAtCursor(code: string): Promise<void> {

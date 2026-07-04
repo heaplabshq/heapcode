@@ -312,6 +312,25 @@ export function App() {
     return config.slashCommands.filter((c) => c.command.startsWith(term));
   }, [input, config]);
 
+  const MENTIONS = [
+    { name: 'file', hint: 'Active file contents' },
+    { name: 'selection', hint: 'Current editor selection' },
+    { name: 'problems', hint: 'Errors & warnings' },
+    { name: 'workspace', hint: 'Semantic search over the codebase' },
+    { name: 'folder', hint: 'Workspace file listing' },
+  ];
+  const mentionMatches = useMemo(() => {
+    const match = /(^|\s)@(\w*)$/.exec(input);
+    if (!match) return [];
+    const term = match[2]!.toLowerCase();
+    return MENTIONS.filter((m) => m.name.startsWith(term) && m.name !== term);
+  }, [input]);
+
+  const insertMention = (name: string) => {
+    setInput((prev) => prev.replace(/(^|\s)@\w*$/, `$1@${name} `));
+    inputRef.current?.focus();
+  };
+
   const contextFiles = (): string[] | undefined => {
     const files = [
       ...(includeCurrentFile && currentFile ? [currentFile] : []),
@@ -636,6 +655,16 @@ export function App() {
             ))}
           </div>
         )}
+        {mentionMatches.length > 0 && (
+          <div className="slash-menu">
+            {mentionMatches.map((m) => (
+              <button key={m.name} className="slash-item" onClick={() => insertMention(m.name)}>
+                <code>@{m.name}</code>
+                <span>{m.hint}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="composer-box">
           <div className="context-row">
             <button
@@ -742,6 +771,24 @@ export function App() {
                       {p.name}
                     </button>
                   ))}
+                  <button
+                    className="menu-item"
+                    onClick={() => {
+                      setModelMenu(null);
+                      postToExtension({ type: 'runCommand', command: 'addProfile' });
+                    }}
+                  >
+                    ＋ Add provider…
+                  </button>
+                  <button
+                    className="menu-item"
+                    onClick={() => {
+                      setModelMenu(null);
+                      postToExtension({ type: 'runCommand', command: 'setApiKey' });
+                    }}
+                  >
+                    🔑 Set API key…
+                  </button>
                   <div className="menu-section">Model</div>
                   {modelMenu.loading && <div className="menu-note">Loading…</div>}
                   {!modelMenu.loading && modelMenu.models.length === 0 && (

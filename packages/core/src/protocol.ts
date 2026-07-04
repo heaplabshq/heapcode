@@ -35,7 +35,7 @@ export interface SlashCommandInfo {
 }
 
 /** Commands the webview may ask the extension to run (allowlist). */
-export type WebviewCommand = 'selectProfile' | 'selectModel' | 'setApiKey';
+export type WebviewCommand = 'selectProfile' | 'selectModel' | 'setApiKey' | 'addProfile';
 
 export type WebviewToExtension =
   | { type: 'ready' }

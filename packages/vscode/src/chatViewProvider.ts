@@ -15,7 +15,7 @@ import {
   type StoredMessage,
   type WebviewToExtension,
 } from '@cortex/core';
-import { collectSelection, resolveMentions } from './contextCollector.js';
+import { collectSelection, getActiveEditor, resolveMentions } from './contextCollector.js';
 import { loadProjectInstructions } from './memory.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
 import type { AgentController } from './agent/controller.js';
@@ -272,7 +272,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   postActiveFile(): void {
-    const editor = vscode.window.activeTextEditor;
+    const editor = getActiveEditor();
     const path =
       editor && editor.document.uri.scheme === 'file'
         ? vscode.workspace.asRelativePath(editor.document.uri, false)
@@ -369,6 +369,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           selectProfile: 'cortex.selectProfile',
           selectModel: 'cortex.selectModel',
           setApiKey: 'cortex.setApiKey',
+          addProfile: 'cortex.addProfile',
         } as const;
         const command = allowed[msg.command];
         if (command) void vscode.commands.executeCommand(command);

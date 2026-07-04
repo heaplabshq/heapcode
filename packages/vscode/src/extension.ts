@@ -8,6 +8,7 @@ import { CortexCodeActionProvider } from './codeActions.js';
 import { CortexCompletionProvider } from './completionProvider.js';
 import { generateCommitMessage } from './gitCommit.js';
 import { JsonConversationStore } from './historyStore.js';
+import { trackActiveEditor } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager } from './profileManager.js';
 import { RagIndexer } from './rag/indexer.js';
@@ -136,6 +137,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('cortex')) updateStatusBar();
     }),
+    trackActiveEditor(),
     vscode.window.onDidChangeActiveTextEditor(() => chatProvider.postActiveFile()),
 
     vscode.commands.registerCommand('cortex.openChat', () => {

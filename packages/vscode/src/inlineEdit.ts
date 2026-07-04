@@ -10,6 +10,7 @@ import {
   minIndent,
   reindent,
 } from '@cortex/core';
+import { getActiveEditor } from './contextCollector.js';
 import type { ProfileManager } from './profileManager.js';
 
 const SCHEME = 'cortex-proposal';
@@ -229,7 +230,7 @@ export async function applyCodeToEditor(
   profiles: ProfileManager,
   log: vscode.OutputChannel,
 ): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
+  const editor = getActiveEditor();
   if (!editor) {
     void vscode.window.showWarningMessage('Cortex: open a file to apply code.');
     return;
@@ -310,7 +311,7 @@ async function runApplyModel(
 }
 
 export async function insertCodeAtCursor(code: string): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
+  const editor = getActiveEditor();
   if (!editor) {
     void vscode.window.showWarningMessage('Cortex: open a file to insert code.');
     return;

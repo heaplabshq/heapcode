@@ -7,8 +7,31 @@ function workspaceRelative(uri: vscode.Uri): string {
   return vscode.workspace.asRelativePath(uri, false);
 }
 
+/**
+ * window.activeTextEditor is undefined while focus sits in a webview (i.e.
+ * whenever the user is typing in the chat) — track the last real editor so
+ * @file/@selection and Apply/Insert keep working from the chat.
+ */
+let lastActiveEditor: vscode.TextEditor | undefined;
+
+export function trackActiveEditor(): vscode.Disposable {
+  lastActiveEditor = vscode.window.activeTextEditor;
+  return vscode.window.onDidChangeActiveTextEditor((editor) => {
+    if (editor && (editor.document.uri.scheme === 'file' || editor.document.uri.scheme === 'untitled')) {
+      lastActiveEditor = editor;
+    }
+  });
+}
+
+export function getActiveEditor(): vscode.TextEditor | undefined {
+  const active = vscode.window.activeTextEditor;
+  if (active) return active;
+  if (lastActiveEditor && !lastActiveEditor.document.isClosed) return lastActiveEditor;
+  return vscode.window.visibleTextEditors.find((e) => e.document.uri.scheme === 'file');
+}
+
 export function collectSelection(): ContextBlock | undefined {
-  const editor = vscode.window.activeTextEditor;
+  const editor = getActiveEditor();
   if (!editor || editor.selection.isEmpty) return undefined;
   const text = editor.document.getText(editor.selection);
   const start = editor.selection.start.line + 1;
@@ -21,7 +44,7 @@ export function collectSelection(): ContextBlock | undefined {
 }
 
 export function collectActiveFile(): ContextBlock | undefined {
-  const editor = vscode.window.activeTextEditor;
+  const editor = getActiveEditor();
   if (!editor) return undefined;
   let content = editor.document.getText();
   if (content.length > MAX_FILE_CHARS) content = content.slice(0, MAX_FILE_CHARS);

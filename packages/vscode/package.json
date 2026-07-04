@@ -397,6 +397,11 @@
           "default": true,
           "markdownDescription": "Index the workspace in the background for semantic search. No-op until the active profile has an `embeddingsModel` (e.g. `nomic-embed-text` on Ollama). Respects `.cortexignore`."
         },
+        "cortex.rag.rerank": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Rerank semantic-search hits with the LLM (edit model, else chat model) before using them. Better precision at the cost of one extra small model call per search. Falls back to plain vector order on any failure."
+        },
         "cortex.agent.enable": {
           "type": "boolean",
           "default": true,

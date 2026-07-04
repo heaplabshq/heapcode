@@ -21,7 +21,23 @@ export class PermissionEngine {
   private sessionAllowed = new Set<string>();
   private chatRequester?: ChatPermissionRequester;
 
-  constructor(private readonly state: vscode.Memento) {}
+  constructor(
+    private readonly state: vscode.Memento,
+    private readonly log?: vscode.OutputChannel,
+  ) {}
+
+  /** Clear all persisted "Always Allow" grants (and session grants). */
+  async reset(): Promise<number> {
+    this.sessionAllowed.clear();
+    let cleared = 0;
+    for (const key of this.state.keys()) {
+      if (key.startsWith('cortex.perm.')) {
+        await this.state.update(key, undefined);
+        cleared++;
+      }
+    }
+    return cleared;
+  }
 
   attachChatRequester(requester: ChatPermissionRequester): void {
     this.chatRequester = requester;
@@ -40,8 +56,16 @@ export class PermissionEngine {
     const key = `cortex.perm.${tool.permission}.${call.name}`;
 
     if (!safeMode) {
-      if (this.sessionAllowed.has(key)) return true;
-      if (this.state.get<Decision>(key) === 'always') return true;
+      if (this.sessionAllowed.has(key)) {
+        this.log?.appendLine(`[perm] auto-allowed (session grant): ${description}`);
+        return true;
+      }
+      if (this.state.get<Decision>(key) === 'always') {
+        this.log?.appendLine(
+          `[perm] auto-allowed (persisted "Always" grant — reset via "Cortex: Reset Agent Permissions"): ${description}`,
+        );
+        return true;
+      }
     }
 
     const allowPersist = tool.permission !== 'destructive' && !safeMode;

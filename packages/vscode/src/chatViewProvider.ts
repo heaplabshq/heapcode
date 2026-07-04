@@ -112,25 +112,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }): Promise<PermissionChoice | undefined> {
     try {
       await vscode.commands.executeCommand('cortex.chatView.focus');
-    } catch {
-      return undefined;
-    }
-    for (let i = 0; i < 20 && !this.viewReady; i++) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    if (!this.view || !this.viewReady) return undefined;
+      for (let i = 0; i < 20 && !this.viewReady; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (!this.view || !this.viewReady) {
+        this.log.appendLine('[perm] chat view unavailable — falling back to modal');
+        return undefined;
+      }
 
-    const id = randomUUID();
-    return new Promise<PermissionChoice | undefined>((resolve) => {
-      this.pendingPermissions.set(id, resolve);
-      this.post({
-        type: 'permissionRequest',
-        id,
-        description: req.description,
-        permission: req.permission,
-        allowPersist: req.allowPersist,
+      const id = randomUUID();
+      this.log.appendLine(`[perm] asking in chat: ${req.description}`);
+      return await new Promise<PermissionChoice | undefined>((resolve) => {
+        this.pendingPermissions.set(id, resolve);
+        // Belt and suspenders: if the card is never answered (webview crash,
+        // dropped message), fall back to the modal instead of stranding the agent.
+        const timeout = setTimeout(() => {
+          if (this.pendingPermissions.delete(id)) {
+            this.log.appendLine('[perm] no response from chat card after 120s — modal fallback');
+            resolve(undefined);
+          }
+        }, 120_000);
+        this.pendingPermissions.set(id, (choice) => {
+          clearTimeout(timeout);
+          this.pendingPermissions.delete(id);
+          resolve(choice);
+        });
+        this.post({
+          type: 'permissionRequest',
+          id,
+          description: req.description,
+          permission: req.permission,
+          allowPersist: req.allowPersist,
+        });
       });
-    });
+    } catch (err) {
+      this.log.appendLine(`[perm] in-chat request failed: ${err instanceof Error ? err.message : err}`);
+      return undefined; // modal fallback
+    }
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {

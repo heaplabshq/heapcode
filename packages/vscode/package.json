@@ -133,6 +133,10 @@
       {
         "command": "cortex.addMcpServer",
         "title": "Cortex: Add MCP Server"
+      },
+      {
+        "command": "cortex.resetPermissions",
+        "title": "Cortex: Reset Agent Permissions"
       }
     ],
     "submenus": [

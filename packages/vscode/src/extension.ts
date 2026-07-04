@@ -18,7 +18,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log);
-  const permissions = new PermissionEngine(context.workspaceState);
+  const permissions = new PermissionEngine(context.workspaceState, log);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   const rag = new RagIndexer(profiles, storageDir, log);
   const mcp = new McpManager(log);
@@ -87,6 +87,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('cortex.buildIndex', () => rag.buildIndex()),
     vscode.commands.registerCommand('cortex.clearIndex', () => rag.clear()),
     vscode.commands.registerCommand('cortex.openMemory', () => openMemoryFile()),
+    vscode.commands.registerCommand('cortex.resetPermissions', async () => {
+      const cleared = await permissions.reset();
+      void vscode.window.showInformationMessage(
+        `Cortex: cleared ${cleared} stored permission grant(s) — the agent will ask again.`,
+      );
+    }),
     vscode.commands.registerCommand('cortex.addMcpServer', async () => {
       const name = await vscode.window.showInputBox({
         title: 'MCP server name',

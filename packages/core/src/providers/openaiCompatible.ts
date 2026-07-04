@@ -21,7 +21,14 @@ interface OpenAIStreamToolCall {
 
 interface OpenAIChatCompletionChunk {
   choices?: Array<{
-    delta?: { content?: string | null; tool_calls?: OpenAIStreamToolCall[] };
+    delta?: {
+      content?: string | null;
+      /** DeepSeek/GLM/NIM-style reasoning stream. */
+      reasoning_content?: string | null;
+      /** OpenRouter-style reasoning stream. */
+      reasoning?: string | null;
+      tool_calls?: OpenAIStreamToolCall[];
+    };
     finish_reason?: string | null;
   }>;
 }
@@ -258,7 +265,7 @@ export class OpenAICompatibleProvider implements Provider {
 
   async chatStreamed(
     req: ChatRequest,
-    onDelta?: (text: string) => void,
+    onDelta?: (text: string, kind?: 'text' | 'reasoning' | 'tool') => void,
   ): Promise<ChatResponse> {
     // Timeout applies to time-to-first-byte only; total stream time is unbounded.
     const ttfbMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -299,15 +306,20 @@ export class OpenAICompatibleProvider implements Provider {
         continue;
       }
       const choice = chunk.choices?.[0];
+      const reasoning = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
+      if (reasoning) onDelta?.(reasoning, 'reasoning');
       if (choice?.delta?.content) {
         content += choice.delta.content;
-        onDelta?.(choice.delta.content);
+        onDelta?.(choice.delta.content, 'text');
       }
       for (const tc of choice?.delta?.tool_calls ?? []) {
         const slot = toolSlots.get(tc.index ?? 0) ?? { name: '', args: '' };
         if (tc.id) slot.id = tc.id;
         if (tc.function?.name) slot.name += tc.function.name;
-        if (tc.function?.arguments) slot.args += tc.function.arguments;
+        if (tc.function?.arguments) {
+          slot.args += tc.function.arguments;
+          onDelta?.(tc.function.arguments, 'tool');
+        }
         toolSlots.set(tc.index ?? 0, slot);
       }
       if (choice?.finish_reason) finishReason = choice.finish_reason;

@@ -1,4 +1,4 @@
-import type { ChatMessage, Provider } from '../providers/types.js';
+import type { ChatMessage, ChatResponse, Provider } from '../providers/types.js';
 import { isAbortError } from '../providers/errors.js';
 import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt } from './prompts.js';
 import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol.js';
@@ -22,6 +22,11 @@ export interface AgentEvents {
   /** Streamed narration tokens; a message ends with onTextEnd. */
   onTextDelta?(text: string): void;
   onTextEnd?(): void;
+  /** Streamed reasoning ("thinking") tokens from reasoning models. */
+  onReasoningDelta?(text: string): void;
+  onReasoningEnd?(): void;
+  /** Cumulative chars of the tool call currently being generated. */
+  onToolStream?(chars: number): void;
 }
 
 export interface AgentOptions {
@@ -104,30 +109,46 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     signal,
   });
 
-  const respond = (msgs: ChatMessage[], withTools: boolean) => {
-    const request = buildRequest(msgs, withTools);
-    return provider.chatStreamed ? provider.chatStreamed(request) : provider.chat(request);
-  };
-
   /**
-   * Streamed turn with live narration deltas. Only for native-tool-call mode —
-   * fallback-mode content contains raw <tool> blocks that must stay buffered.
+   * Streamed turn. Reasoning tokens and tool-call generation progress always
+   * stream to events; narration text streams live only when `liveText` (plan
+   * turns buffer it for the plan card; fallback mode buffers because content
+   * contains raw <tool> blocks).
    * Returns whether narration was already delivered via deltas.
    */
   const respondLive = async (
     msgs: ChatMessage[],
     withTools: boolean,
-  ): Promise<{ response: Awaited<ReturnType<typeof respond>>; streamed: boolean }> => {
-    if (provider.chatStreamed && nativeToolCalls) {
-      let streamed = false;
-      const response = await provider.chatStreamed(buildRequest(msgs, withTools), (text) => {
-        streamed = true;
-        events.onTextDelta?.(text);
-      });
-      if (streamed) events.onTextEnd?.();
-      return { response, streamed };
+    liveText: boolean,
+  ): Promise<{ response: ChatResponse; streamed: boolean }> => {
+    if (!provider.chatStreamed) {
+      return { response: await provider.chat(buildRequest(msgs, withTools)), streamed: false };
     }
-    return { response: await respond(msgs, withTools), streamed: false };
+    let streamed = false;
+    let reasoned = false;
+    let toolChars = 0;
+    const response = await provider.chatStreamed(
+      buildRequest(msgs, withTools),
+      (text, kind = 'text') => {
+        if (kind === 'reasoning') {
+          reasoned = true;
+          events.onReasoningDelta?.(text);
+          return;
+        }
+        if (kind === 'tool') {
+          toolChars += text.length;
+          events.onToolStream?.(toolChars);
+          return;
+        }
+        if (liveText && nativeToolCalls) {
+          streamed = true;
+          events.onTextDelta?.(text);
+        }
+      },
+    );
+    if (reasoned) events.onReasoningEnd?.();
+    if (streamed) events.onTextEnd?.();
+    return { response, streamed };
   };
   const systemPrompt = nativeToolCalls
     ? buildNativeAgentSystemPrompt(opts.workspaceName)
@@ -178,6 +199,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       const { response, streamed } = await respondLive(
         [...messages, { role: 'user', content: prompt }],
         false,
+        true,
       );
       if (!streamed && response.content.trim()) events.onText(response.content);
     } catch {
@@ -187,7 +209,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   try {
     if (opts.plan) {
-      const planRes = await respond([...messages, { role: 'user', content: PLAN_REQUEST }], false);
+      const { response: planRes } = await respondLive(
+        [...messages, { role: 'user', content: PLAN_REQUEST }],
+        false,
+        false, // plan text renders as a card, but reasoning still streams live
+      );
       const planText = planRes.content.trim();
       if (planText) {
         events.onPlan?.(planText);
@@ -205,7 +231,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       if (signal?.aborted) return 'stopped';
 
-      const { response, streamed } = await respondLive(messages, true);
+      const { response, streamed } = await respondLive(messages, true, true);
 
       if (nativeToolCalls) {
         // Structural termination: finish(summary) ends the session.

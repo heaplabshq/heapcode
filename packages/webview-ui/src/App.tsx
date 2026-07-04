@@ -67,6 +67,9 @@ interface UiMessage {
   attachedFiles?: string[];
   /** Live agent narration still receiving deltas. */
   agentStreaming?: boolean;
+  /** Reasoning ("thinking") stream from reasoning models. */
+  reasoning?: boolean;
+  collapsed?: boolean;
 }
 
 interface ModelMenu {
@@ -94,6 +97,7 @@ export function App() {
   const [currentFile, setCurrentFile] = useState<string | null>(null);
   const [includeCurrentFile, setIncludeCurrentFile] = useState(true);
   const [modelMenu, setModelMenu] = useState<ModelMenu | null>(null);
+  const [toolStreamChars, setToolStreamChars] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -241,10 +245,38 @@ export function App() {
             prev.map((m) => (m.agentStreaming ? { ...m, agentStreaming: false } : m)),
           );
           break;
+        case 'agentReasoningDelta':
+          setToolStreamChars(0);
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.reasoning && last.agentStreaming) {
+              next[next.length - 1] = { ...last, content: last.content + msg.text };
+              return next;
+            }
+            return [
+              ...next,
+              { role: 'assistant', content: msg.text, reasoning: true, agentStreaming: true },
+            ];
+          });
+          break;
+        case 'agentReasoningEnd':
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.reasoning && m.agentStreaming
+                ? { ...m, agentStreaming: false, collapsed: true }
+                : m,
+            ),
+          );
+          break;
+        case 'agentToolStream':
+          setToolStreamChars(msg.chars);
+          break;
         case 'agentPlan':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text, plan: true }]);
           break;
         case 'agentToolCall':
+          setToolStreamChars(0);
           setMessages((prev) => [
             ...prev,
             {
@@ -281,6 +313,7 @@ export function App() {
           break;
         case 'agentStatus':
           setAgentRunning(msg.status === 'running');
+          setToolStreamChars(0);
           if (msg.status !== 'running') {
             setMessages((prev) => {
               const next = [...prev];
@@ -568,6 +601,24 @@ export function App() {
                 </div>
               );
             }
+            if (m.reasoning) {
+              return (
+                <div key={i} className="reasoning-block">
+                  <button
+                    className="reasoning-head"
+                    onClick={() =>
+                      setMessages((prev) =>
+                        prev.map((x, j) => (j === i ? { ...x, collapsed: !x.collapsed } : x)),
+                      )
+                    }
+                  >
+                    💭 {m.agentStreaming ? 'Thinking…' : 'Thought'}
+                    <span className="tool-caret">{m.collapsed ? '▸' : '▾'}</span>
+                  </button>
+                  {!m.collapsed && <div className="reasoning-body">{m.content}</div>}
+                </div>
+              );
+            }
             if (m.plan) {
               return (
                 <div key={i} className="plan-card">
@@ -649,7 +700,11 @@ export function App() {
           })}
           {agentRunning && (
             <div className="working-row">
-              <span className="thinking">Working…</span>
+              <span className="thinking">
+                {toolStreamChars > 0
+                  ? `Generating changes… ${(toolStreamChars / 1000).toFixed(1)}k chars`
+                  : 'Working…'}
+              </span>
             </div>
           )}
         </div>

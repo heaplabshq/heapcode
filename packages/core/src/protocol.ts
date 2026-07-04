@@ -92,6 +92,9 @@ export type ExtensionToWebview =
   | { type: 'agentText'; text: string }
   | { type: 'agentTextDelta'; text: string }
   | { type: 'agentTextEnd' }
+  | { type: 'agentReasoningDelta'; text: string }
+  | { type: 'agentReasoningEnd' }
+  | { type: 'agentToolStream'; chars: number }
   | { type: 'agentPlan'; text: string }
   | {
       type: 'agentToolCall';

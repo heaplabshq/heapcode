@@ -118,7 +118,9 @@ describe('OpenAICompatibleProvider.chatStreamed', () => {
     const deltas: string[] = [];
     const res = await provider.chatStreamed(
       { model: 'm', messages: [{ role: 'user', content: 'q' }] },
-      (t) => deltas.push(t),
+      (t, kind = 'text') => {
+        if (kind === 'text') deltas.push(t);
+      },
     );
 
     expect(res.content).toBe('Let me read it.');
@@ -128,6 +130,38 @@ describe('OpenAICompatibleProvider.chatStreamed', () => {
     ]);
     expect(res.finishReason).toBe('tool_calls');
     expect((server.requests[0]!.body as { stream: boolean }).stream).toBe(true);
+  });
+
+  it('routes reasoning_content and tool-argument deltas to their channels', async () => {
+    server = await startMockServer({
+      kind: 'sse-raw',
+      events: [
+        JSON.stringify({ choices: [{ delta: { reasoning_content: 'Hmm, the file is ' } }] }),
+        JSON.stringify({ choices: [{ delta: { reasoning_content: 'empty…' } }] }),
+        JSON.stringify({ choices: [{ delta: { content: 'Creating it now.' } }] }),
+        JSON.stringify({
+          choices: [
+            { delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'write_file', arguments: '{"path":' } }] } },
+          ],
+        }),
+        JSON.stringify({
+          choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"a.html","content":"x"}' } }] } }],
+        }),
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const byKind: Record<string, string> = { text: '', reasoning: '', tool: '' };
+    const res = await provider.chatStreamed(
+      { model: 'm', messages: [] },
+      (t, kind = 'text') => (byKind[kind] += t),
+    );
+
+    expect(byKind.reasoning).toBe('Hmm, the file is empty…');
+    expect(byKind.text).toBe('Creating it now.');
+    expect(byKind.tool).toBe('{"path":"a.html","content":"x"}');
+    // Reasoning never leaks into the answer content.
+    expect(res.content).toBe('Creating it now.');
+    expect(res.toolCalls![0]!.args).toEqual({ path: 'a.html', content: 'x' });
   });
 
   it('fails fast when the endpoint never sends headers', async () => {

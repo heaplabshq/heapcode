@@ -71,6 +71,7 @@ export class AgentController {
     );
 
     const fileEdits = new Map<string, FileEditInfo>();
+    let lastToolStreamPost = 0;
     await this.mcp?.ensureConnected();
     const mcpTools = this.mcp?.getToolDefinitions() ?? [];
     const instructions = await loadProjectInstructions();
@@ -102,6 +103,15 @@ export class AgentController {
           onText: (text) => this.post({ type: 'agentText', text }),
           onTextDelta: (text) => this.post({ type: 'agentTextDelta', text }),
           onTextEnd: () => this.post({ type: 'agentTextEnd' }),
+          onReasoningDelta: (text) => this.post({ type: 'agentReasoningDelta', text }),
+          onReasoningEnd: () => this.post({ type: 'agentReasoningEnd' }),
+          onToolStream: (chars) => {
+            // Throttle: one progress post per ~512 chars is plenty.
+            if (chars - lastToolStreamPost >= 512 || chars < lastToolStreamPost) {
+              lastToolStreamPost = chars;
+              this.post({ type: 'agentToolStream', chars });
+            }
+          },
           onPlan: (text) => this.post({ type: 'agentPlan', text }),
           onToolCall: (call) => {
             const description = this.describe(call, executor);

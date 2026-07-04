@@ -658,6 +658,39 @@ button.ghost:not(:disabled):hover {
   font-size: 0.88em;
 }
 
+.reasoning-block {
+  margin: 2px 14px;
+}
+
+.reasoning-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.reasoning-head:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.reasoning-body {
+  margin: 2px 0 4px 6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--vscode-panel-border);
+  font-size: 0.82em;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
 .model-picker {
   position: relative;
   min-width: 0;

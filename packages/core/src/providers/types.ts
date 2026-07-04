@@ -92,8 +92,13 @@ export interface Provider {
    * Streaming transport returning the full response (content + aggregated
    * tool calls). Preferred for agent turns: reasoning models can take longer
    * than any sane non-streaming timeout, but produce bytes immediately.
+   * Delta kinds: 'text' (answer), 'reasoning' (thinking tokens from
+   * reasoning models), 'tool' (tool-call argument fragments — progress only).
    */
-  chatStreamed?(req: ChatRequest, onDelta?: (text: string) => void): Promise<ChatResponse>;
+  chatStreamed?(
+    req: ChatRequest,
+    onDelta?: (text: string, kind?: 'text' | 'reasoning' | 'tool') => void,
+  ): Promise<ChatResponse>;
   completion(req: CompletionRequest): Promise<CompletionResponse>;
   embeddings(req: EmbeddingsRequest): Promise<EmbeddingsResponse>;
   listModels(): Promise<ModelInfo[]>;

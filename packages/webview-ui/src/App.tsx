@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ConversationMeta, ExtensionToWebview, SlashCommandInfo } from '@cortex/core';
+import type {
+  ConversationMeta,
+  ExtensionToWebview,
+  FileEditInfo,
+  PermissionChoice,
+  SlashCommandInfo,
+} from '@cortex/core';
 import { postToExtension } from './vscodeApi.js';
 import { renderMarkdown } from './markdown.js';
 
@@ -11,6 +17,15 @@ interface ToolChip {
   ok?: boolean;
   summary?: string;
   label?: string;
+  fileEdit?: FileEditInfo;
+}
+
+interface PermissionCard {
+  id: string;
+  description: string;
+  permission: string;
+  allowPersist: boolean;
+  decided?: PermissionChoice;
 }
 
 interface UiMessage {
@@ -19,8 +34,15 @@ interface UiMessage {
   error?: boolean;
   tool?: ToolChip;
   plan?: boolean;
+  permission?: PermissionCard;
   agentStatus?: { state: string; changedFiles: string[] };
   attachedFiles?: string[];
+}
+
+interface ModelMenu {
+  loading: boolean;
+  profiles: Array<{ name: string; active: boolean }>;
+  models: string[];
 }
 
 interface Config {
@@ -41,6 +63,7 @@ export function App() {
   const [attached, setAttached] = useState<string[]>([]);
   const [currentFile, setCurrentFile] = useState<string | null>(null);
   const [includeCurrentFile, setIncludeCurrentFile] = useState(true);
+  const [modelMenu, setModelMenu] = useState<ModelMenu | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -94,7 +117,25 @@ export function App() {
           setHistory(msg.items);
           break;
         case 'conversation':
-          setMessages(msg.messages.map((m) => ({ role: m.role, content: m.content })));
+          setMessages(
+            msg.messages.map((m): UiMessage => {
+              if (m.tool) {
+                return {
+                  role: 'assistant',
+                  content: '',
+                  tool: { id: '', done: true, ...m.tool },
+                };
+              }
+              if (m.status) {
+                return {
+                  role: 'assistant',
+                  content: '',
+                  agentStatus: { state: m.status.state, changedFiles: [] },
+                };
+              }
+              return { role: m.role, content: m.content, plan: m.plan };
+            }),
+          );
           setView('chat');
           setStreaming(false);
           break;
@@ -105,6 +146,24 @@ export function App() {
           break;
         case 'contextFiles':
           setAttached((prev) => [...new Set([...prev, ...msg.files])]);
+          break;
+        case 'models':
+          setModelMenu({ loading: false, profiles: msg.profiles, models: msg.models });
+          break;
+        case 'permissionRequest':
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: '',
+              permission: {
+                id: msg.id,
+                description: msg.description,
+                permission: msg.permission,
+                allowPersist: msg.allowPersist,
+              },
+            },
+          ]);
           break;
         case 'agentText':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text }]);
@@ -128,7 +187,14 @@ export function App() {
               m.tool && m.tool.id === msg.id && !m.tool.done
                 ? {
                     ...m,
-                    tool: { ...m.tool, done: true, ok: msg.ok, summary: msg.summary, label: msg.label },
+                    tool: {
+                      ...m.tool,
+                      done: true,
+                      ok: msg.ok,
+                      summary: msg.summary,
+                      label: msg.label,
+                      fileEdit: msg.fileEdit,
+                    },
                   }
                 : m,
             ),
@@ -243,13 +309,6 @@ export function App() {
   return (
     <div className="app">
       <header className="header">
-        <button
-          className="chip"
-          title="Switch profile"
-          onClick={() => postToExtension({ type: 'runCommand', command: 'selectProfile' })}
-        >
-          {config?.profile ?? '…'}
-        </button>
         <span className="spacer" />
         <button
           className="ghost"
@@ -259,7 +318,7 @@ export function App() {
           {view === 'history' ? 'Back' : 'History'}
         </button>
         <button className="ghost" onClick={() => postToExtension({ type: 'newChat' })} disabled={busy}>
-          New
+          New chat
         </button>
       </header>
 
@@ -298,13 +357,74 @@ export function App() {
           )}
           {messages.map((m, i) => {
             if (m.tool) {
+              const t = m.tool;
+              if (t.fileEdit) {
+                return (
+                  <button
+                    key={i}
+                    className="file-edit-card"
+                    title="Show diff"
+                    onClick={() => postToExtension({ type: 'agentDiffFile', path: t.fileEdit!.path })}
+                  >
+                    <span className="file-edit-name">{t.fileEdit.path}</span>
+                    <span className="diff-added">+{t.fileEdit.added}</span>
+                    <span className="diff-removed">−{t.fileEdit.removed}</span>
+                  </button>
+                );
+              }
               return (
-                <div key={i} className={`tool-chip${m.tool.done ? (m.tool.ok ? ' ok' : ' fail') : ''}`}>
-                  <span className="tool-icon">{m.tool.done ? (m.tool.ok ? '✓' : '✗') : '⏳'}</span>
-                  <span className="tool-desc" title={m.tool.summary ?? ''}>
-                    {m.tool.description}
+                <div key={i} className={`tool-chip${t.done ? (t.ok ? ' ok' : ' fail') : ''}`}>
+                  <span className="tool-icon">{t.done ? (t.ok ? '✓' : '✗') : '⏳'}</span>
+                  <span className="tool-desc" title={t.summary ?? ''}>
+                    {t.description}
                   </span>
-                  {m.tool.label && <span className="tool-label">{m.tool.label}</span>}
+                  {t.label && <span className="tool-label">{t.label}</span>}
+                </div>
+              );
+            }
+            if (m.permission) {
+              const p = m.permission;
+              const decide = (choice: PermissionChoice) => {
+                postToExtension({ type: 'permissionResponse', id: p.id, choice });
+                setMessages((prev) =>
+                  prev.map((x) =>
+                    x.permission?.id === p.id
+                      ? { ...x, permission: { ...x.permission, decided: choice } }
+                      : x,
+                  ),
+                );
+              };
+              return (
+                <div key={i} className={`permission-card${p.permission === 'destructive' ? ' destructive' : ''}`}>
+                  <div className="permission-head">
+                    <span className="permission-badge">{p.permission}</span>
+                    Cortex wants to:
+                  </div>
+                  <code className="permission-desc">{p.description}</code>
+                  {p.decided ? (
+                    <div className="permission-decided">
+                      {p.decided === 'deny' ? '✗ Denied' : `✓ Allowed${p.decided === 'session' ? ' (session)' : p.decided === 'always' ? ' (always)' : ''}`}
+                    </div>
+                  ) : (
+                    <div className="permission-actions">
+                      <button className="primary" onClick={() => decide('allow')}>
+                        Allow
+                      </button>
+                      {p.allowPersist && (
+                        <>
+                          <button className="ghost" onClick={() => decide('session')}>
+                            Session
+                          </button>
+                          <button className="ghost" onClick={() => decide('always')}>
+                            Always
+                          </button>
+                        </>
+                      )}
+                      <button className="ghost danger" onClick={() => decide('deny')}>
+                        Deny
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -476,13 +596,69 @@ export function App() {
               <option value="chat">Ask</option>
               <option value="agent">Agent</option>
             </select>
-            <button
-              className="model-chip"
-              title="Select model"
-              onClick={() => postToExtension({ type: 'runCommand', command: 'selectModel' })}
-            >
-              {config?.model || 'no model'} ▾
-            </button>
+            <div className="model-picker">
+              {modelMenu && (
+                <div className="model-menu">
+                  <div className="menu-section">Provider</div>
+                  {modelMenu.profiles.map((p) => (
+                    <button
+                      key={p.name}
+                      className={`menu-item${p.active ? ' active' : ''}`}
+                      onClick={() => {
+                        postToExtension({ type: 'setProfile', name: p.name });
+                        setModelMenu({ loading: true, profiles: [], models: [] });
+                        postToExtension({ type: 'listModels' });
+                      }}
+                    >
+                      {p.active ? '✓ ' : ''}
+                      {p.name}
+                    </button>
+                  ))}
+                  <div className="menu-section">Model</div>
+                  {modelMenu.loading && <div className="menu-note">Loading…</div>}
+                  {!modelMenu.loading && modelMenu.models.length === 0 && (
+                    <div className="menu-note">Could not list models</div>
+                  )}
+                  {modelMenu.models.map((id) => (
+                    <button
+                      key={id}
+                      className={`menu-item${id === config?.model ? ' active' : ''}`}
+                      onClick={() => {
+                        postToExtension({ type: 'setModel', model: id });
+                        setModelMenu(null);
+                      }}
+                    >
+                      {id === config?.model ? '✓ ' : ''}
+                      {id}
+                    </button>
+                  ))}
+                  <div className="menu-section" />
+                  <button
+                    className="menu-item"
+                    onClick={() => {
+                      setModelMenu(null);
+                      postToExtension({ type: 'runCommand', command: 'selectModel' });
+                    }}
+                  >
+                    Model roles (edit/apply/autocomplete…) →
+                  </button>
+                </div>
+              )}
+              <button
+                className="model-chip"
+                title="Provider & model"
+                onClick={() => {
+                  if (modelMenu) {
+                    setModelMenu(null);
+                  } else {
+                    setModelMenu({ loading: true, profiles: [], models: [] });
+                    postToExtension({ type: 'listModels' });
+                  }
+                }}
+              >
+                {config ? `${config.profile} · ${config.model || 'no model'}` : '…'} ▾
+              </button>
+            </div>
             <span className="spacer" />
             {busy ? (
               <button

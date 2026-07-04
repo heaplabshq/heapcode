@@ -1,9 +1,11 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
+  lineDiffStats,
   runAgent,
   resolveCapabilities,
   type ExtensionToWebview,
+  type FileEditInfo,
   type ToolCall,
 } from '@cortex/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
@@ -68,6 +70,7 @@ export class AgentController {
       `[agent] start (${capabilities.nativeToolCalls ? 'native tools' : 'text fallback'}): ${task}`,
     );
 
+    const fileEdits = new Map<string, FileEditInfo>();
     await this.mcp?.ensureConnected();
     const mcpTools = this.mcp?.getToolDefinitions() ?? [];
     const instructions = await loadProjectInstructions();
@@ -86,7 +89,12 @@ export class AgentController {
             const content = await this.mcp.call(call.name, call.args);
             return { id: call.id, name: call.name, content };
           }
-          return executor.execute(call);
+          const result = await executor.execute(call);
+          if (!result.isError && (call.name === 'write_file' || call.name === 'edit_file')) {
+            const info = await this.computeFileEdit(String(call.args.path ?? ''));
+            if (info) fileEdits.set(call.id, info);
+          }
+          return result;
         },
         requestPermission: (call, tool) =>
           this.permissions.request(call, tool, this.describe(call, executor)),
@@ -105,6 +113,7 @@ export class AgentController {
               ok: !result.isError,
               summary: result.content.slice(0, 300),
               label: resultLabel(result.name, result.content, result.isError),
+              fileEdit: fileEdits.get(result.id),
             }),
         },
         plan: cfg.get<boolean>('planFirst', true),
@@ -120,6 +129,20 @@ export class AgentController {
       });
     } finally {
       this.abort = undefined;
+    }
+  }
+
+  /** +/− line counts for a just-edited file (checkpoint original vs current). */
+  private async computeFileEdit(relPath: string): Promise<FileEditInfo | undefined> {
+    const entry = this.checkpoint?.entryFor(relPath);
+    if (!entry) return undefined;
+    try {
+      const current = new TextDecoder().decode(await vscode.workspace.fs.readFile(entry.uri));
+      const original = entry.original ? new TextDecoder().decode(entry.original) : '';
+      const { added, removed } = lineDiffStats(original, current);
+      return { path: relPath, added, removed };
+    } catch {
+      return undefined;
     }
   }
 

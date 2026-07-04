@@ -5,10 +5,29 @@ import type { ConversationMeta } from './history/types.js';
  * Single source of truth — both sides import these types.
  */
 
+export interface ToolDisplay {
+  name: string;
+  description: string;
+  ok: boolean;
+  label?: string;
+  fileEdit?: FileEditInfo;
+}
+
+export interface FileEditInfo {
+  path: string;
+  added: number;
+  removed: number;
+}
+
 export interface DisplayMessage {
   role: 'user' | 'assistant';
   content: string;
+  plan?: boolean;
+  tool?: ToolDisplay;
+  status?: { state: string };
 }
+
+export type PermissionChoice = 'allow' | 'session' | 'always' | 'deny';
 
 export interface SlashCommandInfo {
   command: string;
@@ -30,6 +49,10 @@ export type WebviewToExtension =
   | { type: 'insertCode'; code: string }
   | { type: 'applyCode'; code: string }
   | { type: 'pickContextFiles' }
+  | { type: 'listModels' }
+  | { type: 'setModel'; model: string }
+  | { type: 'setProfile'; name: string }
+  | { type: 'permissionResponse'; id: string; choice: PermissionChoice }
   | { type: 'agentStart'; task: string; files?: string[] }
   | { type: 'agentStop' }
   | { type: 'agentRevert' }
@@ -56,8 +79,23 @@ export type ExtensionToWebview =
   | { type: 'newChatStarted' }
   | { type: 'contextFiles'; files: string[] }
   | { type: 'activeFile'; path: string | null }
+  | { type: 'models'; profiles: Array<{ name: string; active: boolean }>; models: string[] }
+  | {
+      type: 'permissionRequest';
+      id: string;
+      description: string;
+      permission: string;
+      allowPersist: boolean;
+    }
   | { type: 'agentText'; text: string }
   | { type: 'agentPlan'; text: string }
   | { type: 'agentToolCall'; id: string; name: string; description: string }
-  | { type: 'agentToolResult'; id: string; ok: boolean; summary: string; label: string }
+  | {
+      type: 'agentToolResult';
+      id: string;
+      ok: boolean;
+      summary: string;
+      label: string;
+      fileEdit?: FileEditInfo;
+    }
   | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: string[] };

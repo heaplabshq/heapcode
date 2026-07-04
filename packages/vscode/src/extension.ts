@@ -19,6 +19,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new JsonConversationStore(storageDir);
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log);
   const permissions = new PermissionEngine(context.workspaceState);
+  permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   const rag = new RagIndexer(profiles, storageDir, log);
   const mcp = new McpManager(log);
   chatProvider.rag = rag;
@@ -86,6 +87,41 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('cortex.buildIndex', () => rag.buildIndex()),
     vscode.commands.registerCommand('cortex.clearIndex', () => rag.clear()),
     vscode.commands.registerCommand('cortex.openMemory', () => openMemoryFile()),
+    vscode.commands.registerCommand('cortex.addMcpServer', async () => {
+      const name = await vscode.window.showInputBox({
+        title: 'MCP server name',
+        prompt: 'A short identifier, e.g. "filesystem" or "github"',
+        validateInput: (v) => (/^[\w-]+$/.test(v) ? undefined : 'Letters, digits, - and _ only'),
+      });
+      if (!name) return;
+      const picked = await vscode.window.showQuickPick(
+        [
+          { label: 'stdio (local command)', description: 'e.g. npx -y @modelcontextprotocol/server-filesystem /path', transport: 'stdio' },
+          { label: 'HTTP / SSE (remote URL)', description: 'Streamable HTTP or SSE endpoint', transport: 'url' },
+        ],
+        { title: `MCP server "${name}" — transport` },
+      );
+      if (!picked) return;
+      const cfg = vscode.workspace.getConfiguration('cortex');
+      const servers = { ...cfg.get<Record<string, unknown>>('mcpServers', {}) };
+      if (picked.transport === 'stdio') {
+        const commandLine = await vscode.window.showInputBox({
+          title: 'Command to launch the server',
+          prompt: 'Full command line, e.g. npx -y @modelcontextprotocol/server-filesystem /Users/me',
+        });
+        if (!commandLine) return;
+        const [command, ...args] = commandLine.split(/\s+/);
+        servers[name] = { command, args };
+      } else {
+        const url = await vscode.window.showInputBox({ title: 'Server URL', prompt: 'https://…' });
+        if (!url) return;
+        servers[name] = { url };
+      }
+      await cfg.update('mcpServers', servers, vscode.ConfigurationTarget.Global);
+      void vscode.window.showInformationMessage(
+        `Cortex: MCP server "${name}" added — its tools appear in the next agent session.`,
+      );
+    }),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider),
     profiles.onDidChange(updateStatusBar),
     vscode.workspace.onDidChangeConfiguration((e) => {

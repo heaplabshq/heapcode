@@ -129,6 +129,10 @@
       {
         "command": "cortex.openMemory",
         "title": "Cortex: Open Project Memory"
+      },
+      {
+        "command": "cortex.addMcpServer",
+        "title": "Cortex: Add MCP Server"
       }
     ],
     "submenus": [

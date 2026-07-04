@@ -8,7 +8,9 @@ import {
   renderTemplate,
   type Conversation,
   type ConversationStore,
+  type DisplayMessage,
   type ExtensionToWebview,
+  type PermissionChoice,
   type PromptTemplate,
   type StoredMessage,
   type WebviewToExtension,
@@ -38,6 +40,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   agent?: AgentController;
   rag?: RagIndexer;
 
+  private pendingPermissions = new Map<string, (choice: PermissionChoice) => void>();
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly profiles: ProfileManager,
@@ -46,7 +50,74 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {}
 
   postToWebview(msg: ExtensionToWebview): void {
+    this.recordAgentMessage(msg);
     this.post(msg);
+  }
+
+  /** Persist agent transcript entries so history reloads show the full session. */
+  private recordAgentMessage(msg: ExtensionToWebview): void {
+    switch (msg.type) {
+      case 'agentText':
+        this.conversation.messages.push({ role: 'assistant', content: msg.text });
+        break;
+      case 'agentPlan':
+        this.conversation.messages.push({
+          role: 'assistant',
+          content: msg.text,
+          ui: { plan: true },
+        });
+        break;
+      case 'agentToolCall':
+        this.conversation.messages.push({
+          role: 'assistant',
+          content: '',
+          ui: { tool: { id: msg.id, name: msg.name, description: msg.description, ok: true } },
+        });
+        break;
+      case 'agentToolResult': {
+        for (let i = this.conversation.messages.length - 1; i >= 0; i--) {
+          const tool = this.conversation.messages[i]!.ui?.tool;
+          if (tool?.id === msg.id) {
+            tool.ok = msg.ok;
+            tool.label = msg.label;
+            tool.fileEdit = msg.fileEdit;
+            break;
+          }
+        }
+        break;
+      }
+      case 'agentStatus':
+        if (msg.status !== 'running') {
+          this.conversation.messages.push({
+            role: 'assistant',
+            content: '',
+            ui: { status: { state: msg.status } },
+          });
+          this.conversation.updatedAt = Date.now();
+          void this.store.save(this.conversation);
+        }
+        break;
+    }
+  }
+
+  /** Inline permission card in the chat; resolves undefined if no view is available. */
+  async requestPermissionInChat(req: {
+    description: string;
+    permission: string;
+    allowPersist: boolean;
+  }): Promise<PermissionChoice | undefined> {
+    if (!this.view || !this.viewReady) return undefined;
+    const id = randomUUID();
+    return new Promise<PermissionChoice>((resolve) => {
+      this.pendingPermissions.set(id, resolve);
+      this.post({
+        type: 'permissionRequest',
+        id,
+        description: req.description,
+        permission: req.permission,
+        allowPersist: req.allowPersist,
+      });
+    });
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -130,6 +201,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'send':
         await this.handleSend(msg.text, msg.files);
         break;
+      case 'permissionResponse': {
+        const resolve = this.pendingPermissions.get(msg.id);
+        this.pendingPermissions.delete(msg.id);
+        resolve?.(msg.choice);
+        break;
+      }
+      case 'listModels': {
+        const active = this.profiles.getActiveProfile();
+        let models: string[] = [];
+        try {
+          const { provider } = await this.profiles.createActiveProvider();
+          models = (await provider.listModels()).map((m) => m.id);
+        } catch (err) {
+          this.log.appendLine(`[models] list failed: ${String(err)}`);
+        }
+        this.post({
+          type: 'models',
+          profiles: this.profiles
+            .getProfiles()
+            .map((p) => ({ name: p.name, active: p.name === active.name })),
+          models,
+        });
+        break;
+      }
+      case 'setModel':
+        await this.profiles.setChatModel(msg.model);
+        break;
+      case 'setProfile':
+        await this.profiles.setActiveByName(msg.name);
+        break;
       case 'pickContextFiles': {
         const files = await vscode.workspace.findFiles(
           '**/*',
@@ -180,6 +281,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           msg.files && msg.files.length > 0
             ? `${msg.task}\n\nStart by reading these attached files: ${msg.files.join(', ')}`
             : msg.task;
+        this.conversation.messages.push({ role: 'user', content: task, display: msg.task });
+        if (this.conversation.messages.length === 1) {
+          this.conversation.title = msg.task.slice(0, 60);
+        }
         await this.agent?.start(task);
         break;
       }
@@ -221,10 +326,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({
       type: 'conversation',
       id: loaded.id,
-      messages: loaded.messages.map((m) => ({
-        role: m.role === 'assistant' ? 'assistant' : 'user',
-        content: m.display ?? m.content,
-      })),
+      messages: loaded.messages.map(
+        (m): DisplayMessage => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: m.display ?? m.content,
+          plan: m.ui?.plan,
+          tool: m.ui?.tool,
+          status: m.ui?.status,
+        }),
+      ),
     });
   }
 
@@ -315,7 +425,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             role: 'system',
             content: instructions ? `${SYSTEM_PROMPT}\n\n${instructions}` : SYSTEM_PROMPT,
           },
-          ...this.conversation.messages.map((m) => ({ role: m.role, content: m.content })),
+          // Agent tool chips / status markers are UI-only — not LLM context.
+          ...this.conversation.messages
+            .filter((m) => !m.ui?.tool && !m.ui?.status && m.content.trim())
+            .map((m) => ({ role: m.role, content: m.content })),
         ],
         temperature: profile.temperature,
         maxTokens: profile.maxTokens,

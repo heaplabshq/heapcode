@@ -302,12 +302,19 @@ body {
   outline: none;
 }
 
+.model-picker {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+  display: flex;
+}
+
 .model-chip {
   font-size: 0.8em;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   padding: 1px 6px;
-  max-width: 45%;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -315,6 +322,143 @@ body {
 
 .model-chip:hover {
   color: var(--vscode-foreground);
+}
+
+.model-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.menu-section {
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+  padding: 6px 10px 2px;
+}
+
+.menu-item {
+  text-align: left;
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--vscode-foreground);
+  border-radius: 0;
+  font-size: 0.88em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-item:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.menu-item.active {
+  color: var(--vscode-textLink-foreground);
+}
+
+.menu-note {
+  padding: 4px 12px;
+  font-size: 0.85em;
+  opacity: 0.6;
+}
+
+.permission-card {
+  border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.permission-card.destructive {
+  border-color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.permission-head {
+  font-size: 0.85em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.permission-badge {
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.permission-desc {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.88em;
+  background: var(--vscode-textCodeBlock-background);
+  padding: 4px 8px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
+.permission-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.permission-decided {
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.file-edit-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  margin: 0 8px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background, transparent);
+  color: var(--vscode-foreground);
+  text-align: left;
+}
+
+.file-edit-card:hover {
+  border-color: var(--vscode-focusBorder);
+}
+
+.file-edit-name {
+  flex: 1;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.88em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-added {
+  color: var(--vscode-gitDecoration-addedResourceForeground, #81b88b);
+  font-size: 0.85em;
+}
+
+.diff-removed {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, #c74e39);
+  font-size: 0.85em;
 }
 
 .send {

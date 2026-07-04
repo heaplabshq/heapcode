@@ -81,6 +81,21 @@ export class ProfileManager {
     this.notifyChanged();
   }
 
+  /** Switch profile by name (used by the in-chat model menu). */
+  async setActiveByName(name: string): Promise<void> {
+    if (this.getProfiles().some((p) => p.name === name)) await this.setActive(name);
+  }
+
+  /** Set the chat model of the active profile (used by the in-chat model menu). */
+  async setChatModel(modelId: string): Promise<void> {
+    const active = this.getActiveProfile();
+    const profiles = this.getProfiles().map((p) =>
+      p.name === active.name ? { ...p, model: modelId } : p,
+    );
+    await this.saveProfiles(profiles);
+    this.notifyChanged();
+  }
+
   // ---- interactive flows ----
 
   async selectProfileFlow(): Promise<void> {

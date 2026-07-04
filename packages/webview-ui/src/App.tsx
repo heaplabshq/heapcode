@@ -104,6 +104,19 @@ export function App() {
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modePickerRef = useRef<HTMLDivElement>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+
+  /** Explorer drags carry a uri-list; hand it to the extension to resolve files vs folders. */
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const uriList = e.dataTransfer.getData('text/uri-list');
+    const uris = uriList
+      .split(/[\r\n]+/)
+      .map((u) => u.trim())
+      .filter((u) => u && !u.startsWith('#'));
+    if (uris.length > 0) postToExtension({ type: 'resolveDropped', uris });
+  };
 
   // Popover dismissal: Esc anywhere, or clicking outside the open picker.
   useEffect(() => {
@@ -459,7 +472,17 @@ export function App() {
   const busy = streaming || agentRunning;
 
   return (
-    <div className="app">
+    <div
+      className={`app${dragOver ? ' drag-over' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.target === e.currentTarget) setDragOver(false);
+      }}
+      onDrop={onDrop}
+    >
       <header className="header">
         <span className="spacer" />
         <button
@@ -508,7 +531,8 @@ export function App() {
               <p>Ask about your code, or switch to Agent for autonomous tasks.</p>
               <p className="hint">
                 <code>/</code> for commands · <code>@selection</code> <code>@file</code>{' '}
-                <code>@problems</code> <code>@workspace</code> for context · 📎 to attach files
+                <code>@problems</code> <code>@workspace</code> for context · 📎 or drag &amp; drop
+                files/folders to attach
               </p>
             </div>
           )}
@@ -762,8 +786,8 @@ export function App() {
               </button>
             )}
             {attached.map((f) => (
-              <span key={f} className="attach-chip" title={f}>
-                {f.split('/').pop()}
+              <span key={f} className="attach-chip" title={f.endsWith('/') ? `${f} (folder, recursive)` : f}>
+                {f.endsWith('/') ? `📁 ${f.replace(/\/$/, '').split('/').pop()}/` : f.split('/').pop()}
                 <button
                   className="attach-remove"
                   onClick={() => setAttached((prev) => prev.filter((x) => x !== f))}

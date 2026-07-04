@@ -49,6 +49,8 @@ export type WebviewToExtension =
   | { type: 'insertCode'; code: string }
   | { type: 'applyCode'; code: string }
   | { type: 'pickContextFiles' }
+  /** URIs dropped onto the composer (files or folders) — resolve to attachments. */
+  | { type: 'resolveDropped'; uris: string[] }
   | { type: 'listModels' }
   | { type: 'setModel'; model: string }
   | { type: 'setProfile'; name: string }

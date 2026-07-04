@@ -15,7 +15,14 @@ import {
   type StoredMessage,
   type WebviewToExtension,
 } from '@cortex/core';
-import { collectSelection, getActiveEditor, resolveMentions } from './contextCollector.js';
+import {
+  collectAttachedFolder,
+  collectSelection,
+  getActiveEditor,
+  isFolderAttachment,
+  listFolderFiles,
+  resolveMentions,
+} from './contextCollector.js';
 import { loadProjectInstructions } from './memory.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
 import type { AgentController } from './agent/controller.js';
@@ -356,11 +363,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**',
           5000,
         );
+        const rels = files.map((f) => vscode.workspace.asRelativePath(f, false)).sort();
+        // Folders (derived from the file list, up to 3 levels) are attachable
+        // too — an attached folder means "everything under it, recursively".
+        const dirs = new Set<string>();
+        for (const rel of rels) {
+          const parts = rel.split('/');
+          let prefix = '';
+          for (let i = 0; i < parts.length - 1 && i < 3; i++) {
+            prefix += `${parts[i]}/`;
+            dirs.add(prefix);
+          }
+        }
         const picked = await vscode.window.showQuickPick(
-          files.map((f) => vscode.workspace.asRelativePath(f, false)).sort(),
-          { title: 'Cortex: Attach files as context', canPickMany: true },
+          [
+            ...[...dirs].sort().map((d) => ({ label: `$(folder) ${d}`, value: d })),
+            ...rels.map((r) => ({ label: r, value: r })),
+          ],
+          { title: 'Cortex: Attach files or folders as context', canPickMany: true },
         );
-        if (picked && picked.length > 0) this.post({ type: 'contextFiles', files: picked });
+        if (picked && picked.length > 0) {
+          this.post({ type: 'contextFiles', files: picked.map((p) => p.value) });
+        }
+        break;
+      }
+      case 'resolveDropped': {
+        const attachments: string[] = [];
+        for (const raw of msg.uris.slice(0, 30)) {
+          try {
+            const uri = vscode.Uri.parse(raw);
+            const rel = vscode.workspace.asRelativePath(uri, false);
+            if (rel === uri.fsPath) continue; // outside the workspace
+            const stat = await vscode.workspace.fs.stat(uri);
+            attachments.push(stat.type === vscode.FileType.Directory ? `${rel}/` : rel);
+          } catch {
+            // unreadable/vanished — skip
+          }
+        }
+        if (attachments.length > 0) this.post({ type: 'contextFiles', files: attachments });
         break;
       }
       case 'stop':
@@ -399,9 +439,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'agentStart': {
         let task = msg.task.trim() === '/init' ? INIT_TASK : msg.task;
         if (msg.files && msg.files.length > 0) {
-          task +=
-            `\n\nThe user attached these files as likely-relevant context: ${msg.files.join(', ')}. ` +
-            'Read them, but do not limit yourself to them — explore the workspace as the task requires.';
+          const plainFiles = msg.files.filter((f) => !isFolderAttachment(f));
+          const folders = msg.files.filter(isFolderAttachment);
+          if (plainFiles.length > 0) {
+            task +=
+              `\n\nThe user attached these files as likely-relevant context: ${plainFiles.join(', ')}. ` +
+              'Read them, but do not limit yourself to them — explore the workspace as the task requires.';
+          }
+          for (const folder of folders.slice(0, 3)) {
+            const listing = await listFolderFiles(folder);
+            task +=
+              `\n\nThe user attached the folder "${folder}" as context — everything under it, ` +
+              `including nested subfolders, is in scope. It contains:\n${listing.slice(0, 200).join('\n')}` +
+              `${listing.length > 200 ? `\n…and ${listing.length - 200} more files` : ''}\n` +
+              'Read whichever of these files the task requires.';
+          }
         }
         // Follow-ups ("done?", "now also…") need the conversation so far —
         // agent sessions are otherwise blank-slate.
@@ -491,10 +543,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
     );
 
-    // Explicitly attached files (📎) — highest-priority context after selection.
+    // Explicitly attached files (📎/drag-and-drop) — highest-priority context after selection.
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (root && files) {
-      for (const rel of files.slice(0, 8)) {
+      for (const rel of files.filter((f) => !isFolderAttachment(f)).slice(0, 8)) {
         try {
           const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, rel));
           blocks.push({
@@ -505,6 +557,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch {
           unresolved.push(rel);
         }
+      }
+      // Attached folders: recursive listing + as many nested files inlined as fit.
+      for (const rel of files.filter(isFolderAttachment).slice(0, 3)) {
+        const folderBlocks = await collectAttachedFolder(rel);
+        if (folderBlocks.length > 0) blocks.push(...folderBlocks);
+        else unresolved.push(rel);
       }
     }
 

@@ -84,6 +84,11 @@ button.ghost:not(:disabled):hover {
   height: 100%;
 }
 
+.app.drag-over {
+  outline: 2px dashed var(--vscode-focusBorder);
+  outline-offset: -4px;
+}
+
 .header {
   display: flex;
   align-items: center;

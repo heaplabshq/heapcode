@@ -8,6 +8,7 @@ import {
   estimateMessagesTokens,
   isAbortError,
   parseSlashCommand,
+  providerPresets,
   renderTemplate,
   type Conversation,
   type ConversationStore,
@@ -186,6 +187,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.log.appendLine(`[perm] in-chat request failed: ${err instanceof Error ? err.message : err}`);
       return undefined; // modal fallback
     }
+  }
+
+  /** Everything the settings panel renders: profiles, presets, key status. */
+  private async postSettingsData(): Promise<void> {
+    const profiles = this.profiles.getProfiles();
+    const keySaved: Record<string, boolean> = {};
+    for (const p of profiles) keySaved[p.name] = await this.profiles.hasApiKey(p.name);
+    this.post({
+      type: 'settingsData',
+      profiles,
+      active: this.profiles.getActiveProfile().name,
+      presets: providerPresets.map((p) => ({
+        id: p.id,
+        label: p.label,
+        defaultBaseUrl: p.defaultBaseUrl,
+        requiresApiKey: p.requiresApiKey,
+        local: p.local,
+      })),
+      keySaved,
+    });
   }
 
   /** ask_user tool: question card in the chat, awaiting the user's answer. */
@@ -391,6 +412,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'setProfile':
         await this.profiles.setActiveByName(msg.name);
+        break;
+      case 'settingsLoad':
+        await this.postSettingsData();
+        break;
+      case 'settingsSaveProfile':
+        try {
+          await this.profiles.upsertProfile(msg.original, msg.profile, msg.apiKey);
+        } catch (err) {
+          void vscode.window.showErrorMessage(`Cortex: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await this.postSettingsData();
+        break;
+      case 'settingsDeleteProfile': {
+        const confirm = await vscode.window.showWarningMessage(
+          `Delete profile "${msg.name}"? Its stored API key is removed too.`,
+          { modal: true },
+          'Delete',
+        );
+        if (confirm === 'Delete') await this.profiles.deleteProfile(msg.name);
+        await this.postSettingsData();
+        break;
+      }
+      case 'settingsActivateProfile':
+        await this.profiles.setActiveByName(msg.name);
+        await this.postSettingsData();
+        break;
+      case 'openNativeSettings':
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:cortexcode.cortex-code');
         break;
       case 'pickContextFiles': {
         const files = await vscode.workspace.findFiles(

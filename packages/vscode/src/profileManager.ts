@@ -96,6 +96,69 @@ export class ProfileManager {
     this.notifyChanged();
   }
 
+  // ---- settings panel (programmatic) ----
+
+  async hasApiKey(profileName: string): Promise<boolean> {
+    return (await this.secrets.get(profileSecretKey(profileName))) !== undefined;
+  }
+
+  /**
+   * Create or update a profile from the settings panel. `original` is the
+   * pre-edit name (undefined for a new profile); a rename moves the stored
+   * API key. `apiKey`: undefined = unchanged, '' = clear, else store.
+   */
+  async upsertProfile(
+    original: string | undefined,
+    profile: ProviderProfileConfig,
+    apiKey?: string,
+  ): Promise<void> {
+    const name = profile.name.trim();
+    if (!name) throw new Error('Profile name is required.');
+    const existing = this.getProfiles();
+    if (existing.some((p) => p.name === name && p.name !== original)) {
+      throw new Error(`A profile named "${name}" already exists.`);
+    }
+    const clean = { ...profile, name };
+
+    let profiles: ProviderProfileConfig[];
+    if (original && existing.some((p) => p.name === original)) {
+      profiles = existing.map((p) => (p.name === original ? clean : p));
+      if (original !== name) {
+        const key = await this.secrets.get(profileSecretKey(original));
+        if (key !== undefined) {
+          await this.secrets.store(profileSecretKey(name), key);
+          await this.secrets.delete(profileSecretKey(original));
+        }
+      }
+    } else {
+      profiles = [...existing, clean];
+    }
+    await this.saveProfiles(profiles);
+
+    if (apiKey === '') await this.secrets.delete(profileSecretKey(name));
+    else if (apiKey !== undefined) await this.secrets.store(profileSecretKey(name), apiKey);
+
+    // Keep the active pointer following a rename of the active profile.
+    const activeName = vscode.workspace.getConfiguration('cortex').get<string>('activeProfile', '');
+    if (original && original !== name && activeName === original) {
+      await this.setActive(name);
+    } else {
+      this.notifyChanged();
+    }
+  }
+
+  async deleteProfile(name: string): Promise<void> {
+    const remaining = this.getProfiles().filter((p) => p.name !== name);
+    await this.saveProfiles(remaining);
+    await this.secrets.delete(profileSecretKey(name));
+    const activeName = vscode.workspace.getConfiguration('cortex').get<string>('activeProfile', '');
+    if (activeName === name && remaining.length > 0) {
+      await this.setActive(remaining[0]!.name);
+    } else {
+      this.notifyChanged();
+    }
+  }
+
   // ---- interactive flows ----
 
   async selectProfileFlow(): Promise<void> {

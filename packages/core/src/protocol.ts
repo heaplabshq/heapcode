@@ -1,4 +1,5 @@
 import type { ConversationMeta } from './history/types.js';
+import type { ProviderProfileConfig } from './config/profiles.js';
 
 /**
  * Typed message protocol between the VS Code extension host and the webview UI.
@@ -44,6 +45,15 @@ export interface SlashCommandInfo {
 /** Commands the webview may ask the extension to run (allowlist). */
 export type WebviewCommand = 'selectProfile' | 'selectModel' | 'setApiKey' | 'addProfile';
 
+/** Provider preset info the settings panel needs (subset of ProviderPreset). */
+export interface SettingsPresetInfo {
+  id: string;
+  label: string;
+  defaultBaseUrl: string;
+  requiresApiKey: boolean;
+  local: boolean;
+}
+
 export type WebviewToExtension =
   | { type: 'ready' }
   | { type: 'send'; text: string; files?: string[] }
@@ -63,6 +73,16 @@ export type WebviewToExtension =
   | { type: 'setProfile'; name: string }
   | { type: 'permissionResponse'; id: string; choice: PermissionChoice }
   | { type: 'agentQuestionResponse'; id: string; answer: string }
+  | { type: 'settingsLoad' }
+  /**
+   * Create or update a profile. `original` is the pre-edit name (absent for a
+   * new profile). `apiKey`: undefined = leave unchanged, '' = clear, else set.
+   */
+  | { type: 'settingsSaveProfile'; original?: string; profile: ProviderProfileConfig; apiKey?: string }
+  | { type: 'settingsDeleteProfile'; name: string }
+  | { type: 'settingsActivateProfile'; name: string }
+  /** Open the native VS Code settings UI filtered to this extension. */
+  | { type: 'openNativeSettings' }
   | { type: 'openInTerminal'; command: string }
   | { type: 'openReference'; text: string }
   | { type: 'agentStart'; task: string; files?: string[] }
@@ -110,6 +130,14 @@ export type ExtensionToWebview =
     }
   /** The agent's ask_user tool: a question card in the chat. */
   | { type: 'agentQuestion'; id: string; question: string; options?: string[] }
+  /** Everything the settings panel renders. `keySaved[name]` = an API key exists for that profile. */
+  | {
+      type: 'settingsData';
+      profiles: ProviderProfileConfig[];
+      active: string;
+      presets: SettingsPresetInfo[];
+      keySaved: Record<string, boolean>;
+    }
   | { type: 'agentText'; text: string }
   | { type: 'agentTextDelta'; text: string }
   | { type: 'agentTextEnd' }

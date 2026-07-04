@@ -9,6 +9,7 @@ import type {
 } from '@cortex/core';
 import { postToExtension } from './vscodeApi.js';
 import { renderMarkdown } from './markdown.js';
+import { SettingsView, type SettingsData } from './SettingsView.js';
 
 interface ToolChip {
   id: string;
@@ -45,6 +46,14 @@ function IconNew() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
       <path d="M8.5 3h-1v4.5H3v1h4.5V13h1V8.5H13v-1H8.5V3z" />
+    </svg>
+  );
+}
+
+function IconGear() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M9.1 1.5l.4 1.8c.4.1.8.3 1.1.5l1.7-.8 1.1 1.9-1.4 1.2c.1.4.1.8 0 1.2l1.4 1.2-1.1 1.9-1.7-.8c-.3.2-.7.4-1.1.5l-.4 1.8H6.9l-.4-1.8c-.4-.1-.8-.3-1.1-.5l-1.7.8-1.1-1.9L4 7.3c-.1-.4-.1-.8 0-1.2L2.6 4.9l1.1-1.9 1.7.8c.3-.2.7-.4 1.1-.5l.4-1.8h2.2zM8 5.2A2.2 2.2 0 1 0 8 9.6 2.2 2.2 0 0 0 8 5.2z" transform="translate(0 1.3)" />
     </svg>
   );
 }
@@ -190,7 +199,8 @@ export function App() {
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [config, setConfig] = useState<Config | null>(null);
-  const [view, setView] = useState<'chat' | 'history'>('chat');
+  const [view, setView] = useState<'chat' | 'history' | 'settings'>('chat');
+  const [settingsData, setSettingsData] = useState<SettingsData | null>(null);
   const [history, setHistory] = useState<ConversationMeta[]>([]);
   const [mode, setMode] = useState<'chat' | 'agent'>('chat');
   const [agentRunning, setAgentRunning] = useState(false);
@@ -334,6 +344,14 @@ export function App() {
           break;
         case 'models':
           setModelMenu({ loading: false, profiles: msg.profiles, models: msg.models });
+          break;
+        case 'settingsData':
+          setSettingsData({
+            profiles: msg.profiles,
+            active: msg.active,
+            presets: msg.presets,
+            keySaved: msg.keySaved,
+          });
           break;
         case 'permissionRequest':
           setMessages((prev) => [
@@ -572,6 +590,11 @@ export function App() {
     setView('history');
   };
 
+  const openSettings = () => {
+    postToExtension({ type: 'settingsLoad' });
+    setView('settings');
+  };
+
   /**
    * Delegated clicks in the transcript: code-block action buttons, and inline
    * code references (`.hero-content`, `src/app.ts`) that open in the editor.
@@ -636,6 +659,13 @@ export function App() {
         </button>
         <button
           className="ghost icon-btn"
+          title={view === 'settings' ? 'Back to chat' : 'Settings'}
+          onClick={view === 'settings' ? () => setView('chat') : openSettings}
+        >
+          {view === 'settings' ? '←' : <IconGear />}
+        </button>
+        <button
+          className="ghost icon-btn"
           title="New chat"
           onClick={() => postToExtension({ type: 'newChat' })}
           disabled={busy}
@@ -644,7 +674,9 @@ export function App() {
         </button>
       </header>
 
-      {view === 'history' ? (
+      {view === 'settings' ? (
+        <SettingsView data={settingsData} />
+      ) : view === 'history' ? (
         <div className="history">
           {history.length === 0 && <div className="empty">No previous conversations.</div>}
           {history.map((item) => (
@@ -935,6 +967,7 @@ export function App() {
         </div>
       )}
 
+      {view !== 'settings' && (
       <footer className="composer">
         {slashMatches.length > 0 && (
           <div className="slash-menu">
@@ -1171,6 +1204,7 @@ export function App() {
           </div>
         </div>
       </footer>
+      )}
     </div>
   );
 }

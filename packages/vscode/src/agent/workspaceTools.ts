@@ -1,7 +1,13 @@
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { applySearchReplace, type ToolCall, type ToolDefinition, type ToolResult } from '@cortex/core';
+import {
+  applySearchReplace,
+  findBestMatch,
+  type ToolCall,
+  type ToolDefinition,
+  type ToolResult,
+} from '@cortex/core';
 import type { SessionCheckpoint } from './checkpoint.js';
 
 const MAX_READ_CHARS = 50_000;
@@ -132,6 +138,36 @@ export const agentToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+/**
+ * When an edit_file search misses, locate the closest matching line and show
+ * the model what that region of the file actually looks like — most misses
+ * are stale/hallucinated context, and this lets the model self-correct in
+ * one turn instead of blindly re-reading.
+ */
+function nearbyHint(content: string, search: string): string {
+  const anchor = search.split('\n').find((l) => l.trim().length > 8);
+  if (!anchor) return '';
+  const match = findBestMatch(content, anchor.trim());
+  if (!match) return '';
+  const lines = content.split('\n');
+  let offset = 0;
+  let matchLine = 0;
+  for (let i = 0; i < lines.length; i++) {
+    offset += lines[i]!.length + 1;
+    if (offset > match.start) {
+      matchLine = i;
+      break;
+    }
+  }
+  const start = Math.max(0, matchLine - 6);
+  const end = Math.min(lines.length, matchLine + 7);
+  const snippet = lines
+    .slice(start, end)
+    .map((l, i) => `${start + i + 1}\t${l}`)
+    .join('\n');
+  return `The closest matching region is:\n${snippet}\n`;
+}
+
 export class WorkspaceToolExecutor {
   constructor(
     private readonly root: vscode.Uri,
@@ -252,10 +288,11 @@ export class WorkspaceToolExecutor {
       case 'edit_file': {
         const uri = this.resolve(a.path);
         const current = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-        const next = applySearchReplace(current, a.search ?? '', a.replace ?? '');
+        const next = applySearchReplace(current, String(a.search ?? ''), String(a.replace ?? ''));
         if (next === undefined) {
           return fail(
-            `The "search" text was not found in ${a.path}. Read the file again and provide the exact existing code.`,
+            `The "search" text was not found in ${a.path}. ${nearbyHint(current, String(a.search ?? ''))}` +
+              'Provide the exact existing code (copy it from read_file output, without the line numbers).',
           );
         }
         await this.checkpoint.recordBeforeChange(uri);

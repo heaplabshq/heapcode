@@ -40,7 +40,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   agent?: AgentController;
   rag?: RagIndexer;
 
-  private pendingPermissions = new Map<string, (choice: PermissionChoice) => void>();
+  private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -100,15 +100,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Inline permission card in the chat; resolves undefined if no view is available. */
+  /**
+   * Inline permission card in the chat. Reveals the chat view first — messages
+   * to hidden webviews are dropped silently, which would strand the agent.
+   * Resolves undefined (→ modal fallback) if the view can't be shown or dies.
+   */
   async requestPermissionInChat(req: {
     description: string;
     permission: string;
     allowPersist: boolean;
   }): Promise<PermissionChoice | undefined> {
+    try {
+      await vscode.commands.executeCommand('cortex.chatView.focus');
+    } catch {
+      return undefined;
+    }
+    for (let i = 0; i < 20 && !this.viewReady; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     if (!this.view || !this.viewReady) return undefined;
+
     const id = randomUUID();
-    return new Promise<PermissionChoice>((resolve) => {
+    return new Promise<PermissionChoice | undefined>((resolve) => {
       this.pendingPermissions.set(id, resolve);
       this.post({
         type: 'permissionRequest',
@@ -131,6 +144,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       this.view = undefined;
       this.viewReady = false;
+      // Never leave the agent hanging on a card nobody can see — fall back to modal.
+      for (const resolve of this.pendingPermissions.values()) resolve(undefined);
+      this.pendingPermissions.clear();
     });
   }
 

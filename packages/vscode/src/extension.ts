@@ -122,7 +122,10 @@ export function activate(context: vscode.ExtensionContext): void {
         `Cortex: MCP server "${name}" added — its tools appear in the next agent session.`,
       );
     }),
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider),
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
+      // Keep chat state (incl. live agent transcripts) across sidebar switches.
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
     profiles.onDidChange(updateStatusBar),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('cortex')) updateStatusBar();

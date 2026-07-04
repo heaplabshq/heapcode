@@ -22,6 +22,13 @@ import type { AgentController } from './agent/controller.js';
 import type { ProfileManager } from './profileManager.js';
 import type { RagIndexer } from './rag/indexer.js';
 
+const INIT_TASK =
+  'Initialize this project for Cortex. Explore the workspace (key files, tech stack, structure, ' +
+  'build/test/run commands, conventions), then: 1) create CORTEX.md at the workspace root — concise ' +
+  'project instructions for AI assistants (stack, layout, commands, conventions; under 60 lines); ' +
+  '2) create .cortex/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
+  '(seed them with anything obvious from the code). Do not modify any other files.';
+
 const SYSTEM_PROMPT =
   'You are Cortex, an expert AI programming assistant inside the user\'s IDE. ' +
   'Be concise and technically precise. Use markdown; put code in fenced blocks with a language tag. ' +
@@ -41,6 +48,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   rag?: RagIndexer;
 
   private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
+  private terminal?: vscode.Terminal;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -201,9 +209,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'config',
       profile: profile.name,
       model: profile.model,
-      slashCommands: this.allPrompts().map((p) => ({ command: p.command, title: p.title })),
+      slashCommands: [
+        ...this.allPrompts().map((p) => ({ command: p.command, title: p.title })),
+        { command: 'init', title: 'Set up CORTEX.md & project memory (agent)' },
+      ],
     });
     this.postActiveFile();
+  }
+
+  /**
+   * Open a code reference mentioned in chat: a workspace file path directly,
+   * else the first content match (e.g. a CSS selector or symbol name).
+   */
+  private async openReference(text: string): Promise<void> {
+    const needle = text.trim().slice(0, 200);
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!needle || !root) return;
+
+    try {
+      const uri = vscode.Uri.joinPath(root, needle);
+      await vscode.workspace.fs.stat(uri);
+      await vscode.window.showTextDocument(uri, { preview: true });
+      return;
+    } catch {
+      // not a file path — fall through to content search
+    }
+
+    const files = await vscode.workspace.findFiles(
+      '**/*',
+      '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**',
+      800,
+    );
+    for (const file of files) {
+      let content: string;
+      try {
+        const bytes = await vscode.workspace.fs.readFile(file);
+        if (bytes.byteLength > 300_000) continue;
+        content = new TextDecoder().decode(bytes);
+        if (content.includes(' ')) continue;
+      } catch {
+        continue;
+      }
+      const index = content.indexOf(needle);
+      if (index === -1) continue;
+      const line = content.slice(0, index).split('\n').length - 1;
+      const editor = await vscode.window.showTextDocument(file, { preview: true });
+      const pos = new vscode.Position(line, 0);
+      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+      editor.selection = new vscode.Selection(pos, pos);
+      return;
+    }
+    void vscode.window.setStatusBarMessage(`Cortex: "${needle}" not found in workspace`, 3000);
   }
 
   postActiveFile(): void {
@@ -233,6 +289,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'send':
+        if (msg.text.trim() === '/init') {
+          this.conversation.messages.push({ role: 'user', content: INIT_TASK, display: '/init' });
+          await this.agent?.start(INIT_TASK);
+          break;
+        }
         await this.handleSend(msg.text, msg.files);
         break;
       case 'permissionResponse': {
@@ -311,10 +372,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await applyCodeToEditor(msg.code, this.profiles, this.log);
         break;
       case 'agentStart': {
-        const task =
-          msg.files && msg.files.length > 0
-            ? `${msg.task}\n\nStart by reading these attached files: ${msg.files.join(', ')}`
-            : msg.task;
+        let task = msg.task.trim() === '/init' ? INIT_TASK : msg.task;
+        if (msg.files && msg.files.length > 0) {
+          task +=
+            `\n\nThe user attached these files as likely-relevant context: ${msg.files.join(', ')}. ` +
+            'Read them, but do not limit yourself to them — explore the workspace as the task requires.';
+        }
         this.conversation.messages.push({ role: 'user', content: task, display: msg.task });
         if (this.conversation.messages.length === 1) {
           this.conversation.title = msg.task.slice(0, 60);
@@ -322,6 +385,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.agent?.start(task);
         break;
       }
+      case 'openInTerminal': {
+        if (!this.terminal || this.terminal.exitStatus) {
+          this.terminal = vscode.window.createTerminal('Cortex');
+        }
+        this.terminal.show();
+        // Insert without executing — the user reviews and presses Enter.
+        this.terminal.sendText(msg.command, false);
+        break;
+      }
+      case 'openReference':
+        await this.openReference(msg.text);
+        break;
       case 'agentStop':
         this.agent?.stop();
         break;

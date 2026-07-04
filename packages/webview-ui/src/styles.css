@@ -240,13 +240,63 @@ button.ghost:not(:disabled):hover {
 
 /* ============================================================= agent trace */
 
+.tool-row {
+  display: flex;
+  flex-direction: column;
+}
+
 .tool-chip {
   display: flex;
   align-items: baseline;
   gap: 7px;
+  width: 100%;
   padding: 1px 14px 1px 22px;
   font-size: 0.85em;
   color: var(--vscode-descriptionForeground);
+  text-align: left;
+  border-radius: 0;
+}
+
+.tool-chip:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.tool-caret {
+  flex-shrink: 0;
+  opacity: 0.5;
+  font-size: 0.85em;
+}
+
+.tool-row.ok .tool-icon {
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.tool-row.fail .tool-icon {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
+.tool-detail {
+  margin: 2px 14px 4px 34px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--vscode-panel-border);
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 0 4px 4px 0;
+}
+
+.tool-detail pre {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.tool-detail .ghost {
+  font-size: 0.8em;
+  padding: 1px 8px;
+  font-family: var(--vscode-editor-font-family, monospace);
 }
 
 .tool-icon {
@@ -254,13 +304,6 @@ button.ghost:not(:disabled):hover {
   width: 12px;
 }
 
-.tool-chip.ok .tool-icon {
-  color: var(--vscode-testing-iconPassed, #73c991);
-}
-
-.tool-chip.fail .tool-icon {
-  color: var(--vscode-errorForeground, #f14c4c);
-}
 
 .tool-desc {
   overflow: hidden;
@@ -535,9 +578,14 @@ button.ghost:not(:disabled):hover {
   gap: 5px;
   font-size: 0.78em;
   padding: 1px 8px;
-  border-radius: 9px;
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border);
+  background: transparent;
+  color: var(--vscode-foreground);
+}
+
+.attach-chip:hover {
+  border-color: var(--vscode-focusBorder);
 }
 
 .attach-chip.current {
@@ -567,26 +615,47 @@ button.ghost:not(:disabled):hover {
   padding: 4px 8px 7px;
 }
 
-.mode-select,
-.model-chip {
-  height: 22px;
-  font-size: 0.82em;
-  border-radius: 4px;
+.icon-btn {
+  padding: 3px 6px;
   display: inline-flex;
   align-items: center;
 }
 
-.mode-select {
-  font-family: inherit;
-  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
-  background: var(--vscode-dropdown-background, transparent);
-  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
-  padding: 0 4px;
-  outline: none;
+.mode-picker {
+  position: relative;
+  display: flex;
 }
 
-.mode-select:focus {
-  border-color: var(--vscode-focusBorder);
+.mode-chip,
+.model-chip {
+  height: 22px;
+  font-size: 0.82em;
+  border-radius: 4px;
+  line-height: 22px;
+  padding: 0 8px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.mode-chip:hover,
+.model-chip:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+
+.mode-menu {
+  min-width: 230px;
+  max-width: 300px;
+}
+
+.menu-hint {
+  opacity: 0.55;
+  font-size: 0.9em;
+}
+
+.working-row {
+  padding: 4px 14px;
+  font-size: 0.88em;
 }
 
 .model-picker {
@@ -597,19 +666,15 @@ button.ghost:not(:disabled):hover {
 }
 
 .model-chip {
-  color: var(--vscode-descriptionForeground);
-  padding: 0 8px;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
   display: inline-block;
-  line-height: 22px;
 }
 
-.model-chip:hover {
-  color: var(--vscode-foreground);
-  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+.markdown :not(pre) > code:hover {
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .send {
@@ -635,6 +700,11 @@ button.ghost:not(:disabled):hover {
   display: flex;
   flex-direction: column;
   padding: 6px;
+}
+
+/* Never compress items to fit max-height — scroll instead. */
+.model-menu > * {
+  flex-shrink: 0;
 }
 
 .menu-section {

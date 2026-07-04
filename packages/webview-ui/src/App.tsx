@@ -18,6 +18,34 @@ interface ToolChip {
   summary?: string;
   label?: string;
   fileEdit?: FileEditInfo;
+  terminalCommand?: string;
+  expanded?: boolean;
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  done: 'Completed',
+  stopped: 'Stopped',
+  'max-iterations': 'Stopped at iteration limit',
+  error: 'Failed',
+};
+
+const REFERENCE_PATTERN = /^[.#]?[\w@-]+([./\\-][\w@-]+)*(\.\w+)?$/;
+
+function IconHistory() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M8 2a6 6 0 1 1-5.2 3H1.5L4 1.5 6.5 5H4.1A5 5 0 1 0 8 3V2z" />
+      <path d="M7.5 4.5h1V8l2.8 1.6-.5.9L7.5 8.6V4.5z" />
+    </svg>
+  );
+}
+
+function IconNew() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M8.5 3h-1v4.5H3v1h4.5V13h1V8.5H13v-1H8.5V3z" />
+    </svg>
+  );
 }
 
 interface PermissionCard {
@@ -68,15 +96,24 @@ export function App() {
   const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const modePickerRef = useRef<HTMLDivElement>(null);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
 
-  // Model menu dismissal: Esc anywhere, or clicking outside the picker.
+  // Popover dismissal: Esc anywhere, or clicking outside the open picker.
   useEffect(() => {
-    if (!modelMenu) return;
+    if (!modelMenu && !modeMenuOpen) return;
+    const closeAll = () => {
+      setModelMenu(null);
+      setModeMenuOpen(false);
+    };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setModelMenu(null);
+      if (e.key === 'Escape') closeAll();
     };
     const onMouseDown = (e: MouseEvent) => {
-      if (!modelPickerRef.current?.contains(e.target as Node)) setModelMenu(null);
+      const target = e.target as Node;
+      if (!modelPickerRef.current?.contains(target) && !modePickerRef.current?.contains(target)) {
+        closeAll();
+      }
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onMouseDown);
@@ -84,7 +121,7 @@ export function App() {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onMouseDown);
     };
-  }, [modelMenu]);
+  }, [modelMenu, modeMenuOpen]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<ExtensionToWebview>) => {
@@ -195,7 +232,13 @@ export function App() {
             {
               role: 'assistant',
               content: '',
-              tool: { id: msg.id, name: msg.name, description: msg.description, done: false },
+              tool: {
+                id: msg.id,
+                name: msg.name,
+                description: msg.description,
+                done: false,
+                terminalCommand: msg.terminalCommand,
+              },
             },
           ]);
           break;
@@ -304,22 +347,43 @@ export function App() {
     setView('history');
   };
 
-  /** Delegated handler for Copy/Insert/Apply buttons injected into code blocks. */
+  /**
+   * Delegated clicks in the transcript: code-block action buttons, and inline
+   * code references (`.hero-content`, `src/app.ts`) that open in the editor.
+   */
   const onMessagesClick = (e: React.MouseEvent) => {
-    const button = (e.target as HTMLElement).closest('button[data-action]');
-    if (!button) return;
-    const code = button.closest('.codeblock')?.querySelector('pre code')?.textContent ?? '';
-    if (!code) return;
-    const action = button.getAttribute('data-action');
-    if (action === 'copy') {
-      void navigator.clipboard.writeText(code);
-      button.textContent = 'Copied';
-      setTimeout(() => (button.textContent = 'Copy'), 1200);
-    } else if (action === 'insert') {
-      postToExtension({ type: 'insertCode', code });
-    } else if (action === 'apply') {
-      postToExtension({ type: 'applyCode', code });
+    const target = e.target as HTMLElement;
+    const button = target.closest('button[data-action]');
+    if (button) {
+      const code = button.closest('.codeblock')?.querySelector('pre code')?.textContent ?? '';
+      if (!code) return;
+      const action = button.getAttribute('data-action');
+      if (action === 'copy') {
+        void navigator.clipboard.writeText(code);
+        button.textContent = 'Copied';
+        setTimeout(() => (button.textContent = 'Copy'), 1200);
+      } else if (action === 'insert') {
+        postToExtension({ type: 'insertCode', code });
+      } else if (action === 'apply') {
+        postToExtension({ type: 'applyCode', code });
+      }
+      return;
     }
+    const inlineCode = target.closest('code');
+    if (inlineCode && !inlineCode.closest('pre')) {
+      const text = (inlineCode.textContent ?? '').trim();
+      if (text.length >= 2 && text.length <= 120 && REFERENCE_PATTERN.test(text)) {
+        postToExtension({ type: 'openReference', text });
+      }
+    }
+  };
+
+  const toggleTool = (index: number) => {
+    setMessages((prev) =>
+      prev.map((m, i) =>
+        i === index && m.tool ? { ...m, tool: { ...m.tool, expanded: !m.tool.expanded } } : m,
+      ),
+    );
   };
 
   const busy = streaming || agentRunning;
@@ -329,14 +393,19 @@ export function App() {
       <header className="header">
         <span className="spacer" />
         <button
-          className="ghost"
-          title="History"
+          className="ghost icon-btn"
+          title={view === 'history' ? 'Back to chat' : 'History'}
           onClick={view === 'history' ? () => setView('chat') : openHistory}
         >
-          {view === 'history' ? 'Back' : 'History'}
+          {view === 'history' ? '←' : <IconHistory />}
         </button>
-        <button className="ghost" onClick={() => postToExtension({ type: 'newChat' })} disabled={busy}>
-          New chat
+        <button
+          className="ghost icon-btn"
+          title="New chat"
+          onClick={() => postToExtension({ type: 'newChat' })}
+          disabled={busy}
+        >
+          <IconNew />
         </button>
       </header>
 
@@ -391,12 +460,28 @@ export function App() {
                 );
               }
               return (
-                <div key={i} className={`tool-chip${t.done ? (t.ok ? ' ok' : ' fail') : ''}`}>
-                  <span className="tool-icon">{t.done ? (t.ok ? '✓' : '✗') : '⏳'}</span>
-                  <span className="tool-desc" title={t.summary ?? ''}>
-                    {t.description}
-                  </span>
-                  {t.label && <span className="tool-label">{t.label}</span>}
+                <div key={i} className={`tool-row${t.done ? (t.ok ? ' ok' : ' fail') : ''}`}>
+                  <button className="tool-chip" onClick={() => toggleTool(i)}>
+                    <span className="tool-icon">{t.done ? (t.ok ? '✓' : '✗') : '⏳'}</span>
+                    <span className="tool-desc">{t.description}</span>
+                    {t.label && <span className="tool-label">{t.label}</span>}
+                    <span className="tool-caret">{t.expanded ? '▾' : '▸'}</span>
+                  </button>
+                  {t.expanded && (
+                    <div className="tool-detail">
+                      {t.summary ? <pre>{t.summary}</pre> : <span className="menu-note">No output</span>}
+                      {t.terminalCommand && (
+                        <button
+                          className="ghost"
+                          onClick={() =>
+                            postToExtension({ type: 'openInTerminal', command: t.terminalCommand! })
+                          }
+                        >
+                          $ Run in terminal
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -463,8 +548,10 @@ export function App() {
                 <div key={i} className={`agent-banner ${state === 'done' ? 'ok' : 'warn'}`}>
                   <div className="banner-head">
                     <span>
-                      Agent {state === 'done' ? 'finished' : state}
-                      {changedFiles.length > 0 && ` — review ${changedFiles.length} changed file(s)`}
+                      {state === 'done' ? '✓ ' : ''}
+                      {STATUS_LABEL[state] ?? state}
+                      {changedFiles.length > 0 &&
+                        ` · ${changedFiles.length} file${changedFiles.length > 1 ? 's' : ''} changed`}
                     </span>
                     {changedFiles.length > 0 && (
                       <button className="ghost" onClick={() => postToExtension({ type: 'agentRevert' })}>
@@ -524,8 +611,8 @@ export function App() {
             );
           })}
           {agentRunning && (
-            <div className="agent-banner running">
-              <span>Agent running — executing tools until the task is done (Stop to abort)…</span>
+            <div className="working-row">
+              <span className="thinking">Working…</span>
             </div>
           )}
         </div>
@@ -604,16 +691,39 @@ export function App() {
             rows={3}
           />
           <div className="composer-footer">
-            <select
-              className="mode-select"
-              value={mode}
-              onChange={(e) => setMode(e.target.value as 'chat' | 'agent')}
-              disabled={busy}
-              title="Mode"
-            >
-              <option value="chat">Ask</option>
-              <option value="agent">Agent</option>
-            </select>
+            <div className="mode-picker" ref={modePickerRef}>
+              {modeMenuOpen && (
+                <div className="model-menu mode-menu">
+                  {(
+                    [
+                      { id: 'chat', label: 'Ask', hint: 'Chat about your code' },
+                      { id: 'agent', label: 'Agent', hint: 'Autonomously edit files & run commands' },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.id}
+                      className={`menu-item${mode === option.id ? ' active' : ''}`}
+                      onClick={() => {
+                        setMode(option.id);
+                        setModeMenuOpen(false);
+                      }}
+                    >
+                      {mode === option.id ? '✓ ' : ''}
+                      {option.label}
+                      <span className="menu-hint"> — {option.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                className="mode-chip"
+                disabled={busy}
+                title="Mode"
+                onClick={() => setModeMenuOpen((v) => !v)}
+              >
+                {mode === 'agent' ? 'Agent' : 'Ask'} ▾
+              </button>
+            </div>
             <div className="model-picker" ref={modelPickerRef}>
               {modelMenu && (
                 <div className="model-menu">

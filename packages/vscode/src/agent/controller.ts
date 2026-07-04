@@ -104,7 +104,14 @@ export class AgentController {
           onToolCall: (call) => {
             const description = this.describe(call, executor);
             this.log.appendLine(`[agent] tool: ${description}`);
-            this.post({ type: 'agentToolCall', id: call.id, name: call.name, description });
+            this.post({
+              type: 'agentToolCall',
+              id: call.id,
+              name: call.name,
+              description,
+              terminalCommand:
+                call.name === 'run_command' ? String(call.args.command ?? '') : undefined,
+            });
           },
           onToolResult: (result) =>
             this.post({

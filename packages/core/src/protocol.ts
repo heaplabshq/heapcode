@@ -53,6 +53,8 @@ export type WebviewToExtension =
   | { type: 'setModel'; model: string }
   | { type: 'setProfile'; name: string }
   | { type: 'permissionResponse'; id: string; choice: PermissionChoice }
+  | { type: 'openInTerminal'; command: string }
+  | { type: 'openReference'; text: string }
   | { type: 'agentStart'; task: string; files?: string[] }
   | { type: 'agentStop' }
   | { type: 'agentRevert' }
@@ -89,7 +91,14 @@ export type ExtensionToWebview =
     }
   | { type: 'agentText'; text: string }
   | { type: 'agentPlan'; text: string }
-  | { type: 'agentToolCall'; id: string; name: string; description: string }
+  | {
+      type: 'agentToolCall';
+      id: string;
+      name: string;
+      description: string;
+      /** For run_command: the shell command, so the UI can offer "run in terminal". */
+      terminalCommand?: string;
+    }
   | {
       type: 'agentToolResult';
       id: string;

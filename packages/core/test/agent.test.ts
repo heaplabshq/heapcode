@@ -310,6 +310,50 @@ describe('runAgent — native tool calls', () => {
     expect(outcome).toBe('max-iterations');
     expect(h.calls.length).toBe(3);
   });
+
+  it('compacts the transcript when it outgrows the context window', async () => {
+    const toolTurn = {
+      content: '',
+      toolCalls: [{ id: 'c', name: 'read_file', args: { path: 'a.ts' } }],
+    };
+    const provider = scriptedProvider([
+      ...Array.from({ length: 6 }, () => toolTurn),
+      { content: 'Compact summary of the work so far.' }, // compaction request
+      { content: '', toolCalls: [{ id: 'f', name: 'finish', args: { summary: 'did it' } }] },
+    ]);
+    const compactions: Array<[number, number]> = [];
+    const usages: number[] = [];
+    const h = harness({
+      // Each tool result is ~750 tokens; six of them overflow a 4k window.
+      execute: (call: ToolCall) =>
+        Promise.resolve({ id: call.id, name: call.name, content: 'x'.repeat(3000) }),
+      events: {
+        onText: () => {},
+        onToolCall: () => {},
+        onToolResult: () => {},
+        onContextUsage: (used: number) => usages.push(used),
+        onCompaction: (before: number, after: number) => compactions.push([before, after]),
+      },
+    });
+    const outcome = await runAgent({
+      ...h.options,
+      provider,
+      nativeToolCalls: true,
+      contextWindow: 4_000,
+      maxTokens: 1_000,
+    });
+
+    expect(outcome).toBe('done');
+    expect(compactions.length).toBe(1);
+    expect(compactions[0]![1]).toBeLessThan(compactions[0]![0]);
+    expect(usages.length).toBeGreaterThan(0);
+    // The post-compaction request keeps system+task and carries the summary.
+    const lastReq = provider.requests[provider.requests.length - 1]!;
+    expect(lastReq.messages[0]!.role).toBe('system');
+    expect(lastReq.messages[1]!.content).toBe('do the thing');
+    expect(lastReq.messages.some((m) => m.content.includes('[Earlier work compacted'))).toBe(true);
+    expect(lastReq.messages.some((m) => m.content.includes('Compact summary'))).toBe(true);
+  });
 });
 
 describe('runAgent — structured-text fallback', () => {

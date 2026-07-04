@@ -125,6 +125,11 @@ export class AgentController {
                 call.name === 'run_command' ? String(call.args.command ?? '') : undefined,
             });
           },
+          onContextUsage: (used, window) => this.post({ type: 'contextUsage', used, window }),
+          onCompaction: (before, after) => {
+            this.log.appendLine(`[agent] compacted context: ~${before} → ~${after} tokens`);
+            this.post({ type: 'compacted', before, after });
+          },
           onToolResult: (result) =>
             this.post({
               type: 'agentToolResult',
@@ -140,6 +145,7 @@ export class AgentController {
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
         // which truncates large write_file calls mid-generation.
         maxTokens: profile.maxTokens ?? 16_384,
+        contextWindow: profile.contextWindow,
         signal: this.abort.signal,
       });
       this.log.appendLine(`[agent] finished: ${outcome}`);

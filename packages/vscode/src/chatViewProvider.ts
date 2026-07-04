@@ -3,6 +3,9 @@ import * as vscode from 'vscode';
 import {
   assembleContext,
   builtinPrompts,
+  COMPACTION_THRESHOLD,
+  DEFAULT_CONTEXT_WINDOW,
+  estimateMessagesTokens,
   isAbortError,
   parseSlashCommand,
   renderTemplate,
@@ -615,19 +618,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let assistant = '';
     const instructions = await loadProjectInstructions();
 
+    const systemMessage = {
+      role: 'system' as const,
+      content: instructions ? `${SYSTEM_PROMPT}\n\n${instructions}` : SYSTEM_PROMPT,
+    };
+    // Agent tool chips / status markers are UI-only — not LLM context.
+    const history = this.conversation.messages
+      .filter((m) => !m.ui?.tool && !m.ui?.status && m.content.trim())
+      .map((m) => ({ role: m.role, content: m.content }));
+
+    // Sliding window: drop the oldest turns (full history stays on disk)
+    // until the prompt plus a reply fits the model's context window.
+    const window = profile.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+    const budget = Math.max(
+      2_000,
+      window * COMPACTION_THRESHOLD - Math.min(profile.maxTokens ?? 4_096, window / 4),
+    );
+    let dropped = 0;
+    while (history.length > 2 && estimateMessagesTokens([systemMessage, ...history]) > budget) {
+      history.shift();
+      dropped++;
+    }
+    if (dropped > 0) {
+      this.log.appendLine(`[chat] trimmed ${dropped} old message(s) to fit the context window`);
+      history.unshift({
+        role: 'user',
+        content: `[${dropped} earlier message(s) omitted — the conversation exceeded the context window.]`,
+      });
+    }
+    this.post({
+      type: 'contextUsage',
+      used: estimateMessagesTokens([systemMessage, ...history]),
+      window,
+    });
+
     try {
       const stream = provider.streamChat({
         model: profile.model,
-        messages: [
-          {
-            role: 'system',
-            content: instructions ? `${SYSTEM_PROMPT}\n\n${instructions}` : SYSTEM_PROMPT,
-          },
-          // Agent tool chips / status markers are UI-only — not LLM context.
-          ...this.conversation.messages
-            .filter((m) => !m.ui?.tool && !m.ui?.status && m.content.trim())
-            .map((m) => ({ role: m.role, content: m.content })),
-        ],
+        messages: [systemMessage, ...history],
         temperature: profile.temperature,
         maxTokens: profile.maxTokens,
         signal: this.abortController.signal,

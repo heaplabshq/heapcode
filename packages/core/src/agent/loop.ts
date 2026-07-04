@@ -1,5 +1,10 @@
 import type { ChatMessage, ChatResponse, Provider } from '../providers/types.js';
 import { isAbortError } from '../providers/errors.js';
+import {
+  COMPACTION_THRESHOLD,
+  DEFAULT_CONTEXT_WINDOW,
+  estimateMessagesTokens,
+} from '../context/tokens.js';
 import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt } from './prompts.js';
 import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol.js';
 import {
@@ -27,6 +32,10 @@ export interface AgentEvents {
   onReasoningEnd?(): void;
   /** Cumulative chars of the tool call currently being generated. */
   onToolStream?(chars: number): void;
+  /** Estimated prompt tokens vs the model's context window, per iteration. */
+  onContextUsage?(usedTokens: number, windowTokens: number): void;
+  /** Older turns were summarized to stay inside the context window. */
+  onCompaction?(beforeTokens: number, afterTokens: number): void;
 }
 
 export interface AgentOptions {
@@ -46,6 +55,8 @@ export interface AgentOptions {
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
+  /** Model context window in tokens; drives usage reporting and compaction. */
+  contextWindow?: number;
   signal?: AbortSignal;
 }
 
@@ -193,6 +204,73 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   let nudges = 0;
   let finishReminderSent = false;
 
+  const contextWindow = opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  // Compact when prompt + a reply would cross the threshold. Cap the output
+  // reservation at a quarter of the window so small windows still get most
+  // of their space for the transcript.
+  const reservedOutput = Math.min(opts.maxTokens ?? 4_096, contextWindow / 4);
+  const compactionBudget = Math.max(2_000, contextWindow * COMPACTION_THRESHOLD - reservedOutput);
+
+  /**
+   * Context compaction: when the transcript outgrows the window, summarize
+   * the middle (keeping the system prompt, the task, and the most recent
+   * exchanges verbatim) and splice the summary in. Best-effort — on failure
+   * the session continues and the provider's own error surfaces later.
+   */
+  const compactIfNeeded = async (): Promise<void> => {
+    const before = estimateMessagesTokens(messages);
+    events.onContextUsage?.(before, contextWindow);
+    if (before < compactionBudget) return;
+
+    // Keep system + task at the head and the last ~8 messages at the tail;
+    // never split an assistant tool-call from its tool results.
+    let tailStart = Math.max(2, messages.length - 8);
+    while (tailStart < messages.length && messages[tailStart]!.role === 'tool') tailStart++;
+    const middle = messages.slice(2, tailStart);
+    if (middle.length < 4) return;
+
+    const transcript = middle
+      .map((m) => {
+        const calls = m.toolCalls ? ` [called: ${m.toolCalls.map((c) => c.name).join(', ')}]` : '';
+        return `${m.role}: ${m.content.slice(0, 1_500)}${calls}`;
+      })
+      .join('\n');
+    try {
+      const res = await provider.chat({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You compress coding-agent transcripts. Reply with only the summary.',
+          },
+          {
+            role: 'user',
+            content:
+              'Summarize this transcript so the agent can continue seamlessly. Preserve: files ' +
+              'read/modified (and what was learned or changed in each), commands run with their ' +
+              'outcomes, decisions made, errors hit, and exact current progress on the task. ' +
+              `Max 500 words.\n\n${transcript}`,
+          },
+        ],
+        maxTokens: 1_000,
+        temperature: 0,
+        signal,
+      });
+      const summary = res.content.trim();
+      if (!summary) return;
+      messages.splice(2, tailStart - 2, {
+        role: 'user',
+        content: `[Earlier work compacted to save context]\n${summary}\n[Continue the task from here.]`,
+      });
+      const after = estimateMessagesTokens(messages);
+      events.onCompaction?.(before, after);
+      events.onContextUsage?.(after, contextWindow);
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      // best-effort
+    }
+  };
+
   /** One extra no-tools turn so every session ends with a human-readable conclusion. */
   const summarize = async (prompt: string): Promise<void> => {
     try {
@@ -230,6 +308,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       if (signal?.aborted) return 'stopped';
+      await compactIfNeeded();
 
       const { response, streamed } = await respondLive(messages, true, true);
 

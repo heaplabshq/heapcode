@@ -89,6 +89,25 @@ button.ghost:not(:disabled):hover {
   outline-offset: -4px;
 }
 
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 6px;
+  cursor: default;
+}
+
+.context-meter-pct {
+  font-size: 10px;
+}
+
+.system-note {
+  text-align: center;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin: 6px 0;
+}
+
 .header {
   display: flex;
   align-items: center;

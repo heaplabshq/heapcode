@@ -114,4 +114,8 @@ export type ExtensionToWebview =
       label: string;
       fileEdit?: FileEditInfo;
     }
-  | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: string[] };
+  | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: string[] }
+  /** Estimated prompt tokens vs the model's context window (chat + agent). */
+  | { type: 'contextUsage'; used: number; window: number }
+  /** Older turns were summarized to fit the context window. */
+  | { type: 'compacted'; before: number; after: number };

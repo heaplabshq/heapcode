@@ -70,6 +70,48 @@ interface UiMessage {
   /** Reasoning ("thinking") stream from reasoning models. */
   reasoning?: boolean;
   collapsed?: boolean;
+  /** Small centered system note (e.g. "context compacted"). */
+  note?: boolean;
+}
+
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/** Ring meter showing how much of the model's context window is in use. */
+function ContextMeter({ used, window: win }: { used: number; window: number }) {
+  const pct = Math.min(1, used / Math.max(1, win));
+  const radius = 5.5;
+  const circumference = 2 * Math.PI * radius;
+  const color =
+    pct > 0.9
+      ? 'var(--vscode-editorError-foreground)'
+      : pct > 0.7
+        ? 'var(--vscode-editorWarning-foreground)'
+        : 'var(--vscode-descriptionForeground)';
+  return (
+    <span
+      className="context-meter"
+      title={`Context window: ~${formatTokens(used)} of ${formatTokens(win)} tokens used (${Math.round(pct * 100)}%). Compacts automatically near the limit.`}
+    >
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+        <circle cx="7" cy="7" r={radius} fill="none" stroke={color} strokeOpacity="0.25" strokeWidth="2.5" />
+        <circle
+          cx="7"
+          cy="7"
+          r={radius}
+          fill="none"
+          stroke={color}
+          strokeWidth="2.5"
+          strokeDasharray={`${pct * circumference} ${circumference}`}
+          transform="rotate(-90 7 7)"
+        />
+      </svg>
+      <span className="context-meter-pct" style={{ color }}>
+        {Math.round(pct * 100)}%
+      </span>
+    </span>
+  );
 }
 
 interface ModelMenu {
@@ -98,6 +140,7 @@ export function App() {
   const [includeCurrentFile, setIncludeCurrentFile] = useState(true);
   const [modelMenu, setModelMenu] = useState<ModelMenu | null>(null);
   const [toolStreamChars, setToolStreamChars] = useState(0);
+  const [contextUsage, setContextUsage] = useState<{ used: number; window: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -284,6 +327,19 @@ export function App() {
           break;
         case 'agentToolStream':
           setToolStreamChars(msg.chars);
+          break;
+        case 'contextUsage':
+          setContextUsage({ used: msg.used, window: msg.window });
+          break;
+        case 'compacted':
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: `Context compacted: ~${formatTokens(msg.before)} → ~${formatTokens(msg.after)} tokens`,
+              note: true,
+            },
+          ]);
           break;
         case 'agentPlan':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text, plan: true }]);
@@ -625,6 +681,13 @@ export function App() {
                 </div>
               );
             }
+            if (m.note) {
+              return (
+                <div key={i} className="system-note">
+                  {m.content}
+                </div>
+              );
+            }
             if (m.reasoning) {
               return (
                 <div key={i} className="reasoning-block">
@@ -932,6 +995,7 @@ export function App() {
               </button>
             </div>
             <span className="spacer" />
+            {contextUsage && <ContextMeter used={contextUsage.used} window={contextUsage.window} />}
             {busy ? (
               <button
                 className="primary send"

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   assembleContext,
@@ -350,13 +351,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     void vscode.window.setStatusBarMessage(`Cortex: "${needle}" not found in workspace`, 3000);
   }
 
+  private lastActiveFilePost = '';
+
   postActiveFile(): void {
     const editor = getActiveEditor();
     const path =
       editor && editor.document.uri.scheme === 'file'
         ? vscode.workspace.asRelativePath(editor.document.uri, false)
         : null;
-    this.post({ type: 'activeFile', path });
+    const selection =
+      path && editor && !editor.selection.isEmpty
+        ? { start: editor.selection.start.line + 1, end: editor.selection.end.line + 1 }
+        : undefined;
+    // Selection events fire on every cursor move — only post real changes.
+    const key = `${path}|${selection?.start ?? ''}|${selection?.end ?? ''}`;
+    if (key === this.lastActiveFilePost) return;
+    this.lastActiveFilePost = key;
+    this.post({ type: 'activeFile', path, selection });
   }
 
   private post(msg: ExtensionToWebview): void {
@@ -475,6 +486,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         break;
       }
+      case 'pickUpload': {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectMany: true,
+          openLabel: 'Attach',
+          title: 'Cortex: Attach files or images',
+        });
+        if (!picked || picked.length === 0) break;
+        const files: string[] = [];
+        const images: string[] = [];
+        for (const uri of picked.slice(0, 10)) {
+          try {
+            if (IMAGE_EXTENSIONS.test(uri.path) && images.length < MAX_IMAGES) {
+              const bytes = await vscode.workspace.fs.readFile(uri);
+              if (bytes.byteLength <= MAX_IMAGE_BYTES) {
+                const ext = uri.path.split('.').pop()!.toLowerCase();
+                const mime = ext === 'jpg' ? 'jpeg' : ext;
+                images.push(`data:image/${mime};base64,${Buffer.from(bytes).toString('base64')}`);
+              }
+              continue;
+            }
+            const rel = vscode.workspace.asRelativePath(uri, false);
+            // Files outside the workspace attach by absolute path.
+            files.push(rel === uri.fsPath ? uri.fsPath : rel);
+          } catch {
+            // unreadable — skip
+          }
+        }
+        if (files.length > 0) this.post({ type: 'contextFiles', files });
+        if (images.length > 0) this.post({ type: 'imageAttachments', images });
+        break;
+      }
       case 'resolveDropped': {
         const attachments: string[] = [];
         const images: string[] = [];
@@ -580,7 +622,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async startAgentTask(rawTask: string, files?: string[], images?: string[]): Promise<void> {
     let task = rawTask.trim() === '/init' ? INIT_TASK : rawTask;
     if (files && files.length > 0) {
-      const plainFiles = files.filter((f) => !isFolderAttachment(f));
+      // "path#L10-80" (selection chip) → tell the agent which lines matter.
+      const plainFiles = files
+        .filter((f) => !isFolderAttachment(f))
+        .map((f) => {
+          const range = /^(.*)#L(\d+)-(\d+)$/.exec(f);
+          return range ? `${range[1]} (especially lines ${range[2]}-${range[3]})` : f;
+        });
       const folders = files.filter(isFolderAttachment);
       if (plainFiles.length > 0) {
         task +=
@@ -736,14 +784,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     // Explicitly attached files (📎/drag-and-drop) — highest-priority context after selection.
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (root && files) {
-      for (const rel of files.filter((f) => !isFolderAttachment(f)).slice(0, 8)) {
+      for (const attachment of files.filter((f) => !isFolderAttachment(f)).slice(0, 8)) {
+        // "path#L10-80" = attach only those lines (editor selection chip).
+        const range = /^(.*)#L(\d+)-(\d+)$/.exec(attachment);
+        const rel = range ? range[1]! : attachment;
         try {
-          const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, rel));
-          blocks.push({
-            label: `Attached file (${rel})`,
-            content: new TextDecoder().decode(bytes).slice(0, 20_000),
-            priority: 1.5,
-          });
+          const uri = path.isAbsolute(rel) ? vscode.Uri.file(rel) : vscode.Uri.joinPath(root, rel);
+          let content = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+          let label = `Attached file (${rel})`;
+          if (range) {
+            const start = Number(range[2]);
+            const end = Number(range[3]);
+            content = content
+              .split('\n')
+              .slice(start - 1, end)
+              .join('\n');
+            label = `Attached selection (${rel}:${start}-${end})`;
+          }
+          blocks.push({ label, content: content.slice(0, 20_000), priority: 1.5 });
         } catch {
           unresolved.push(rel);
         }
@@ -829,7 +887,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Sliding window: drop the oldest turns (full history stays on disk)
     // until the prompt plus a reply fits the model's context window.
-    const window = await this.profiles.contextWindowFor(profile, profile.model);
+    const { window, source: windowSource } = await this.profiles.contextWindowFor(
+      profile,
+      profile.model,
+    );
     const budget = Math.max(
       2_000,
       window * COMPACTION_THRESHOLD - Math.min(profile.maxTokens ?? 4_096, window / 4),
@@ -851,6 +912,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       type: 'contextUsage',
       used: estimateMessagesTokens([systemMessage, ...history]),
       window,
+      source: windowSource,
     });
 
     try {

@@ -89,16 +89,86 @@ button.ghost:not(:disabled):hover {
   outline-offset: -4px;
 }
 
+.context-meter-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
 .context-meter {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   margin-right: 6px;
-  cursor: default;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 2px;
+  color: inherit;
+}
+
+.context-meter:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+  border-radius: 4px;
 }
 
 .context-meter-pct {
   font-size: 10px;
+}
+
+.context-popup {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: 240px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.35));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 0.82em;
+  text-align: left;
+  cursor: default;
+}
+
+.context-popup-title {
+  font-weight: 600;
+}
+
+.context-popup-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.context-popup-row span:first-child {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.context-popup-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(128, 128, 128, 0.25);
+  overflow: hidden;
+}
+
+.context-popup-fill {
+  height: 100%;
+  border-radius: 2px;
+}
+
+.context-popup-note {
+  color: var(--vscode-descriptionForeground);
+}
+
+.context-popup-link {
+  align-self: flex-start;
+  padding-left: 0;
+  font-size: 1em;
 }
 
 .turn.user {
@@ -914,6 +984,14 @@ select.settings-input {
 .chip-tag {
   font-size: 0.85em;
   opacity: 0.7;
+}
+
+.chip-lines {
+  font-size: 0.85em;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
 }
 
 .attach-remove {

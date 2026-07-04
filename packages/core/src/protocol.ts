@@ -47,6 +47,9 @@ export interface SlashCommandInfo {
 /** Commands the webview may ask the extension to run (allowlist). */
 export type WebviewCommand = 'selectProfile' | 'selectModel' | 'setApiKey' | 'addProfile';
 
+/** How the effective context window was determined (shown in the meter popup). */
+export type ContextWindowSource = 'profile' | 'model' | 'preset' | 'default';
+
 /** Provider preset info the settings panel needs (subset of ProviderPreset). */
 export interface SettingsPresetInfo {
   id: string;
@@ -68,6 +71,8 @@ export type WebviewToExtension =
   | { type: 'insertCode'; code: string }
   | { type: 'applyCode'; code: string }
   | { type: 'pickContextFiles' }
+  /** OS file dialog (+ button): images become vision attachments, other files context. */
+  | { type: 'pickUpload' }
   /** URIs dropped onto the composer (files or folders) — resolve to attachments. */
   | { type: 'resolveDropped'; uris: string[] }
   | { type: 'listModels' }
@@ -123,7 +128,8 @@ export type ExtensionToWebview =
   | { type: 'contextFiles'; files: string[] }
   /** Dropped image files, read by the extension and converted to data: URLs. */
   | { type: 'imageAttachments'; images: string[] }
-  | { type: 'activeFile'; path: string | null }
+  /** Active editor file; `selection` (1-based lines) present while text is selected. */
+  | { type: 'activeFile'; path: string | null; selection?: { start: number; end: number } }
   | { type: 'models'; profiles: Array<{ name: string; active: boolean }>; models: string[] }
   | {
       type: 'permissionRequest';
@@ -167,6 +173,6 @@ export type ExtensionToWebview =
     }
   | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: ChangedFile[] }
   /** Estimated prompt tokens vs the model's context window (chat + agent). */
-  | { type: 'contextUsage'; used: number; window: number }
+  | { type: 'contextUsage'; used: number; window: number; source?: ContextWindowSource }
   /** Older turns were summarized to fit the context window. */
   | { type: 'compacted'; before: number; after: number };

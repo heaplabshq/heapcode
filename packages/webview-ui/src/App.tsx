@@ -122,8 +122,43 @@ function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-/** Ring meter showing how much of the model's context window is in use. */
-function ContextMeter({ used, window: win }: { used: number; window: number }) {
+const WINDOW_SOURCE_LABEL: Record<string, string> = {
+  profile: 'profile setting (contextWindow)',
+  model: 'reported by the provider for this model',
+  preset: 'provider preset default',
+  default: 'fallback default — set contextWindow on the profile if your model has more',
+};
+
+/** Ring meter showing how much of the model's context window is in use; click for details. */
+function ContextMeter({
+  used,
+  window: win,
+  source,
+  onOpenSettings,
+}: {
+  used: number;
+  window: number;
+  source?: string;
+  onOpenSettings: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   const pct = Math.min(1, used / Math.max(1, win));
   const radius = 5.5;
   const circumference = 2 * Math.PI * radius;
@@ -134,26 +169,61 @@ function ContextMeter({ used, window: win }: { used: number; window: number }) {
         ? 'var(--vscode-editorWarning-foreground)'
         : 'var(--vscode-descriptionForeground)';
   return (
-    <span
-      className="context-meter"
-      title={`Context window: ~${formatTokens(used)} of ${formatTokens(win)} tokens used (${Math.round(pct * 100)}%). Compacts automatically near the limit.`}
-    >
-      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
-        <circle cx="7" cy="7" r={radius} fill="none" stroke={color} strokeOpacity="0.25" strokeWidth="2.5" />
-        <circle
-          cx="7"
-          cy="7"
-          r={radius}
-          fill="none"
-          stroke={color}
-          strokeWidth="2.5"
-          strokeDasharray={`${pct * circumference} ${circumference}`}
-          transform="rotate(-90 7 7)"
-        />
-      </svg>
-      <span className="context-meter-pct" style={{ color }}>
-        {Math.round(pct * 100)}%
-      </span>
+    <span className="context-meter-wrap" ref={ref}>
+      {open && (
+        <div className="context-popup">
+          <div className="context-popup-title">Context window</div>
+          <div className="context-popup-row">
+            <span>Used</span>
+            <span>
+              ~{formatTokens(used)} / {formatTokens(win)} tokens ({Math.round(pct * 100)}%)
+            </span>
+          </div>
+          <div className="context-popup-bar">
+            <div className="context-popup-fill" style={{ width: `${pct * 100}%`, background: color }} />
+          </div>
+          {source && (
+            <div className="context-popup-row">
+              <span>Window size</span>
+              <span>{WINDOW_SOURCE_LABEL[source] ?? source}</span>
+            </div>
+          )}
+          <div className="context-popup-note">
+            Older turns are compacted automatically as usage approaches ~80%.
+          </div>
+          <button
+            className="ghost context-popup-link"
+            onClick={() => {
+              setOpen(false);
+              onOpenSettings();
+            }}
+          >
+            Override in profile settings…
+          </button>
+        </div>
+      )}
+      <button
+        className="context-meter"
+        title={`Context window: ~${formatTokens(used)} of ${formatTokens(win)} tokens used (${Math.round(pct * 100)}%). Click for details.`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+          <circle cx="7" cy="7" r={radius} fill="none" stroke={color} strokeOpacity="0.25" strokeWidth="2.5" />
+          <circle
+            cx="7"
+            cy="7"
+            r={radius}
+            fill="none"
+            stroke={color}
+            strokeWidth="2.5"
+            strokeDasharray={`${pct * circumference} ${circumference}`}
+            transform="rotate(-90 7 7)"
+          />
+        </svg>
+        <span className="context-meter-pct" style={{ color }}>
+          {Math.round(pct * 100)}%
+        </span>
+      </button>
     </span>
   );
 }
@@ -233,10 +303,17 @@ export function App() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [attached, setAttached] = useState<string[]>([]);
   const [currentFile, setCurrentFile] = useState<string | null>(null);
+  const [currentSelection, setCurrentSelection] = useState<{ start: number; end: number } | null>(
+    null,
+  );
   const [includeCurrentFile, setIncludeCurrentFile] = useState(true);
   const [modelMenu, setModelMenu] = useState<ModelMenu | null>(null);
   const [toolStreamChars, setToolStreamChars] = useState(0);
-  const [contextUsage, setContextUsage] = useState<{ used: number; window: number } | null>(null);
+  const [contextUsage, setContextUsage] = useState<{
+    used: number;
+    window: number;
+    source?: string;
+  } | null>(null);
   /** Ordinal (Nth user message) being edited; sending truncates + resends from there. */
   const [editing, setEditing] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -292,6 +369,7 @@ export function App() {
           break;
         case 'activeFile':
           setCurrentFile(msg.path);
+          setCurrentSelection(msg.selection ?? null);
           break;
         case 'chunk':
           setMessages((prev) => {
@@ -455,7 +533,7 @@ export function App() {
           setToolStreamChars(msg.chars);
           break;
         case 'contextUsage':
-          setContextUsage({ used: msg.used, window: msg.window });
+          setContextUsage({ used: msg.used, window: msg.window, source: msg.source });
           break;
         case 'compacted':
           setMessages((prev) => [
@@ -579,7 +657,14 @@ export function App() {
 
   const contextFiles = (): string[] | undefined => {
     const files = [
-      ...(includeCurrentFile && currentFile ? [currentFile] : []),
+      // With an active selection, attach just those lines instead of the whole file.
+      ...(includeCurrentFile && currentFile
+        ? [
+            currentSelection
+              ? `${currentFile}#L${currentSelection.start}-${currentSelection.end}`
+              : currentFile,
+          ]
+        : []),
       ...attached.filter((f) => f !== currentFile),
     ];
     return files.length > 0 ? files : undefined;
@@ -1054,7 +1139,14 @@ export function App() {
           <div className="context-row">
             <button
               className="ghost attach-btn"
-              title="Attach files as context"
+              title="Upload files or images from disk"
+              onClick={() => postToExtension({ type: 'pickUpload' })}
+            >
+              +
+            </button>
+            <button
+              className="ghost attach-btn"
+              title="Attach workspace files as context"
               onClick={() => postToExtension({ type: 'pickContextFiles' })}
             >
               📎
@@ -1064,13 +1156,20 @@ export function App() {
                 className={`attach-chip current${includeCurrentFile ? '' : ' off'}`}
                 title={
                   includeCurrentFile
-                    ? `${currentFile} is included as context — click to exclude`
+                    ? currentSelection
+                      ? `Only lines ${currentSelection.start}-${currentSelection.end} of ${currentFile} go in as context — click to exclude`
+                      : `${currentFile} is included as context — click to exclude`
                     : `${currentFile} excluded — click to include`
                 }
                 onClick={() => setIncludeCurrentFile((v) => !v)}
               >
                 {currentFile.split('/').pop()}
-                <span className="chip-tag">current file</span>
+                {currentSelection && (
+                  <span className="chip-lines">
+                    L{currentSelection.start}-{currentSelection.end}
+                  </span>
+                )}
+                <span className="chip-tag">{currentSelection ? 'selection' : 'current file'}</span>
               </button>
             )}
             {attached.map((f) => (
@@ -1253,7 +1352,14 @@ export function App() {
               </button>
             </div>
             <span className="spacer" />
-            {contextUsage && <ContextMeter used={contextUsage.used} window={contextUsage.window} />}
+            {contextUsage && (
+              <ContextMeter
+                used={contextUsage.used}
+                window={contextUsage.window}
+                source={contextUsage.source}
+                onOpenSettings={openSettings}
+              />
+            )}
             {busy ? (
               <button
                 className="primary send"

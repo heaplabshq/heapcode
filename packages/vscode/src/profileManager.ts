@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import {
   createProvider,
+  DEFAULT_CONTEXT_WINDOW,
   getPreset,
   providerPresets,
-  resolveContextWindow,
+  resolveCapabilities,
+  type ContextWindowSource,
   type PresetId,
   type Provider,
   type ProviderProfileConfig,
@@ -73,12 +75,15 @@ export class ProfileManager {
   private readonly modelContextCache = new Map<string, number | undefined>();
 
   /**
-   * Effective context window for a model on this profile:
+   * Effective context window for a model on this profile, with its source:
    * explicit profile setting → model-reported length (/models, cached) →
    * preset default → 32768. Never throws; offline endpoints just fall back.
    */
-  async contextWindowFor(profile: ProviderProfileConfig, model: string): Promise<number> {
-    if (profile.contextWindow) return profile.contextWindow;
+  async contextWindowFor(
+    profile: ProviderProfileConfig,
+    model: string,
+  ): Promise<{ window: number; source: ContextWindowSource }> {
+    if (profile.contextWindow) return { window: profile.contextWindow, source: 'profile' };
     const key = `${profile.baseUrl}|${model}`;
     if (!this.modelContextCache.has(key)) {
       let reported: number | undefined;
@@ -93,7 +98,12 @@ export class ProfileManager {
       }
       this.modelContextCache.set(key, reported);
     }
-    return this.modelContextCache.get(key) ?? resolveContextWindow(profile);
+    const reported = this.modelContextCache.get(key);
+    if (reported) return { window: reported, source: 'model' };
+    const preset = resolveCapabilities(profile).maxContext;
+    return preset
+      ? { window: preset, source: 'preset' }
+      : { window: DEFAULT_CONTEXT_WINDOW, source: 'default' };
   }
 
   private async saveProfiles(profiles: ProviderProfileConfig[]): Promise<void> {

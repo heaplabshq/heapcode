@@ -82,6 +82,10 @@ export class AgentController {
       `[agent] start (${capabilities.nativeToolCalls ? 'native tools' : 'text fallback'}): ${task}`,
     );
 
+    const contextWindow = await this.profiles.contextWindowFor(
+      profile,
+      profile.agentModel || profile.model,
+    );
     const fileEdits = new Map<string, FileEditInfo>();
     let lastToolStreamPost = 0;
     await this.mcp?.ensureConnected();
@@ -151,7 +155,8 @@ export class AgentController {
                 call.name === 'run_command' ? String(call.args.command ?? '') : undefined,
             });
           },
-          onContextUsage: (used, window) => this.post({ type: 'contextUsage', used, window }),
+          onContextUsage: (used, window) =>
+            this.post({ type: 'contextUsage', used, window, source: contextWindow.source }),
           onCompaction: (before, after) => {
             this.log.appendLine(`[agent] compacted context: ~${before} → ~${after} tokens`);
             this.post({ type: 'compacted', before, after });
@@ -171,10 +176,7 @@ export class AgentController {
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
         // which truncates large write_file calls mid-generation.
         maxTokens: profile.maxTokens ?? 16_384,
-        contextWindow: await this.profiles.contextWindowFor(
-          profile,
-          profile.agentModel || profile.model,
-        ),
+        contextWindow: contextWindow.window,
         signal: this.abort.signal,
       });
       this.log.appendLine(`[agent] finished: ${outcome}`);

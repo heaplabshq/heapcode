@@ -4,12 +4,12 @@ import {
   assembleContext,
   builtinPrompts,
   COMPACTION_THRESHOLD,
-  DEFAULT_CONTEXT_WINDOW,
   estimateMessagesTokens,
   isAbortError,
   parseSlashCommand,
   providerPresets,
   renderTemplate,
+  resolveContextWindow,
   type Conversation,
   type ConversationStore,
   type DisplayMessage,
@@ -791,7 +791,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     // Sliding window: drop the oldest turns (full history stays on disk)
     // until the prompt plus a reply fits the model's context window.
-    const window = profile.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+    const window = resolveContextWindow(profile);
     const budget = Math.max(
       2_000,
       window * COMPACTION_THRESHOLD - Math.min(profile.maxTokens ?? 4_096, window / 4),

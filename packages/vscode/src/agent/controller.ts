@@ -4,6 +4,7 @@ import {
   lineDiffStats,
   runAgent,
   resolveCapabilities,
+  resolveContextWindow,
   type ExtensionToWebview,
   type FileEditInfo,
   type ToolCall,
@@ -161,7 +162,7 @@ export class AgentController {
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
         // which truncates large write_file calls mid-generation.
         maxTokens: profile.maxTokens ?? 16_384,
-        contextWindow: profile.contextWindow,
+        contextWindow: resolveContextWindow(profile),
         signal: this.abort.signal,
       });
       this.log.appendLine(`[agent] finished: ${outcome}`);

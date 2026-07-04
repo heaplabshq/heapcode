@@ -74,7 +74,7 @@ export const providerPresets: readonly ProviderPreset[] = [
     defaultBaseUrl: 'https://openrouter.ai/api/v1',
     requiresApiKey: true,
     local: false,
-    capabilities: caps({ vision: true }),
+    capabilities: caps({ vision: true, maxContext: 128_000 }),
   },
   {
     id: 'together',
@@ -90,7 +90,7 @@ export const providerPresets: readonly ProviderPreset[] = [
     defaultBaseUrl: 'https://api.groq.com/openai/v1',
     requiresApiKey: true,
     local: false,
-    capabilities: caps({ embeddings: false }),
+    capabilities: caps({ embeddings: false, maxContext: 128_000 }),
   },
   {
     id: 'nvidia-nim',

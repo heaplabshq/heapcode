@@ -1,4 +1,5 @@
 import { getPreset, type PresetId, type ProviderCapabilities } from '../providers/presets.js';
+import { DEFAULT_CONTEXT_WINDOW } from '../context/tokens.js';
 
 /**
  * A named provider configuration. API keys are NOT part of the profile —
@@ -35,4 +36,14 @@ export interface ProviderProfileConfig {
 
 export function resolveCapabilities(profile: ProviderProfileConfig): ProviderCapabilities {
   return { ...getPreset(profile.preset).capabilities, ...profile.capabilities };
+}
+
+/**
+ * Effective context window for the meter and compaction:
+ * explicit profile setting → preset's known maxContext → conservative default.
+ * Without this chain, large-context providers (128k presets) would compact
+ * prematurely at the 32k fallback.
+ */
+export function resolveContextWindow(profile: ProviderProfileConfig): number {
+  return profile.contextWindow ?? resolveCapabilities(profile).maxContext ?? DEFAULT_CONTEXT_WINDOW;
 }

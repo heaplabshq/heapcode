@@ -920,15 +920,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         model: profile.model,
         messages: [systemMessage, ...history],
         temperature: profile.temperature,
-        maxTokens: profile.maxTokens,
+        // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA
+        // NIM), which cuts replies off mid-sentence — same fix as the agent.
+        maxTokens: profile.maxTokens ?? 16_384,
         signal: this.abortController.signal,
       });
+      let finishReason: string | undefined;
       for await (const chunk of stream) {
-        assistant += chunk.content;
-        this.post({ type: 'chunk', text: chunk.content });
+        if (chunk.content) {
+          assistant += chunk.content;
+          this.post({ type: 'chunk', text: chunk.content });
+        }
+        if (chunk.finishReason) finishReason = chunk.finishReason;
       }
       this.finishTurn(assistant);
       this.post({ type: 'done' });
+      if (finishReason === 'length') {
+        this.post({
+          type: 'error',
+          message:
+            'The response was cut off: the model hit its output-token limit. ' +
+            `Raise "Max output tokens" on profile "${profile.name}" (settings ⚙) or ask it to continue.`,
+        });
+      }
     } catch (err) {
       if (isAbortError(err)) {
         this.finishTurn(assistant); // keep the partial response coherent in history

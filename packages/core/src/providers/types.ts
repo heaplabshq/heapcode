@@ -39,6 +39,8 @@ export interface ChatRequest {
 
 export interface ChatChunk {
   content: string;
+  /** Set on the final chunk when the provider reports why it stopped ('stop', 'length'…). */
+  finishReason?: string;
 }
 
 export interface ChatResponse {

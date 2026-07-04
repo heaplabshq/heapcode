@@ -1029,6 +1029,11 @@ select.settings-input {
   white-space: nowrap;
 }
 
+.plus-chip {
+  font-size: 1.15em;
+  padding: 0 7px;
+}
+
 .mode-chip:hover,
 .model-chip:hover {
   color: var(--vscode-foreground);

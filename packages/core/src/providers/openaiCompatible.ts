@@ -233,7 +233,8 @@ export class OpenAICompatibleProvider implements Provider {
         continue; // tolerate malformed keep-alive lines from lax servers
       }
       const content = chunk.choices?.[0]?.delta?.content;
-      if (content) yield { content };
+      const finishReason = chunk.choices?.[0]?.finish_reason ?? undefined;
+      if (content || finishReason) yield { content: content ?? '', finishReason };
     }
   }
 

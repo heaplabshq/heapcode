@@ -321,6 +321,8 @@ export function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modePickerRef = useRef<HTMLDivElement>(null);
+  const plusPickerRef = useRef<HTMLDivElement>(null);
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
@@ -338,17 +340,22 @@ export function App() {
 
   // Popover dismissal: Esc anywhere, or clicking outside the open picker.
   useEffect(() => {
-    if (!modelMenu && !modeMenuOpen) return;
+    if (!modelMenu && !modeMenuOpen && !plusMenuOpen) return;
     const closeAll = () => {
       setModelMenu(null);
       setModeMenuOpen(false);
+      setPlusMenuOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeAll();
     };
     const onMouseDown = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (!modelPickerRef.current?.contains(target) && !modePickerRef.current?.contains(target)) {
+      if (
+        !modelPickerRef.current?.contains(target) &&
+        !modePickerRef.current?.contains(target) &&
+        !plusPickerRef.current?.contains(target)
+      ) {
         closeAll();
       }
     };
@@ -358,7 +365,7 @@ export function App() {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onMouseDown);
     };
-  }, [modelMenu, modeMenuOpen]);
+  }, [modelMenu, modeMenuOpen, plusMenuOpen]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<ExtensionToWebview>) => {
@@ -822,8 +829,8 @@ export function App() {
               <p>Ask about your code, or switch to Agent for autonomous tasks.</p>
               <p className="hint">
                 <code>/</code> for commands · <code>@selection</code> <code>@file</code>{' '}
-                <code>@problems</code> <code>@workspace</code> for context · 📎 or drag &amp; drop
-                files/folders to attach · paste screenshots for vision models
+                <code>@problems</code> <code>@workspace</code> for context · <code>+</code> to
+                upload, or drag &amp; drop files/folders · paste screenshots for vision models
               </p>
             </div>
           )}
@@ -1136,21 +1143,8 @@ export function App() {
               </button>
             </div>
           )}
+          {(currentFile || attached.length > 0) && (
           <div className="context-row">
-            <button
-              className="ghost attach-btn"
-              title="Upload files or images from disk"
-              onClick={() => postToExtension({ type: 'pickUpload' })}
-            >
-              +
-            </button>
-            <button
-              className="ghost attach-btn"
-              title="Attach workspace files as context"
-              onClick={() => postToExtension({ type: 'pickContextFiles' })}
-            >
-              📎
-            </button>
             {currentFile && (
               <button
                 className={`attach-chip current${includeCurrentFile ? '' : ' off'}`}
@@ -1184,6 +1178,7 @@ export function App() {
               </span>
             ))}
           </div>
+          )}
           {pendingImages.length > 0 && (
             <div className="image-row">
               {pendingImages.map((src, i) => (
@@ -1237,6 +1232,39 @@ export function App() {
             rows={3}
           />
           <div className="composer-footer">
+            <div className="mode-picker plus-picker" ref={plusPickerRef}>
+              {plusMenuOpen && (
+                <div className="model-menu mode-menu">
+                  <button
+                    className="menu-item"
+                    onClick={() => {
+                      setPlusMenuOpen(false);
+                      postToExtension({ type: 'pickUpload' });
+                    }}
+                  >
+                    Upload file
+                    <span className="menu-hint"> — images &amp; files from disk</span>
+                  </button>
+                  <button
+                    className="menu-item"
+                    onClick={() => {
+                      setPlusMenuOpen(false);
+                      postToExtension({ type: 'pickContextFiles' });
+                    }}
+                  >
+                    Attach workspace files
+                    <span className="menu-hint"> — pick from this project</span>
+                  </button>
+                </div>
+              )}
+              <button
+                className="mode-chip plus-chip"
+                title="Add files or images"
+                onClick={() => setPlusMenuOpen((v) => !v)}
+              >
+                +
+              </button>
+            </div>
             <div className="mode-picker" ref={modePickerRef}>
               {modeMenuOpen && (
                 <div className="model-menu mode-menu">

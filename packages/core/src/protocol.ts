@@ -30,6 +30,8 @@ export interface ChangedFile {
 export interface DisplayMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** Attached images (data: URLs) shown as thumbnails on user turns. */
+  images?: string[];
   plan?: boolean;
   tool?: ToolDisplay;
   status?: { state: string };
@@ -56,7 +58,7 @@ export interface SettingsPresetInfo {
 
 export type WebviewToExtension =
   | { type: 'ready' }
-  | { type: 'send'; text: string; files?: string[] }
+  | { type: 'send'; text: string; files?: string[]; images?: string[] }
   | { type: 'stop' }
   | { type: 'newChat' }
   | { type: 'listHistory' }
@@ -85,7 +87,7 @@ export type WebviewToExtension =
   | { type: 'openNativeSettings' }
   | { type: 'openInTerminal'; command: string }
   | { type: 'openReference'; text: string }
-  | { type: 'agentStart'; task: string; files?: string[] }
+  | { type: 'agentStart'; task: string; files?: string[]; images?: string[] }
   | { type: 'agentStop' }
   | { type: 'agentRevert' }
   | { type: 'agentDiffFile'; path: string }
@@ -119,6 +121,8 @@ export type ExtensionToWebview =
   | { type: 'conversation'; id: string; messages: DisplayMessage[] }
   | { type: 'newChatStarted' }
   | { type: 'contextFiles'; files: string[] }
+  /** Dropped image files, read by the extension and converted to data: URLs. */
+  | { type: 'imageAttachments'; images: string[] }
   | { type: 'activeFile'; path: string | null }
   | { type: 'models'; profiles: Array<{ name: string; active: boolean }>; models: string[] }
   | {

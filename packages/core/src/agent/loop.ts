@@ -42,6 +42,8 @@ export interface AgentOptions {
   provider: Provider;
   model: string;
   task: string;
+  /** Images attached to the task (data: URLs) — needs a vision-capable model. */
+  images?: string[];
   workspaceName: string;
   tools: ToolDefinition[];
   /** True → OpenAI-native function calling; false → structured-text fallback. */
@@ -167,7 +169,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: opts.task },
+    { role: 'user', content: opts.task, images: opts.images },
   ];
 
   const execTool = async (call: ToolCall): Promise<ToolResult> => {

@@ -33,6 +33,30 @@ const STATUS_LABEL: Record<string, string> = {
 
 const REFERENCE_PATTERN = /^[.#]?[\w@-]+([./\\-][\w@-]+)*(\.\w+)?$/;
 
+const MAX_IMAGES = 4;
+const MAX_IMAGE_DIMENSION = 1568;
+
+/**
+ * Pasted/dropped image → data URL. Large images are downscaled and
+ * re-encoded as JPEG so a 5 MB screenshot doesn't blow up the prompt.
+ */
+async function imageToDataUrl(blob: Blob): Promise<string> {
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(bitmap.width, bitmap.height));
+  if (scale === 1 && blob.size <= 1_000_000) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.readAsDataURL(blob);
+    });
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.85);
+}
+
 function IconHistory() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
@@ -81,6 +105,8 @@ interface UiMessage {
   plan?: boolean;
   permission?: PermissionCard;
   question?: QuestionCard;
+  /** Images attached to a user turn (data: URLs). */
+  images?: string[];
   agentStatus?: { state: string; changedFiles: ChangedFile[] };
   attachedFiles?: string[];
   /** Live agent narration still receiving deltas. */
@@ -201,6 +227,7 @@ export function App() {
   const [config, setConfig] = useState<Config | null>(null);
   const [view, setView] = useState<'chat' | 'history' | 'settings'>('chat');
   const [settingsData, setSettingsData] = useState<SettingsData | null>(null);
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [history, setHistory] = useState<ConversationMeta[]>([]);
   const [mode, setMode] = useState<'chat' | 'agent'>('chat');
   const [agentRunning, setAgentRunning] = useState(false);
@@ -328,7 +355,7 @@ export function App() {
                   agentStatus: { state: m.status.state, changedFiles: [] },
                 };
               }
-              return { role: m.role, content: m.content, plan: m.plan };
+              return { role: m.role, content: m.content, plan: m.plan, images: m.images };
             }),
           );
           setView('chat');
@@ -341,6 +368,9 @@ export function App() {
           break;
         case 'contextFiles':
           setAttached((prev) => [...new Set([...prev, ...msg.files])]);
+          break;
+        case 'imageAttachments':
+          setPendingImages((prev) => [...prev, ...msg.images].slice(0, MAX_IMAGES));
           break;
         case 'models':
           setModelMenu({ loading: false, profiles: msg.profiles, models: msg.models });
@@ -557,10 +587,12 @@ export function App() {
 
   const send = () => {
     const text = input.trim();
-    if (!text || streaming || agentRunning) return;
+    if ((!text && pendingImages.length === 0) || streaming || agentRunning) return;
     nearBottomRef.current = true;
     const files = contextFiles();
+    const images = pendingImages.length > 0 ? pendingImages : undefined;
     setAttached([]); // attachments are per-message, like Copilot
+    setPendingImages([]);
     if (editing !== null) {
       // Edited prompt: the extension truncates the conversation, restores the
       // workspace checkpoint, re-renders, and resends — no local append here.
@@ -570,14 +602,14 @@ export function App() {
       return;
     }
     if (mode === 'agent') {
-      setMessages((prev) => [...prev, { role: 'user', content: text, attachedFiles: files }]);
+      setMessages((prev) => [...prev, { role: 'user', content: text, attachedFiles: files, images }]);
       setInput('');
-      postToExtension({ type: 'agentStart', task: text, files });
+      postToExtension({ type: 'agentStart', task: text, files, images });
       return;
     }
     setMessages((prev) => [
       ...prev,
-      { role: 'user', content: text, attachedFiles: files },
+      { role: 'user', content: text, attachedFiles: files, images },
       { role: 'assistant', content: '' },
     ]);
     setInput('');
@@ -706,7 +738,7 @@ export function App() {
               <p className="hint">
                 <code>/</code> for commands · <code>@selection</code> <code>@file</code>{' '}
                 <code>@problems</code> <code>@workspace</code> for context · 📎 or drag &amp; drop
-                files/folders to attach
+                files/folders to attach · paste screenshots for vision models
               </p>
             </div>
           )}
@@ -933,6 +965,13 @@ export function App() {
                 ) : (
                   <>
                     <div className="user-text">{m.content}</div>
+                    {m.images && m.images.length > 0 && (
+                      <div className="msg-images">
+                        {m.images.map((src, j) => (
+                          <img key={j} src={src} alt={`attachment ${j + 1}`} />
+                        ))}
+                      </div>
+                    )}
                     {m.attachedFiles && (
                       <div className="attach-note">📎 {m.attachedFiles.join(', ')}</div>
                     )}
@@ -1046,10 +1085,38 @@ export function App() {
               </span>
             ))}
           </div>
+          {pendingImages.length > 0 && (
+            <div className="image-row">
+              {pendingImages.map((src, i) => (
+                <span key={i} className="image-chip">
+                  <img src={src} alt={`attachment ${i + 1}`} />
+                  <button
+                    className="attach-remove"
+                    title="Remove image"
+                    onClick={() => setPendingImages((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => {
+              const items = [...e.clipboardData.items].filter((i) => i.type.startsWith('image/'));
+              if (items.length === 0) return;
+              e.preventDefault();
+              for (const item of items) {
+                const blob = item.getAsFile();
+                if (!blob) continue;
+                void imageToDataUrl(blob).then((url) =>
+                  setPendingImages((prev) => [...prev, url].slice(0, MAX_IMAGES)),
+                );
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Escape' && editing !== null) {
                 setEditing(null);
@@ -1197,7 +1264,11 @@ export function App() {
                 ◼ Stop
               </button>
             ) : (
-              <button className="primary send" onClick={send} disabled={!input.trim()}>
+              <button
+                className="primary send"
+                onClick={send}
+                disabled={!input.trim() && pendingImages.length === 0}
+              >
                 ➤
               </button>
             )}

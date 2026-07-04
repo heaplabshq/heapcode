@@ -9,6 +9,7 @@ import {
   parseSlashCommand,
   providerPresets,
   renderTemplate,
+  resolveCapabilities,
   type Conversation,
   type ConversationStore,
   type DisplayMessage,
@@ -39,6 +40,10 @@ const INIT_TASK =
   'project instructions for AI assistants (stack, layout, commands, conventions; under 60 lines); ' +
   '2) create .cortex/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
   '(seed them with anything obvious from the code). Do not modify any other files.';
+
+const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 10_000_000;
 
 const SYSTEM_PROMPT =
   'You are Cortex, an expert AI programming assistant inside the user\'s IDE. ' +
@@ -377,7 +382,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await this.agent?.start(INIT_TASK);
           break;
         }
-        await this.handleSend(msg.text, msg.files);
+        await this.handleSend(msg.text, msg.files, msg.images);
         break;
       case 'permissionResponse': {
         const resolve = this.pendingPermissions.get(msg.id);
@@ -472,9 +477,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'resolveDropped': {
         const attachments: string[] = [];
+        const images: string[] = [];
         for (const raw of msg.uris.slice(0, 30)) {
           try {
             const uri = vscode.Uri.parse(raw);
+            // Dropped images become vision attachments (data URLs); images may
+            // also come from outside the workspace (e.g. a screenshots folder).
+            if (IMAGE_EXTENSIONS.test(uri.path) && images.length < MAX_IMAGES) {
+              const bytes = await vscode.workspace.fs.readFile(uri);
+              if (bytes.byteLength <= MAX_IMAGE_BYTES) {
+                const ext = uri.path.split('.').pop()!.toLowerCase();
+                const mime = ext === 'jpg' ? 'jpeg' : ext;
+                images.push(`data:image/${mime};base64,${Buffer.from(bytes).toString('base64')}`);
+              }
+              continue;
+            }
             const rel = vscode.workspace.asRelativePath(uri, false);
             if (rel === uri.fsPath) continue; // outside the workspace
             const stat = await vscode.workspace.fs.stat(uri);
@@ -484,6 +501,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         }
         if (attachments.length > 0) this.post({ type: 'contextFiles', files: attachments });
+        if (images.length > 0) this.post({ type: 'imageAttachments', images });
         break;
       }
       case 'stop':
@@ -520,7 +538,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await applyCodeToEditor(msg.code, this.profiles, this.log);
         break;
       case 'agentStart':
-        await this.startAgentTask(msg.task, msg.files);
+        await this.startAgentTask(msg.task, msg.files, msg.images);
         break;
       case 'editUserMessage':
         await this.editUserMessage(msg.ordinal, msg.text, msg.files, msg.mode);
@@ -559,7 +577,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Agent turn: checkpoint the workspace, expand attachments, run the agent. */
-  private async startAgentTask(rawTask: string, files?: string[]): Promise<void> {
+  private async startAgentTask(rawTask: string, files?: string[], images?: string[]): Promise<void> {
     let task = rawTask.trim() === '/init' ? INIT_TASK : rawTask;
     if (files && files.length > 0) {
       const plainFiles = files.filter((f) => !isFolderAttachment(f));
@@ -585,11 +603,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       task = `Conversation so far (for context):\n${prior}\n\n---\n\nNew task: ${task}`;
     }
     const checkpoint = await this.shadowGit?.snapshot(`before: ${rawTask.slice(0, 80)}`);
-    this.conversation.messages.push({ role: 'user', content: task, display: rawTask, checkpoint });
+    this.conversation.messages.push({
+      role: 'user',
+      content: task,
+      display: rawTask,
+      checkpoint,
+      images: images?.slice(0, MAX_IMAGES),
+    });
     if (this.conversation.messages.length === 1) {
-      this.conversation.title = rawTask.slice(0, 60);
+      this.conversation.title = (rawTask || 'Image').slice(0, 60);
     }
-    await this.agent?.start(task);
+    await this.agent?.start(task, images?.slice(0, MAX_IMAGES));
   }
 
   /**
@@ -646,6 +670,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         (m): DisplayMessage => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
           content: m.display ?? m.content,
+          images: m.images,
           plan: m.ui?.plan,
           tool: m.ui?.tool,
           status: m.ui?.status,
@@ -686,6 +711,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         (m): DisplayMessage => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
           content: m.display ?? m.content,
+          images: m.images,
           plan: m.ui?.plan,
           tool: m.ui?.tool,
           status: m.ui?.status,
@@ -759,7 +785,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return { role: 'user', content: body + context.text, display: text };
   }
 
-  private async handleSend(text: string, files?: string[]): Promise<void> {
+  private async handleSend(text: string, files?: string[], images?: string[]): Promise<void> {
     const { provider, profile } = await this.profiles.createActiveProvider();
     if (!profile.model) {
       this.post({
@@ -768,11 +794,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
       return;
     }
+    if (images && images.length > 0 && !resolveCapabilities(profile).vision) {
+      this.post({
+        type: 'error',
+        message:
+          `Profile "${profile.name}" is not marked vision-capable, so images can't be sent. ` +
+          'If your model does support images, set "capabilities": {"vision": true} on the profile (cortex.profiles).',
+      });
+      return;
+    }
 
     const userMessage = await this.buildUserMessage(text, files);
+    if (images && images.length > 0) {
+      userMessage.images = images.slice(0, MAX_IMAGES);
+      if (!userMessage.content.trim()) userMessage.content = 'See the attached image(s).';
+    }
     this.conversation.messages.push(userMessage);
     if (this.conversation.messages.length === 1) {
-      this.conversation.title = text.slice(0, 60);
+      this.conversation.title = (text || 'Image').slice(0, 60);
     }
 
     this.abortController = new AbortController();
@@ -785,8 +824,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
     // Agent tool chips / status markers are UI-only — not LLM context.
     const history = this.conversation.messages
-      .filter((m) => !m.ui?.tool && !m.ui?.status && m.content.trim())
-      .map((m) => ({ role: m.role, content: m.content }));
+      .filter((m) => !m.ui?.tool && !m.ui?.status && (m.content.trim() || m.images?.length))
+      .map((m) => ({ role: m.role, content: m.content, images: m.images }));
 
     // Sliding window: drop the oldest turns (full history stays on disk)
     // until the prompt plus a reply fits the model's context window.
@@ -805,6 +844,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       history.unshift({
         role: 'user',
         content: `[${dropped} earlier message(s) omitted — the conversation exceeded the context window.]`,
+        images: undefined,
       });
     }
     this.post({

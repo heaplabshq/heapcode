@@ -91,7 +91,14 @@ export class OpenAICompatibleProvider implements Provider {
       // Map to the wire format explicitly — send only what the spec defines.
       messages: req.messages.map((m) => ({
         role: m.role,
-        content: m.content,
+        // Vision: images ride along as image_url parts next to the text.
+        content:
+          m.images && m.images.length > 0
+            ? [
+                ...(m.content ? [{ type: 'text', text: m.content }] : []),
+                ...m.images.map((url) => ({ type: 'image_url', image_url: { url } })),
+              ]
+            : m.content,
         ...(m.toolCalls && m.toolCalls.length > 0
           ? {
               tool_calls: m.toolCalls.map((c) => ({

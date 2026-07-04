@@ -11,6 +11,8 @@ export interface ToolCallRequest {
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+  /** Attached images as data: URLs — sent as image_url content parts (vision models). */
+  images?: string[];
   /** Tool calls made by an assistant message. */
   toolCalls?: ToolCallRequest[];
   /** For role 'tool': which call this result answers. */

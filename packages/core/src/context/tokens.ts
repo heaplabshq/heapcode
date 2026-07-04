@@ -20,6 +20,7 @@ export function estimateMessagesTokens(messages: ChatMessage[]): number {
   for (const m of messages) {
     total += estimateTokens(m.content) + 4; // +4 ≈ per-message framing overhead
     if (m.toolCalls) total += estimateTokens(JSON.stringify(m.toolCalls));
+    if (m.images) total += m.images.length * 800; // ≈ one downscaled screenshot
   }
   return total;
 }

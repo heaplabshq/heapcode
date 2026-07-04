@@ -36,7 +36,7 @@ export class AgentController {
     return this.abort !== undefined;
   }
 
-  async start(task: string): Promise<void> {
+  async start(task: string, images?: string[]): Promise<void> {
     if (this.running) {
       this.post({ type: 'error', message: 'An agent session is already running. Stop it first.' });
       return;
@@ -58,6 +58,15 @@ export class AgentController {
       return;
     }
     const capabilities = resolveCapabilities(profile);
+    if (images && images.length > 0 && !capabilities.vision) {
+      this.post({
+        type: 'error',
+        message:
+          `Profile "${profile.name}" is not marked vision-capable, so images can't be sent. ` +
+          'If your model does support images, set "capabilities": {"vision": true} on the profile (cortex.profiles).',
+      });
+      return;
+    }
 
     this.checkpoint = new SessionCheckpoint();
     this.permissions.resetSession();
@@ -85,6 +94,7 @@ export class AgentController {
         provider,
         model: profile.agentModel || profile.model,
         task: fullTask,
+        images,
         workspaceName: path.basename(root.fsPath),
         tools: [...agentToolDefinitions, ...mcpTools],
         nativeToolCalls: capabilities.nativeToolCalls,

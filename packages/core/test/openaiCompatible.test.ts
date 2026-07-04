@@ -198,3 +198,39 @@ describe('OpenAICompatibleProvider.listModels', () => {
     expect(models.map((m) => m.id)).toEqual(['llama3.2', 'qwen2.5-coder']);
   });
 });
+
+describe('vision message serialization', () => {
+  it('sends images as image_url content parts next to the text', async () => {
+    server = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { choices: [{ message: { content: 'a cat' }, finish_reason: 'stop' }] },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await provider.chat({
+      model: 'm',
+      messages: [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'what is this?', images: ['data:image/png;base64,AAA'] },
+      ],
+    });
+    const body = server.requests[0]!.body as { messages: Array<{ content: unknown }> };
+    // Plain messages keep string content; only image turns become part arrays.
+    expect(body.messages[0]!.content).toBe('sys');
+    expect(body.messages[1]!.content).toEqual([
+      { type: 'text', text: 'what is this?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAA' } },
+    ]);
+  });
+
+  it('reports the context length from /models when present', async () => {
+    server = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { data: [{ id: 'glm', context_length: 131072 }, { id: 'small' }] },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const models = await provider.listModels();
+    expect(models).toEqual([{ id: 'glm', contextLength: 131072 }, { id: 'small' }]);
+  });
+});

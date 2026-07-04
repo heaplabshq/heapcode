@@ -36,6 +36,24 @@ describe('retry with backoff', () => {
     expect(server.requests.length).toBe(3);
   });
 
+  it('times out on a stalled endpoint instead of hanging forever', async () => {
+    server = await startMockServer({ kind: 'hang' });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl, timeoutMs: 400 });
+    await expect(provider.chat({ model: 'm', messages: [] })).rejects.toThrowError(
+      /timed out after 0s|timed out/,
+    );
+  });
+
+  it('a user abort is still reported as an abort, not a timeout', async () => {
+    server = await startMockServer({ kind: 'hang' });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl, timeoutMs: 5000 });
+    const abort = new AbortController();
+    setTimeout(() => abort.abort(), 100);
+    await expect(
+      provider.chat({ model: 'm', messages: [], signal: abort.signal }),
+    ).rejects.toSatisfy((e: unknown) => e instanceof Error && e.name === 'AbortError');
+  });
+
   it('does not retry non-retryable errors like 401', async () => {
     server = await startMockServer({
       kind: 'sequence',

@@ -12,6 +12,8 @@ export type MockBehavior =
   | { kind: 'sse'; chunks: string[]; delayMs?: number; omitDone?: boolean }
   | { kind: 'json'; status: number; body: unknown; headers?: Record<string, string> }
   | { kind: 'hang-after-first-chunk'; firstChunk: string }
+  /** Accepts the request and never responds — for timeout tests. */
+  | { kind: 'hang' }
   /** Serves responses[i] for the i-th request (last one repeats). */
   | { kind: 'sequence'; responses: Array<Exclude<MockBehavior, { kind: 'sequence' }>> };
 
@@ -33,6 +35,10 @@ export async function startMockServer(behavior: MockBehavior): Promise<MockServe
       if (active.kind === 'sequence') {
         const index = Math.min(requests.length - 1, active.responses.length - 1);
         active = active.responses[index]!;
+      }
+
+      if (active.kind === 'hang') {
+        return; // never respond
       }
 
       if (active.kind === 'json') {

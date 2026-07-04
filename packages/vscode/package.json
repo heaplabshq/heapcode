@@ -281,6 +281,10 @@
               "maxTokens": {
                 "type": "number"
               },
+              "timeoutMs": {
+                "type": "number",
+                "description": "Per-request timeout for non-streaming calls (ms). Default 120000."
+              },
               "headers": {
                 "type": "object"
               },

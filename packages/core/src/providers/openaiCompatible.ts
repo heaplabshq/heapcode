@@ -31,6 +31,7 @@ interface OpenAIChatCompletion {
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 3;
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
  * Client for any OpenAI-compatible endpoint: OpenAI, Ollama (/v1), OpenRouter,
@@ -102,19 +103,37 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   /**
-   * fetch() with two reliability layers:
+   * fetch() with three reliability layers:
    * 1. Network errors ("fetch failed") get their real cause (ECONNREFUSED,
    *    ETIMEDOUT, DNS…) surfaced, or users can't tell a wrong URL from a down server.
    * 2. 429/5xx responses are retried with exponential backoff (honoring
    *    Retry-After), up to 3 attempts. Streams only retry before first byte.
+   * 3. A per-attempt timeout (default 120s; timeoutMs=0 disables, used for
+   *    streaming) — a stalled endpoint must fail loudly, never hang the UI.
    */
-  protected async fetchOrThrow(url: string, init: RequestInit): Promise<Response> {
+  protected async fetchOrThrow(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  ): Promise<Response> {
     for (let attempt = 1; ; attempt++) {
       let res: Response;
       try {
-        res = await fetch(url, init);
+        let signal = (init.signal as AbortSignal | null | undefined) ?? undefined;
+        if (timeoutMs > 0) {
+          const timeout = AbortSignal.timeout(timeoutMs);
+          signal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+        }
+        res = await fetch(url, { ...init, signal: signal ?? null });
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') throw err;
+        const userAborted = (init.signal as AbortSignal | null | undefined)?.aborted;
+        if (err instanceof Error && err.name === 'AbortError' && userAborted) throw err;
+        if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+          throw new ProviderError(
+            `Request to ${this.config.baseUrl} timed out after ${Math.round(timeoutMs / 1000)}s. ` +
+              'The endpoint may be overloaded, or may not support this request shape (e.g. tool calling).',
+          );
+        }
         const cause = (err as { cause?: { code?: string; message?: string } }).cause;
         const detail =
           cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err));
@@ -168,12 +187,17 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   async *streamChat(req: ChatRequest): AsyncIterable<ChatChunk> {
-    const res = await this.fetchOrThrow(this.chatUrl(req), {
-      method: 'POST',
-      headers: this.headers(),
-      body: this.chatBody(req, true),
-      signal: req.signal ?? null,
-    });
+    // No timeout on streams — long generations are legitimate; Stop covers it.
+    const res = await this.fetchOrThrow(
+      this.chatUrl(req),
+      {
+        method: 'POST',
+        headers: this.headers(),
+        body: this.chatBody(req, true),
+        signal: req.signal ?? null,
+      },
+      0,
+    );
     if (!res.ok) throw await describeHttpError(res);
     if (!res.body) throw new ProviderError('Response has no body.');
 

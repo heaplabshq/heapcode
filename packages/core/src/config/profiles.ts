@@ -21,6 +21,8 @@ export interface ProviderProfileConfig {
   embeddingsModel?: string;
   temperature?: number;
   maxTokens?: number;
+  /** Per-request timeout for non-streaming calls (ms). Default 120000. */
+  timeoutMs?: number;
   headers?: Record<string, string>;
   /** Per-profile overrides of the preset's capability defaults. */
   capabilities?: Partial<ProviderCapabilities>;

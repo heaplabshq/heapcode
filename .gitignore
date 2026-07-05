@@ -6,3 +6,4 @@ coverage/
 *.log
 .DS_Store
 packages/vscode/media/webview/
+docs/

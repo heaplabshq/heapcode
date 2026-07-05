@@ -5,7 +5,24 @@
   "version": "0.1.0",
   "publisher": "cortexcode",
   "private": true,
-  "license": "SEE LICENSE FILE",
+  "license": "Apache-2.0",
+  "icon": "media/marketplace-icon.png",
+  "galleryBanner": {
+    "color": "#0e1626",
+    "theme": "dark"
+  },
+  "keywords": [
+    "ai",
+    "copilot",
+    "ollama",
+    "openai",
+    "llm",
+    "chat",
+    "autocomplete",
+    "agent",
+    "local",
+    "privacy"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/siddharth7631/cortexcode"
@@ -457,7 +474,7 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "package": "vsce package --no-dependencies --skip-license -o cortex-code.vsix"
+    "package": "vsce package --no-dependencies -o cortex-code.vsix"
   },
   "dependencies": {
     "@cortex/core": "workspace:*",

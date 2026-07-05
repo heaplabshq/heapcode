@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -41,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -50,3 +53,9 @@ jobs:
         with:
           files: cortex-code.vsix
           generate_release_notes: true
+
+      # Publishes when the VSCE_PAT secret is configured (a PAT with the
+      # Marketplace → Manage scope for the "cortexcode" publisher); skipped otherwise.
+      - name: Publish to VS Code Marketplace
+        if: ${{ env.VSCE_PAT != '' }}
+        run: npx @vscode/vsce publish --packagePath cortex-code.vsix

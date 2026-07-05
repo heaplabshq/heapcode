@@ -4,8 +4,8 @@ import { McpManager } from './agent/mcp.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { openMemoryFile } from './memory.js';
 import { ChatViewProvider } from './chatViewProvider.js';
-import { CortexCodeActionProvider } from './codeActions.js';
-import { CortexCompletionProvider } from './completionProvider.js';
+import { HeapCodeActionProvider } from './codeActions.js';
+import { HeapCodeCompletionProvider } from './completionProvider.js';
 import { generateCommitMessage } from './gitCommit.js';
 import { JsonConversationStore } from './historyStore.js';
 import { trackActiveEditor, trackTerminal } from './contextCollector.js';
@@ -15,7 +15,7 @@ import { RagIndexer } from './rag/indexer.js';
 import { ShadowGit } from './agent/shadowGit.js';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const log = vscode.window.createOutputChannel('Cortex Code');
+  const log = vscode.window.createOutputChannel('Heap Code');
   const profiles = new ProfileManager(context.secrets, log);
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);
@@ -45,44 +45,44 @@ export function activate(context: vscode.ExtensionContext): void {
     chatProvider.askAgentQuestion(question, options);
 
   const ragStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
-  ragStatus.command = 'cortex.buildIndex';
+  ragStatus.command = 'heapcode.buildIndex';
   const updateRagStatus = () => {
     const s = rag.status();
     switch (s.state) {
       case 'no-embedder':
         ragStatus.text = '$(database) no index';
         ragStatus.tooltip =
-          'Cortex semantic index — configure an embeddings model first (status bar → Select model → Embeddings)';
+          'Heap Code semantic index — configure an embeddings model first (status bar → Select model → Embeddings)';
         break;
       case 'indexing':
         ragStatus.text = `$(sync~spin) indexing ${s.files}`;
-        ragStatus.tooltip = 'Cortex: indexing workspace…';
+        ragStatus.tooltip = 'Heap Code: indexing workspace…';
         break;
       case 'error':
         ragStatus.text = '$(database) index error';
-        ragStatus.tooltip = 'Cortex: indexing failed — see the output panel. Click to retry.';
+        ragStatus.tooltip = 'Heap Code: indexing failed — see the output panel. Click to retry.';
         break;
       default:
         ragStatus.text = `$(database) ${s.chunks}`;
-        ragStatus.tooltip = `Cortex semantic index: ${s.files} files / ${s.chunks} chunks. Click to re-index.`;
+        ragStatus.tooltip = `Heap Code semantic index: ${s.files} files / ${s.chunks} chunks. Click to re-index.`;
     }
     ragStatus.show();
   };
 
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBar.command = 'cortex.menu';
+  statusBar.command = 'heapcode.menu';
   const completionStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-  completionStatus.command = 'cortex.toggleCompletion';
+  completionStatus.command = 'heapcode.toggleCompletion';
   const updateStatusBar = () => {
     const profile = profiles.getActiveProfile();
     statusBar.text = `$(sparkle) ${profile.name} · ${profile.model || 'no model'}`;
-    statusBar.tooltip = `Cortex Code — ${profile.baseUrl}\nClick to switch profile or model`;
+    statusBar.tooltip = `Heap Code — ${profile.baseUrl}\nClick to switch profile or model`;
     statusBar.show();
     const completionsOn = vscode.workspace
-      .getConfiguration('cortex.completion')
+      .getConfiguration('heapcode.completion')
       .get<boolean>('enable', true);
     completionStatus.text = completionsOn ? '$(zap) CC' : '$(circle-slash) CC';
-    completionStatus.tooltip = `Cortex completions: ${completionsOn ? 'on' : 'off'} — click to toggle`;
+    completionStatus.tooltip = `Heap Code completions: ${completionsOn ? 'on' : 'off'} — click to toggle`;
     completionStatus.show();
     chatProvider.postConfig();
   };
@@ -96,16 +96,16 @@ export function activate(context: vscode.ExtensionContext): void {
     ragStatus,
     mcp,
     rag.onStatus(updateRagStatus),
-    vscode.commands.registerCommand('cortex.buildIndex', () => rag.buildIndex()),
-    vscode.commands.registerCommand('cortex.clearIndex', () => rag.clear()),
-    vscode.commands.registerCommand('cortex.openMemory', () => openMemoryFile()),
-    vscode.commands.registerCommand('cortex.resetPermissions', async () => {
+    vscode.commands.registerCommand('heapcode.buildIndex', () => rag.buildIndex()),
+    vscode.commands.registerCommand('heapcode.clearIndex', () => rag.clear()),
+    vscode.commands.registerCommand('heapcode.openMemory', () => openMemoryFile()),
+    vscode.commands.registerCommand('heapcode.resetPermissions', async () => {
       const cleared = await permissions.reset();
       void vscode.window.showInformationMessage(
-        `Cortex: cleared ${cleared} stored permission grant(s) — the agent will ask again.`,
+        `Heap Code: cleared ${cleared} stored permission grant(s) — the agent will ask again.`,
       );
     }),
-    vscode.commands.registerCommand('cortex.addMcpServer', async () => {
+    vscode.commands.registerCommand('heapcode.addMcpServer', async () => {
       const name = await vscode.window.showInputBox({
         title: 'MCP server name',
         prompt: 'A short identifier, e.g. "filesystem" or "github"',
@@ -120,7 +120,7 @@ export function activate(context: vscode.ExtensionContext): void {
         { title: `MCP server "${name}" — transport` },
       );
       if (!picked) return;
-      const cfg = vscode.workspace.getConfiguration('cortex');
+      const cfg = vscode.workspace.getConfiguration('heapcode');
       const servers = { ...cfg.get<Record<string, unknown>>('mcpServers', {}) };
       if (picked.transport === 'stdio') {
         const commandLine = await vscode.window.showInputBox({
@@ -137,7 +137,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await cfg.update('mcpServers', servers, vscode.ConfigurationTarget.Global);
       void vscode.window.showInformationMessage(
-        `Cortex: MCP server "${name}" added — its tools appear in the next agent session.`,
+        `Heap Code: MCP server "${name}" added — its tools appear in the next agent session.`,
       );
     }),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider, {
@@ -146,48 +146,48 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     profiles.onDidChange(updateStatusBar),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('cortex')) updateStatusBar();
+      if (e.affectsConfiguration('heapcode')) updateStatusBar();
     }),
     trackActiveEditor(),
     trackTerminal(),
     vscode.window.onDidChangeActiveTextEditor(() => chatProvider.postActiveFile()),
     vscode.window.onDidChangeTextEditorSelection(() => chatProvider.postActiveFile()),
 
-    vscode.commands.registerCommand('cortex.openChat', () => {
-      void vscode.commands.executeCommand('workbench.view.extension.cortex');
+    vscode.commands.registerCommand('heapcode.openChat', () => {
+      void vscode.commands.executeCommand('workbench.view.extension.heapcode');
     }),
-    vscode.commands.registerCommand('cortex.menu', () => profiles.menuFlow()),
-    vscode.commands.registerCommand('cortex.selectProfile', () => profiles.selectProfileFlow()),
-    vscode.commands.registerCommand('cortex.addProfile', () => profiles.addProfileFlow()),
-    vscode.commands.registerCommand('cortex.selectModel', () => profiles.selectModelFlow()),
-    vscode.commands.registerCommand('cortex.setApiKey', () => profiles.setApiKeyFlow()),
+    vscode.commands.registerCommand('heapcode.menu', () => profiles.menuFlow()),
+    vscode.commands.registerCommand('heapcode.selectProfile', () => profiles.selectProfileFlow()),
+    vscode.commands.registerCommand('heapcode.addProfile', () => profiles.addProfileFlow()),
+    vscode.commands.registerCommand('heapcode.selectModel', () => profiles.selectModelFlow()),
+    vscode.commands.registerCommand('heapcode.setApiKey', () => profiles.setApiKeyFlow()),
 
-    vscode.commands.registerCommand('cortex.explain', () => chatProvider.sendFromCommand('/explain')),
-    vscode.commands.registerCommand('cortex.fix', () => chatProvider.sendFromCommand('/fix @problems')),
-    vscode.commands.registerCommand('cortex.refactor', () => chatProvider.sendFromCommand('/refactor')),
-    vscode.commands.registerCommand('cortex.optimize', () => chatProvider.sendFromCommand('/optimize')),
-    vscode.commands.registerCommand('cortex.generateTests', () => chatProvider.sendFromCommand('/test')),
-    vscode.commands.registerCommand('cortex.generateDocs', () => chatProvider.sendFromCommand('/docs')),
-    vscode.commands.registerCommand('cortex.reviewCode', () => chatProvider.sendFromCommand('/review')),
-    vscode.commands.registerCommand('cortex.generateCommitMessage', () =>
+    vscode.commands.registerCommand('heapcode.explain', () => chatProvider.sendFromCommand('/explain')),
+    vscode.commands.registerCommand('heapcode.fix', () => chatProvider.sendFromCommand('/fix @problems')),
+    vscode.commands.registerCommand('heapcode.refactor', () => chatProvider.sendFromCommand('/refactor')),
+    vscode.commands.registerCommand('heapcode.optimize', () => chatProvider.sendFromCommand('/optimize')),
+    vscode.commands.registerCommand('heapcode.generateTests', () => chatProvider.sendFromCommand('/test')),
+    vscode.commands.registerCommand('heapcode.generateDocs', () => chatProvider.sendFromCommand('/docs')),
+    vscode.commands.registerCommand('heapcode.reviewCode', () => chatProvider.sendFromCommand('/review')),
+    vscode.commands.registerCommand('heapcode.generateCommitMessage', () =>
       generateCommitMessage(profiles, log),
     ),
 
     vscode.languages.registerCodeActionsProvider(
       [{ scheme: 'file' }, { scheme: 'untitled' }],
-      new CortexCodeActionProvider(),
-      CortexCodeActionProvider.metadata,
+      new HeapCodeActionProvider(),
+      HeapCodeActionProvider.metadata,
     ),
 
     vscode.languages.registerInlineCompletionItemProvider(
       [{ scheme: 'file' }, { scheme: 'untitled' }],
-      new CortexCompletionProvider(profiles, log),
+      new HeapCodeCompletionProvider(profiles, log),
     ),
-    vscode.commands.registerCommand('cortex.toggleCompletion', async () => {
-      const cfg = vscode.workspace.getConfiguration('cortex.completion');
+    vscode.commands.registerCommand('heapcode.toggleCompletion', async () => {
+      const cfg = vscode.workspace.getConfiguration('heapcode.completion');
       await cfg.update('enable', !cfg.get<boolean>('enable', true), vscode.ConfigurationTarget.Global);
     }),
-    vscode.commands.registerCommand('cortex.triggerCompletion', () =>
+    vscode.commands.registerCommand('heapcode.triggerCompletion', () =>
       vscode.commands.executeCommand('editor.action.inlineSuggest.trigger'),
     ),
   );
@@ -196,13 +196,13 @@ export function activate(context: vscode.ExtensionContext): void {
   registerAgentDiffProvider(context);
 
   updateRagStatus();
-  if (vscode.workspace.getConfiguration('cortex.rag').get<boolean>('autoIndex', true)) {
+  if (vscode.workspace.getConfiguration('heapcode.rag').get<boolean>('autoIndex', true)) {
     // Background, off the activation path.
     setTimeout(() => void rag.buildIndex().then(updateRagStatus), 5_000);
   }
 
   updateStatusBar();
-  log.appendLine('Cortex Code activated.');
+  log.appendLine('Heap Code activated.');
 }
 
 export function deactivate(): void {}

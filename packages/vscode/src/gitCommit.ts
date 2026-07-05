@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { buildCommitMessages, extractFirstCodeBlock, isAbortError } from '@cortex/core';
+import { buildCommitMessages, extractFirstCodeBlock, isAbortError } from '@heapcode/core';
 import type { ProfileManager } from './profileManager.js';
 
 const MAX_DIFF_CHARS = 30_000;
@@ -34,7 +34,7 @@ export async function generateCommitMessage(
 ): Promise<void> {
   const repo = getRepository();
   if (!repo) {
-    void vscode.window.showWarningMessage('Cortex: no git repository found in this workspace.');
+    void vscode.window.showWarningMessage('Heap Code: no git repository found in this workspace.');
     return;
   }
 
@@ -45,7 +45,7 @@ export async function generateCommitMessage(
     scope = 'working tree changes';
   }
   if (!diff.trim()) {
-    void vscode.window.showInformationMessage('Cortex: no changes to describe.');
+    void vscode.window.showInformationMessage('Heap Code: no changes to describe.');
     return;
   }
   if (diff.length > MAX_DIFF_CHARS) {
@@ -55,7 +55,7 @@ export async function generateCommitMessage(
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.SourceControl,
-      title: `Cortex: writing commit message from ${scope}…`,
+      title: `Heap Code: writing commit message from ${scope}…`,
       cancellable: true,
     },
     async (_progress, token) => {
@@ -78,7 +78,7 @@ export async function generateCommitMessage(
         if (isAbortError(err)) return;
         const message = err instanceof Error ? err.message : String(err);
         log.appendLine(`[commit] ${message}`);
-        void vscode.window.showErrorMessage(`Cortex: ${message}`);
+        void vscode.window.showErrorMessage(`Heap Code: ${message}`);
       }
     },
   );

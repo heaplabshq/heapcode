@@ -3,7 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { ToolDefinition } from '@cortex/core';
+import type { ToolDefinition } from '@heapcode/core';
 
 export interface McpServerConfig {
   /** stdio transport */
@@ -35,7 +35,7 @@ export class McpManager implements vscode.Disposable {
 
   private config(): Record<string, McpServerConfig> {
     return vscode.workspace
-      .getConfiguration('cortex')
+      .getConfiguration('heapcode')
       .get<Record<string, McpServerConfig>>('mcpServers', {});
   }
 
@@ -58,7 +58,7 @@ export class McpManager implements vscode.Disposable {
     for (const [name, server] of Object.entries(config)) {
       if (this.servers.has(name)) continue;
       try {
-        const client = new Client({ name: 'cortex-code', version: '0.1.0' });
+        const client = new Client({ name: 'heap-code', version: '0.1.0' });
         const transport = server.url
           ? server.transport === 'sse'
             ? new SSEClientTransport(new URL(server.url))

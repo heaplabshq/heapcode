@@ -1,9 +1,9 @@
 {
-  "name": "cortex-code",
-  "displayName": "Cortex Code",
+  "name": "heap-code",
+  "displayName": "Heap Code",
   "description": "Model-agnostic AI coding assistant. Works with any OpenAI-compatible API — Ollama, OpenAI, OpenRouter, Groq, LM Studio, vLLM, and more.",
   "version": "0.1.0",
-  "publisher": "cortexcode",
+  "publisher": "heapcode",
   "private": true,
   "license": "Apache-2.0",
   "icon": "media/marketplace-icon.png",
@@ -25,7 +25,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/siddharth7631/cortexcode"
+    "url": "https://github.com/siddharth7631/heapcode"
   },
   "engines": {
     "vscode": "^1.93.0"
@@ -40,209 +40,209 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "cortex",
-          "title": "Cortex",
+          "id": "heapcode",
+          "title": "Heap Code",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "cortex": [
+      "heapcode": [
         {
           "type": "webview",
-          "id": "cortex.chatView",
+          "id": "heapcode.chatView",
           "name": "Chat"
         }
       ]
     },
     "commands": [
       {
-        "command": "cortex.openChat",
-        "title": "Cortex: Open Chat"
+        "command": "heapcode.openChat",
+        "title": "Heap Code: Open Chat"
       },
       {
-        "command": "cortex.menu",
-        "title": "Cortex: Provider Menu"
+        "command": "heapcode.menu",
+        "title": "Heap Code: Provider Menu"
       },
       {
-        "command": "cortex.selectProfile",
-        "title": "Cortex: Switch Profile"
+        "command": "heapcode.selectProfile",
+        "title": "Heap Code: Switch Profile"
       },
       {
-        "command": "cortex.addProfile",
-        "title": "Cortex: Add Provider Profile"
+        "command": "heapcode.addProfile",
+        "title": "Heap Code: Add Provider Profile"
       },
       {
-        "command": "cortex.selectModel",
-        "title": "Cortex: Select Model"
+        "command": "heapcode.selectModel",
+        "title": "Heap Code: Select Model"
       },
       {
-        "command": "cortex.setApiKey",
-        "title": "Cortex: Set API Key (Active Profile)"
+        "command": "heapcode.setApiKey",
+        "title": "Heap Code: Set API Key (Active Profile)"
       },
       {
-        "command": "cortex.inlineEdit",
-        "title": "Cortex: Edit Selection"
+        "command": "heapcode.inlineEdit",
+        "title": "Heap Code: Edit Selection"
       },
       {
-        "command": "cortex.explain",
-        "title": "Cortex: Explain"
+        "command": "heapcode.explain",
+        "title": "Heap Code: Explain"
       },
       {
-        "command": "cortex.fix",
-        "title": "Cortex: Fix"
+        "command": "heapcode.fix",
+        "title": "Heap Code: Fix"
       },
       {
-        "command": "cortex.refactor",
-        "title": "Cortex: Refactor"
+        "command": "heapcode.refactor",
+        "title": "Heap Code: Refactor"
       },
       {
-        "command": "cortex.optimize",
-        "title": "Cortex: Optimize"
+        "command": "heapcode.optimize",
+        "title": "Heap Code: Optimize"
       },
       {
-        "command": "cortex.generateTests",
-        "title": "Cortex: Generate Tests"
+        "command": "heapcode.generateTests",
+        "title": "Heap Code: Generate Tests"
       },
       {
-        "command": "cortex.generateDocs",
-        "title": "Cortex: Generate Docs"
+        "command": "heapcode.generateDocs",
+        "title": "Heap Code: Generate Docs"
       },
       {
-        "command": "cortex.reviewCode",
-        "title": "Cortex: Review Code"
+        "command": "heapcode.reviewCode",
+        "title": "Heap Code: Review Code"
       },
       {
-        "command": "cortex.generateCommitMessage",
-        "title": "Cortex: Generate Commit Message",
+        "command": "heapcode.generateCommitMessage",
+        "title": "Heap Code: Generate Commit Message",
         "icon": "$(sparkle)"
       },
       {
-        "command": "cortex.acceptEdit",
-        "title": "Accept Cortex Edit",
+        "command": "heapcode.acceptEdit",
+        "title": "Accept Heap Code Edit",
         "icon": "$(check)"
       },
       {
-        "command": "cortex.rejectEdit",
-        "title": "Reject Cortex Edit",
+        "command": "heapcode.rejectEdit",
+        "title": "Reject Heap Code Edit",
         "icon": "$(close)"
       },
       {
-        "command": "cortex.toggleCompletion",
-        "title": "Cortex: Toggle Completions"
+        "command": "heapcode.toggleCompletion",
+        "title": "Heap Code: Toggle Completions"
       },
       {
-        "command": "cortex.triggerCompletion",
-        "title": "Cortex: Trigger Completion"
+        "command": "heapcode.triggerCompletion",
+        "title": "Heap Code: Trigger Completion"
       },
       {
-        "command": "cortex.buildIndex",
-        "title": "Cortex: Build/Refresh Semantic Index"
+        "command": "heapcode.buildIndex",
+        "title": "Heap Code: Build/Refresh Semantic Index"
       },
       {
-        "command": "cortex.clearIndex",
-        "title": "Cortex: Clear Semantic Index"
+        "command": "heapcode.clearIndex",
+        "title": "Heap Code: Clear Semantic Index"
       },
       {
-        "command": "cortex.openMemory",
-        "title": "Cortex: Open Project Memory"
+        "command": "heapcode.openMemory",
+        "title": "Heap Code: Open Project Memory"
       },
       {
-        "command": "cortex.addMcpServer",
-        "title": "Cortex: Add MCP Server"
+        "command": "heapcode.addMcpServer",
+        "title": "Heap Code: Add MCP Server"
       },
       {
-        "command": "cortex.resetPermissions",
-        "title": "Cortex: Reset Agent Permissions"
+        "command": "heapcode.resetPermissions",
+        "title": "Heap Code: Reset Agent Permissions"
       }
     ],
     "submenus": [
       {
-        "id": "cortex.submenu",
-        "label": "Cortex"
+        "id": "heapcode.submenu",
+        "label": "Heap Code"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "submenu": "cortex.submenu",
+          "submenu": "heapcode.submenu",
           "group": "1_modification@100"
         }
       ],
-      "cortex.submenu": [
+      "heapcode.submenu": [
         {
-          "command": "cortex.inlineEdit",
+          "command": "heapcode.inlineEdit",
           "group": "1_edit@1"
         },
         {
-          "command": "cortex.explain",
+          "command": "heapcode.explain",
           "group": "2_ask@1"
         },
         {
-          "command": "cortex.fix",
+          "command": "heapcode.fix",
           "group": "2_ask@2"
         },
         {
-          "command": "cortex.refactor",
+          "command": "heapcode.refactor",
           "group": "2_ask@3"
         },
         {
-          "command": "cortex.optimize",
+          "command": "heapcode.optimize",
           "group": "2_ask@4"
         },
         {
-          "command": "cortex.reviewCode",
+          "command": "heapcode.reviewCode",
           "group": "2_ask@5"
         },
         {
-          "command": "cortex.generateTests",
+          "command": "heapcode.generateTests",
           "group": "3_generate@1"
         },
         {
-          "command": "cortex.generateDocs",
+          "command": "heapcode.generateDocs",
           "group": "3_generate@2"
         }
       ],
       "scm/title": [
         {
-          "command": "cortex.generateCommitMessage",
+          "command": "heapcode.generateCommitMessage",
           "group": "navigation",
           "when": "scmProvider == git"
         }
       ],
       "editor/title": [
         {
-          "command": "cortex.acceptEdit",
+          "command": "heapcode.acceptEdit",
           "group": "navigation@1",
-          "when": "resourceScheme == cortex-proposal"
+          "when": "resourceScheme == heapcode-proposal"
         },
         {
-          "command": "cortex.rejectEdit",
+          "command": "heapcode.rejectEdit",
           "group": "navigation@2",
-          "when": "resourceScheme == cortex-proposal"
+          "when": "resourceScheme == heapcode-proposal"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "cortex.inlineEdit",
+        "command": "heapcode.inlineEdit",
         "key": "ctrl+i",
         "mac": "cmd+i",
         "when": "editorTextFocus"
       },
       {
-        "command": "cortex.triggerCompletion",
+        "command": "heapcode.triggerCompletion",
         "key": "alt+\\",
         "when": "editorTextFocus && !editorReadonly"
       }
     ],
     "configuration": {
-      "title": "Cortex Code",
+      "title": "Heap Code",
       "properties": {
-        "cortex.profiles": {
+        "heapcode.profiles": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. API keys are NOT stored here — use the *Cortex: Set API Key* command (OS keychain). Presets: `openai`, `ollama`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
+          "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. API keys are NOT stored here — use the *Heap Code: Set API Key* command (OS keychain). Presets: `openai`, `ollama`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
           "items": {
             "type": "object",
             "required": [
@@ -315,12 +315,12 @@
             }
           }
         },
-        "cortex.activeProfile": {
+        "heapcode.activeProfile": {
           "type": "string",
           "default": "",
           "description": "Name of the active provider profile. Switch via the status bar."
         },
-        "cortex.customPrompts": {
+        "heapcode.customPrompts": {
           "type": "array",
           "default": [],
           "markdownDescription": "User prompt library. Each item: `{ command, title, template }` — usable as `/command` in chat. Templates support `{input}` (text after the command) and `{selection}` (current editor selection).",
@@ -343,58 +343,58 @@
             }
           }
         },
-        "cortex.baseUrl": {
+        "heapcode.baseUrl": {
           "type": "string",
-          "default": "http://192.168.29.92:11434/v1",
-          "markdownDescription": "Legacy fallback endpoint, used only when `cortex.profiles` is empty. Prefer profiles."
+          "default": "",
+          "markdownDescription": "Legacy fallback endpoint, used only when `heapcode.profiles` is empty. Prefer profiles."
         },
-        "cortex.model": {
+        "heapcode.model": {
           "type": "string",
-          "default": "fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:latest",
-          "markdownDescription": "Legacy fallback model, used only when `cortex.profiles` is empty. Prefer profiles."
+          "default": "",
+          "markdownDescription": "Legacy fallback model, used only when `heapcode.profiles` is empty. Prefer profiles."
         },
-        "cortex.temperature": {
+        "heapcode.temperature": {
           "type": "number",
           "default": 0.3,
           "minimum": 0,
           "maximum": 2,
           "description": "Sampling temperature."
         },
-        "cortex.maxTokens": {
+        "heapcode.maxTokens": {
           "type": "number",
           "default": 4096,
           "description": "Maximum tokens to generate per response."
         },
-        "cortex.completion.enable": {
+        "heapcode.completion.enable": {
           "type": "boolean",
           "default": true,
           "description": "Enable inline (ghost text) code completions."
         },
-        "cortex.completion.delay": {
+        "heapcode.completion.delay": {
           "type": "number",
           "default": 250,
           "description": "Debounce in ms before requesting a completion."
         },
-        "cortex.completion.maxLines": {
+        "heapcode.completion.maxLines": {
           "type": "number",
           "default": 12,
           "description": "Maximum lines per multi-line completion."
         },
-        "cortex.completion.maxTokens": {
+        "heapcode.completion.maxTokens": {
           "type": "number",
           "default": 200,
           "description": "Max tokens to generate per completion."
         },
-        "cortex.completion.triggerMode": {
+        "heapcode.completion.triggerMode": {
           "type": "string",
           "enum": [
             "auto",
             "manual"
           ],
           "default": "auto",
-          "markdownDescription": "`auto`: suggest while typing. `manual`: only on Alt+\\ (Cortex: Trigger Completion)."
+          "markdownDescription": "`auto`: suggest while typing. `manual`: only on Alt+\\ (Heap Code: Trigger Completion)."
         },
-        "cortex.mcpServers": {
+        "heapcode.mcpServers": {
           "type": "object",
           "default": {},
           "markdownDescription": "MCP servers exposed to the agent. Keyed by name. stdio: `{ \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/path\"] }` — remote: `{ \"url\": \"https://…\", \"transport\": \"http\" }` (or `sse`). MCP tools go through the same permission prompts as other agent actions.",
@@ -409,32 +409,32 @@
             }
           }
         },
-        "cortex.rag.autoIndex": {
+        "heapcode.rag.autoIndex": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Index the workspace in the background for semantic search. No-op until the active profile has an `embeddingsModel` (e.g. `nomic-embed-text` on Ollama). Respects `.cortexignore`."
+          "markdownDescription": "Index the workspace in the background for semantic search. No-op until the active profile has an `embeddingsModel` (e.g. `nomic-embed-text` on Ollama). Respects `.heapcodeignore`."
         },
-        "cortex.rag.rerank": {
+        "heapcode.rag.rerank": {
           "type": "boolean",
           "default": true,
           "markdownDescription": "Rerank semantic-search hits with the LLM (edit model, else chat model) before using them. Better precision at the cost of one extra small model call per search. Falls back to plain vector order on any failure."
         },
-        "cortex.agent.enable": {
+        "heapcode.agent.enable": {
           "type": "boolean",
           "default": true,
           "description": "Enable agent mode."
         },
-        "cortex.agent.planFirst": {
+        "heapcode.agent.planFirst": {
           "type": "boolean",
           "default": true,
           "description": "Agent writes a numbered plan first, then executes it step by step."
         },
-        "cortex.agent.maxIterations": {
+        "heapcode.agent.maxIterations": {
           "type": "number",
           "default": 50,
           "description": "Maximum plan→act→observe iterations per agent session."
         },
-        "cortex.agent.disabledTools": {
+        "heapcode.agent.disabledTools": {
           "type": "array",
           "items": {
             "type": "string"
@@ -442,17 +442,17 @@
           "default": [],
           "description": "Agent tools switched off in the chat's tools picker (🔧). Disabled tools are not offered to the model."
         },
-        "cortex.agent.safeMode": {
+        "heapcode.agent.safeMode": {
           "type": "boolean",
           "default": false,
           "description": "Ask for permission on every non-read action, ignoring session/always grants."
         },
-        "cortex.agent.commandTimeout": {
+        "heapcode.agent.commandTimeout": {
           "type": "number",
           "default": 60,
           "description": "Terminal command timeout in seconds for agent-run commands."
         },
-        "cortex.completion.template": {
+        "heapcode.completion.template": {
           "type": "string",
           "enum": [
             "auto",
@@ -474,10 +474,10 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "package": "vsce package --no-dependencies -o cortex-code.vsix"
+    "package": "vsce package --no-dependencies -o heap-code.vsix"
   },
   "dependencies": {
-    "@cortex/core": "workspace:*",
+    "@heapcode/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {

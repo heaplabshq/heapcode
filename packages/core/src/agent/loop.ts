@@ -443,7 +443,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     let message = err instanceof Error ? err.message : String(err);
     if (nativeToolCalls && /tool|function/i.test(message)) {
       message +=
-        '\n\nThis endpoint/model may not support native tool calling — set `"capabilities": {"nativeToolCalls": false}` on the profile (cortex.profiles) to use the text-protocol fallback.';
+        '\n\nThis endpoint/model may not support native tool calling — set `"capabilities": {"nativeToolCalls": false}` on the profile (heapcode.profiles) to use the text-protocol fallback.';
     }
     events.onText(`Agent error: ${message}`);
     return 'error';

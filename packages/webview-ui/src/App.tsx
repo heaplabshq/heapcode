@@ -6,7 +6,7 @@ import type {
   FileEditInfo,
   PermissionChoice,
   SlashCommandInfo,
-} from '@cortex/core';
+} from '@heapcode/core';
 import { postToExtension } from './vscodeApi.js';
 import { renderMarkdown } from './markdown.js';
 import { SettingsView, type SettingsData } from './SettingsView.js';
@@ -239,7 +239,7 @@ function QuestionCardView({
   const [text, setText] = useState('');
   return (
     <div className="question-card">
-      <div className="question-head">Cortex has a question</div>
+      <div className="question-head">Heap Code has a question</div>
       <div className="question-text">{q.question}</div>
       {q.answered !== undefined ? (
         <div className="question-answered">↳ {q.answered}</div>
@@ -906,7 +906,7 @@ export function App() {
                 <div key={i} className={`permission-card${p.permission === 'destructive' ? ' destructive' : ''}`}>
                   <div className="permission-head">
                     <span className="permission-badge">{p.permission}</span>
-                    Cortex wants to:
+                    Heap Code wants to:
                   </div>
                   <code className="permission-desc">{p.description}</code>
                   {p.decided ? (
@@ -1071,7 +1071,7 @@ export function App() {
             }
             return (
               <div key={i} className={`turn ${m.role}${m.error ? ' error' : ''}`}>
-                <div className="turn-author">{m.role === 'user' ? 'You' : 'Cortex'}</div>
+                <div className="turn-author">{m.role === 'user' ? 'You' : 'Heap Code'}</div>
                 {m.role === 'assistant' ? (
                   m.content === '' && streaming && i === messages.length - 1 ? (
                     <span className="thinking">…</span>
@@ -1266,7 +1266,7 @@ export function App() {
               }
             }}
             placeholder={
-              mode === 'agent' ? 'Describe a task for the agent…' : 'Ask Cortex…'
+              mode === 'agent' ? 'Describe a task for the agent…' : 'Ask Heap Code…'
             }
             rows={3}
           />

@@ -1,10 +1,10 @@
 {
-  "name": "cortexcode",
+  "name": "heapcode",
   "private": true,
   "version": "0.1.0",
-  "description": "Cortex Code — model-agnostic AI coding assistant for VS Code",
+  "description": "Heap Code — model-agnostic AI coding assistant for VS Code",
   "scripts": {
-    "build": "pnpm --filter @cortex/webview-ui build && pnpm --filter cortex-code build",
+    "build": "pnpm --filter @heapcode/webview-ui build && pnpm --filter heap-code build",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "test": "vitest run",

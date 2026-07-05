@@ -19,7 +19,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }
     if (this.state.error) {
       return (
         <div style={{ padding: 16 }}>
-          <h3>Cortex chat crashed</h3>
+          <h3>Heap Code chat crashed</h3>
           <pre style={{ whiteSpace: 'pre-wrap', opacity: 0.8 }}>
             {this.state.error.message}
             {'\n'}

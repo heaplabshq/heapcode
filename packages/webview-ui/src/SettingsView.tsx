@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ProviderProfileConfig, SettingsPresetInfo } from '@cortex/core';
+import type { ProviderProfileConfig, SettingsPresetInfo } from '@heapcode/core';
 import { postToExtension } from './vscodeApi.js';
 
 export interface SettingsData {

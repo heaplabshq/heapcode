@@ -2,7 +2,7 @@ import type { ToolDefinition } from './tools.js';
 import { formatToolsForPrompt } from './textProtocol.js';
 
 const COMMON =
-  'You are Cortex Agent, an autonomous coding agent working inside the user\'s workspace. ' +
+  'You are Heap Code Agent, an autonomous coding agent working inside the user\'s workspace. ' +
   'Complete the user\'s task end to end:\n' +
   '1. Explore: find and read the relevant files before changing anything.\n' +
   '2. Act: make the changes with the editing tools. Prefer small, targeted edits.\n' +

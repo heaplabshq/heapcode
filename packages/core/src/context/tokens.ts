@@ -8,7 +8,7 @@ export const COMPACTION_THRESHOLD = 0.8;
 
 /**
  * Rough token estimate (≈ 4 chars/token for English + code). Deliberately
- * tokenizer-free: Cortex is model-agnostic, and the meter/compaction only
+ * tokenizer-free: Heap Code is model-agnostic, and the meter/compaction only
  * need to be directionally right.
  */
 export function estimateTokens(text: string): number {

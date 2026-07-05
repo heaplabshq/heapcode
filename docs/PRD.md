@@ -1,8 +1,8 @@
-# Cortex Code — Product Requirements Document (PRD)
+# Heap Code — Product Requirements Document (PRD)
 
 **Version:** 1.1.0 (enhanced from v1.0.0 draft PDF)
 **Status:** Active — this markdown file is the source of truth; the PDF is the original draft.
-**Product Name:** Cortex Code
+**Product Name:** Heap Code
 
 Target platforms: VS Code (Phase 1), JetBrains IDEs (Phase 2), Neovim (Phase 3).
 
@@ -10,7 +10,7 @@ Target platforms: VS Code (Phase 1), JetBrains IDEs (Phase 2), Neovim (Phase 3).
 
 ## 1. Vision
 
-Cortex Code is an AI-powered coding assistant comparable to GitHub Copilot, Claude Code, and Cursor, while remaining **model-agnostic**. It works with any OpenAI-compatible API, cloud or local:
+Heap Code is an AI-powered coding assistant comparable to GitHub Copilot, Claude Code, and Cursor, while remaining **model-agnostic**. It works with any OpenAI-compatible API, cloud or local:
 
 OpenAI, Ollama, NVIDIA NIM, OpenRouter, Together AI, Groq, LM Studio, vLLM, LocalAI, Azure OpenAI, and any custom OpenAI-spec endpoint.
 
@@ -46,7 +46,7 @@ OpenAI, Ollama, NVIDIA NIM, OpenRouter, Together AI, Groq, LM Studio, vLLM, Loca
 All AI logic lives in an IDE-agnostic core package. IDE plugins are thin adapters. This is what makes Phase 2/3 (JetBrains, Neovim) feasible without a rewrite.
 
 ```
-cortexcode/
+heapcode/
 ├── packages/
 │   ├── core/            # IDE-agnostic: providers, agent engine, tools, RAG, MCP client
 │   │   └── src/
@@ -218,13 +218,13 @@ Permission modes per operation class: **Ask Every Time / Allow This Session / Al
 - Chunking: Tree-sitter-aware (function/class boundaries), fallback to sliding window.
 - Store: SQLite + **sqlite-vec** (ship prebuilt binaries; **fallback to pure-JS brute-force cosine over Float32Arrays if the native module fails to load** — fine up to ~50k chunks).
 - Embeddings via the provider's OpenAI-compatible `/embeddings`; local default recommendation: `nomic-embed-text` on Ollama.
-- Ignore: node_modules, dist, build, target, .git, coverage, vendor, out + `.gitignore` + `.cortexignore`.
+- Ignore: node_modules, dist, build, target, .git, coverage, vendor, out + `.gitignore` + `.heapcodeignore`.
 - Incremental indexing keyed on file mtime+hash; background, throttled; embedding cache keyed by chunk hash.
 - **Degrade gracefully:** if no embedding model configured, semantic search falls back to ripgrep + symbol index. RAG is an enhancement, never a dependency.
 
 ## 12. Memory (v2.0)
 
-Workspace memory (`.cortex/memory.md`, human-editable): coding style, architecture, framework preferences, ignore folders, naming conventions. Also honor `CORTEX.md` at repo root as project instructions. Global memory optional.
+Workspace memory (`.heapcode/memory.md`, human-editable): coding style, architecture, framework preferences, ignore folders, naming conventions. Also honor `HEAPCODE.md` at repo root as project instructions. Global memory optional.
 
 ## 13. Slash Commands & Mentions
 
@@ -234,7 +234,7 @@ Mentions: `@workspace @file @folder @terminal @git @diff @clipboard @selection @
 
 ## 14. Commands (palette)
 
-Cortex Chat, Cortex Agent, Explain, Fix, Refactor, Optimize, Generate Tests, Generate Docs, Review Code, Rename, Summarize, Commit Message, Toggle Completion.
+Heap Code Chat, Heap Code Agent, Explain, Fix, Refactor, Optimize, Generate Tests, Generate Docs, Review Code, Rename, Summarize, Commit Message, Toggle Completion.
 
 ## 15. Settings
 

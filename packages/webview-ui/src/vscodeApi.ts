@@ -1,4 +1,4 @@
-import type { WebviewToExtension } from '@cortex/core';
+import type { WebviewToExtension } from '@heapcode/core';
 
 interface VsCodeApi {
   postMessage(msg: unknown): void;

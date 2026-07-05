@@ -1,4 +1,4 @@
-# Cortex Code
+# Heap Code
 
 Model-agnostic AI coding assistant for VS Code. Works with **any OpenAI-compatible API** — local (Ollama, LM Studio, vLLM, LocalAI) or cloud (OpenAI, OpenRouter, Groq, Together, Azure OpenAI, NVIDIA NIM).
 
@@ -8,7 +8,7 @@ Your code never leaves your machine except to the endpoint **you** configure. No
 
 ## Quick start
 
-1. Open the **Cortex** icon in the activity bar.
+1. Open the **Heap Code** icon in the activity bar.
 2. Click the **⚙ gear** in the chat header → add a provider profile (Ollama works out of the box at `http://localhost:11434/v1`).
 3. Pick a model, chat. Switch to **Agent** mode for autonomous multi-file tasks.
 
@@ -21,7 +21,7 @@ Your code never leaves your machine except to the endpoint **you** configure. No
 - **Semantic search (RAG)** — background incremental index with your embeddings model, LLM-reranked retrieval; powers `@workspace` and the agent's search
 - **Context management** — usage meter with auto-detected model context windows; automatic conversation compaction; edit any earlier prompt to rewind conversation *and* workspace
 - **MCP** — register Model Context Protocol servers (stdio / HTTP / SSE); their tools join agent mode under the same permissions
-- **Project memory** — `CORTEX.md` + `.cortex/memory.md` load into every session
+- **Project memory** — `HEAPCODE.md` + `.heapcode/memory.md` load into every session
 - **Git** — commit-message generation from the staged diff (✨ in Source Control)
 
 ## Provider profiles
@@ -30,4 +30,4 @@ Named profiles with per-role models — chat, edit, apply, autocomplete, agent, 
 
 ## License
 
-Apache-2.0. Source: [github.com/siddharth7631/cortexcode](https://github.com/siddharth7631/cortexcode)
+Apache-2.0. Source: [github.com/siddharth7631/heapcode](https://github.com/siddharth7631/heapcode)

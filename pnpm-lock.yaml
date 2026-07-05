@@ -35,7 +35,7 @@ importers:
 
   packages/vscode:
     dependencies:
-      '@cortex/core':
+      '@heapcode/core':
         specifier: workspace:*
         version: link:../core
       '@modelcontextprotocol/sdk':
@@ -57,7 +57,7 @@ importers:
 
   packages/webview-ui:
     dependencies:
-      '@cortex/core':
+      '@heapcode/core':
         specifier: workspace:*
         version: link:../core
       dompurify:

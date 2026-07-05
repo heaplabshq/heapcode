@@ -17,7 +17,7 @@ export function createProvider(profile: ProviderProfileConfig, apiKey?: string):
       return new AzureOpenAIProvider(config);
     case 'openrouter':
       // OpenRouter uses these for app attribution; harmless elsewhere.
-      config.headers = { 'x-title': 'Cortex Code', ...config.headers };
+      config.headers = { 'x-title': 'Heap Code', ...config.headers };
       return new OpenAICompatibleProvider(config);
     default:
       return new OpenAICompatibleProvider(config);

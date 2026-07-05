@@ -12,7 +12,7 @@ const DEFAULT_EXCLUDES = [
   'coverage/',
   'vendor/',
   '.next/',
-  '.cortex/',
+  '.heapcode/',
   '*.vsix',
 ];
 
@@ -47,8 +47,8 @@ export class ShadowGit {
         await this.git(['init', '--bare', this.gitDir.fsPath], { bare: true });
         await this.git(['config', 'core.bare', 'false']);
         await this.git(['config', 'core.worktree', this.workspaceRoot]);
-        await this.git(['config', 'user.name', 'Cortex']);
-        await this.git(['config', 'user.email', 'cortex@localhost']);
+        await this.git(['config', 'user.name', 'Heap Code']);
+        await this.git(['config', 'user.email', 'heapcode@localhost']);
         await this.git(['config', 'commit.gpgsign', 'false']);
         await vscode.workspace.fs.writeFile(
           vscode.Uri.joinPath(this.gitDir, 'info', 'exclude'),

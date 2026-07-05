@@ -1,4 +1,4 @@
-# Cortex Code
+# Heap Code
 
 **Model-agnostic AI coding assistant for VS Code.** Chat, ghost-text completions, inline edits, an autonomous agent, and semantic codebase search — with **any OpenAI-compatible API**, local or cloud.
 
@@ -22,7 +22,7 @@ Your code never leaves your machine except to the endpoint **you** configure. No
 - **Agent mode** — reads, searches, edits files and runs commands to complete tasks autonomously; every non-read action goes through permission prompts (Allow Once / Session / Always, Safe Mode); one-click **Revert all** restores every touched file byte-identical
 - **Semantic search (RAG)** — background incremental index using your embeddings model; powers `@workspace` and the agent's `semantic_search`; degrades gracefully to text search with no embedder
 - **MCP** — register Model Context Protocol servers (stdio / HTTP / SSE); their tools appear in agent mode under the same permission system
-- **Project memory** — `CORTEX.md` + `.cortex/memory.md` are loaded into every chat and agent session
+- **Project memory** — `HEAPCODE.md` + `.heapcode/memory.md` are loaded into every chat and agent session
 - **Git** — commit-message generation from the staged diff (✨ button in Source Control)
 
 ## Quick start
@@ -30,7 +30,7 @@ Your code never leaves your machine except to the endpoint **you** configure. No
 1. `pnpm install && pnpm build`, then press **F5** in VS Code (or install the packaged `.vsix`).
 2. Click the **✨ status bar item** → *Add profile* → pick your provider (e.g. Ollama) → pick a model.
 3. Recommended local models: chat `llama3.1:8b`+ · completion `qwen2.5-coder:1.5b` · embeddings `nomic-embed-text`.
-4. Open the Cortex icon in the activity bar and start chatting; select code and hit `Cmd+I` to edit.
+4. Open the Heap Code icon in the activity bar and start chatting; select code and hit `Cmd+I` to edit.
 
 API keys are stored in the OS keychain via VS Code SecretStorage — never in settings files.
 

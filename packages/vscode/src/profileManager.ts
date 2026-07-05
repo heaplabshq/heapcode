@@ -9,9 +9,9 @@ import {
   type PresetId,
   type Provider,
   type ProviderProfileConfig,
-} from '@cortex/core';
+} from '@heapcode/core';
 
-const LEGACY_KEY_SECRET = 'cortex.apiKey';
+const LEGACY_KEY_SECRET = 'heapcode.apiKey';
 
 /**
  * Model context length from provider-native APIs, for endpoints whose
@@ -59,7 +59,7 @@ async function probeNativeContextLength(
 }
 
 function profileSecretKey(profileName: string): string {
-  return `cortex.apiKey.${profileName}`;
+  return `heapcode.apiKey.${profileName}`;
 }
 
 export class ProfileManager {
@@ -81,7 +81,7 @@ export class ProfileManager {
   }
 
   getProfiles(): ProviderProfileConfig[] {
-    const cfg = vscode.workspace.getConfiguration('cortex');
+    const cfg = vscode.workspace.getConfiguration('heapcode');
     const profiles = cfg.get<ProviderProfileConfig[]>('profiles', []);
     if (profiles.length > 0) return profiles;
     // Legacy fallback: synthesize a profile from the flat v0.1 settings.
@@ -99,7 +99,7 @@ export class ProfileManager {
 
   getActiveProfile(): ProviderProfileConfig {
     const profiles = this.getProfiles();
-    const activeName = vscode.workspace.getConfiguration('cortex').get<string>('activeProfile', '');
+    const activeName = vscode.workspace.getConfiguration('heapcode').get<string>('activeProfile', '');
     return profiles.find((p) => p.name === activeName) ?? profiles[0]!;
   }
 
@@ -156,13 +156,13 @@ export class ProfileManager {
 
   private async saveProfiles(profiles: ProviderProfileConfig[]): Promise<void> {
     await vscode.workspace
-      .getConfiguration('cortex')
+      .getConfiguration('heapcode')
       .update('profiles', profiles, vscode.ConfigurationTarget.Global);
   }
 
   private async setActive(name: string): Promise<void> {
     await vscode.workspace
-      .getConfiguration('cortex')
+      .getConfiguration('heapcode')
       .update('activeProfile', name, vscode.ConfigurationTarget.Global);
     this.notifyChanged();
   }
@@ -225,7 +225,7 @@ export class ProfileManager {
     else if (apiKey !== undefined) await this.secrets.store(profileSecretKey(name), apiKey);
 
     // Keep the active pointer following a rename of the active profile.
-    const activeName = vscode.workspace.getConfiguration('cortex').get<string>('activeProfile', '');
+    const activeName = vscode.workspace.getConfiguration('heapcode').get<string>('activeProfile', '');
     if (original && original !== name && activeName === original) {
       await this.setActive(name);
     } else {
@@ -237,7 +237,7 @@ export class ProfileManager {
     const remaining = this.getProfiles().filter((p) => p.name !== name);
     await this.saveProfiles(remaining);
     await this.secrets.delete(profileSecretKey(name));
-    const activeName = vscode.workspace.getConfiguration('cortex').get<string>('activeProfile', '');
+    const activeName = vscode.workspace.getConfiguration('heapcode').get<string>('activeProfile', '');
     if (activeName === name && remaining.length > 0) {
       await this.setActive(remaining[0]!.name);
     } else {
@@ -258,7 +258,7 @@ export class ProfileManager {
       })),
       { label: addLabel, description: '' },
     ];
-    const picked = await vscode.window.showQuickPick(items, { title: 'Cortex: Switch profile' });
+    const picked = await vscode.window.showQuickPick(items, { title: 'Heap Code: Switch profile' });
     if (!picked) return;
     if (picked.label === addLabel) {
       await this.addProfileFlow();
@@ -274,7 +274,7 @@ export class ProfileManager {
         description: p.local ? 'local' : p.defaultBaseUrl,
         presetId: p.id,
       })),
-      { title: 'Cortex: Add profile — pick a provider' },
+      { title: 'Heap Code: Add profile — pick a provider' },
     );
     if (!presetPick) return;
     const preset = getPreset(presetPick.presetId as PresetId);
@@ -387,7 +387,7 @@ export class ProfileManager {
           role: 'rerankModel' as Role,
         },
       ],
-      { title: `Cortex: Select model — which role? (${profile.name})` },
+      { title: `Heap Code: Select model — which role? (${profile.name})` },
     );
     if (!rolePick) return;
     const role = rolePick.role;
@@ -409,7 +409,7 @@ export class ProfileManager {
           });
         }
         const picked = await vscode.window.showQuickPick(items, {
-          title: `Cortex: ${rolePick.label.replace(/\$\([\w-]+\) /, '')} model (${profile.name})`,
+          title: `Heap Code: ${rolePick.label.replace(/\$\([\w-]+\) /, '')} model (${profile.name})`,
           matchOnDescription: true,
         });
         if (!picked) return;
@@ -452,11 +452,11 @@ export class ProfileManager {
     if (key === undefined) return;
     if (key === '') {
       await this.secrets.delete(profileSecretKey(profile.name));
-      void vscode.window.showInformationMessage(`Cortex: API key cleared for "${profile.name}".`);
+      void vscode.window.showInformationMessage(`Heap Code: API key cleared for "${profile.name}".`);
     } else {
       await this.secrets.store(profileSecretKey(profile.name), key);
       void vscode.window.showInformationMessage(
-        `Cortex: API key saved for "${profile.name}" in secure storage.`,
+        `Heap Code: API key saved for "${profile.name}" in secure storage.`,
       );
     }
   }
@@ -470,7 +470,7 @@ export class ProfileManager {
         { label: '$(add) Add profile', action: 'add' },
         { label: '$(key) Set API key', action: 'key' },
       ],
-      { title: `Cortex — ${profile.name} · ${profile.model || 'no model'}` },
+      { title: `Heap Code — ${profile.name} · ${profile.model || 'no model'}` },
     );
     switch (picked?.action) {
       case 'switch':

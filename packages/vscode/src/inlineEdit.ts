@@ -9,11 +9,11 @@ import {
   isAbortError,
   minIndent,
   reindent,
-} from '@cortex/core';
+} from '@heapcode/core';
 import { getActiveEditor } from './contextCollector.js';
 import type { ProfileManager } from './profileManager.js';
 
-const SCHEME = 'cortex-proposal';
+const SCHEME = 'heapcode-proposal';
 const CONTEXT_LINES = 40;
 
 const proposals = new Map<string, string>();
@@ -34,16 +34,16 @@ export function registerInlineEdit(
 ): void {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new ProposalContentProvider()),
-    vscode.commands.registerCommand('cortex.inlineEdit', () => inlineEdit(profiles, log)),
-    vscode.commands.registerCommand('cortex.acceptEdit', () => pendingReview?.(true)),
-    vscode.commands.registerCommand('cortex.rejectEdit', () => pendingReview?.(false)),
+    vscode.commands.registerCommand('heapcode.inlineEdit', () => inlineEdit(profiles, log)),
+    vscode.commands.registerCommand('heapcode.acceptEdit', () => pendingReview?.(true)),
+    vscode.commands.registerCommand('heapcode.rejectEdit', () => pendingReview?.(false)),
   );
 }
 
 async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
-    void vscode.window.showWarningMessage('Cortex: open a file to use inline edit.');
+    void vscode.window.showWarningMessage('Heap Code: open a file to use inline edit.');
     return;
   }
 
@@ -54,7 +54,7 @@ async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): 
   }
 
   const instruction = await vscode.window.showInputBox({
-    title: 'Cortex: Edit selection',
+    title: 'Heap Code: Edit selection',
     prompt: 'e.g. "add error handling", "convert to async/await", "fix the bug"',
     ignoreFocusOut: true,
   });
@@ -74,7 +74,7 @@ async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): 
   const response = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: 'Cortex: generating edit…',
+      title: 'Heap Code: generating edit…',
       cancellable: true,
     },
     async (_progress, token) => {
@@ -107,7 +107,7 @@ async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): 
     (err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       log.appendLine(`[inline-edit] ${message}`);
-      void vscode.window.showErrorMessage(`Cortex: ${message}`);
+      void vscode.window.showErrorMessage(`Heap Code: ${message}`);
       return undefined;
     },
   );
@@ -116,11 +116,11 @@ async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): 
   let newCode = extractFirstCodeBlock(response) ?? response.trim();
   newCode = reindent(newCode, minIndent(selectedCode));
   if (newCode === selectedCode) {
-    void vscode.window.showInformationMessage('Cortex: the model proposed no changes.');
+    void vscode.window.showInformationMessage('Heap Code: the model proposed no changes.');
     return;
   }
 
-  await proposeEdit(editor, range, newCode, `Cortex: ${instruction}`);
+  await proposeEdit(editor, range, newCode, `Heap Code: ${instruction}`);
 }
 
 /**
@@ -178,7 +178,7 @@ export async function proposeEdit(
     // Review happens in the diff itself: ✓ / ✗ in its title bar, or close the
     // tab to reject. A status-bar hint replaces the old notification popup.
     vscode.window.setStatusBarMessage(
-      '$(git-compare) Cortex: review the proposed edit — ✓ accept / ✗ reject in the diff title bar',
+      '$(git-compare) Heap Code: review the proposed edit — ✓ accept / ✗ reject in the diff title bar',
       15_000,
     );
   });
@@ -197,7 +197,7 @@ export async function proposeEdit(
 
   if (document.version !== versionBeforeReview) {
     void vscode.window.showWarningMessage(
-      'Cortex: the file changed while you were reviewing — edit not applied. Run it again.',
+      'Heap Code: the file changed while you were reviewing — edit not applied. Run it again.',
     );
     return;
   }
@@ -206,7 +206,7 @@ export async function proposeEdit(
   edit.replace(document.uri, range, newCode);
   const applied = await vscode.workspace.applyEdit(edit);
   if (!applied) {
-    void vscode.window.showErrorMessage('Cortex: failed to apply the edit.');
+    void vscode.window.showErrorMessage('Heap Code: failed to apply the edit.');
     return;
   }
   await document.save();
@@ -226,7 +226,7 @@ export async function applyCodeToEditor(
 ): Promise<void> {
   const editor = getActiveEditor();
   if (!editor) {
-    void vscode.window.showWarningMessage('Cortex: open a file to apply code.');
+    void vscode.window.showWarningMessage('Heap Code: open a file to apply code.');
     return;
   }
   const document = editor.document;
@@ -239,11 +239,11 @@ export async function applyCodeToEditor(
         new vscode.Position(0, 0),
         document.lineAt(document.lineCount - 1).range.end,
       );
-      await proposeEdit(editor, fullRange, merged, 'Cortex: apply changes');
+      await proposeEdit(editor, fullRange, merged, 'Heap Code: apply changes');
       return;
     }
     if (merged !== undefined) {
-      void vscode.window.showInformationMessage('Cortex: apply model produced no changes.');
+      void vscode.window.showInformationMessage('Heap Code: apply model produced no changes.');
       return;
     }
     // Apply model failed — fall through to the simple paths.
@@ -252,7 +252,7 @@ export async function applyCodeToEditor(
   if (!editor.selection.isEmpty) {
     const selected = document.getText(editor.selection);
     const adjusted = reindent(code, minIndent(selected));
-    await proposeEdit(editor, editor.selection, adjusted, 'Cortex: apply code block');
+    await proposeEdit(editor, editor.selection, adjusted, 'Heap Code: apply code block');
     return;
   }
 
@@ -273,7 +273,7 @@ async function runApplyModel(
   return vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: 'Cortex: merging changes (apply model)…',
+      title: 'Heap Code: merging changes (apply model)…',
       cancellable: true,
     },
     async (_progress, token) => {
@@ -307,7 +307,7 @@ async function runApplyModel(
 export async function insertCodeAtCursor(code: string): Promise<void> {
   const editor = getActiveEditor();
   if (!editor) {
-    void vscode.window.showWarningMessage('Cortex: open a file to insert code.');
+    void vscode.window.showWarningMessage('Heap Code: open a file to insert code.');
     return;
   }
   await editor.edit((builder) => builder.replace(editor.selection, code));

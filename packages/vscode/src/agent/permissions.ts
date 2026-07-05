@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { PermissionChoice, PermissionClass, ToolCall, ToolDefinition } from '@cortex/core';
+import type { PermissionChoice, PermissionClass, ToolCall, ToolDefinition } from '@heapcode/core';
 
 type Decision = 'always';
 
@@ -31,7 +31,7 @@ export class PermissionEngine {
     this.sessionAllowed.clear();
     let cleared = 0;
     for (const key of this.state.keys()) {
-      if (key.startsWith('cortex.perm.')) {
+      if (key.startsWith('heapcode.perm.')) {
         await this.state.update(key, undefined);
         cleared++;
       }
@@ -51,9 +51,9 @@ export class PermissionEngine {
     if (tool.permission === 'read') return true;
 
     const safeMode = vscode.workspace
-      .getConfiguration('cortex.agent')
+      .getConfiguration('heapcode.agent')
       .get<boolean>('safeMode', false);
-    const key = `cortex.perm.${tool.permission}.${call.name}`;
+    const key = `heapcode.perm.${tool.permission}.${call.name}`;
 
     if (!safeMode) {
       if (this.sessionAllowed.has(key)) {
@@ -62,7 +62,7 @@ export class PermissionEngine {
       }
       if (this.state.get<Decision>(key) === 'always') {
         this.log?.appendLine(
-          `[perm] auto-allowed (persisted "Always" grant — reset via "Cortex: Reset Agent Permissions"): ${description}`,
+          `[perm] auto-allowed (persisted "Always" grant — reset via "Heap Code: Reset Agent Permissions"): ${description}`,
         );
         return true;
       }
@@ -100,7 +100,7 @@ export class PermissionEngine {
       ? (['Allow Once', 'Allow This Session', 'Always Allow'] as const)
       : (['Allow Once'] as const);
     const picked = await vscode.window.showWarningMessage(
-      `Cortex Agent wants to ${permissionLabel(permission)}`,
+      `Heap Code Agent wants to ${permissionLabel(permission)}`,
       { modal: true, detail: description },
       ...buttons,
     );

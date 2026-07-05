@@ -1,5 +1,5 @@
 {
-  "name": "@cortex/webview-ui",
+  "name": "@heapcode/webview-ui",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cortex/core": "workspace:*",
+    "@heapcode/core": "workspace:*",
     "dompurify": "^3.1.6",
     "highlight.js": "^11.10.0",
     "marked": "^14.1.0",

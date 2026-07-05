@@ -7,7 +7,7 @@ import {
   isAbortError,
   LatencyTracker,
   PrefixCache,
-} from '@cortex/core';
+} from '@heapcode/core';
 import type { ProfileManager } from './profileManager.js';
 
 const PREFIX_CHARS = 6000;
@@ -17,7 +17,7 @@ const SNIPPET_CHARS = 700;
 
 const HASH_COMMENT_LANGS = new Set(['python', 'ruby', 'shellscript', 'yaml', 'perl', 'r', 'makefile', 'dockerfile', 'toml']);
 
-export class CortexCompletionProvider implements vscode.InlineCompletionItemProvider {
+export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemProvider {
   private readonly cache = new PrefixCache();
   private readonly latency = new LatencyTracker();
 
@@ -32,7 +32,7 @@ export class CortexCompletionProvider implements vscode.InlineCompletionItemProv
     context: vscode.InlineCompletionContext,
     token: vscode.CancellationToken,
   ): Promise<vscode.InlineCompletionItem[] | undefined> {
-    const cfg = vscode.workspace.getConfiguration('cortex.completion');
+    const cfg = vscode.workspace.getConfiguration('heapcode.completion');
     if (!cfg.get<boolean>('enable', true)) return;
     if (
       cfg.get<string>('triggerMode', 'auto') === 'manual' &&

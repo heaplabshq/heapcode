@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { Conversation, ConversationMeta, ConversationStore } from '@cortex/core';
+import type { Conversation, ConversationMeta, ConversationStore } from '@heapcode/core';
 
 const FILE_NAME = 'conversations.json';
 const MAX_CONVERSATIONS = 200;

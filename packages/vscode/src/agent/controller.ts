@@ -7,7 +7,7 @@ import {
   type ExtensionToWebview,
   type FileEditInfo,
   type ToolCall,
-} from '@cortex/core';
+} from '@heapcode/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
@@ -62,9 +62,9 @@ export class AgentController {
       this.post({ type: 'error', message: 'Agent mode needs an open workspace folder.' });
       return;
     }
-    const cfg = vscode.workspace.getConfiguration('cortex.agent');
+    const cfg = vscode.workspace.getConfiguration('heapcode.agent');
     if (!cfg.get<boolean>('enable', true)) {
-      this.post({ type: 'error', message: 'Agent mode is disabled (cortex.agent.enable).' });
+      this.post({ type: 'error', message: 'Agent mode is disabled (heapcode.agent.enable).' });
       return;
     }
 
@@ -79,7 +79,7 @@ export class AgentController {
         type: 'error',
         message:
           `Profile "${profile.name}" is not marked vision-capable, so images can't be sent. ` +
-          'If your model does support images, set "capabilities": {"vision": true} on the profile (cortex.profiles).',
+          'If your model does support images, set "capabilities": {"vision": true} on the profile (heapcode.profiles).',
       });
       return;
     }
@@ -259,7 +259,7 @@ export class AgentController {
       'vscode.diff',
       originalUri,
       entry.uri,
-      `Cortex Agent: ${relPath}`,
+      `Heap Code Agent: ${relPath}`,
       { preview: true },
     );
   }
@@ -294,7 +294,7 @@ export class AgentController {
   }
 }
 
-const ORIGINAL_SCHEME = 'cortex-agent-original';
+const ORIGINAL_SCHEME = 'heapcode-agent-original';
 const agentOriginals = new Map<string, Uint8Array>();
 
 export function registerAgentDiffProvider(context: vscode.ExtensionContext): void {

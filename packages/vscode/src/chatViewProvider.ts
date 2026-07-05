@@ -19,7 +19,7 @@ import {
   type PromptTemplate,
   type StoredMessage,
   type WebviewToExtension,
-} from '@cortex/core';
+} from '@heapcode/core';
 import {
   collectAttachedFolder,
   collectSelection,
@@ -36,10 +36,10 @@ import type { ProfileManager } from './profileManager.js';
 import type { RagIndexer } from './rag/indexer.js';
 
 const INIT_TASK =
-  'Initialize this project for Cortex. Explore the workspace (key files, tech stack, structure, ' +
-  'build/test/run commands, conventions), then: 1) create CORTEX.md at the workspace root — concise ' +
+  'Initialize this project for Heap Code. Explore the workspace (key files, tech stack, structure, ' +
+  'build/test/run commands, conventions), then: 1) create HEAPCODE.md at the workspace root — concise ' +
   'project instructions for AI assistants (stack, layout, commands, conventions; under 60 lines); ' +
-  '2) create .cortex/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
+  '2) create .heapcode/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
   '(seed them with anything obvious from the code). Do not modify any other files.';
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
@@ -47,12 +47,12 @@ const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 10_000_000;
 
 const SYSTEM_PROMPT =
-  'You are Cortex, an expert AI programming assistant inside the user\'s IDE. ' +
+  'You are Heap Code, an expert AI programming assistant inside the user\'s IDE. ' +
   'Be concise and technically precise. Use markdown; put code in fenced blocks with a language tag. ' +
   'Context sections (marked with "---") may accompany the user\'s message — use them, and say so if they are insufficient.';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = 'cortex.chatView';
+  public static readonly viewType = 'heapcode.chatView';
 
   private view?: vscode.WebviewView;
   private viewReady = false;
@@ -154,7 +154,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     allowPersist: boolean;
   }): Promise<PermissionChoice | undefined> {
     try {
-      await vscode.commands.executeCommand('cortex.chatView.focus');
+      await vscode.commands.executeCommand('heapcode.chatView.focus');
       for (let i = 0; i < 20 && !this.viewReady; i++) {
         await new Promise((r) => setTimeout(r, 100));
       }
@@ -217,7 +217,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** ask_user tool: question card in the chat, awaiting the user's answer. */
   async askAgentQuestion(question: string, options?: string[]): Promise<string | undefined> {
     try {
-      await vscode.commands.executeCommand('cortex.chatView.focus');
+      await vscode.commands.executeCommand('heapcode.chatView.focus');
       for (let i = 0; i < 20 && !this.viewReady; i++) {
         await new Promise((r) => setTimeout(r, 100));
       }
@@ -261,7 +261,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    * view (waiting for it to boot if needed) and runs `text` as a user turn.
    */
   async sendFromCommand(text: string): Promise<void> {
-    await vscode.commands.executeCommand('cortex.chatView.focus');
+    await vscode.commands.executeCommand('heapcode.chatView.focus');
     if (this.viewReady) {
       this.post({ type: 'userMessage', text });
       await this.handleSend(text);
@@ -270,10 +270,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Built-in prompts plus user prompts from `cortex.customPrompts` (later wins on collision). */
+  /** Built-in prompts plus user prompts from `heapcode.customPrompts` (later wins on collision). */
   private allPrompts(): PromptTemplate[] {
     const custom = vscode.workspace
-      .getConfiguration('cortex')
+      .getConfiguration('heapcode')
       .get<PromptTemplate[]>('customPrompts', [])
       .filter((p) => p.command && p.template);
     const merged = new Map(builtinPrompts.map((p) => [p.command, p]));
@@ -291,7 +291,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       model: profile.model,
       slashCommands: [
         ...this.allPrompts().map((p) => ({ command: p.command, title: p.title })),
-        { command: 'init', title: 'Set up CORTEX.md & project memory (agent)' },
+        { command: 'init', title: 'Set up HEAPCODE.md & project memory (agent)' },
       ],
     });
     this.postActiveFile();
@@ -348,7 +348,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       editor.selection = new vscode.Selection(pos, pos);
       return;
     }
-    void vscode.window.setStatusBarMessage(`Cortex: "${needle}" not found in workspace`, 3000);
+    void vscode.window.setStatusBarMessage(`Heap Code: "${needle}" not found in workspace`, 3000);
   }
 
   private lastActiveFilePost = '';
@@ -435,7 +435,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         try {
           await this.profiles.upsertProfile(msg.original, msg.profile, msg.apiKey);
         } catch (err) {
-          void vscode.window.showErrorMessage(`Cortex: ${err instanceof Error ? err.message : String(err)}`);
+          void vscode.window.showErrorMessage(`Heap Code: ${err instanceof Error ? err.message : String(err)}`);
         }
         await this.postSettingsData();
         break;
@@ -455,7 +455,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'listTools': {
         const disabled = new Set(
-          vscode.workspace.getConfiguration('cortex.agent').get<string[]>('disabledTools', []),
+          vscode.workspace.getConfiguration('heapcode.agent').get<string[]>('disabledTools', []),
         );
         this.post({
           type: 'toolsList',
@@ -467,7 +467,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'setToolEnabled': {
-        const cfg = vscode.workspace.getConfiguration('cortex.agent');
+        const cfg = vscode.workspace.getConfiguration('heapcode.agent');
         const disabled = new Set(cfg.get<string[]>('disabledTools', []));
         if (msg.enabled) disabled.delete(msg.name);
         else disabled.add(msg.name);
@@ -481,7 +481,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'openNativeSettings':
-        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:cortexcode.cortex-code');
+        await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:heapcode.heap-code');
         break;
       case 'pickContextFiles': {
         const files = await vscode.workspace.findFiles(
@@ -506,7 +506,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ...[...dirs].sort().map((d) => ({ label: `$(folder) ${d}`, value: d })),
             ...rels.map((r) => ({ label: r, value: r })),
           ],
-          { title: 'Cortex: Attach files or folders as context', canPickMany: true },
+          { title: 'Heap Code: Attach files or folders as context', canPickMany: true },
         );
         if (picked && picked.length > 0) {
           this.post({ type: 'contextFiles', files: picked.map((p) => p.value) });
@@ -517,7 +517,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const picked = await vscode.window.showOpenDialog({
           canSelectMany: true,
           openLabel: 'Attach',
-          title: 'Cortex: Attach files or images',
+          title: 'Heap Code: Attach files or images',
         });
         if (!picked || picked.length === 0) break;
         const files: string[] = [];
@@ -591,10 +591,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'runCommand': {
         const allowed = {
-          selectProfile: 'cortex.selectProfile',
-          selectModel: 'cortex.selectModel',
-          setApiKey: 'cortex.setApiKey',
-          addProfile: 'cortex.addProfile',
+          selectProfile: 'heapcode.selectProfile',
+          selectModel: 'heapcode.selectModel',
+          setApiKey: 'heapcode.setApiKey',
+          addProfile: 'heapcode.addProfile',
         } as const;
         const command = allowed[msg.command];
         if (command) void vscode.commands.executeCommand(command);
@@ -617,7 +617,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'openInTerminal': {
         if (!this.terminal || this.terminal.exitStatus) {
-          this.terminal = vscode.window.createTerminal('Cortex');
+          this.terminal = vscode.window.createTerminal('Heap Code');
         }
         this.terminal.show();
         // Insert without executing — the user reviews and presses Enter.
@@ -910,7 +910,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (!profile.model) {
       this.post({
         type: 'error',
-        message: `Profile "${profile.name}" has no model configured. Pick one via the status bar or the "Cortex: Select Model" command.`,
+        message: `Profile "${profile.name}" has no model configured. Pick one via the status bar or the "Heap Code: Select Model" command.`,
       });
       return;
     }
@@ -919,7 +919,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type: 'error',
         message:
           `Profile "${profile.name}" is not marked vision-capable, so images can't be sent. ` +
-          'If your model does support images, set "capabilities": {"vision": true} on the profile (cortex.profiles).',
+          'If your model does support images, set "capabilities": {"vision": true} on the profile (heapcode.profiles).',
       });
       return;
     }
@@ -1049,7 +1049,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   <meta http-equiv="Content-Security-Policy" content="${csp}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="${styleUri}" />
-  <title>Cortex Chat</title>
+  <title>Heap Code Chat</title>
 </head>
 <body>
   <div id="root"></div>

@@ -14,5 +14,5 @@ Initial marketplace release.
 - Vision: paste or drop screenshots into chat and agent tasks (vision-capable models)
 - Semantic index (RAG): incremental background embedding index with LLM rerank stage, `@workspace` retrieval, agent `semantic_search`
 - MCP client (stdio/HTTP/SSE) exposing server tools to the agent
-- Project memory: `CORTEX.md` and `.cortex/memory.md`
+- Project memory: `HEAPCODE.md` and `.heapcode/memory.md`
 - Commit-message generation from the staged diff

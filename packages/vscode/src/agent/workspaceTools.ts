@@ -7,7 +7,7 @@ import {
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
-} from '@cortex/core';
+} from '@heapcode/core';
 import type { SessionCheckpoint } from './checkpoint.js';
 
 const MAX_READ_CHARS = 50_000;
@@ -16,7 +16,7 @@ const MAX_SEARCH_RESULTS = 40;
 const MAX_SEARCH_FILES = 2_000;
 const MAX_FETCH_CHARS = 20_000;
 const IGNORE_GLOB = '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**';
-const CWD_MARKER = '__CORTEX_CWD__';
+const CWD_MARKER = '__HEAPCODE_CWD__';
 
 export const agentToolDefinitions: ToolDefinition[] = [
   {
@@ -561,7 +561,7 @@ export class WorkspaceToolExecutor {
     }
     // POSIX: echo the final $PWD behind a marker so `cd` persists to the next call.
     const trackCwd = process.platform !== 'win32';
-    const wrapped = trackCwd ? `${command}\n__cortex_ec=$?; echo "${CWD_MARKER}$PWD"; exit $__cortex_ec` : command;
+    const wrapped = trackCwd ? `${command}\n__heapcode_ec=$?; echo "${CWD_MARKER}$PWD"; exit $__heapcode_ec` : command;
     return new Promise((resolvePromise) => {
       const child = spawn(wrapped, {
         shell: true,
@@ -701,7 +701,7 @@ async function fetchUrl(url: string): Promise<string> {
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { 'user-agent': 'CortexCode-Agent', accept: 'text/html, text/plain, application/json, */*' },
+      headers: { 'user-agent': 'HeapCode-Agent', accept: 'text/html, text/plain, application/json, */*' },
       redirect: 'follow',
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);

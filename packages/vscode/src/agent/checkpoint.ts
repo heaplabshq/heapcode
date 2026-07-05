@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChangedFile } from '@cortex/core';
+import type { ChangedFile } from '@heapcode/core';
 
 interface Entry {
   uri: vscode.Uri;

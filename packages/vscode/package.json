@@ -2,7 +2,7 @@
   "name": "heap-code",
   "displayName": "Heap Code",
   "description": "Model-agnostic AI coding assistant. Works with any OpenAI-compatible API — Ollama, OpenAI, OpenRouter, Groq, LM Studio, vLLM, and more.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "heapcode",
   "private": true,
   "license": "Apache-2.0",

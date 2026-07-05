@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Wire up CI-based Marketplace publishing (no functional changes from 0.1.0)
+
 ## 0.1.0
 
 Initial marketplace release.

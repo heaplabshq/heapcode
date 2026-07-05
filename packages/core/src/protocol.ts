@@ -104,7 +104,12 @@ export type WebviewToExtension =
    * conversation there, restores the workspace to that turn's checkpoint,
    * and resends the new text.
    */
-  | { type: 'editUserMessage'; ordinal: number; text: string; files?: string[]; mode: 'chat' | 'agent' };
+  | { type: 'editUserMessage'; ordinal: number; text: string; files?: string[]; mode: 'chat' | 'agent' }
+  /**
+   * Restore the workspace files to the checkpoint taken before the Nth user
+   * turn (0-based) ran, without touching the conversation.
+   */
+  | { type: 'restoreCheckpoint'; ordinal: number };
 
 export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error';
 

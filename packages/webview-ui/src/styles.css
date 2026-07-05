@@ -183,6 +183,10 @@ button.ghost:not(:disabled):hover {
   font-size: 12px;
 }
 
+.restore-msg {
+  right: 26px;
+}
+
 .turn.user:hover .edit-msg {
   opacity: 0.7;
 }

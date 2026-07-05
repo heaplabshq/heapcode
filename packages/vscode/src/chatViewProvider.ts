@@ -585,6 +585,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'editUserMessage':
         await this.editUserMessage(msg.ordinal, msg.text, msg.files, msg.mode);
         break;
+      case 'restoreCheckpoint':
+        await this.restoreCheckpoint(msg.ordinal);
+        break;
       case 'openInTerminal': {
         if (!this.terminal || this.terminal.exitStatus) {
           this.terminal = vscode.window.createTerminal('Cortex');
@@ -664,6 +667,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     await this.agent?.start(task, images?.slice(0, MAX_IMAGES));
   }
 
+  /** Index in conversation.messages of the Nth real (non-UI) user turn, or -1. */
+  private userMessageIndex(ordinal: number): number {
+    let seen = -1;
+    for (let i = 0; i < this.conversation.messages.length; i++) {
+      if (this.conversation.messages[i]!.role === 'user' && !this.conversation.messages[i]!.ui) {
+        seen++;
+        if (seen === ordinal) return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Timeline restore: put the workspace files back to the state before this
+   * turn ran. The conversation itself is untouched — unlike editing a prompt.
+   */
+  private async restoreCheckpoint(ordinal: number): Promise<void> {
+    const index = this.userMessageIndex(ordinal);
+    if (index === -1) {
+      this.post({ type: 'error', message: 'Could not locate that message.' });
+      return;
+    }
+    const checkpoint = this.conversation.messages
+      .slice(index)
+      .find((m) => m.checkpoint)?.checkpoint;
+    if (!checkpoint) {
+      this.post({
+        type: 'agentText',
+        text: 'No workspace checkpoint for this turn — checkpoints are taken when a prompt runs in agent mode.',
+      });
+      return;
+    }
+    const restored = await this.shadowGit?.restore(checkpoint);
+    this.post({
+      type: 'agentText',
+      text:
+        restored && restored.length > 0
+          ? `⤺ Restored ${restored.length} file(s) to the workspace state before this message.`
+          : 'Workspace already matches the state before this message — nothing to restore.',
+    });
+  }
+
   /**
    * Edit a previous prompt: truncate the conversation at that user turn,
    * restore the workspace to the checkpoint taken before the first agent
@@ -675,17 +720,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     files: string[] | undefined,
     mode: 'chat' | 'agent',
   ): Promise<void> {
-    let index = -1;
-    let seen = -1;
-    for (let i = 0; i < this.conversation.messages.length; i++) {
-      if (this.conversation.messages[i]!.role === 'user' && !this.conversation.messages[i]!.ui) {
-        seen++;
-        if (seen === ordinal) {
-          index = i;
-          break;
-        }
-      }
-    }
+    const index = this.userMessageIndex(ordinal);
     if (index === -1) {
       this.post({ type: 'error', message: 'Could not locate that message to edit.' });
       return;
@@ -921,8 +956,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         messages: [systemMessage, ...history],
         temperature: profile.temperature,
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA
-        // NIM), which cuts replies off mid-sentence — same fix as the agent.
-        maxTokens: profile.maxTokens ?? 16_384,
+        // NIM), which cuts replies off mid-sentence. Capped at a quarter of
+        // the window so small local models don't reject the request.
+        maxTokens: profile.maxTokens ?? Math.min(16_384, Math.floor(window / 4)),
         signal: this.abortController.signal,
       });
       let finishReason: string | undefined;

@@ -174,8 +174,9 @@ export class AgentController {
         plan: cfg.get<boolean>('planFirst', true),
         maxIterations: cfg.get<number>('maxIterations', 25),
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
-        // which truncates large write_file calls mid-generation.
-        maxTokens: profile.maxTokens ?? 16_384,
+        // which truncates large write_file calls mid-generation. Capped at a
+        // quarter of the window so small local models don't reject the request.
+        maxTokens: profile.maxTokens ?? Math.min(16_384, Math.floor(contextWindow.window / 4)),
         contextWindow: contextWindow.window,
         signal: this.abort.signal,
       });

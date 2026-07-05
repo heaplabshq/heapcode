@@ -11,7 +11,7 @@
     "url": "https://github.com/siddharth7631/cortexcode"
   },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.93.0"
   },
   "categories": [
     "AI",
@@ -456,7 +456,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
-    "@types/vscode": "1.90.0",
+    "@types/vscode": "1.93.0",
     "@vscode/vsce": "^3.1.0",
     "esbuild": "^0.23.1",
     "typescript": "^5.5.4"

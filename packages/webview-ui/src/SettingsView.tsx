@@ -22,6 +22,7 @@ interface Draft {
   completionModel: string;
   agentModel: string;
   embeddingsModel: string;
+  rerankModel: string;
   contextWindow: string;
   temperature: string;
   maxTokens: string;
@@ -42,6 +43,7 @@ function toDraft(p: ProviderProfileConfig): Draft {
     completionModel: p.completionModel ?? '',
     agentModel: p.agentModel ?? '',
     embeddingsModel: p.embeddingsModel ?? '',
+    rerankModel: p.rerankModel ?? '',
     contextWindow: p.contextWindow != null ? String(p.contextWindow) : '',
     temperature: p.temperature != null ? String(p.temperature) : '',
     maxTokens: p.maxTokens != null ? String(p.maxTokens) : '',
@@ -61,6 +63,7 @@ function newDraft(preset: SettingsPresetInfo): Draft {
     completionModel: '',
     agentModel: '',
     embeddingsModel: '',
+    rerankModel: '',
     contextWindow: '',
     temperature: '',
     maxTokens: '',
@@ -86,6 +89,7 @@ function fromDraft(d: Draft): ProviderProfileConfig {
   if (opt(d.completionModel)) profile.completionModel = opt(d.completionModel);
   if (opt(d.agentModel)) profile.agentModel = opt(d.agentModel);
   if (opt(d.embeddingsModel)) profile.embeddingsModel = opt(d.embeddingsModel);
+  if (opt(d.rerankModel)) profile.rerankModel = opt(d.rerankModel);
   if (num(d.contextWindow) != null) profile.contextWindow = num(d.contextWindow);
   if (num(d.temperature) != null) profile.temperature = num(d.temperature);
   if (num(d.maxTokens) != null) profile.maxTokens = num(d.maxTokens);
@@ -207,6 +211,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
             <Field label="Autocomplete model" value={draft.completionModel} onChange={(completionModel) => set({ completionModel })} placeholder={inherits} />
             <Field label="Agent model" value={draft.agentModel} onChange={(agentModel) => set({ agentModel })} placeholder={inherits} />
             <Field label="Embeddings model" value={draft.embeddingsModel} onChange={(embeddingsModel) => set({ embeddingsModel })} placeholder="for semantic search / RAG" />
+            <Field label="Rerank model" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" />
             <Field label="Context window (tokens)" value={draft.contextWindow} onChange={(contextWindow) => set({ contextWindow })} placeholder="auto — provider default, else 32768" type="number" />
             <Field label="Temperature" value={draft.temperature} onChange={(temperature) => set({ temperature })} placeholder="provider default" type="number" />
             <Field label="Max output tokens" value={draft.maxTokens} onChange={(maxTokens) => set({ maxTokens })} placeholder="provider default" type="number" />

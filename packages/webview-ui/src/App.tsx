@@ -647,6 +647,7 @@ export function App() {
     { name: 'file', hint: 'Active file contents' },
     { name: 'selection', hint: 'Current editor selection' },
     { name: 'problems', hint: 'Errors & warnings' },
+    { name: 'terminal', hint: 'Recent terminal commands & output' },
     { name: 'workspace', hint: 'Semantic search over the codebase' },
     { name: 'folder', hint: 'Workspace file listing' },
   ];
@@ -1068,18 +1069,30 @@ export function App() {
                       <div className="attach-note">📎 {m.attachedFiles.join(', ')}</div>
                     )}
                     {!busy && (
-                      <button
-                        className="ghost edit-msg"
-                        title="Edit this message — reverts the code and conversation to this point and resends"
-                        onClick={() => {
-                          const ordinal = messages.slice(0, i).filter((x) => x.role === 'user').length;
-                          setEditing(ordinal);
-                          setInput(m.content);
-                          inputRef.current?.focus();
-                        }}
-                      >
-                        ✎
-                      </button>
+                      <>
+                        <button
+                          className="ghost edit-msg"
+                          title="Edit this message — reverts the code and conversation to this point and resends"
+                          onClick={() => {
+                            const ordinal = messages.slice(0, i).filter((x) => x.role === 'user').length;
+                            setEditing(ordinal);
+                            setInput(m.content);
+                            inputRef.current?.focus();
+                          }}
+                        >
+                          ✎
+                        </button>
+                        <button
+                          className="ghost edit-msg restore-msg"
+                          title="Restore workspace files to the state before this message ran (conversation stays)"
+                          onClick={() => {
+                            const ordinal = messages.slice(0, i).filter((x) => x.role === 'user').length;
+                            postToExtension({ type: 'restoreCheckpoint', ordinal });
+                          }}
+                        >
+                          ⤺
+                        </button>
+                      </>
                     )}
                   </>
                 )}

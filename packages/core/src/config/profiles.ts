@@ -20,6 +20,8 @@ export interface ProviderProfileConfig {
   /** Agent mode. Inherits chat when unset. */
   agentModel?: string;
   embeddingsModel?: string;
+  /** Reranks semantic-search hits. Inherits edit → chat model when unset. */
+  rerankModel?: string;
   temperature?: number;
   maxTokens?: number;
   /**

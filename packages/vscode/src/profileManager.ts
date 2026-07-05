@@ -291,7 +291,8 @@ export class ProfileManager {
       | 'applyModel'
       | 'completionModel'
       | 'agentModel'
-      | 'embeddingsModel';
+      | 'embeddingsModel'
+      | 'rerankModel';
     const inherits = `inherits chat (${profile.model || 'not set'})`;
     const rolePick = await vscode.window.showQuickPick(
       [
@@ -330,6 +331,12 @@ export class ProfileManager {
           description: profile.embeddingsModel || 'not set',
           detail: 'Semantic search / RAG index',
           role: 'embeddingsModel' as Role,
+        },
+        {
+          label: '$(list-ordered) Rerank',
+          description: profile.rerankModel || `inherits edit/chat (${profile.editModel || profile.model || 'not set'})`,
+          detail: 'Reranks semantic-search hits — a small fast model works well',
+          role: 'rerankModel' as Role,
         },
       ],
       { title: `Cortex: Select model — which role? (${profile.name})` },

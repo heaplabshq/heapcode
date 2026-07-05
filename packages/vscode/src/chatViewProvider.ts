@@ -453,6 +453,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.profiles.setActiveByName(msg.name);
         await this.postSettingsData();
         break;
+      case 'listTools': {
+        const disabled = new Set(
+          vscode.workspace.getConfiguration('cortex.agent').get<string[]>('disabledTools', []),
+        );
+        this.post({
+          type: 'toolsList',
+          tools: (this.agent?.listAvailableTools() ?? []).map((t) => ({
+            ...t,
+            enabled: !disabled.has(t.name),
+          })),
+        });
+        break;
+      }
+      case 'setToolEnabled': {
+        const cfg = vscode.workspace.getConfiguration('cortex.agent');
+        const disabled = new Set(cfg.get<string[]>('disabledTools', []));
+        if (msg.enabled) disabled.delete(msg.name);
+        else disabled.add(msg.name);
+        await cfg.update(
+          'disabledTools',
+          [...disabled].sort(),
+          vscode.workspace.workspaceFolders
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global,
+        );
+        break;
+      }
       case 'openNativeSettings':
         await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:cortexcode.cortex-code');
         break;

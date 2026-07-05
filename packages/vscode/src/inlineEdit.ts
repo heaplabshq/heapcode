@@ -175,18 +175,12 @@ export async function proposeEdit(
       }
     });
 
-    // Notification as a secondary affordance; primary is the ✓/✗ in the diff title bar.
-    void vscode.window
-      .showInformationMessage(
-        `Apply edit to ${vscode.workspace.asRelativePath(document.uri, false)}? Use ✓ / ✗ in the diff editor's title bar.`,
-        'Accept',
-        'Reject',
-      )
-      .then((choice) => {
-        if (choice === 'Accept') settle(true);
-        else if (choice === 'Reject') settle(false);
-        // dismissed → keep waiting for the title-bar buttons or tab close
-      });
+    // Review happens in the diff itself: ✓ / ✗ in its title bar, or close the
+    // tab to reject. A status-bar hint replaces the old notification popup.
+    vscode.window.setStatusBarMessage(
+      '$(git-compare) Cortex: review the proposed edit — ✓ accept / ✗ reject in the diff title bar',
+      15_000,
+    );
   });
   pendingReview = undefined;
 

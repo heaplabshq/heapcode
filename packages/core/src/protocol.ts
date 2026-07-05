@@ -90,6 +90,9 @@ export type WebviewToExtension =
   | { type: 'settingsActivateProfile'; name: string }
   /** Open the native VS Code settings UI filtered to this extension. */
   | { type: 'openNativeSettings' }
+  /** Tools picker: list agent tools with their enabled state. */
+  | { type: 'listTools' }
+  | { type: 'setToolEnabled'; name: string; enabled: boolean }
   | { type: 'openInTerminal'; command: string }
   | { type: 'openReference'; text: string }
   | { type: 'agentStart'; task: string; files?: string[]; images?: string[] }
@@ -133,6 +136,11 @@ export type ExtensionToWebview =
   | { type: 'contextFiles'; files: string[] }
   /** Dropped image files, read by the extension and converted to data: URLs. */
   | { type: 'imageAttachments'; images: string[] }
+  /** Agent tools with enabled state, for the composer's tools picker. */
+  | {
+      type: 'toolsList';
+      tools: Array<{ name: string; description: string; enabled: boolean; source: 'builtin' | 'mcp' }>;
+    }
   /** Active editor file; `selection` (1-based lines) present while text is selected. */
   | { type: 'activeFile'; path: string | null; selection?: { start: number; end: number } }
   | { type: 'models'; profiles: Array<{ name: string; active: boolean }>; models: string[] }

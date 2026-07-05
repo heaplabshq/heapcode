@@ -13,6 +13,51 @@ import {
 
 const LEGACY_KEY_SECRET = 'cortex.apiKey';
 
+/**
+ * Model context length from provider-native APIs, for endpoints whose
+ * OpenAI-compatible /models omits it: Ollama (/api/show) and LM Studio
+ * (/api/v0/models). Best-effort with a short timeout; undefined otherwise.
+ */
+async function probeNativeContextLength(
+  profile: ProviderProfileConfig,
+  model: string,
+): Promise<number | undefined> {
+  if (profile.preset !== 'ollama' && profile.preset !== 'lmstudio') return undefined;
+  const origin = profile.baseUrl.replace(/\/v1\/?$/, '');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  try {
+    if (profile.preset === 'ollama') {
+      const res = await fetch(`${origin}/api/show`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model }),
+        signal: controller.signal,
+      });
+      if (!res.ok) return undefined;
+      const json = (await res.json()) as { model_info?: Record<string, unknown> };
+      for (const [k, v] of Object.entries(json.model_info ?? {})) {
+        // e.g. "llama.context_length", "qwen2.context_length"
+        if (k.endsWith('.context_length') && typeof v === 'number' && v > 0) return v;
+      }
+    } else {
+      const res = await fetch(`${origin}/api/v0/models/${encodeURIComponent(model)}`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) return undefined;
+      const json = (await res.json()) as { max_context_length?: number };
+      if (typeof json.max_context_length === 'number' && json.max_context_length > 0) {
+        return json.max_context_length;
+      }
+    }
+  } catch {
+    // endpoint down or API shape changed — caller falls back
+  } finally {
+    clearTimeout(timeout);
+  }
+  return undefined;
+}
+
 function profileSecretKey(profileName: string): string {
   return `cortex.apiKey.${profileName}`;
 }
@@ -90,11 +135,14 @@ export class ProfileManager {
       try {
         const provider = createProvider(profile, await this.getApiKey(profile));
         reported = (await provider.listModels()).find((m) => m.id === model)?.contextLength;
-        if (reported) {
-          this.log.appendLine(`[profiles] ${model}: provider reports ${reported}-token context window`);
-        }
       } catch {
         // unreachable or unlistable endpoint — preset default below
+      }
+      // Ollama and LM Studio don't report context in /v1/models — ask their
+      // native APIs instead.
+      reported ??= await probeNativeContextLength(profile, model);
+      if (reported) {
+        this.log.appendLine(`[profiles] ${model}: provider reports ${reported}-token context window`);
       }
       this.modelContextCache.set(key, reported);
     }

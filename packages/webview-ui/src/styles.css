@@ -452,26 +452,28 @@ button.ghost:not(:disabled):hover {
   font-size: 0.9em;
 }
 
+/* File edits render like any other tool row — a flat line, no card. */
 .file-edit-card {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  margin: 2px 14px 2px 22px;
-  border: 1px solid var(--vscode-panel-border);
-  border-radius: 5px;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 1px 14px 1px 22px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
   text-align: left;
+  border: none;
+  background: none;
+  border-radius: 0;
 }
 
 .file-edit-card:hover {
-  border-color: var(--vscode-focusBorder);
   background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-foreground);
 }
 
 .file-edit-name {
-  flex: 1;
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.85em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -489,17 +491,57 @@ button.ghost:not(:disabled):hover {
 
 .plan-card {
   margin: 4px 14px;
-  padding: 4px 12px;
-  border-left: 3px solid var(--vscode-focusBorder);
+  border-left: 2px solid var(--vscode-focusBorder);
 }
 
-.plan-title {
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 12px;
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.plan-head:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.plan-badge {
   font-weight: 600;
-  font-size: 0.75em;
+  font-size: 0.9em;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
-  opacity: 0.65;
-  margin-bottom: 2px;
+  letter-spacing: 0.06em;
+  color: var(--vscode-focusBorder);
+}
+
+.plan-steps {
+  flex: 1;
+}
+
+.plan-body {
+  padding: 0 12px 4px;
+}
+
+.plan-body ol,
+.plan-body ul {
+  margin: 2px 0;
+  padding-left: 20px;
+}
+
+.plan-body li {
+  margin: 3px 0;
+}
+
+.plan-body li::marker {
+  color: var(--vscode-descriptionForeground);
 }
 
 .agent-banner {
@@ -1036,6 +1078,42 @@ select.settings-input {
 .plus-chip {
   font-size: 1.15em;
   padding: 0 7px;
+}
+
+.tools-menu {
+  max-height: 300px;
+}
+
+.tools-menu-title {
+  font-size: 0.78em;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  padding: 4px 8px 6px;
+}
+
+.tool-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.84em;
+}
+
+.tool-toggle:not(.active) {
+  opacity: 0.55;
+}
+
+.tool-toggle-check {
+  width: 14px;
+  color: var(--vscode-focusBorder);
+}
+
+.tool-toggle-tag {
+  font-size: 0.75em;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
 }
 
 .mode-chip:hover,

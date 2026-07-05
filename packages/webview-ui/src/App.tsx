@@ -323,6 +323,11 @@ export function App() {
   const modePickerRef = useRef<HTMLDivElement>(null);
   const plusPickerRef = useRef<HTMLDivElement>(null);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const toolsPickerRef = useRef<HTMLDivElement>(null);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [toolsList, setToolsList] = useState<
+    Array<{ name: string; description: string; enabled: boolean; source: 'builtin' | 'mcp' }>
+  >([]);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
@@ -340,11 +345,12 @@ export function App() {
 
   // Popover dismissal: Esc anywhere, or clicking outside the open picker.
   useEffect(() => {
-    if (!modelMenu && !modeMenuOpen && !plusMenuOpen) return;
+    if (!modelMenu && !modeMenuOpen && !plusMenuOpen && !toolsMenuOpen) return;
     const closeAll = () => {
       setModelMenu(null);
       setModeMenuOpen(false);
       setPlusMenuOpen(false);
+      setToolsMenuOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeAll();
@@ -354,7 +360,8 @@ export function App() {
       if (
         !modelPickerRef.current?.contains(target) &&
         !modePickerRef.current?.contains(target) &&
-        !plusPickerRef.current?.contains(target)
+        !plusPickerRef.current?.contains(target) &&
+        !toolsPickerRef.current?.contains(target)
       ) {
         closeAll();
       }
@@ -365,7 +372,7 @@ export function App() {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onMouseDown);
     };
-  }, [modelMenu, modeMenuOpen, plusMenuOpen]);
+  }, [modelMenu, modeMenuOpen, plusMenuOpen, toolsMenuOpen]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<ExtensionToWebview>) => {
@@ -456,6 +463,9 @@ export function App() {
           break;
         case 'imageAttachments':
           setPendingImages((prev) => [...prev, ...msg.images].slice(0, MAX_IMAGES));
+          break;
+        case 'toolsList':
+          setToolsList(msg.tools);
           break;
         case 'models':
           setModelMenu({ loading: false, profiles: msg.profiles, models: msg.models });
@@ -846,6 +856,8 @@ export function App() {
                     title="Show diff"
                     onClick={() => postToExtension({ type: 'agentDiffFile', path: t.fileEdit!.path })}
                   >
+                    <span className="tool-icon">✓</span>
+                    <span className="tool-desc">Edited</span>
                     <span className="file-edit-name">{t.fileEdit.path}</span>
                     <span className="diff-added">+{t.fileEdit.added}</span>
                     <span className="diff-removed">−{t.fileEdit.removed}</span>
@@ -969,13 +981,27 @@ export function App() {
               );
             }
             if (m.plan) {
+              const steps = (m.content.match(/^\s*\d+[.)]\s/gm) ?? []).length;
               return (
                 <div key={i} className="plan-card">
-                  <div className="plan-title">Plan</div>
-                  <div
-                    className="markdown"
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
-                  />
+                  <button
+                    className="plan-head"
+                    onClick={() =>
+                      setMessages((prev) =>
+                        prev.map((x, j) => (j === i ? { ...x, collapsed: !x.collapsed } : x)),
+                      )
+                    }
+                  >
+                    <span className="plan-badge">Plan</span>
+                    {steps > 0 && <span className="plan-steps">{steps} steps</span>}
+                    <span className="tool-caret">{m.collapsed ? '▸' : '▾'}</span>
+                  </button>
+                  {!m.collapsed && (
+                    <div
+                      className="markdown plan-body"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
+                    />
+                  )}
                 </div>
               );
             }
@@ -1276,6 +1302,43 @@ export function App() {
                 onClick={() => setPlusMenuOpen((v) => !v)}
               >
                 +
+              </button>
+            </div>
+            <div className="mode-picker" ref={toolsPickerRef}>
+              {toolsMenuOpen && (
+                <div className="model-menu tools-menu">
+                  <div className="tools-menu-title">
+                    Agent tools · {toolsList.filter((t) => t.enabled).length}/{toolsList.length} enabled
+                  </div>
+                  {toolsList.map((t) => (
+                    <button
+                      key={t.name}
+                      className={`menu-item tool-toggle${t.enabled ? ' active' : ''}`}
+                      title={t.description}
+                      onClick={() => {
+                        setToolsList((prev) =>
+                          prev.map((x) => (x.name === t.name ? { ...x, enabled: !x.enabled } : x)),
+                        );
+                        postToExtension({ type: 'setToolEnabled', name: t.name, enabled: !t.enabled });
+                      }}
+                    >
+                      <span className="tool-toggle-check">{t.enabled ? '✓' : ''}</span>
+                      {t.name}
+                      {t.source === 'mcp' && <span className="tool-toggle-tag">MCP</span>}
+                    </button>
+                  ))}
+                  {toolsList.length === 0 && <div className="menu-note">No tools reported.</div>}
+                </div>
+              )}
+              <button
+                className="mode-chip"
+                title="Choose which tools the agent may use"
+                onClick={() => {
+                  if (!toolsMenuOpen) postToExtension({ type: 'listTools' });
+                  setToolsMenuOpen((v) => !v);
+                }}
+              >
+                🔧
               </button>
             </div>
             <div className="mode-picker" ref={modePickerRef}>

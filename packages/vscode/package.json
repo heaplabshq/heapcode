@@ -417,6 +417,14 @@
           "default": 50,
           "description": "Maximum plan→act→observe iterations per agent session."
         },
+        "cortex.agent.disabledTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Agent tools switched off in the chat's tools picker (🔧). Disabled tools are not offered to the model."
+        },
         "cortex.agent.safeMode": {
           "type": "boolean",
           "default": false,

@@ -23,6 +23,22 @@ export class AgentController {
   /** ask_user tool: forwards the agent's question to the chat UI; set by extension.ts. */
   askUser?: (question: string, options?: string[]) => Promise<string | undefined>;
 
+  /** All tools the agent could use (for the composer's tools picker). */
+  listAvailableTools(): Array<{ name: string; description: string; source: 'builtin' | 'mcp' }> {
+    return [
+      ...agentToolDefinitions.map((t) => ({
+        name: t.name,
+        description: t.description,
+        source: 'builtin' as const,
+      })),
+      ...(this.mcp?.getToolDefinitions() ?? []).map((t) => ({
+        name: t.name,
+        description: t.description,
+        source: 'mcp' as const,
+      })),
+    ];
+  }
+
   constructor(
     private readonly profiles: ProfileManager,
     private readonly permissions: PermissionEngine,
@@ -100,7 +116,9 @@ export class AgentController {
         task: fullTask,
         images,
         workspaceName: path.basename(root.fsPath),
-        tools: [...agentToolDefinitions, ...mcpTools],
+        tools: [...agentToolDefinitions, ...mcpTools].filter(
+          (t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name),
+        ),
         nativeToolCalls: capabilities.nativeToolCalls,
         execute: async (call) => {
           if (call.name === 'ask_user') {

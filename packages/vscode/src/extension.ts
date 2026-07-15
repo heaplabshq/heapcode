@@ -188,7 +188,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('heapcode')) updateStatusBar();
     }),
-    trackActiveEditor(),
+    trackActiveEditor(() => chatProvider.postActiveFile()),
     trackTerminal(),
     vscode.window.onDidChangeActiveTextEditor(() => chatProvider.postActiveFile()),
     vscode.window.onDidChangeTextEditorSelection(() => chatProvider.postActiveFile()),

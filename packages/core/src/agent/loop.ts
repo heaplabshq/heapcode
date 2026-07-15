@@ -71,7 +71,9 @@ export interface AgentOptions {
 }
 
 const PLAN_REQUEST =
-  'Before doing anything, write a concise numbered plan (3-8 steps) for this task. ' +
+  'Before doing anything, write a concise plan for this task, scaled to what it actually ' +
+  'needs. A simple question or lookup needs only 1-2 steps — do not pad it out. Reserve a ' +
+  'longer numbered plan (up to ~8 steps) for genuinely multi-step build/edit work. ' +
   'Plain text only — do NOT call any tools yet.';
 
 const CONTINUE_NUDGE =

@@ -53,6 +53,17 @@ const MAX_IMAGE_BYTES = 10_000_000;
 /** Ask-mode read-only tool loop: a few search/read rounds, then a forced final answer. */
 const MAX_ASK_TOOL_ITERATIONS = 4;
 
+/**
+ * Defensive net for runAskWithTools: strips fake "[Tool call: ...]" text a
+ * model can still free-associate into its final answer despite the nudge
+ * telling it tools are gone. Best-effort — the response already streamed
+ * live before this runs, so this only guarantees the stored/reloaded copy
+ * is clean.
+ */
+function stripToolCallArtifacts(text: string): string {
+  return text.replace(/\s*\[Tool call:[^\]]*\]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 const SYSTEM_PROMPT =
   'You are Heap Code, an expert AI programming assistant inside the user\'s IDE. ' +
   'Be concise and technically precise. Use markdown; put code in fenced blocks with a language tag. ' +
@@ -1039,7 +1050,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (chunk.finishReason) finishReason = chunk.finishReason;
         }
       }
-      this.finishTurn(assistant);
+      this.finishTurn(stripToolCallArtifacts(assistant));
       this.post({ type: 'done' });
       if (finishReason === 'length') {
         this.post({
@@ -1051,7 +1062,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (err) {
       if (isAbortError(err)) {
-        this.finishTurn(assistant); // keep the partial response coherent in history
+        this.finishTurn(stripToolCallArtifacts(assistant)); // keep the partial response coherent in history
         this.post({ type: 'done' });
         return;
       }
@@ -1103,6 +1114,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     for (let i = 0; i < MAX_ASK_TOOL_ITERATIONS; i++) {
       const offerTools = i < MAX_ASK_TOOL_ITERATIONS - 1;
+      // Withdrawing tools silently invites a model mid-tool-use habit to
+      // free-associate fake "[Tool call: ...]" text instead of wrapping up —
+      // tell it plainly instead.
+      if (!offerTools) {
+        convo.push({
+          role: 'user',
+          content:
+            'Tool access has ended for this turn. Give your final, complete answer now in ' +
+            'plain text based on what you already found — do not mention, reference, or ' +
+            'write out any further tool calls.',
+        });
+      }
 
       if (!offerTools && provider.chatStreamed) {
         const res = await provider.chatStreamed(

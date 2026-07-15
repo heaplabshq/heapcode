@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0
+
+- Semantic search: AST-aware chunking (tree-sitter) for TypeScript/TSX/JavaScript/JSX/Python — chunks align to real function/class boundaries instead of line windows, with the line-window chunker as fallback everywhere else
+- Semantic search: hybrid retrieval — BM25 keyword search fused with embeddings (reciprocal rank fusion), on by default; catches exact-identifier queries pure embedding search misses
+- Semantic search: optional contextual retrieval — an LLM-generated blurb per chunk before embedding, off by default (`heapcode.rag.contextualRetrieval`); new `contextModel` profile role
+- Completions: repo-level context — a fast BM25-only lookup for typing-triggered completions, the full semantic index for manual-trigger (Alt+\\) completions (`heapcode.completion.repoContext`)
+- Agent: `repo_map` tool — a persisted, incrementally-updated outline of every file's top-level symbols, so the agent can orient without a search call
+- Agent: session-to-memory distillation — proposes a short note at the end of a successful session, appended to `.heapcode/memory.md` only with your confirmation (`heapcode.agent.memoryDistillation`)
+- Project instructions: reads `AGENTS.md` as a fallback when there's no `.heapcode/HEAPCODE.md`
+- New `/security-review` slash command and context-menu entry, focused specifically on vulnerabilities (injection, hardcoded secrets, broken auth, etc.)
+- Inline edit: Accept/Reject also available as CodeLens directly above the diff
+- Fixed: closing the last open editor tab while chat had focus could leave a stale file as context for `@file`/agent tasks
+- Fixed: agent mode no longer forces a multi-step plan on simple lookup questions
+- Fixed: plain chat (Ask mode) no longer leaks literal tool-call-like text into answers when its read-only tool budget runs out
+
+## 0.1.1
+
+- Wire up CI-based Marketplace publishing (no functional changes from 0.1.0)
+
 ## 0.1.0
 
 Initial marketplace release.

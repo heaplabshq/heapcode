@@ -29,6 +29,17 @@ class ProposalContentProvider implements vscode.TextDocumentContentProvider {
   }
 }
 
+/** Accept/Reject as CodeLens above the diff — the title-bar buttons alone are easy to miss. */
+class ProposalCodeLensProvider implements vscode.CodeLensProvider {
+  provideCodeLenses(): vscode.CodeLens[] {
+    const top = new vscode.Range(0, 0, 0, 0);
+    return [
+      new vscode.CodeLens(top, { title: '$(check) Accept', command: 'heapcode.acceptEdit', arguments: [] }),
+      new vscode.CodeLens(top, { title: '$(close) Reject', command: 'heapcode.rejectEdit', arguments: [] }),
+    ];
+  }
+}
+
 export function registerInlineEdit(
   context: vscode.ExtensionContext,
   profiles: ProfileManager,
@@ -37,6 +48,7 @@ export function registerInlineEdit(
 ): void {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new ProposalContentProvider()),
+    vscode.languages.registerCodeLensProvider({ scheme: SCHEME }, new ProposalCodeLensProvider()),
     vscode.commands.registerCommand('heapcode.inlineEdit', () => inlineEdit(profiles, log, rag)),
     vscode.commands.registerCommand('heapcode.acceptEdit', () => pendingReview?.(true)),
     vscode.commands.registerCommand('heapcode.rejectEdit', () => pendingReview?.(false)),

@@ -4,29 +4,32 @@ import { VectorStore, type VectorRecord } from '../src/rag/store.js';
 import { OpenAICompatibleProvider } from '../src/providers/openaiCompatible.js';
 import { startMockServer, type MockServer } from './mockServer.js';
 
-describe('chunkFile', () => {
-  it('covers the whole file with overlapping windows', () => {
+// No configureAstChunker() call in this file, so chunkFile() always takes
+// the line-window path — the regression check that the default (no host
+// wired up) behaves exactly as before AST chunking existed.
+describe('chunkFile (line-window path, no AST configured)', () => {
+  it('covers the whole file with overlapping windows', async () => {
     const content = Array.from({ length: 150 }, (_, i) => `line ${i + 1}`).join('\n');
-    const chunks = chunkFile('a.ts', content, { maxLines: 60, overlap: 10 });
+    const chunks = await chunkFile('a.ts', content, { maxLines: 60, overlap: 10 });
     expect(chunks[0]!.startLine).toBe(1);
     expect(chunks[chunks.length - 1]!.endLine).toBe(150);
     // Consecutive chunks overlap.
     expect(chunks[1]!.startLine).toBeLessThanOrEqual(chunks[0]!.endLine);
   });
 
-  it('prefers symbol boundaries near the window edge', () => {
+  it('prefers symbol boundaries near the window edge', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 55; i++) lines.push(`  body${i};`);
     lines.push('export function next() {');
     for (let i = 0; i < 30; i++) lines.push(`  more${i};`);
-    const chunks = chunkFile('a.ts', lines.join('\n'), { maxLines: 60, overlap: 5 });
+    const chunks = await chunkFile('a.ts', lines.join('\n'), { maxLines: 60, overlap: 5 });
     expect(chunks[0]!.endLine).toBe(55); // stopped before the function line
   });
 
-  it('returns nothing for empty content and stable hashes otherwise', () => {
-    expect(chunkFile('a.ts', '   \n  ')).toEqual([]);
-    const [c1] = chunkFile('a.ts', 'const x = 1;');
-    const [c2] = chunkFile('a.ts', 'const x = 1;');
+  it('returns nothing for empty content and stable hashes otherwise', async () => {
+    expect(await chunkFile('a.ts', '   \n  ')).toEqual([]);
+    const [c1] = await chunkFile('a.ts', 'const x = 1;');
+    const [c2] = await chunkFile('a.ts', 'const x = 1;');
     expect(c1!.hash).toBe(c2!.hash);
     expect(fnv1a('abc')).not.toBe(fnv1a('abd'));
   });

@@ -511,6 +511,8 @@
     "@types/vscode": "1.95.0",
     "@vscode/vsce": "^3.1.0",
     "esbuild": "^0.23.1",
-    "typescript": "^5.5.4"
+    "tree-sitter-wasms": "^0.1.12",
+    "typescript": "^5.5.4",
+    "web-tree-sitter": "^0.25.6"
   }
 }

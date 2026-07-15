@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { configureAstChunker } from '@heapcode/core';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
 import { McpManager } from './agent/mcp.js';
 import { PermissionEngine } from './agent/permissions.js';
@@ -14,8 +15,43 @@ import { ProfileManager } from './profileManager.js';
 import { RagIndexer } from './rag/indexer.js';
 import { ShadowGit } from './agent/shadowGit.js';
 
+const AST_GRAMMAR_FILES = [
+  'tree-sitter.wasm',
+  'tree-sitter-typescript.wasm',
+  'tree-sitter-tsx.wasm',
+  'tree-sitter-javascript.wasm',
+  'tree-sitter-python.wasm',
+];
+
+/**
+ * Wires up AST-aware chunking (packages/core/src/rag/astChunker.ts) — core
+ * stays IDE-agnostic and never resolves its own paths, so this is the one
+ * place that knows where the bundled wasm assets live. Verifies every file
+ * is actually present first: a missing/corrupt wasm binary makes the
+ * underlying WASM runtime abort loudly instead of failing quietly, so it's
+ * far better to catch that once here than let the indexer discover it
+ * per-file later. Off the activation path — never blocks `activate()`.
+ */
+async function enableAstChunking(
+  context: vscode.ExtensionContext,
+  log: vscode.OutputChannel,
+): Promise<void> {
+  const wasmDir = vscode.Uri.joinPath(context.extensionUri, 'dist', 'wasm');
+  try {
+    await Promise.all(
+      AST_GRAMMAR_FILES.map((f) => vscode.workspace.fs.stat(vscode.Uri.joinPath(wasmDir, f))),
+    );
+    configureAstChunker((filename) => vscode.Uri.joinPath(wasmDir, filename).fsPath);
+  } catch {
+    log.appendLine(
+      '[rag] AST-aware chunking unavailable (missing grammar assets) — using line-window chunking.',
+    );
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Heap Code');
+  void enableAstChunking(context, log);
   const profiles = new ProfileManager(context.secrets, log);
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);

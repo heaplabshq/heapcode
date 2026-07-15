@@ -1,3 +1,6 @@
+import { chunkFileAst, isAstSupported } from './astChunker.js';
+import { fnv1a } from './hash.js';
+
 export interface Chunk {
   path: string;
   /** 1-indexed, inclusive. */
@@ -8,9 +11,11 @@ export interface Chunk {
   hash: string;
 }
 
+export { fnv1a } from './hash.js';
+
 /** Lines that look like a good place to start a chunk (symbol boundaries). */
 const BOUNDARY =
-  /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|interface|type|enum|const|def |fn |func |impl |struct |trait |public |private |protected )/;
+  /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|interface|type|enum|const|def |fn |func |impl |struct |trait |public|private|protected )/;
 
 export interface ChunkOptions {
   maxLines?: number;
@@ -19,10 +24,11 @@ export interface ChunkOptions {
 
 /**
  * Splits a file into overlapping line-window chunks, snapping chunk starts
- * to symbol-like boundaries when one is nearby. (Tree-sitter-precise
- * boundaries can replace this behind the same interface later.)
+ * to symbol-like boundaries when one is nearby. Used directly for languages
+ * without a configured AST grammar, and as the fallback when AST chunking
+ * (astChunker.ts) is unavailable or fails for a particular file.
  */
-export function chunkFile(path: string, content: string, opts: ChunkOptions = {}): Chunk[] {
+export function chunkFileByLines(path: string, content: string, opts: ChunkOptions = {}): Chunk[] {
   const maxLines = opts.maxLines ?? 60;
   const overlap = opts.overlap ?? 10;
   const lines = content.split('\n');
@@ -60,12 +66,20 @@ export function chunkFile(path: string, content: string, opts: ChunkOptions = {}
   return chunks;
 }
 
-/** FNV-1a 32-bit, hex string — fast, stable content hash. */
-export function fnv1a(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
+/**
+ * Splits a file into chunks. Tries AST-aware structural chunking first
+ * (astChunker.ts) for languages with a configured grammar; falls back to
+ * the line-window chunker for everything else, or if AST chunking isn't
+ * wired up (see configureAstChunker) or fails for this particular file.
+ */
+export async function chunkFile(
+  path: string,
+  content: string,
+  opts: ChunkOptions = {},
+): Promise<Chunk[]> {
+  if (isAstSupported(path)) {
+    const chunks = await chunkFileAst(path, content, opts);
+    if (chunks) return chunks;
   }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return chunkFileByLines(path, content, opts);
 }

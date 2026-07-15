@@ -7,6 +7,7 @@ export * from './providers/presets.js';
 export * from './providers/sse.js';
 export * from './config/profiles.js';
 export * from './rag/chunker.js';
+export * from './rag/astChunker.js';
 export * from './rag/store.js';
 export * from './rag/rerank.js';
 export * from './agent/tools.js';

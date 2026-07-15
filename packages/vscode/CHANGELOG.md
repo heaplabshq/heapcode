@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Fixed the Marketplace listing (Details tab) showing stale content — it's a separate README from the repo root one and had been missed, still showing the old Apache-2.0 license and an outdated feature list
+
 ## 0.2.0
 
 - **License changed from Apache-2.0 to PolyForm Noncommercial License 1.0.0** — free for noncommercial use; `0.1.x` remains available under its original Apache-2.0 terms

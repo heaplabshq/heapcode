@@ -9,8 +9,13 @@ import {
   type ToolResult,
 } from '@heapcode/core';
 import type { SessionCheckpoint } from './checkpoint.js';
+import { listSkillsFormatted, loadSkill } from './skills.js';
 
 const MAX_READ_CHARS = 50_000;
+// Above this, an unranged read_file returns an outline instead of the full text —
+// SWE-agent's ACI work found this kind of windowed view (vs. dumping whole files)
+// meaningfully improves an agent's ability to navigate large codebases cheaply.
+const LARGE_FILE_LINES = 300;
 const MAX_OUTPUT_CHARS = 8_000;
 const MAX_SEARCH_RESULTS = 40;
 const MAX_SEARCH_FILES = 2_000;
@@ -22,7 +27,10 @@ export const agentToolDefinitions: ToolDefinition[] = [
   {
     name: 'read_file',
     description:
-      'Read a file (or a line range of it). Returns content with line numbers.',
+      'Read a file (or a line range of it). Returns content with line numbers. ' +
+      'For files over ~300 lines, calling this with no range first returns a symbol outline ' +
+      'instead of the full text — call again with start_line/end_line for the section you need, ' +
+      'or repeat the unranged call to force the full contents.',
     parameters: {
       type: 'object',
       properties: {
@@ -242,6 +250,33 @@ export const agentToolDefinitions: ToolDefinition[] = [
     },
     permission: 'read',
   },
+  {
+    name: 'list_skills',
+    description:
+      'List available Skills (name + description) from .claude/skills/ (project) and ~/.claude/skills/ ' +
+      '(personal) — the same convention Claude Code itself uses. Skills are model-invoked: call this early, ' +
+      'and if one\'s description matches the current task, call load_skill on it before proceeding.',
+    parameters: { type: 'object', properties: {} },
+    permission: 'read',
+  },
+  {
+    name: 'load_skill',
+    description:
+      'Load a Skill\'s full instructions by name (from list_skills). If the instructions reference a bundled ' +
+      'file (e.g. "see FORMS.md"), call this again with that file as `resource` to read it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Skill name, from list_skills' },
+        resource: {
+          type: 'string',
+          description: 'Optional: relative path to a file bundled in the skill\'s own folder',
+        },
+      },
+      required: ['name'],
+    },
+    permission: 'read',
+  },
 ];
 
 /**
@@ -277,6 +312,8 @@ function nearbyHint(content: string, search: string): string {
 export class WorkspaceToolExecutor {
   /** run_command working directory — persists across calls within a session. */
   private cwd: string;
+  /** Files already shown as an outline (by URI) — the next unranged read_file gets the full text. */
+  private readonly outlinedFiles = new Set<string>();
 
   constructor(
     private readonly root: vscode.Uri,
@@ -332,6 +369,10 @@ export class WorkspaceToolExecutor {
         return `Create directory ${a.path}`;
       case 'ask_user':
         return `Ask: ${String(a.question ?? '').slice(0, 80)}`;
+      case 'list_skills':
+        return 'List available skills';
+      case 'load_skill':
+        return `Load skill "${a.name}"${a.resource ? ` (${a.resource})` : ''}`;
       default:
         return `${call.name} ${JSON.stringify(call.args)}`;
     }
@@ -352,6 +393,22 @@ export class WorkspaceToolExecutor {
         const uri = this.resolve(a.path);
         const bytes = await vscode.workspace.fs.readFile(uri);
         const allLines = new TextDecoder().decode(bytes).split('\n');
+
+        const rangeGiven = Boolean(a.start_line || a.end_line);
+        const key = uri.toString();
+        if (!rangeGiven && allLines.length > LARGE_FILE_LINES && !this.outlinedFiles.has(key)) {
+          this.outlinedFiles.add(key);
+          const outline = await getSymbolOutline(uri);
+          if (outline) {
+            return ok(
+              `${a.path} has ${allLines.length} lines — showing its outline instead of the full ` +
+                'contents to save context. Call read_file again with start_line/end_line for the ' +
+                'section you need, or repeat this call with no range to force the full file.\n\n' +
+                outline.join('\n'),
+            );
+          }
+        }
+
         const start = Math.max(1, Number(a.start_line) || 1);
         const end = Math.min(allLines.length, Number(a.end_line) || allLines.length);
         let text = allLines.slice(start - 1, end).join('\n');
@@ -444,13 +501,11 @@ export class WorkspaceToolExecutor {
         return this.runCommand(a.command ?? '');
       case 'get_symbols': {
         const uri = this.resolve(a.path);
-        const symbols = await vscode.commands.executeCommand<
-          (vscode.DocumentSymbol | vscode.SymbolInformation)[]
-        >('vscode.executeDocumentSymbolProvider', uri);
-        if (!symbols || symbols.length === 0) {
+        const outline = await getSymbolOutline(uri);
+        if (!outline) {
           return ok('No symbols found (no language server for this file type, or an empty file).');
         }
-        return ok(formatSymbols(symbols).join('\n'));
+        return ok(outline.join('\n'));
       }
       case 'find_references':
       case 'go_to_definition': {
@@ -500,6 +555,10 @@ export class WorkspaceToolExecutor {
         await vscode.workspace.fs.createDirectory(this.resolve(a.path));
         return ok(`Created ${a.path}.`);
       }
+      case 'list_skills':
+        return ok(await listSkillsFormatted());
+      case 'load_skill':
+        return loadSkill(a.name ?? '', a.resource).then(ok, (err: Error) => fail(err.message));
       default:
         return fail(`Tool "${call.name}" is not implemented.`);
     }
@@ -617,6 +676,15 @@ export class WorkspaceToolExecutor {
       });
     });
   }
+}
+
+/** Symbol outline for a file, or undefined when the language server has none (e.g. JSON/plain text). */
+async function getSymbolOutline(uri: vscode.Uri): Promise<string[] | undefined> {
+  const symbols = await vscode.commands.executeCommand<
+    (vscode.DocumentSymbol | vscode.SymbolInformation)[]
+  >('vscode.executeDocumentSymbolProvider', uri);
+  if (!symbols || symbols.length === 0) return undefined;
+  return formatSymbols(symbols);
 }
 
 /** Flatten a DocumentSymbol tree (or SymbolInformation list) into outline lines. */

@@ -93,6 +93,17 @@ export class SessionCheckpoint {
     if (entry) this.entries.delete(entry.uri.toString());
   }
 
+  /** Accept every remaining tracked file at once (already-reverted ones stay revertible). */
+  keepAll(): string[] {
+    const kept: string[] = [];
+    for (const [key, entry] of [...this.entries]) {
+      if (entry.reverted) continue;
+      kept.push(vscode.workspace.asRelativePath(entry.uri, false));
+      this.entries.delete(key);
+    }
+    return kept;
+  }
+
   get size(): number {
     return this.entries.size;
   }

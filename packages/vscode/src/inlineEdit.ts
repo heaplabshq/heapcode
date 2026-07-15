@@ -98,7 +98,7 @@ async function inlineEdit(
         }
       }
       try {
-        const { provider, profile } = await profiles.createActiveProvider();
+        const { provider, profile } = await profiles.resolveRole('editModel');
         const result = await provider.chat({
           model: profile.editModel || profile.model,
           messages: buildInlineEditMessages({
@@ -248,7 +248,7 @@ export async function applyCodeToEditor(
     return;
   }
   const document = editor.document;
-  const profile = profiles.getActiveProfile();
+  const profile = profiles.resolveRoleProfile('applyModel');
 
   if (profile.applyModel && document.getText().length <= MAX_APPLY_FILE_CHARS) {
     const merged = await runApplyModel(document.getText(), code, profiles, log);
@@ -301,7 +301,7 @@ async function runApplyModel(
       const abort = new AbortController();
       token.onCancellationRequested(() => abort.abort());
       try {
-        const { provider, profile } = await profiles.createActiveProvider();
+        const { provider, profile } = await profiles.resolveRole('applyModel');
         const res = await provider.chat({
           model: profile.applyModel!,
           messages: buildApplyMessages(original, snippet),

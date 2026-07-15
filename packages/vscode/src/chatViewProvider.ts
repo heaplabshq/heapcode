@@ -11,16 +11,19 @@ import {
   providerPresets,
   renderTemplate,
   resolveCapabilities,
+  type ChatMessage,
   type Conversation,
   type ConversationStore,
   type DisplayMessage,
   type ExtensionToWebview,
   type PermissionChoice,
+  type Provider,
   type PromptTemplate,
   type StoredMessage,
   type WebviewToExtension,
 } from '@heapcode/core';
 import {
+  collectActiveFile,
   collectAttachedFolder,
   collectSelection,
   getActiveEditor,
@@ -30,14 +33,16 @@ import {
 } from './contextCollector.js';
 import { loadProjectInstructions } from './memory.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
-import type { AgentController } from './agent/controller.js';
+import { agentToolDefinitions, WorkspaceToolExecutor } from './agent/workspaceTools.js';
+import { SessionCheckpoint } from './agent/checkpoint.js';
+import { resultLabel, TOOL_SUMMARY_CHARS, type AgentController } from './agent/controller.js';
 import type { ShadowGit } from './agent/shadowGit.js';
 import type { ProfileManager } from './profileManager.js';
 import type { RagIndexer } from './rag/indexer.js';
 
 const INIT_TASK =
   'Initialize this project for Heap Code. Explore the workspace (key files, tech stack, structure, ' +
-  'build/test/run commands, conventions), then: 1) create HEAPCODE.md at the workspace root — concise ' +
+  'build/test/run commands, conventions), then: 1) create .heapcode/HEAPCODE.md — concise ' +
   'project instructions for AI assistants (stack, layout, commands, conventions; under 60 lines); ' +
   '2) create .heapcode/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
   '(seed them with anything obvious from the code). Do not modify any other files.';
@@ -45,11 +50,16 @@ const INIT_TASK =
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 10_000_000;
+/** Ask-mode read-only tool loop: a few search/read rounds, then a forced final answer. */
+const MAX_ASK_TOOL_ITERATIONS = 4;
 
 const SYSTEM_PROMPT =
   'You are Heap Code, an expert AI programming assistant inside the user\'s IDE. ' +
   'Be concise and technically precise. Use markdown; put code in fenced blocks with a language tag. ' +
-  'Context sections (marked with "---") may accompany the user\'s message — use them, and say so if they are insufficient.';
+  'Context sections (marked with "---") may accompany the user\'s message — use them, and say so if they are insufficient. ' +
+  'When asked about specific code (a function, file, or "my X") and no matching code appears in the ' +
+  'context sections, say so plainly and ask the user to share it (or use @file/@workspace) — never ' +
+  'invent, guess, or reconstruct a plausible-looking implementation and present it as their real code.';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'heapcode.chatView';
@@ -119,6 +129,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (tool?.id === msg.id) {
             tool.ok = msg.ok;
             tool.label = msg.label;
+            tool.summary = msg.summary;
             tool.fileEdit = msg.fileEdit;
             break;
           }
@@ -459,9 +470,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
         this.post({
           type: 'toolsList',
-          tools: (this.agent?.listAvailableTools() ?? []).map((t) => ({
-            ...t,
-            enabled: !disabled.has(t.name),
+          groups: (this.agent?.listToolGroups() ?? []).map((g) => ({
+            ...g,
+            tools: g.tools.map((t) => ({ ...t, enabled: !disabled.has(t.name) })),
           })),
         });
         break;
@@ -632,6 +643,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'agentRevert':
         await this.agent?.revert();
+        break;
+      case 'agentKeepAll':
+        this.agent?.keepAll();
         break;
       case 'agentDiffFile':
         await this.agent?.diffFile(msg.path);
@@ -894,6 +908,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       body = text;
     }
 
+    // No @mention, attachment, or selection resolved any context — ground the answer in
+    // whatever's open rather than let the model guess at code it has never seen.
+    if (blocks.length === 0) {
+      const activeFile = collectActiveFile();
+      if (activeFile) blocks.push(activeFile);
+    }
+
     const context = assembleContext(blocks);
     if (context.dropped.length > 0) {
       this.log.appendLine(`[context] dropped over budget: ${context.dropped.join(', ')}`);
@@ -936,7 +957,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.abortController = new AbortController();
     let assistant = '';
-    const instructions = await loadProjectInstructions();
+    const activeEditor = getActiveEditor();
+    const activeFilePath = activeEditor
+      ? vscode.workspace.asRelativePath(activeEditor.document.uri, false)
+      : undefined;
+    const instructions = await loadProjectInstructions(activeFilePath);
 
     const systemMessage = {
       role: 'system' as const,
@@ -978,23 +1003,41 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     try {
-      const stream = provider.streamChat({
-        model: profile.model,
-        messages: [systemMessage, ...history],
-        temperature: profile.temperature,
-        // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA
-        // NIM), which cuts replies off mid-sentence. Capped at a quarter of
-        // the window so small local models don't reject the request.
-        maxTokens: profile.maxTokens ?? Math.min(16_384, Math.floor(window / 4)),
-        signal: this.abortController.signal,
-      });
-      let finishReason: string | undefined;
-      for await (const chunk of stream) {
-        if (chunk.content) {
-          assistant += chunk.content;
-          this.post({ type: 'chunk', text: chunk.content });
+      const conversationMessages: ChatMessage[] = [systemMessage, ...history];
+      // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
+      // which cuts replies off mid-sentence. Capped at a quarter of the
+      // window so small local models don't reject the request.
+      const maxTokens = profile.maxTokens ?? Math.min(16_384, Math.floor(window / 4));
+      const onDelta = (delta: string) => {
+        assistant += delta;
+        this.post({ type: 'chunk', text: delta });
+      };
+
+      const toolOutcome = resolveCapabilities(profile).nativeToolCalls
+        ? await this.runAskWithTools(
+            provider,
+            profile.model,
+            conversationMessages,
+            profile.temperature,
+            maxTokens,
+            this.abortController.signal,
+            onDelta,
+          )
+        : undefined;
+
+      let finishReason: string | undefined = toolOutcome?.finishReason;
+      if (!toolOutcome) {
+        const stream = provider.streamChat({
+          model: profile.model,
+          messages: conversationMessages,
+          temperature: profile.temperature,
+          maxTokens,
+          signal: this.abortController.signal,
+        });
+        for await (const chunk of stream) {
+          if (chunk.content) onDelta(chunk.content);
+          if (chunk.finishReason) finishReason = chunk.finishReason;
         }
-        if (chunk.finishReason) finishReason = chunk.finishReason;
       }
       this.finishTurn(assistant);
       this.post({ type: 'done' });
@@ -1012,13 +1055,114 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'done' });
         return;
       }
-      this.conversation.messages.pop(); // drop the failed turn so retry doesn't duplicate
+      // Drop the failed turn — back through any ask-mode tool chips to the user message —
+      // so retry doesn't duplicate.
+      let lastUser = this.conversation.messages.length - 1;
+      while (lastUser >= 0 && this.conversation.messages[lastUser]!.role !== 'user') lastUser--;
+      if (lastUser >= 0) this.conversation.messages.splice(lastUser);
       const message = err instanceof Error ? err.message : String(err);
       this.log.appendLine(`[chat] error: ${message}`);
       this.post({ type: 'error', message });
     } finally {
       this.abortController = undefined;
     }
+  }
+
+  /**
+   * Ask-mode read-only tool loop (mirrors how Copilot's Ask mode autonomously searches the
+   * codebase): lets the model call read/search tools — never write/execute/destructive ones,
+   * so this never needs a permission prompt — to ground its answer in real code instead of
+   * guessing. Bounded iterations; the last attempt always omits tools so the turn is
+   * guaranteed to end in a normal answer rather than looping forever.
+   * Returns undefined when there's no workspace, no read tools, or the model doesn't support
+   * native tool calling — the caller falls back to a plain streamed reply.
+   */
+  private async runAskWithTools(
+    provider: Provider,
+    model: string,
+    messages: ChatMessage[],
+    temperature: number | undefined,
+    maxTokens: number,
+    signal: AbortSignal,
+    onDelta: (text: string) => void,
+  ): Promise<{ finishReason?: string } | undefined> {
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!root) return undefined;
+    const readOnlyTools = agentToolDefinitions.filter(
+      (t) => t.permission === 'read' && t.name !== 'ask_user',
+    );
+    if (readOnlyTools.length === 0) return undefined;
+
+    const executor = new WorkspaceToolExecutor(
+      root,
+      new SessionCheckpoint(),
+      60_000,
+      this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
+    );
+    const convo = [...messages];
+
+    for (let i = 0; i < MAX_ASK_TOOL_ITERATIONS; i++) {
+      const offerTools = i < MAX_ASK_TOOL_ITERATIONS - 1;
+
+      if (!offerTools && provider.chatStreamed) {
+        const res = await provider.chatStreamed(
+          { model, messages: convo, temperature, maxTokens, signal },
+          (text, kind) => {
+            if (!kind || kind === 'text') onDelta(text);
+          },
+        );
+        return { finishReason: res.finishReason };
+      }
+
+      const res = await provider.chat({
+        model,
+        messages: convo,
+        tools: offerTools ? readOnlyTools : undefined,
+        temperature,
+        maxTokens,
+        signal,
+      });
+
+      if (offerTools && res.toolCalls && res.toolCalls.length > 0) {
+        convo.push({
+          role: 'assistant',
+          content: res.content,
+          toolCalls: res.toolCalls.map((c) => ({ id: c.id, name: c.name, args: c.args })),
+        });
+        for (const call of res.toolCalls) {
+          const toolCall = { id: call.id, name: call.name, args: call.args };
+          const description = executor.describe(toolCall);
+          this.log.appendLine(`[ask] tool: ${description}`);
+          this.postToWebview({
+            type: 'agentToolCall',
+            id: call.id,
+            name: call.name,
+            description,
+          });
+          const result = call.argsParseError
+            ? {
+                id: call.id,
+                name: call.name,
+                content: `Invalid JSON arguments: ${call.argsParseError}`,
+                isError: true,
+              }
+            : await executor.execute(toolCall);
+          this.postToWebview({
+            type: 'agentToolResult',
+            id: call.id,
+            ok: !result.isError,
+            summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
+            label: resultLabel(result.name, result.content, result.isError),
+          });
+          convo.push({ role: 'tool', content: result.content, toolCallId: call.id });
+        }
+        continue;
+      }
+
+      if (res.content) onDelta(res.content);
+      return { finishReason: res.finishReason };
+    }
+    return undefined;
   }
 
   private finishTurn(assistant: string): void {

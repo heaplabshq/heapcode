@@ -23,9 +23,18 @@ interface Draft {
   agentModel: string;
   embeddingsModel: string;
   rerankModel: string;
+  /** Name of another configured profile to run this role on entirely — '' = this profile. */
+  editProfile: string;
+  applyProfile: string;
+  completionProfile: string;
+  agentProfile: string;
+  embeddingsProfile: string;
+  rerankProfile: string;
   contextWindow: string;
   temperature: string;
   maxTokens: string;
+  /** Seconds, for form binding — converted to/from timeoutMs (ms). */
+  timeoutSec: string;
   /** '' = untouched; anything typed is stored on save. */
   apiKey: string;
   clearKey: boolean;
@@ -44,9 +53,16 @@ function toDraft(p: ProviderProfileConfig): Draft {
     agentModel: p.agentModel ?? '',
     embeddingsModel: p.embeddingsModel ?? '',
     rerankModel: p.rerankModel ?? '',
+    editProfile: p.editProfile ?? '',
+    applyProfile: p.applyProfile ?? '',
+    completionProfile: p.completionProfile ?? '',
+    agentProfile: p.agentProfile ?? '',
+    embeddingsProfile: p.embeddingsProfile ?? '',
+    rerankProfile: p.rerankProfile ?? '',
     contextWindow: p.contextWindow != null ? String(p.contextWindow) : '',
     temperature: p.temperature != null ? String(p.temperature) : '',
     maxTokens: p.maxTokens != null ? String(p.maxTokens) : '',
+    timeoutSec: p.timeoutMs != null ? String(Math.round(p.timeoutMs / 1000)) : '',
     apiKey: '',
     clearKey: false,
   };
@@ -64,9 +80,16 @@ function newDraft(preset: SettingsPresetInfo): Draft {
     agentModel: '',
     embeddingsModel: '',
     rerankModel: '',
+    editProfile: '',
+    applyProfile: '',
+    completionProfile: '',
+    agentProfile: '',
+    embeddingsProfile: '',
+    rerankProfile: '',
     contextWindow: '',
     temperature: '',
     maxTokens: '',
+    timeoutSec: '',
     apiKey: '',
     clearKey: false,
   };
@@ -90,9 +113,16 @@ function fromDraft(d: Draft): ProviderProfileConfig {
   if (opt(d.agentModel)) profile.agentModel = opt(d.agentModel);
   if (opt(d.embeddingsModel)) profile.embeddingsModel = opt(d.embeddingsModel);
   if (opt(d.rerankModel)) profile.rerankModel = opt(d.rerankModel);
+  if (opt(d.editProfile)) profile.editProfile = opt(d.editProfile);
+  if (opt(d.applyProfile)) profile.applyProfile = opt(d.applyProfile);
+  if (opt(d.completionProfile)) profile.completionProfile = opt(d.completionProfile);
+  if (opt(d.agentProfile)) profile.agentProfile = opt(d.agentProfile);
+  if (opt(d.embeddingsProfile)) profile.embeddingsProfile = opt(d.embeddingsProfile);
+  if (opt(d.rerankProfile)) profile.rerankProfile = opt(d.rerankProfile);
   if (num(d.contextWindow) != null) profile.contextWindow = num(d.contextWindow);
   if (num(d.temperature) != null) profile.temperature = num(d.temperature);
   if (num(d.maxTokens) != null) profile.maxTokens = num(d.maxTokens);
+  if (num(d.timeoutSec) != null) profile.timeoutMs = num(d.timeoutSec)! * 1000;
   return profile;
 }
 
@@ -123,6 +153,31 @@ function Field({
   );
 }
 
+/** "Run this role on a different profile" dropdown — sits under a role's model Field. */
+function RoleProfileSelect({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+}) {
+  return (
+    <label className="settings-field settings-role-profile">
+      <span className="settings-label">↳ run on profile</span>
+      <select className="settings-input" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">this profile</option>
+        {options.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function SettingsView({ data }: { data: SettingsData | null }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [showRoles, setShowRoles] = useState(false);
@@ -135,6 +190,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
     const preset = data.presets.find((p) => p.id === draft.preset);
     const keySaved = draft.original ? (data.keySaved[draft.original] ?? false) : false;
     const inherits = `inherits chat (${draft.model || 'not set'})`;
+    const otherProfiles = data.profiles.map((p) => p.name).filter((n) => n !== draft.name);
     return (
       <div className="settings">
         <div className="settings-title">
@@ -207,14 +263,21 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
         {showRoles && (
           <>
             <Field label="Edit model" value={draft.editModel} onChange={(editModel) => set({ editModel })} placeholder={inherits} />
+            <RoleProfileSelect value={draft.editProfile} onChange={(editProfile) => set({ editProfile })} options={otherProfiles} />
             <Field label="Apply model" value={draft.applyModel} onChange={(applyModel) => set({ applyModel })} placeholder="fast-apply merge model" />
+            <RoleProfileSelect value={draft.applyProfile} onChange={(applyProfile) => set({ applyProfile })} options={otherProfiles} />
             <Field label="Autocomplete model" value={draft.completionModel} onChange={(completionModel) => set({ completionModel })} placeholder={inherits} />
+            <RoleProfileSelect value={draft.completionProfile} onChange={(completionProfile) => set({ completionProfile })} options={otherProfiles} />
             <Field label="Agent model" value={draft.agentModel} onChange={(agentModel) => set({ agentModel })} placeholder={inherits} />
+            <RoleProfileSelect value={draft.agentProfile} onChange={(agentProfile) => set({ agentProfile })} options={otherProfiles} />
             <Field label="Embeddings model" value={draft.embeddingsModel} onChange={(embeddingsModel) => set({ embeddingsModel })} placeholder="for semantic search / RAG" />
+            <RoleProfileSelect value={draft.embeddingsProfile} onChange={(embeddingsProfile) => set({ embeddingsProfile })} options={otherProfiles} />
             <Field label="Rerank model" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" />
+            <RoleProfileSelect value={draft.rerankProfile} onChange={(rerankProfile) => set({ rerankProfile })} options={otherProfiles} />
             <Field label="Context window (tokens)" value={draft.contextWindow} onChange={(contextWindow) => set({ contextWindow })} placeholder="auto — provider default, else 32768" type="number" />
             <Field label="Temperature" value={draft.temperature} onChange={(temperature) => set({ temperature })} placeholder="provider default" type="number" />
             <Field label="Max output tokens" value={draft.maxTokens} onChange={(maxTokens) => set({ maxTokens })} placeholder="provider default" type="number" />
+            <Field label="Request timeout (seconds)" value={draft.timeoutSec} onChange={(timeoutSec) => set({ timeoutSec })} placeholder="300 — raise for local/slow models on large prompts" type="number" />
           </>
         )}
 

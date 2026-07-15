@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
+import { matchesAnyGlob, parseInstructionFile } from '@heapcode/core';
 
 const MAX_CHARS = 4_000;
+const INSTRUCTIONS_DIR = '.heapcode/instructions';
 
 const MEMORY_TEMPLATE = `# Heap Code Memory
 
@@ -22,9 +24,11 @@ agent session. Keep it short — it costs context tokens.
 
 /**
  * Project instructions injected into chat/agent system context:
- * HEAPCODE.md (project instructions) + .heapcode/memory.md (accumulated notes).
+ * .heapcode/HEAPCODE.md (project instructions) + .heapcode/memory.md (accumulated notes)
+ * + any path-scoped files under .heapcode/instructions/ whose `applyTo` glob
+ * matches the active file (or that apply everywhere, if no active file).
  */
-export async function loadProjectInstructions(): Promise<string> {
+export async function loadProjectInstructions(activeFilePath?: string): Promise<string> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (!root) return '';
   const parts: string[] = [];
@@ -38,12 +42,46 @@ export async function loadProjectInstructions(): Promise<string> {
     }
   };
 
-  const heapcodeMd = await read('HEAPCODE.md');
+  // Older projects may still have it at the workspace root, from before this moved into .heapcode/.
+  const heapcodeMd = (await read('.heapcode/HEAPCODE.md')) || (await read('HEAPCODE.md'));
   if (heapcodeMd) parts.push(`Project instructions (HEAPCODE.md):\n${heapcodeMd}`);
   const memory = await read('.heapcode/memory.md');
   if (memory) parts.push(`Project memory (.heapcode/memory.md):\n${memory}`);
 
+  const scoped = await loadScopedInstructions(root, activeFilePath);
+  if (scoped) parts.push(scoped);
+
   return parts.join('\n\n');
+}
+
+/** Reads .heapcode/instructions/*.md and returns the ones applicable to `activeFilePath`, formatted. */
+async function loadScopedInstructions(root: vscode.Uri, activeFilePath?: string): Promise<string> {
+  const dir = vscode.Uri.joinPath(root, INSTRUCTIONS_DIR);
+  let entries: [string, vscode.FileType][];
+  try {
+    entries = await vscode.workspace.fs.readDirectory(dir);
+  } catch {
+    return '';
+  }
+
+  const blocks: string[] = [];
+  for (const [name, type] of entries) {
+    if (type !== vscode.FileType.File || !name.endsWith('.md')) continue;
+    let content: string;
+    try {
+      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(dir, name));
+      content = new TextDecoder().decode(bytes);
+    } catch {
+      continue;
+    }
+    const { applyTo, body } = parseInstructionFile(content);
+    if (!body) continue;
+    // With no active file to check against, only globally-scoped (`**`) files apply.
+    const applies = activeFilePath ? matchesAnyGlob(applyTo, activeFilePath) : applyTo.includes('**');
+    if (!applies) continue;
+    blocks.push(`Instructions (${INSTRUCTIONS_DIR}/${name}, applyTo: ${applyTo.join(', ')}):\n${body.slice(0, MAX_CHARS)}`);
+  }
+  return blocks.join('\n\n');
 }
 
 export async function openMemoryFile(): Promise<void> {

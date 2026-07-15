@@ -325,9 +325,14 @@ export function App() {
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const toolsPickerRef = useRef<HTMLDivElement>(null);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
-  const [toolsList, setToolsList] = useState<
-    Array<{ name: string; description: string; enabled: boolean; source: 'builtin' | 'mcp' }>
+  const [toolGroups, setToolGroups] = useState<
+    Array<{
+      id: string;
+      label: string;
+      tools: Array<{ name: string; label: string; description: string; enabled: boolean }>;
+    }>
   >([]);
+  const [collapsedToolGroups, setCollapsedToolGroups] = useState<Record<string, boolean>>({});
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
@@ -465,7 +470,7 @@ export function App() {
           setPendingImages((prev) => [...prev, ...msg.images].slice(0, MAX_IMAGES));
           break;
         case 'toolsList':
-          setToolsList(msg.tools);
+          setToolGroups(msg.groups);
           break;
         case 'models':
           setModelMenu({ loading: false, profiles: msg.profiles, models: msg.models });
@@ -567,10 +572,9 @@ export function App() {
           break;
         case 'agentToolCall':
           setToolStreamChars(0);
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: 'assistant',
+          setMessages((prev) => {
+            const chip = {
+              role: 'assistant' as const,
               content: '',
               tool: {
                 id: msg.id,
@@ -579,8 +583,15 @@ export function App() {
                 done: false,
                 terminalCommand: msg.terminalCommand,
               },
-            },
-          ]);
+            };
+            // Ask mode streams the answer into an empty placeholder appended at send
+            // time — keep chips above it so 'chunk' still finds the placeholder last.
+            const last = prev[prev.length - 1];
+            if (last && last.role === 'assistant' && !last.content && !last.tool && !last.agentStatus) {
+              return [...prev.slice(0, -1), chip, last];
+            }
+            return [...prev, chip];
+          });
           break;
         case 'agentToolResult':
           setMessages((prev) =>
@@ -1016,6 +1027,11 @@ export function App() {
                       {changedFiles.length > 0 &&
                         ` · ${changedFiles.length} file${changedFiles.length > 1 ? 's' : ''} changed`}
                     </span>
+                    {changedFiles.some((f) => !f.reverted) && (
+                      <button className="ghost" onClick={() => postToExtension({ type: 'agentKeepAll' })}>
+                        Keep all
+                      </button>
+                    )}
                     {changedFiles.length > 0 && (
                       <button className="ghost" onClick={() => postToExtension({ type: 'agentRevert' })}>
                         Revert all
@@ -1308,26 +1324,82 @@ export function App() {
               {toolsMenuOpen && (
                 <div className="model-menu tools-menu">
                   <div className="tools-menu-title">
-                    Agent tools · {toolsList.filter((t) => t.enabled).length}/{toolsList.length} enabled
+                    Agent tools ·{' '}
+                    {toolGroups.reduce((n, g) => n + g.tools.filter((t) => t.enabled).length, 0)}/
+                    {toolGroups.reduce((n, g) => n + g.tools.length, 0)} enabled
                   </div>
-                  {toolsList.map((t) => (
-                    <button
-                      key={t.name}
-                      className={`menu-item tool-toggle${t.enabled ? ' active' : ''}`}
-                      title={t.description}
-                      onClick={() => {
-                        setToolsList((prev) =>
-                          prev.map((x) => (x.name === t.name ? { ...x, enabled: !x.enabled } : x)),
-                        );
-                        postToExtension({ type: 'setToolEnabled', name: t.name, enabled: !t.enabled });
-                      }}
-                    >
-                      <span className="tool-toggle-check">{t.enabled ? '✓' : ''}</span>
-                      {t.name}
-                      {t.source === 'mcp' && <span className="tool-toggle-tag">MCP</span>}
-                    </button>
-                  ))}
-                  {toolsList.length === 0 && <div className="menu-note">No tools reported.</div>}
+                  {toolGroups.map((g) => {
+                    const allOn = g.tools.every((t) => t.enabled);
+                    const someOn = g.tools.some((t) => t.enabled);
+                    const collapsed = collapsedToolGroups[g.id] ?? false;
+                    return (
+                      <div className="tools-group" key={g.id}>
+                        <button
+                          className="tools-group-header"
+                          onClick={() =>
+                            setCollapsedToolGroups((prev) => ({ ...prev, [g.id]: !collapsed }))
+                          }
+                        >
+                          <span className="tools-group-chevron">{collapsed ? '▸' : '▾'}</span>
+                          <input
+                            type="checkbox"
+                            checked={allOn}
+                            ref={(el) => {
+                              if (el) el.indeterminate = !allOn && someOn;
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => {
+                              const next = !allOn;
+                              setToolGroups((prev) =>
+                                prev.map((x) =>
+                                  x.id === g.id
+                                    ? { ...x, tools: x.tools.map((t) => ({ ...t, enabled: next })) }
+                                    : x,
+                                ),
+                              );
+                              for (const t of g.tools) {
+                                postToExtension({ type: 'setToolEnabled', name: t.name, enabled: next });
+                              }
+                            }}
+                          />
+                          <span className="tools-group-label">{g.label}</span>
+                          <span className="tools-group-count">
+                            {g.tools.filter((t) => t.enabled).length}/{g.tools.length}
+                          </span>
+                        </button>
+                        {!collapsed && (
+                          <div className="tools-group-body">
+                            {g.tools.map((t) => (
+                              <label className="tool-toggle" title={t.description} key={t.name}>
+                                <input
+                                  type="checkbox"
+                                  checked={t.enabled}
+                                  onChange={() => {
+                                    const next = !t.enabled;
+                                    setToolGroups((prev) =>
+                                      prev.map((x) =>
+                                        x.id === g.id
+                                          ? {
+                                              ...x,
+                                              tools: x.tools.map((y) =>
+                                                y.name === t.name ? { ...y, enabled: next } : y,
+                                              ),
+                                            }
+                                          : x,
+                                      ),
+                                    );
+                                    postToExtension({ type: 'setToolEnabled', name: t.name, enabled: next });
+                                  }}
+                                />
+                                {t.label}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {toolGroups.length === 0 && <div className="menu-note">No tools reported.</div>}
                 </div>
               )}
               <button

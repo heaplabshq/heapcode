@@ -422,7 +422,7 @@ button.ghost:not(:disabled):hover {
   overflow-wrap: anywhere;
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.8em;
-  max-height: 180px;
+  max-height: 280px;
   overflow-y: auto;
 }
 
@@ -896,6 +896,17 @@ select.settings-input {
   appearance: auto;
 }
 
+/* Sits directly under a role's model field — reads as "this model's provider", not a new setting. */
+.settings-role-profile {
+  margin-top: -4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--vscode-panel-border);
+}
+
+.settings-role-profile .settings-input {
+  max-width: 220px;
+}
+
 .settings-key-row {
   display: flex;
   gap: 6px;
@@ -1081,7 +1092,8 @@ select.settings-input {
 }
 
 .tools-menu {
-  max-height: 300px;
+  max-height: 340px;
+  overflow-y: auto;
 }
 
 .tools-menu-title {
@@ -1091,29 +1103,71 @@ select.settings-input {
   padding: 4px 8px 6px;
 }
 
+.tools-group {
+  margin-bottom: 2px;
+}
+
+.tools-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+.tools-group-header:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.tools-group-chevron {
+  width: 10px;
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+
+.tools-group-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tools-group-count {
+  font-size: 0.85em;
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+.tools-group-body {
+  display: flex;
+  flex-direction: column;
+  padding-left: 22px;
+}
+
 .tool-toggle {
   display: flex;
   align-items: center;
   gap: 7px;
+  padding: 3px 8px;
+  border-radius: 4px;
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.84em;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.tool-toggle:not(.active) {
+.tool-toggle:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.tool-toggle:has(input:not(:checked)) {
   opacity: 0.55;
-}
-
-.tool-toggle-check {
-  width: 14px;
-  color: var(--vscode-focusBorder);
-}
-
-.tool-toggle-tag {
-  font-size: 0.75em;
-  padding: 0 5px;
-  border-radius: 6px;
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
 }
 
 .mode-chip:hover,

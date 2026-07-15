@@ -11,6 +11,8 @@ import {
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
+import { callLmTool, getLmToolDefinitions, getLmToolGroups, isLmTool } from './lmTools.js';
+import { getActiveEditor } from '../contextCollector.js';
 import type { ProfileManager } from '../profileManager.js';
 import type { RagIndexer } from '../rag/indexer.js';
 import type { McpManager } from './mcp.js';
@@ -23,20 +25,61 @@ export class AgentController {
   /** ask_user tool: forwards the agent's question to the chat UI; set by extension.ts. */
   askUser?: (question: string, options?: string[]) => Promise<string | undefined>;
 
-  /** All tools the agent could use (for the composer's tools picker). */
-  listAvailableTools(): Array<{ name: string; description: string; source: 'builtin' | 'mcp' }> {
-    return [
-      ...agentToolDefinitions.map((t) => ({
-        name: t.name,
-        description: t.description,
-        source: 'builtin' as const,
-      })),
-      ...(this.mcp?.getToolDefinitions() ?? []).map((t) => ({
-        name: t.name,
-        description: t.description,
-        source: 'mcp' as const,
-      })),
-    ];
+  /** Built-in tools grouped the way Copilot groups its own (read/search/edit/execute/other). */
+  private static readonly BUILTIN_CATEGORIES: Array<{ label: string; names: string[] }> = [
+    {
+      label: 'Built-in · Read',
+      names: ['read_file', 'list_dir', 'get_symbols', 'find_references', 'go_to_definition', 'get_diagnostics'],
+    },
+    { label: 'Built-in · Search', names: ['search', 'semantic_search'] },
+    {
+      label: 'Built-in · Edit',
+      names: ['write_file', 'edit_file', 'multi_edit', 'rename_file', 'delete_file', 'create_directory'],
+    },
+    { label: 'Built-in · Execute', names: ['run_command'] },
+    { label: 'Built-in · Skills', names: ['list_skills', 'load_skill'] },
+    { label: 'Built-in · Other', names: ['ask_user', 'fetch_url'] },
+  ];
+
+  /** All tools the agent could use, grouped by source (for the composer's tools picker). */
+  listToolGroups(): Array<{
+    id: string;
+    label: string;
+    tools: Array<{ name: string; label: string; description: string }>;
+  }> {
+    const groups: Array<{ id: string; label: string; tools: Array<{ name: string; label: string; description: string }> }> = [];
+
+    const byName = new Map(agentToolDefinitions.map((t) => [t.name, t]));
+    for (const cat of AgentController.BUILTIN_CATEGORIES) {
+      const tools = cat.names
+        .map((n) => byName.get(n))
+        .filter((t): t is NonNullable<typeof t> => !!t)
+        .map((t) => ({ name: t.name, label: t.name, description: t.description }));
+      if (tools.length > 0) groups.push({ id: cat.label, label: cat.label, tools });
+    }
+
+    const mcpByServer = new Map<string, Array<{ name: string; label: string; description: string }>>();
+    for (const t of this.mcp?.getToolDefinitions() ?? []) {
+      const withoutPrefix = t.name.replace(/^mcp__/, '');
+      const sep = withoutPrefix.indexOf('__');
+      const server = sep >= 0 ? withoutPrefix.slice(0, sep) : withoutPrefix;
+      const label = sep >= 0 ? withoutPrefix.slice(sep + 2) : withoutPrefix;
+      if (!mcpByServer.has(server)) mcpByServer.set(server, []);
+      mcpByServer.get(server)!.push({ name: t.name, label, description: t.description });
+    }
+    for (const [server, tools] of mcpByServer) {
+      groups.push({ id: `mcp-${server}`, label: `MCP · ${server}`, tools });
+    }
+
+    for (const g of getLmToolGroups()) {
+      groups.push({
+        id: `lm-${g.label}`,
+        label: g.label,
+        tools: g.tools.map((t) => ({ name: t.name, label: t.label, description: t.description })),
+      });
+    }
+
+    return groups;
   }
 
   constructor(
@@ -68,7 +111,7 @@ export class AgentController {
       return;
     }
 
-    const { provider, profile } = await this.profiles.createActiveProvider();
+    const { provider, profile } = await this.profiles.resolveRole('agentModel');
     if (!profile.model) {
       this.post({ type: 'error', message: `Profile "${profile.name}" has no model configured.` });
       return;
@@ -106,7 +149,12 @@ export class AgentController {
     let lastToolStreamPost = 0;
     await this.mcp?.ensureConnected();
     const mcpTools = this.mcp?.getToolDefinitions() ?? [];
-    const instructions = await loadProjectInstructions();
+    const lmTools = getLmToolDefinitions();
+    const activeEditor = getActiveEditor();
+    const activeFilePath = activeEditor
+      ? vscode.workspace.asRelativePath(activeEditor.document.uri, false)
+      : undefined;
+    const instructions = await loadProjectInstructions(activeFilePath);
     const fullTask = instructions ? `${instructions}\n\n---\n\nTask: ${task}` : task;
 
     try {
@@ -116,7 +164,7 @@ export class AgentController {
         task: fullTask,
         images,
         workspaceName: path.basename(root.fsPath),
-        tools: [...agentToolDefinitions, ...mcpTools].filter(
+        tools: [...agentToolDefinitions, ...mcpTools, ...lmTools].filter(
           (t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name),
         ),
         nativeToolCalls: capabilities.nativeToolCalls,
@@ -137,6 +185,19 @@ export class AgentController {
           if (this.mcp?.isMcpTool(call.name)) {
             const content = await this.mcp.call(call.name, call.args);
             return { id: call.id, name: call.name, content };
+          }
+          if (isLmTool(call.name)) {
+            try {
+              const content = await callLmTool(call.name, call.args);
+              return { id: call.id, name: call.name, content };
+            } catch (err) {
+              return {
+                id: call.id,
+                name: call.name,
+                content: err instanceof Error ? err.message : String(err),
+                isError: true,
+              };
+            }
           }
           const result = await executor.execute(call);
           if (!result.isError && (call.name === 'write_file' || call.name === 'edit_file')) {
@@ -184,7 +245,7 @@ export class AgentController {
               type: 'agentToolResult',
               id: result.id,
               ok: !result.isError,
-              summary: result.content.slice(0, 300),
+              summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
               label: resultLabel(result.name, result.content, result.isError),
               fileEdit: fileEdits.get(result.id),
             }),
@@ -229,6 +290,9 @@ export class AgentController {
   private describe(call: ToolCall, executor: WorkspaceToolExecutor): string {
     if (this.mcp?.isMcpTool(call.name)) {
       return `MCP tool ${call.name.replace(/^mcp__/, '').replace('__', ': ')} ${JSON.stringify(call.args).slice(0, 120)}`;
+    }
+    if (isLmTool(call.name)) {
+      return `VS Code tool ${call.name.replace(/^vslm__/, '')} ${JSON.stringify(call.args).slice(0, 120)}`;
     }
     return executor.describe(call);
   }
@@ -285,6 +349,16 @@ export class AgentController {
     this.postChangedFiles();
   }
 
+  /** Accept every remaining (non-reverted) file at once — the "Keep all" counterpart to Revert all. */
+  keepAll(): void {
+    const kept = this.checkpoint?.keepAll() ?? [];
+    this.post({
+      type: 'agentText',
+      text: kept.length > 0 ? `Kept ${kept.length} file(s): ${kept.join(', ')}.` : 'Nothing to keep.',
+    });
+    this.postChangedFiles();
+  }
+
   private postChangedFiles(): void {
     this.post({
       type: 'agentStatus',
@@ -308,7 +382,10 @@ export function registerAgentDiffProvider(context: vscode.ExtensionContext): voi
   );
 }
 
-function resultLabel(name: string, content: string, isError?: boolean): string {
+/** How much tool output the expandable chip in the chat can show (it scrolls). */
+export const TOOL_SUMMARY_CHARS = 5_000;
+
+export function resultLabel(name: string, content: string, isError?: boolean): string {
   if (isError) return content.split('\n')[0]!.slice(0, 80);
   switch (name) {
     case 'read_file':

@@ -62,7 +62,7 @@ export async function generateCommitMessage(
       const abort = new AbortController();
       token.onCancellationRequested(() => abort.abort());
       try {
-        const { provider, profile } = await profiles.createActiveProvider();
+        const { provider, profile } = await profiles.resolveRole('editModel');
         const result = await provider.chat({
           model: profile.editModel || profile.model,
           messages: buildCommitMessages(diff),

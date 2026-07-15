@@ -5,6 +5,15 @@ import { DEFAULT_CONTEXT_WINDOW } from '../context/tokens.js';
  * A named provider configuration. API keys are NOT part of the profile —
  * they live in the IDE's secret storage, keyed by profile name.
  */
+/** Roles that can each run against a different configured profile entirely (see `*Profile` fields below). */
+export type ModelRole =
+  | 'editModel'
+  | 'applyModel'
+  | 'completionModel'
+  | 'agentModel'
+  | 'embeddingsModel'
+  | 'rerankModel';
+
 export interface ProviderProfileConfig {
   name: string;
   preset: PresetId;
@@ -22,6 +31,19 @@ export interface ProviderProfileConfig {
   embeddingsModel?: string;
   /** Reranks semantic-search hits. Inherits edit → chat model when unset. */
   rerankModel?: string;
+  /**
+   * Run this role against a different configured profile's provider entirely
+   * (its baseUrl/key/model), instead of this one — e.g. embeddings on a local
+   * Ollama profile while chat/agent stay on a cloud profile. Falls back to
+   * this profile when unset, self-referencing, or the named profile doesn't
+   * exist.
+   */
+  editProfile?: string;
+  applyProfile?: string;
+  completionProfile?: string;
+  agentProfile?: string;
+  embeddingsProfile?: string;
+  rerankProfile?: string;
   temperature?: number;
   maxTokens?: number;
   /**
@@ -29,7 +51,11 @@ export interface ProviderProfileConfig {
    * usage meter and automatic conversation compaction. Default 32768.
    */
   contextWindow?: number;
-  /** Per-request timeout for non-streaming calls (ms). Default 120000. */
+  /**
+   * Per-request timeout (ms): the full response for non-streaming calls, or
+   * time-to-first-token for streaming/agent calls (not the whole reply).
+   * Default 300000. Raise this for local/slow models on large prompts.
+   */
   timeoutMs?: number;
   headers?: Record<string, string>;
   /** Per-profile overrides of the preset's capability defaults. */

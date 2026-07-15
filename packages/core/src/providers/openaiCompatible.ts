@@ -47,7 +47,10 @@ interface OpenAIChatCompletion {
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 3;
-const DEFAULT_TIMEOUT_MS = 120_000;
+// Local models can take a while to first-token on a long prompt (agent turns
+// especially — big system prompt, tool schemas, file contents) while they
+// prefill, well before generation even starts. 120s cut those off routinely.
+const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**
  * Client for any OpenAI-compatible endpoint: OpenAI, Ollama (/v1), OpenRouter,
@@ -131,8 +134,9 @@ export class OpenAICompatibleProvider implements Provider {
    *    ETIMEDOUT, DNS…) surfaced, or users can't tell a wrong URL from a down server.
    * 2. 429/5xx responses are retried with exponential backoff (honoring
    *    Retry-After), up to 3 attempts. Streams only retry before first byte.
-   * 3. A per-attempt timeout (default 120s; timeoutMs=0 disables, used for
-   *    streaming) — a stalled endpoint must fail loudly, never hang the UI.
+   * 3. A per-attempt timeout (default 300s; timeoutMs=0 disables). For
+   *    streaming calls this bounds time-to-first-byte only, not the whole
+   *    response — a stalled endpoint must fail loudly, never hang the UI.
    */
   protected async fetchOrThrow(
     url: string,
@@ -291,7 +295,9 @@ export class OpenAICompatibleProvider implements Provider {
     } catch (err) {
       if (internal.signal.aborted && !req.signal?.aborted) {
         throw new ProviderError(
-          `No response from ${this.config.baseUrl} within ${Math.round(ttfbMs / 1000)}s.`,
+          `No response from ${this.config.baseUrl} within ${Math.round(ttfbMs / 1000)}s. ` +
+            'If this is a local/slow model on a large prompt (e.g. an agent task), raise ' +
+            '"timeoutMs" on this profile — it only bounds time-to-first-token, not the full reply.',
         );
       }
       throw err;

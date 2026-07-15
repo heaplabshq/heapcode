@@ -11,6 +11,8 @@ export interface ToolDisplay {
   description: string;
   ok: boolean;
   label?: string;
+  /** Truncated tool output for the expandable chip; persisted so history reloads keep it. */
+  summary?: string;
   fileEdit?: FileEditInfo;
 }
 
@@ -98,6 +100,7 @@ export type WebviewToExtension =
   | { type: 'agentStart'; task: string; files?: string[]; images?: string[] }
   | { type: 'agentStop' }
   | { type: 'agentRevert' }
+  | { type: 'agentKeepAll' }
   | { type: 'agentDiffFile'; path: string }
   | { type: 'agentRevertFile'; path: string }
   | { type: 'agentReapplyFile'; path: string }
@@ -136,10 +139,14 @@ export type ExtensionToWebview =
   | { type: 'contextFiles'; files: string[] }
   /** Dropped image files, read by the extension and converted to data: URLs. */
   | { type: 'imageAttachments'; images: string[] }
-  /** Agent tools with enabled state, for the composer's tools picker. */
+  /** Agent tools grouped by source (built-in category, MCP server, or contributing VS Code extension), for the composer's tools picker. */
   | {
       type: 'toolsList';
-      tools: Array<{ name: string; description: string; enabled: boolean; source: 'builtin' | 'mcp' }>;
+      groups: Array<{
+        id: string;
+        label: string;
+        tools: Array<{ name: string; label: string; description: string; enabled: boolean }>;
+      }>;
     }
   /** Active editor file; `selection` (1-based lines) present while text is selected. */
   | { type: 'activeFile'; path: string | null; selection?: { start: number; end: number } }

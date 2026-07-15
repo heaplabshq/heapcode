@@ -29,3 +29,5 @@ export * from './edit/indent.js';
 export * from './edit/diffStats.js';
 export * from './history/types.js';
 export * from './protocol.js';
+export * from './instructions.js';
+export * from './skills.js';

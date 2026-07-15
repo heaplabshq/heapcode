@@ -43,8 +43,8 @@ importers:
         version: 1.29.0(zod@4.4.3)
     devDependencies:
       '@types/vscode':
-        specifier: 1.93.0
-        version: 1.93.0
+        specifier: 1.95.0
+        version: 1.95.0
       '@vscode/vsce':
         specifier: ^3.1.0
         version: 3.9.2
@@ -860,8 +860,8 @@ packages:
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
 
-  '@types/vscode@1.93.0':
-    resolution: {integrity: sha512-kUK6jAHSR5zY8ps42xuW89NLcBpw1kOabah7yv38J8MyiYuOHxLQBi0e7zeXbQgVefDy/mZZetqEFC+Fl5eIEQ==}
+  '@types/vscode@1.95.0':
+    resolution: {integrity: sha512-0LBD8TEiNbet3NvWsmn59zLzOFu/txSlGxnv5yAFHCrhG9WvAnR3IvfHzMOs2aeWqgvNjq9pO99IUw8d3n+unw==}
 
   '@typescript-eslint/eslint-plugin@8.62.1':
     resolution: {integrity: sha512-4EQM77WgVNxj7OkL/5b/D/xZsw00G577+UriYTC7JF5opcF3T2AuoeY7ueLaZgSVjSgCS6yOAJB5bRGLPSJUzA==}
@@ -3312,7 +3312,7 @@ snapshots:
   '@types/trusted-types@2.0.7':
     optional: true
 
-  '@types/vscode@1.93.0': {}
+  '@types/vscode@1.95.0': {}
 
   '@typescript-eslint/eslint-plugin@8.62.1(@typescript-eslint/parser@8.62.1(eslint@9.39.4)(typescript@5.9.3))(eslint@9.39.4)(typescript@5.9.3)':
     dependencies:

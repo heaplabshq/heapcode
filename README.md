@@ -12,7 +12,7 @@ Your code never leaves your machine except to the endpoint **you** configure. No
 |---|---|
 | Ollama, LM Studio, vLLM, LocalAI | OpenAI, Azure OpenAI, OpenRouter, Groq, Together AI, NVIDIA NIM |
 
-…plus any custom OpenAI-spec endpoint. Providers are **named profiles** — switch from the status bar, with separate model roles for **chat / completion / embeddings** per profile.
+…plus any custom OpenAI-spec endpoint. Providers are **named profiles** — switch from the status bar, with separate model roles for **chat / edit / apply / completion / agent / embeddings / rerank** per profile. Any role can also run on a *different* profile entirely (Settings → Model roles & tuning → "run on profile") — e.g. embeddings on a local Ollama profile while chat/agent use a cloud profile.
 
 ## Features
 
@@ -22,7 +22,9 @@ Your code never leaves your machine except to the endpoint **you** configure. No
 - **Agent mode** — reads, searches, edits files and runs commands to complete tasks autonomously; every non-read action goes through permission prompts (Allow Once / Session / Always, Safe Mode); one-click **Revert all** restores every touched file byte-identical
 - **Semantic search (RAG)** — background incremental index using your embeddings model; powers `@workspace` and the agent's `semantic_search`; degrades gracefully to text search with no embedder
 - **MCP** — register Model Context Protocol servers (stdio / HTTP / SSE); their tools appear in agent mode under the same permission system
-- **Project memory** — `HEAPCODE.md` + `.heapcode/memory.md` are loaded into every chat and agent session
+- **VS Code tool interop** — any tool another installed extension registered via VS Code's Language Model Tools API (Python, Jupyter, SonarQube, …) shows up in agent mode too, same tools picker, same permission system
+- **Project memory** — `.heapcode/HEAPCODE.md` + `.heapcode/memory.md` are loaded into every chat and agent session; add path-scoped rules with `.heapcode/instructions/*.md` files (optional front-matter `applyTo: "**/*.tsx"` glob — applies everywhere if omitted)
+- **Skills** — model-invoked capabilities from `.claude/skills/<name>/SKILL.md` (project) or `~/.claude/skills/<name>/SKILL.md` (personal) — the same convention Claude Code uses, so Skills are shared with zero setup. The agent calls `list_skills` (name + description only, cheap) then `load_skill` on whichever matches the task, including bundled reference files
 - **Git** — commit-message generation from the staged diff (✨ button in Source Control)
 
 ## Quick start

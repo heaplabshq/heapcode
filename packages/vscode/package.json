@@ -28,7 +28,7 @@
     "url": "https://github.com/siddharth7631/heapcode"
   },
   "engines": {
-    "vscode": "^1.93.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "AI",
@@ -242,7 +242,7 @@
         "heapcode.profiles": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. API keys are NOT stored here — use the *Heap Code: Set API Key* command (OS keychain). Presets: `openai`, `ollama`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
+          "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. Each role (edit/apply/completion/agent/embeddings/rerank) can also be pointed at a *different* profile entirely via its `<role>Profile` field (e.g. `embeddingsProfile: \"my-ollama-profile\"`) — lets you mix providers per role, e.g. embeddings on local Ollama while chat/agent use a cloud profile. API keys are NOT stored here — use the *Heap Code: Set API Key* command (OS keychain). Presets: `openai`, `ollama`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
           "items": {
             "type": "object",
             "required": [
@@ -292,6 +292,33 @@
               "embeddingsModel": {
                 "type": "string"
               },
+              "rerankModel": {
+                "type": "string"
+              },
+              "editProfile": {
+                "type": "string",
+                "description": "Run the edit role on a different configured profile entirely (its baseUrl/key/model) instead of this one. Name of another profile; unset = use this profile."
+              },
+              "applyProfile": {
+                "type": "string",
+                "description": "Run the apply role on a different configured profile entirely, instead of this one."
+              },
+              "completionProfile": {
+                "type": "string",
+                "description": "Run the autocomplete role on a different configured profile entirely, instead of this one."
+              },
+              "agentProfile": {
+                "type": "string",
+                "description": "Run agent mode on a different configured profile entirely, instead of this one."
+              },
+              "embeddingsProfile": {
+                "type": "string",
+                "description": "Run embeddings (semantic search / RAG) on a different configured profile entirely — e.g. a local Ollama profile while chat/agent stay on a cloud profile."
+              },
+              "rerankProfile": {
+                "type": "string",
+                "description": "Run the semantic-search rerank step on a different configured profile entirely, instead of this one."
+              },
               "temperature": {
                 "type": "number"
               },
@@ -304,7 +331,7 @@
               },
               "timeoutMs": {
                 "type": "number",
-                "description": "Per-request timeout for non-streaming calls (ms). Default 120000."
+                "description": "Per-request timeout in ms: full response for non-streaming calls, time-to-first-token for streaming/agent calls (not the whole reply). Default 300000. Raise this for local/slow models on large prompts (e.g. agent tasks)."
               },
               "headers": {
                 "type": "object"
@@ -481,7 +508,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
-    "@types/vscode": "1.93.0",
+    "@types/vscode": "1.95.0",
     "@vscode/vsce": "^3.1.0",
     "esbuild": "^0.23.1",
     "typescript": "^5.5.4"

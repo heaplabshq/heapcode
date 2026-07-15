@@ -6,12 +6,23 @@ import {
   providerPresets,
   resolveCapabilities,
   type ContextWindowSource,
+  type ModelRole,
   type PresetId,
   type Provider,
   type ProviderProfileConfig,
 } from '@heapcode/core';
 
 const LEGACY_KEY_SECRET = 'heapcode.apiKey';
+
+/** Which `*Profile` field on ProviderProfileConfig redirects a given role to another profile. */
+const ROLE_PROFILE_FIELD: Record<ModelRole, keyof ProviderProfileConfig> = {
+  editModel: 'editProfile',
+  applyModel: 'applyProfile',
+  completionModel: 'completionProfile',
+  agentModel: 'agentProfile',
+  embeddingsModel: 'embeddingsProfile',
+  rerankModel: 'rerankProfile',
+};
 
 /**
  * Model context length from provider-native APIs, for endpoints whose
@@ -112,6 +123,26 @@ export class ProfileManager {
 
   async createActiveProvider(): Promise<{ provider: Provider; profile: ProviderProfileConfig }> {
     const profile = this.getActiveProfile();
+    const apiKey = await this.getApiKey(profile);
+    return { provider: createProvider(profile, apiKey), profile };
+  }
+
+  /**
+   * Which profile actually serves a given role: the active profile, unless it names a
+   * different one via its `<role>Profile` field (e.g. `embeddingsProfile`), in which case
+   * that named profile is used instead — its own baseUrl/key/model, not the active one's.
+   * Synchronous (no secret-storage lookup) so it's cheap to call just to check a model name.
+   */
+  resolveRoleProfile(role: ModelRole): ProviderProfileConfig {
+    const active = this.getActiveProfile();
+    const targetName = active[ROLE_PROFILE_FIELD[role]] as string | undefined;
+    if (!targetName || targetName === active.name) return active;
+    return this.getProfiles().find((p) => p.name === targetName) ?? active;
+  }
+
+  /** Provider + profile for a role, following its `<role>Profile` redirect (see resolveRoleProfile). */
+  async resolveRole(role: ModelRole): Promise<{ provider: Provider; profile: ProviderProfileConfig }> {
+    const profile = this.resolveRoleProfile(role);
     const apiKey = await this.getApiKey(profile);
     return { provider: createProvider(profile, apiKey), profile };
   }
@@ -341,6 +372,17 @@ export class ProfileManager {
       | 'agentModel'
       | 'embeddingsModel'
       | 'rerankModel';
+
+    /** A role redirected to another profile shows that instead — this profile's own model field is unused while it's active. */
+    const describeRole = (role: Role, ownDescription: string): string => {
+      if (role === 'model') return ownDescription;
+      const targetName = profile[ROLE_PROFILE_FIELD[role]] as string | undefined;
+      if (!targetName) return ownDescription;
+      const target = this.getProfiles().find((p) => p.name === targetName);
+      if (!target) return `via "${targetName}" (profile not found — falls back here)`;
+      return `via "${targetName}" → ${target[role] || 'not set'}`;
+    };
+
     const inherits = `inherits chat (${profile.model || 'not set'})`;
     const rolePick = await vscode.window.showQuickPick(
       [
@@ -352,37 +394,40 @@ export class ProfileManager {
         },
         {
           label: '$(edit) Edit',
-          description: profile.editModel || inherits,
+          description: describeRole('editModel', profile.editModel || inherits),
           detail: 'Inline edit (Ctrl+I), commit messages',
           role: 'editModel' as Role,
         },
         {
           label: '$(git-merge) Apply',
-          description: profile.applyModel || 'not set — uses selection/insert fallback',
+          description: describeRole('applyModel', profile.applyModel || 'not set — uses selection/insert fallback'),
           detail: 'Fast-apply merge model for "Apply" on code blocks (e.g. FastApply-1.5B)',
           role: 'applyModel' as Role,
         },
         {
           label: '$(zap) Autocomplete',
-          description: profile.completionModel || inherits,
+          description: describeRole('completionModel', profile.completionModel || inherits),
           detail: 'Ghost text — pick a FIM-capable coder model (qwen2.5-coder, starcoder2…)',
           role: 'completionModel' as Role,
         },
         {
           label: '$(hubot) Agent',
-          description: profile.agentModel || inherits,
+          description: describeRole('agentModel', profile.agentModel || inherits),
           detail: 'Agent mode — pick a strong tool-calling model',
           role: 'agentModel' as Role,
         },
         {
           label: '$(search) Embeddings',
-          description: profile.embeddingsModel || 'not set',
+          description: describeRole('embeddingsModel', profile.embeddingsModel || 'not set'),
           detail: 'Semantic search / RAG index',
           role: 'embeddingsModel' as Role,
         },
         {
           label: '$(list-ordered) Rerank',
-          description: profile.rerankModel || `inherits edit/chat (${profile.editModel || profile.model || 'not set'})`,
+          description: describeRole(
+            'rerankModel',
+            profile.rerankModel || `inherits edit/chat (${profile.editModel || profile.model || 'not set'})`,
+          ),
           detail: 'Reranks semantic-search hits — a small fast model works well',
           role: 'rerankModel' as Role,
         },
@@ -391,6 +436,22 @@ export class ProfileManager {
     );
     if (!rolePick) return;
     const role = rolePick.role;
+
+    if (role !== 'model') {
+      const redirectTarget = profile[ROLE_PROFILE_FIELD[role]] as string | undefined;
+      if (redirectTarget) {
+        const roleLabel = rolePick.label.replace(/\$\([\w-]+\) /, '');
+        const exists = this.getProfiles().some((p) => p.name === redirectTarget);
+        void vscode.window.showInformationMessage(
+          exists
+            ? `"${roleLabel}" on "${profile.name}" runs on profile "${redirectTarget}" instead (set in Settings → Model roles & tuning). ` +
+              `Edit "${redirectTarget}"'s own model there, or clear the redirect to set a model here.`
+            : `"${roleLabel}" on "${profile.name}" is redirected to profile "${redirectTarget}", which no longer exists — ` +
+              'falling back to this profile. Clear the redirect in Settings → Model roles & tuning.',
+        );
+        return;
+      }
+    }
 
     let modelId: string | undefined;
     try {

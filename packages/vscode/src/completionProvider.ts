@@ -65,7 +65,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     const abort = new AbortController();
     token.onCancellationRequested(() => abort.abort());
 
-    const { provider, profile } = await this.profiles.createActiveProvider();
+    const { provider, profile } = await this.profiles.resolveRole('completionModel');
     const model = profile.completionModel || profile.model;
     if (!model) return;
 

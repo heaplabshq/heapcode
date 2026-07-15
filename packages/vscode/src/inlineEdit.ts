@@ -258,8 +258,11 @@ export async function applyCodeToEditor(
 
   const match = findBestMatch(document.getText(), code);
   if (match) {
-    // The block already exists verbatim — nothing to change.
-    log.appendLine('[apply] code block already present in file; inserting at cursor instead');
+    // The block already exists verbatim (or near-verbatim) — inserting again
+    // at the cursor would just duplicate it.
+    log.appendLine('[apply] code block already present in file; nothing to apply');
+    void vscode.window.showInformationMessage('Heap Code: this code is already in the file.');
+    return;
   }
   await editor.edit((builder) => builder.insert(editor.selection.active, code));
 }

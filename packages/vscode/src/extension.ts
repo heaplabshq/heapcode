@@ -192,7 +192,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  registerInlineEdit(context, profiles, log);
+  registerInlineEdit(context, profiles, log, rag);
   registerAgentDiffProvider(context);
 
   updateRagStatus();

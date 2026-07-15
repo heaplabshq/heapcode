@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { extractFirstCodeBlock } from '../src/edit/codeBlocks.js';
 import { applySearchReplace, findBestMatch } from '../src/edit/fuzzyMatch.js';
 import { minIndent, reindent } from '../src/edit/indent.js';
+import { buildInlineEditMessages } from '../src/prompts/edit.js';
 
 describe('extractFirstCodeBlock', () => {
   it('extracts a plain fenced block', () => {
@@ -84,6 +85,26 @@ describe('applySearchReplace', () => {
 
   it('returns undefined instead of guessing on no match', () => {
     expect(applySearchReplace('abc', 'xyz', '123')).toBeUndefined();
+  });
+});
+
+describe('buildInlineEditMessages', () => {
+  const base = {
+    instruction: 'add error handling',
+    selectedCode: 'foo();',
+    languageId: 'typescript',
+    filePath: 'src/a.ts',
+  };
+
+  it('omits the related-code section when none is given', () => {
+    const [, user] = buildInlineEditMessages(base);
+    expect(user!.content).not.toContain('RELATED CODE');
+  });
+
+  it('includes related code from the RAG index when provided', () => {
+    const [, user] = buildInlineEditMessages({ ...base, relatedCode: '--- src/b.ts:1-2 ---\nbar();' });
+    expect(user!.content).toContain('RELATED CODE FROM ELSEWHERE IN THE WORKSPACE');
+    expect(user!.content).toContain('bar();');
   });
 });
 

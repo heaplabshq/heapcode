@@ -14,6 +14,8 @@ export interface InlineEditOptions {
   /** Optional code around the selection, for style/context. */
   prefix?: string;
   suffix?: string;
+  /** Optional semantically-related snippets from elsewhere in the workspace (from the RAG index). */
+  relatedCode?: string;
 }
 
 export function buildInlineEditMessages(opts: InlineEditOptions): ChatMessage[] {
@@ -24,6 +26,11 @@ export function buildInlineEditMessages(opts: InlineEditOptions): ChatMessage[] 
   parts.push(`SELECTED CODE:\n\`\`\`${opts.languageId}\n${opts.selectedCode}\n\`\`\``);
   if (opts.suffix) {
     parts.push(`CODE AFTER SELECTION (context only, do not include in reply):\n${opts.suffix}`);
+  }
+  if (opts.relatedCode) {
+    parts.push(
+      `RELATED CODE FROM ELSEWHERE IN THE WORKSPACE (context only, do not include in reply):\n${opts.relatedCode}`,
+    );
   }
   parts.push(`INSTRUCTION: ${opts.instruction}`);
 

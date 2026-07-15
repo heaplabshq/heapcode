@@ -12,9 +12,11 @@ import {
 } from '@heapcode/core';
 import { getActiveEditor } from './contextCollector.js';
 import type { ProfileManager } from './profileManager.js';
+import type { RagIndexer } from './rag/indexer.js';
 
 const SCHEME = 'heapcode-proposal';
 const CONTEXT_LINES = 40;
+const RELATED_CODE_MATCHES = 4;
 
 const proposals = new Map<string, string>();
 
@@ -31,16 +33,21 @@ export function registerInlineEdit(
   context: vscode.ExtensionContext,
   profiles: ProfileManager,
   log: vscode.OutputChannel,
+  rag: RagIndexer,
 ): void {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new ProposalContentProvider()),
-    vscode.commands.registerCommand('heapcode.inlineEdit', () => inlineEdit(profiles, log)),
+    vscode.commands.registerCommand('heapcode.inlineEdit', () => inlineEdit(profiles, log, rag)),
     vscode.commands.registerCommand('heapcode.acceptEdit', () => pendingReview?.(true)),
     vscode.commands.registerCommand('heapcode.rejectEdit', () => pendingReview?.(false)),
   );
 }
 
-async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): Promise<void> {
+async function inlineEdit(
+  profiles: ProfileManager,
+  log: vscode.OutputChannel,
+  rag: RagIndexer,
+): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     void vscode.window.showWarningMessage('Heap Code: open a file to use inline edit.');
@@ -80,6 +87,16 @@ async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): 
     async (_progress, token) => {
       const abort = new AbortController();
       token.onCancellationRequested(() => abort.abort());
+      let relatedCode = '';
+      if (rag.ready) {
+        try {
+          relatedCode = await rag.queryFormatted(`${instruction}\n${selectedCode}`, RELATED_CODE_MATCHES);
+        } catch (err) {
+          log.appendLine(
+            `[inline-edit] semantic search failed, continuing without it: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
       try {
         const { provider, profile } = await profiles.createActiveProvider();
         const result = await provider.chat({
@@ -91,6 +108,7 @@ async function inlineEdit(profiles: ProfileManager, log: vscode.OutputChannel): 
             filePath: vscode.workspace.asRelativePath(document.uri, false),
             prefix,
             suffix,
+            relatedCode: relatedCode || undefined,
           }),
           temperature: 0,
           maxTokens: profile.maxTokens,

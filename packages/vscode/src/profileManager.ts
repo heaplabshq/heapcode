@@ -22,6 +22,7 @@ const ROLE_PROFILE_FIELD: Record<ModelRole, keyof ProviderProfileConfig> = {
   agentModel: 'agentProfile',
   embeddingsModel: 'embeddingsProfile',
   rerankModel: 'rerankProfile',
+  contextModel: 'contextProfile',
 };
 
 /**
@@ -371,7 +372,8 @@ export class ProfileManager {
       | 'completionModel'
       | 'agentModel'
       | 'embeddingsModel'
-      | 'rerankModel';
+      | 'rerankModel'
+      | 'contextModel';
 
     /** A role redirected to another profile shows that instead — this profile's own model field is unused while it's active. */
     const describeRole = (role: Role, ownDescription: string): string => {
@@ -430,6 +432,17 @@ export class ProfileManager {
           ),
           detail: 'Reranks semantic-search hits — a small fast model works well',
           role: 'rerankModel' as Role,
+        },
+        {
+          label: '$(comment) Context',
+          description: describeRole(
+            'contextModel',
+            profile.contextModel ||
+              `inherits rerank/edit/chat (${profile.rerankModel || profile.editModel || profile.model || 'not set'})`,
+          ),
+          detail:
+            'Generates a short blurb per chunk for contextual retrieval (indexing) — a small fast model works well',
+          role: 'contextModel' as Role,
         },
       ],
       { title: `Heap Code: Select model — which role? (${profile.name})` },

@@ -10,6 +10,8 @@ export * from './rag/chunker.js';
 export * from './rag/astChunker.js';
 export * from './rag/store.js';
 export * from './rag/rerank.js';
+export * from './rag/bm25.js';
+export * from './rag/contextualize.js';
 export * from './agent/tools.js';
 export * from './agent/textProtocol.js';
 export * from './agent/prompts.js';

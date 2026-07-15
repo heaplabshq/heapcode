@@ -1,3 +1,5 @@
+import { bm25Scores, tokenize } from './bm25.js';
+
 export interface VectorRecord {
   path: string;
   startLine: number;
@@ -6,6 +8,8 @@ export interface VectorRecord {
   hash: string;
   /** L2-normalized at insert; cosine similarity = dot product. */
   vector: Float32Array;
+  /** Contextual-retrieval blurb (if generated) — embedded alongside the text and indexed for hybrid search too. */
+  context?: string;
 }
 
 export interface SearchHit {
@@ -88,6 +92,33 @@ export class VectorStore {
     }
     hits.sort((a, b) => b.score - a.score);
     return hits.slice(0, k);
+  }
+
+  /**
+   * Fuses the embedding ranking with a BM25 keyword ranking via Reciprocal
+   * Rank Fusion (score = Σ 1/(60 + rank) across both rankings — standard
+   * RRF constant). Catches exact-identifier queries pure embedding search
+   * misses, without losing the semantic matches BM25 misses.
+   */
+  hybridSearch(query: Float32Array | number[], queryText: string, k: number): SearchHit[] {
+    const overfetch = Math.max(k * 3, 50);
+    const vectorHits = this.search(query, overfetch);
+    const bm25 = bm25Scores(this.records, tokenize(queryText));
+    const bm25Ranked = [...bm25.entries()].sort((a, b) => b[1] - a[1]).slice(0, overfetch);
+
+    const RRF_K = 60;
+    const fused = new Map<VectorRecord, number>();
+    vectorHits.forEach((hit, rank) => {
+      fused.set(hit.record, (fused.get(hit.record) ?? 0) + 1 / (RRF_K + rank));
+    });
+    bm25Ranked.forEach(([record], rank) => {
+      fused.set(record, (fused.get(record) ?? 0) + 1 / (RRF_K + rank));
+    });
+
+    return [...fused.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, k)
+      .map(([record, score]) => ({ record, score }));
   }
 
   serialize(): string {

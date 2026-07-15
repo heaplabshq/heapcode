@@ -23,6 +23,7 @@ interface Draft {
   agentModel: string;
   embeddingsModel: string;
   rerankModel: string;
+  contextModel: string;
   /** Name of another configured profile to run this role on entirely — '' = this profile. */
   editProfile: string;
   applyProfile: string;
@@ -30,6 +31,7 @@ interface Draft {
   agentProfile: string;
   embeddingsProfile: string;
   rerankProfile: string;
+  contextProfile: string;
   contextWindow: string;
   temperature: string;
   maxTokens: string;
@@ -53,12 +55,14 @@ function toDraft(p: ProviderProfileConfig): Draft {
     agentModel: p.agentModel ?? '',
     embeddingsModel: p.embeddingsModel ?? '',
     rerankModel: p.rerankModel ?? '',
+    contextModel: p.contextModel ?? '',
     editProfile: p.editProfile ?? '',
     applyProfile: p.applyProfile ?? '',
     completionProfile: p.completionProfile ?? '',
     agentProfile: p.agentProfile ?? '',
     embeddingsProfile: p.embeddingsProfile ?? '',
     rerankProfile: p.rerankProfile ?? '',
+    contextProfile: p.contextProfile ?? '',
     contextWindow: p.contextWindow != null ? String(p.contextWindow) : '',
     temperature: p.temperature != null ? String(p.temperature) : '',
     maxTokens: p.maxTokens != null ? String(p.maxTokens) : '',
@@ -80,12 +84,14 @@ function newDraft(preset: SettingsPresetInfo): Draft {
     agentModel: '',
     embeddingsModel: '',
     rerankModel: '',
+    contextModel: '',
     editProfile: '',
     applyProfile: '',
     completionProfile: '',
     agentProfile: '',
     embeddingsProfile: '',
     rerankProfile: '',
+    contextProfile: '',
     contextWindow: '',
     temperature: '',
     maxTokens: '',
@@ -113,12 +119,14 @@ function fromDraft(d: Draft): ProviderProfileConfig {
   if (opt(d.agentModel)) profile.agentModel = opt(d.agentModel);
   if (opt(d.embeddingsModel)) profile.embeddingsModel = opt(d.embeddingsModel);
   if (opt(d.rerankModel)) profile.rerankModel = opt(d.rerankModel);
+  if (opt(d.contextModel)) profile.contextModel = opt(d.contextModel);
   if (opt(d.editProfile)) profile.editProfile = opt(d.editProfile);
   if (opt(d.applyProfile)) profile.applyProfile = opt(d.applyProfile);
   if (opt(d.completionProfile)) profile.completionProfile = opt(d.completionProfile);
   if (opt(d.agentProfile)) profile.agentProfile = opt(d.agentProfile);
   if (opt(d.embeddingsProfile)) profile.embeddingsProfile = opt(d.embeddingsProfile);
   if (opt(d.rerankProfile)) profile.rerankProfile = opt(d.rerankProfile);
+  if (opt(d.contextProfile)) profile.contextProfile = opt(d.contextProfile);
   if (num(d.contextWindow) != null) profile.contextWindow = num(d.contextWindow);
   if (num(d.temperature) != null) profile.temperature = num(d.temperature);
   if (num(d.maxTokens) != null) profile.maxTokens = num(d.maxTokens);
@@ -274,6 +282,8 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
             <RoleProfileSelect value={draft.embeddingsProfile} onChange={(embeddingsProfile) => set({ embeddingsProfile })} options={otherProfiles} />
             <Field label="Rerank model" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" />
             <RoleProfileSelect value={draft.rerankProfile} onChange={(rerankProfile) => set({ rerankProfile })} options={otherProfiles} />
+            <Field label="Context model" value={draft.contextModel} onChange={(contextModel) => set({ contextModel })} placeholder="inherits rerank → edit → chat model" />
+            <RoleProfileSelect value={draft.contextProfile} onChange={(contextProfile) => set({ contextProfile })} options={otherProfiles} />
             <Field label="Context window (tokens)" value={draft.contextWindow} onChange={(contextWindow) => set({ contextWindow })} placeholder="auto — provider default, else 32768" type="number" />
             <Field label="Temperature" value={draft.temperature} onChange={(temperature) => set({ temperature })} placeholder="provider default" type="number" />
             <Field label="Max output tokens" value={draft.maxTokens} onChange={(maxTokens) => set({ maxTokens })} placeholder="provider default" type="number" />

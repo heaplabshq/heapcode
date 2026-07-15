@@ -295,6 +295,9 @@
               "rerankModel": {
                 "type": "string"
               },
+              "contextModel": {
+                "type": "string"
+              },
               "editProfile": {
                 "type": "string",
                 "description": "Run the edit role on a different configured profile entirely (its baseUrl/key/model) instead of this one. Name of another profile; unset = use this profile."
@@ -318,6 +321,10 @@
               "rerankProfile": {
                 "type": "string",
                 "description": "Run the semantic-search rerank step on a different configured profile entirely, instead of this one."
+              },
+              "contextProfile": {
+                "type": "string",
+                "description": "Run the contextual-retrieval blurb generation step (indexing) on a different configured profile entirely, instead of this one."
               },
               "temperature": {
                 "type": "number"
@@ -445,6 +452,16 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Rerank semantic-search hits with the LLM (edit model, else chat model) before using them. Better precision at the cost of one extra small model call per search. Falls back to plain vector order on any failure."
+        },
+        "heapcode.rag.hybridSearch": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Fuse embedding search with BM25 keyword search (reciprocal rank fusion) before reranking. Catches exact-identifier queries pure embedding search misses. Free — no extra model calls."
+        },
+        "heapcode.rag.contextualRetrieval": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Generate a short LLM blurb per chunk at index time describing what it is and where it fits, embedded alongside the chunk for better retrieval (\"contextual retrieval\"). Off by default: unlike rerank, this runs once per **changed chunk**, not once per query, so it adds real time to indexing. Uses the Context model role (status bar → Select model → Context) — a small fast model like `qwen2.5-coder:3b` on Ollama works well."
         },
         "heapcode.agent.enable": {
           "type": "boolean",

@@ -12,7 +12,8 @@ export type ModelRole =
   | 'completionModel'
   | 'agentModel'
   | 'embeddingsModel'
-  | 'rerankModel';
+  | 'rerankModel'
+  | 'contextModel';
 
 export interface ProviderProfileConfig {
   name: string;
@@ -32,6 +33,13 @@ export interface ProviderProfileConfig {
   /** Reranks semantic-search hits. Inherits edit → chat model when unset. */
   rerankModel?: string;
   /**
+   * Generates a short contextual blurb per chunk at index time (contextual
+   * retrieval). Inherits rerank → edit → chat model when unset. A small
+   * fast model works well here — it runs once per changed chunk, not once
+   * per query.
+   */
+  contextModel?: string;
+  /**
    * Run this role against a different configured profile's provider entirely
    * (its baseUrl/key/model), instead of this one — e.g. embeddings on a local
    * Ollama profile while chat/agent stay on a cloud profile. Falls back to
@@ -44,6 +52,7 @@ export interface ProviderProfileConfig {
   agentProfile?: string;
   embeddingsProfile?: string;
   rerankProfile?: string;
+  contextProfile?: string;
   temperature?: number;
   maxTokens?: number;
   /**

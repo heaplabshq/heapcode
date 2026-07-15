@@ -60,4 +60,9 @@ cd packages/vscode && pnpm package   # build the .vsix
 
 ## License
 
-TBD before marketplace publication (MIT or Apache-2.0 — see PLAN.md).
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) —
+free to use, modify, and share for any noncommercial purpose (personal use, private/internal
+use, research, nonprofits, education, government). Commercial use — selling it, hosting it as
+a paid service, bundling it into a commercial product — isn't permitted under this license.
+Versions `0.1.x` were released under Apache-2.0 and remain available under those original
+terms; this license applies from `0.2.0` onward.

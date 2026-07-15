@@ -2,6 +2,7 @@
 
 ## 0.2.0
 
+- **License changed from Apache-2.0 to PolyForm Noncommercial License 1.0.0** — free for noncommercial use; `0.1.x` remains available under its original Apache-2.0 terms
 - Semantic search: AST-aware chunking (tree-sitter) for TypeScript/TSX/JavaScript/JSX/Python — chunks align to real function/class boundaries instead of line windows, with the line-window chunker as fallback everywhere else
 - Semantic search: hybrid retrieval — BM25 keyword search fused with embeddings (reciprocal rank fusion), on by default; catches exact-identifier queries pure embedding search misses
 - Semantic search: optional contextual retrieval — an LLM-generated blurb per chunk before embedding, off by default (`heapcode.rag.contextualRetrieval`); new `contextModel` profile role

@@ -36,6 +36,12 @@ export interface AgentEvents {
   onContextUsage?(usedTokens: number, windowTokens: number): void;
   /** Older turns were summarized to stay inside the context window. */
   onCompaction?(beforeTokens: number, afterTokens: number): void;
+  /**
+   * A note the agent found worth remembering long-term (a convention,
+   * constraint, or gotcha) — only fires when opts.proposeMemoryNote is set.
+   * The host decides whether/how to persist it; core never writes files.
+   */
+  onMemoryCandidate?(note: string): void;
 }
 
 export interface AgentOptions {
@@ -54,6 +60,8 @@ export interface AgentOptions {
   events: AgentEvents;
   /** Ask for a numbered plan first, then execute it step by step. */
   plan?: boolean;
+  /** On a clean finish, ask the model if anything's worth remembering long-term (see onMemoryCandidate). Off (no extra call at all) unless set. */
+  proposeMemoryNote?: boolean;
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
@@ -96,6 +104,12 @@ function looksUnfinished(text: string): boolean {
 }
 
 const MAX_REPAIRS = 3;
+
+const MEMORY_NOTE_PROMPT =
+  'Is there anything about this codebase worth remembering long-term — a non-obvious ' +
+  'convention, constraint, or gotcha you discovered while working on this task? ' +
+  'Reply with ONLY the note itself (1-3 sentences, plain text, no preamble), or reply ' +
+  'with exactly "NONE" if there is nothing worth recording.';
 
 export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const {
@@ -287,6 +301,27 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     }
   };
 
+  /** Session-to-memory distillation: proposes a note; the host decides whether to keep it. */
+  const proposeMemoryNote = async (): Promise<void> => {
+    try {
+      const { response } = await respondLive(
+        [...messages, { role: 'user', content: MEMORY_NOTE_PROMPT }],
+        false,
+        false,
+      );
+      const note = response.content.trim();
+      if (note && !/^none$/i.test(note)) events.onMemoryCandidate?.(note);
+    } catch {
+      // Best-effort — never turn a finished session into an error.
+    }
+  };
+
+  /** Every clean-finish return path goes through here so memory distillation runs exactly once, only on success. */
+  const finish = async (): Promise<'done'> => {
+    if (opts.proposeMemoryNote) await proposeMemoryNote();
+    return 'done';
+  };
+
   try {
     if (opts.plan) {
       const { response: planRes } = await respondLive(
@@ -324,7 +359,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           else if (!response.content.trim()) {
             await summarize('Summarize what you did and whether the task is complete.');
           }
-          return 'done';
+          return finish();
         }
         if (response.toolCalls && response.toolCalls.length > 0) {
           if (!streamed && response.content.trim()) events.onText(response.content);
@@ -377,7 +412,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         else if (!response.content.trim()) {
           await summarize('Summarize what you did and whether the task is complete.');
         }
-        return 'done';
+        return finish();
       }
 
       // Structured-text fallback: one tool call per turn.
@@ -398,7 +433,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         }
         if (response.content.trim()) events.onText(response.content);
         else await summarize('Summarize what you did and whether the task is complete.');
-        return 'done';
+        return finish();
       }
 
       const first = parsed.calls[0]!;
@@ -406,7 +441,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         if (parsed.narration) events.onText(parsed.narration);
         const summary = String(first.args?.summary ?? '').trim();
         if (summary) events.onText(summary);
-        return 'done';
+        return finish();
       }
       if (parsed.narration) events.onText(parsed.narration);
       messages.push({ role: 'assistant', content: response.content });

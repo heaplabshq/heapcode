@@ -44,7 +44,11 @@ export async function loadProjectInstructions(activeFilePath?: string): Promise<
 
   // Older projects may still have it at the workspace root, from before this moved into .heapcode/.
   const heapcodeMd = (await read('.heapcode/HEAPCODE.md')) || (await read('HEAPCODE.md'));
+  // AGENTS.md is the widely-adopted cross-tool convention — only used when this
+  // project has no Heap Code-specific instructions of its own.
+  const agentsMd = heapcodeMd ? '' : await read('AGENTS.md');
   if (heapcodeMd) parts.push(`Project instructions (HEAPCODE.md):\n${heapcodeMd}`);
+  else if (agentsMd) parts.push(`Project instructions (AGENTS.md):\n${agentsMd}`);
   const memory = await read('.heapcode/memory.md');
   if (memory) parts.push(`Project memory (.heapcode/memory.md):\n${memory}`);
 
@@ -82,6 +86,27 @@ async function loadScopedInstructions(root: vscode.Uri, activeFilePath?: string)
     blocks.push(`Instructions (${INSTRUCTIONS_DIR}/${name}, applyTo: ${applyTo.join(', ')}):\n${body.slice(0, MAX_CHARS)}`);
   }
   return blocks.join('\n\n');
+}
+
+/**
+ * Session-to-memory distillation: appends a note the agent proposed as worth
+ * remembering (packages/core/src/agent/loop.ts's onMemoryCandidate) — only
+ * ever called after the user has explicitly confirmed it in chat.
+ */
+export async function appendMemoryNote(note: string): Promise<void> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+  if (!root) return;
+  const dir = vscode.Uri.joinPath(root, '.heapcode');
+  const uri = vscode.Uri.joinPath(dir, 'memory.md');
+  let existing: string;
+  try {
+    existing = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+  } catch {
+    existing = MEMORY_TEMPLATE;
+  }
+  const entry = `\n- ${new Date().toISOString().slice(0, 10)}: ${note}\n`;
+  await vscode.workspace.fs.createDirectory(dir);
+  await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(existing + entry));
 }
 
 export async function openMemoryFile(): Promise<void> {

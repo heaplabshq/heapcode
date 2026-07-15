@@ -356,6 +356,71 @@ describe('runAgent — native tool calls', () => {
   });
 });
 
+describe('runAgent — memory distillation', () => {
+  it('proposes a memory note when the model finds something worth remembering', async () => {
+    const provider = scriptedProvider([
+      { content: 'Task is complete: everything was already in place, no changes needed.' },
+      { content: 'This project uses pnpm workspaces; always run commands via pnpm --filter.' },
+    ]);
+    const notes: string[] = [];
+    const h = harness();
+    const outcome = await runAgent({
+      ...h.options,
+      events: { ...h.options.events, onMemoryCandidate: (n: string) => notes.push(n) },
+      provider,
+      nativeToolCalls: true,
+      proposeMemoryNote: true,
+    });
+    expect(outcome).toBe('done');
+    expect(notes).toEqual(['This project uses pnpm workspaces; always run commands via pnpm --filter.']);
+    expect(provider.requests.length).toBe(2);
+  });
+
+  it('does not propose a note when the model replies NONE', async () => {
+    const provider = scriptedProvider([
+      { content: 'Task is complete: everything was already in place, no changes needed.' },
+      { content: 'NONE' },
+    ]);
+    const notes: string[] = [];
+    const h = harness();
+    const outcome = await runAgent({
+      ...h.options,
+      events: { ...h.options.events, onMemoryCandidate: (n: string) => notes.push(n) },
+      provider,
+      nativeToolCalls: true,
+      proposeMemoryNote: true,
+    });
+    expect(outcome).toBe('done');
+    expect(notes).toEqual([]);
+  });
+
+  it('never asks for a memory note when proposeMemoryNote is not set', async () => {
+    const provider = scriptedProvider([
+      { content: 'Task is complete: everything was already in place, no changes needed.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    expect(provider.requests.length).toBe(1); // no extra memory-note call
+  });
+
+  it('does not propose a memory note when the session hits maxIterations', async () => {
+    const provider = scriptedProvider([{ content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] }]);
+    const notes: string[] = [];
+    const h = harness();
+    const outcome = await runAgent({
+      ...h.options,
+      events: { ...h.options.events, onMemoryCandidate: (n: string) => notes.push(n) },
+      provider,
+      nativeToolCalls: true,
+      maxIterations: 3,
+      proposeMemoryNote: true,
+    });
+    expect(outcome).toBe('max-iterations');
+    expect(notes).toEqual([]);
+  });
+});
+
 describe('runAgent — structured-text fallback', () => {
   it('parses a tool block, executes, and finishes on a block-free reply', async () => {
     const provider = scriptedProvider([

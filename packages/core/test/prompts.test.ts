@@ -18,6 +18,12 @@ describe('parseSlashCommand', () => {
     expect(parseSlashCommand('/frobnicate this')).toBeUndefined();
     expect(parseSlashCommand('explain this')).toBeUndefined();
   });
+
+  it('parses the security-review command', () => {
+    const parsed = parseSlashCommand('/security-review');
+    expect(parsed?.prompt.command).toBe('security-review');
+    expect(parsed?.prompt.template).toContain('security');
+  });
 });
 
 describe('renderTemplate', () => {

@@ -32,6 +32,18 @@ export const builtinPrompts: readonly PromptTemplate[] = [
       'Review the following code as a senior engineer. Point out bugs, edge cases, security issues, and style problems, ordered by severity. {input}',
   },
   {
+    command: 'security-review',
+    title: 'Security review',
+    template:
+      'Review the following code as an application security engineer. Look only for ' +
+      'security vulnerabilities, not general code quality — injection (SQL/command/etc.), ' +
+      'hardcoded secrets or credentials, broken authentication/authorization, insecure ' +
+      'deserialization, path traversal, SSRF, unsafe eval/exec, weak input validation, ' +
+      'insecure cryptography, and sensitive data exposure. For each finding, give severity, ' +
+      'the exact location, why it is exploitable, and a concrete fix. If you find nothing, ' +
+      'say so plainly — do not invent issues. {input}',
+  },
+  {
     command: 'test',
     title: 'Generate tests',
     template:

@@ -209,6 +209,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('heapcode.generateTests', () => chatProvider.sendFromCommand('/test')),
     vscode.commands.registerCommand('heapcode.generateDocs', () => chatProvider.sendFromCommand('/docs')),
     vscode.commands.registerCommand('heapcode.reviewCode', () => chatProvider.sendFromCommand('/review')),
+    vscode.commands.registerCommand('heapcode.securityReview', () =>
+      chatProvider.sendFromCommand('/security-review'),
+    ),
     vscode.commands.registerCommand('heapcode.generateCommitMessage', () =>
       generateCommitMessage(profiles, log),
     ),

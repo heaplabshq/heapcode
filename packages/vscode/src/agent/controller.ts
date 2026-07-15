@@ -17,7 +17,7 @@ import type { ProfileManager } from '../profileManager.js';
 import type { RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import type { McpManager } from './mcp.js';
-import { loadProjectInstructions } from '../memory.js';
+import { appendMemoryNote, loadProjectInstructions } from '../memory.js';
 
 export class AgentController {
   private abort?: AbortController;
@@ -252,8 +252,18 @@ export class AgentController {
               label: resultLabel(result.name, result.content, result.isError),
               fileEdit: fileEdits.get(result.id),
             }),
+          onMemoryCandidate: (note) => {
+            void (async () => {
+              const answer = await this.askUser?.(
+                `Worth remembering for next time?\n\n"${note}"`,
+                ['Save to memory', 'Skip'],
+              );
+              if (answer === 'Save to memory') await appendMemoryNote(note);
+            })();
+          },
         },
         plan: cfg.get<boolean>('planFirst', true),
+        proposeMemoryNote: cfg.get<boolean>('memoryDistillation', true),
         maxIterations: cfg.get<number>('maxIterations', 25),
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
         // which truncates large write_file calls mid-generation. Capped at a

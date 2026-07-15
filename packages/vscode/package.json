@@ -113,6 +113,10 @@
         "title": "Heap Code: Review Code"
       },
       {
+        "command": "heapcode.securityReview",
+        "title": "Heap Code: Security Review"
+      },
+      {
         "command": "heapcode.generateCommitMessage",
         "title": "Heap Code: Generate Commit Message",
         "icon": "$(sparkle)"
@@ -193,6 +197,10 @@
         {
           "command": "heapcode.reviewCode",
           "group": "2_ask@5"
+        },
+        {
+          "command": "heapcode.securityReview",
+          "group": "2_ask@6"
         },
         {
           "command": "heapcode.generateTests",
@@ -505,6 +513,11 @@
           "type": "number",
           "default": 60,
           "description": "Terminal command timeout in seconds for agent-run commands."
+        },
+        "heapcode.agent.memoryDistillation": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "At the end of a successful agent session, ask whether anything's worth remembering long-term (a convention, constraint, or gotcha discovered) and — with your confirmation — append it to `.heapcode/memory.md`. Never writes without asking first."
         },
         "heapcode.completion.template": {
           "type": "string",

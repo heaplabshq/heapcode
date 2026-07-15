@@ -4,3 +4,4 @@ tsconfig.json
 esbuild.mjs
 **/*.map
 *.vsix
+media/marketplace-icon-source.svg

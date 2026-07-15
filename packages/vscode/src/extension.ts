@@ -217,7 +217,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.languages.registerInlineCompletionItemProvider(
       [{ scheme: 'file' }, { scheme: 'untitled' }],
-      new HeapCodeCompletionProvider(profiles, log),
+      new HeapCodeCompletionProvider(profiles, log, rag),
     ),
     vscode.commands.registerCommand('heapcode.toggleCompletion', async () => {
       const cfg = vscode.workspace.getConfiguration('heapcode.completion');

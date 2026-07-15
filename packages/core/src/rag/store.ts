@@ -121,6 +121,19 @@ export class VectorStore {
       .map(([record, score]) => ({ record, score }));
   }
 
+  /**
+   * BM25-only ranking, no vector involved — no embedding call, no LLM call,
+   * pure in-memory computation. Used where retrieval must stay cheap enough
+   * to run inside a typing debounce window (see completionProvider.ts).
+   */
+  keywordSearch(queryText: string, k: number): SearchHit[] {
+    const scores = bm25Scores(this.records, tokenize(queryText));
+    return [...scores.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, k)
+      .map(([record, score]) => ({ record, score }));
+  }
+
   serialize(): string {
     const out: SerializedStore = {
       version: 1,

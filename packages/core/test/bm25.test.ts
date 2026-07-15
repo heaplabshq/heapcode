@@ -71,3 +71,25 @@ describe('VectorStore.hybridSearch', () => {
     expect(hits[0]!.record.path).toBe('a.ts');
   });
 });
+
+describe('VectorStore.keywordSearch', () => {
+  it('ranks by BM25 alone, with no vector involved', () => {
+    const store = new VectorStore();
+    store.upsertFile('a.ts', 'fh', [
+      rec('a.ts', 'export function resolveRoleProfile(role: ModelRole) {}', [0, 0]),
+      rec('b.ts', 'totally unrelated prose about gardening', [0, 0]),
+    ]);
+    const hits = store.keywordSearch('resolveRoleProfile', 2);
+    expect(hits[0]!.record.path).toBe('a.ts');
+    expect(hits.map((h) => h.record.path)).not.toContain('b.ts');
+  });
+
+  it('returns nothing for an empty store or a query with no matches', () => {
+    const empty = new VectorStore();
+    expect(empty.keywordSearch('anything', 5)).toEqual([]);
+
+    const store = new VectorStore();
+    store.upsertFile('a.ts', 'fh', [rec('a.ts', 'const x = 1;', [0, 0])]);
+    expect(store.keywordSearch('zzz not present anywhere', 5)).toEqual([]);
+  });
+});

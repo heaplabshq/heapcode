@@ -428,6 +428,11 @@
           "default": "auto",
           "markdownDescription": "`auto`: suggest while typing. `manual`: only on Alt+\\ (Heap Code: Trigger Completion)."
         },
+        "heapcode.completion.repoContext": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Include a couple of similar snippets from elsewhere in the repo (via the semantic-search index) in completion prompts. Typing-triggered completions use a fast keyword-only lookup (no extra model call); manual-trigger completions (Alt+\\) also use the full semantic index. No-op until the workspace index has chunks."
+        },
         "heapcode.mcpServers": {
           "type": "object",
           "default": {},

@@ -9,11 +9,15 @@ import {
   PrefixCache,
 } from '@heapcode/core';
 import type { ProfileManager } from './profileManager.js';
+import type { RagIndexer } from './rag/indexer.js';
 
 const PREFIX_CHARS = 6000;
 const SUFFIX_CHARS = 2000;
 const CROSS_FILE_CHARS = 1500;
 const SNIPPET_CHARS = 700;
+const REPO_CONTEXT_CHARS = 1200;
+const REPO_QUERY_LINES = 10;
+const REPO_QUERY_CHARS = 500;
 
 const HASH_COMMENT_LANGS = new Set(['python', 'ruby', 'shellscript', 'yaml', 'perl', 'r', 'makefile', 'dockerfile', 'toml']);
 
@@ -24,6 +28,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
   constructor(
     private readonly profiles: ProfileManager,
     private readonly log: vscode.OutputChannel,
+    private readonly rag: RagIndexer,
   ) {}
 
   async provideInlineCompletionItems(
@@ -86,6 +91,9 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     // `suffix` param — more reliable than hand-rendered FIM token strings.
     const nativeFim = profile.preset === 'ollama' && templateSetting === 'auto' && template;
 
+    const repoContext = cfg.get<boolean>('repoContext', true)
+      ? await collectRepoContext(this.rag, document, prefix, context.triggerKind)
+      : '';
     const crossFile = collectCrossFileContext(document);
     const started = Date.now();
     let mode: string;
@@ -95,7 +103,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
         mode = 'fim:native';
         const res = await provider.completion({
           model,
-          prompt: crossFile + prefix,
+          prompt: repoContext + crossFile + prefix,
           suffix,
           maxTokens: cfg.get<number>('maxTokens', 200),
           temperature: 0,
@@ -107,7 +115,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
         mode = `fim:${template.id}`;
         const res = await provider.completion({
           model,
-          prompt: template.render(crossFile + prefix, suffix),
+          prompt: template.render(repoContext + crossFile + prefix, suffix),
           maxTokens: cfg.get<number>('maxTokens', 200),
           temperature: 0,
           stop: singleLine ? ['\n', ...template.stop] : template.stop,
@@ -119,7 +127,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
         const res = await provider.chat({
           model,
           messages: buildChatCompletionMessages({
-            prefix: crossFile + prefix,
+            prefix: repoContext + crossFile + prefix,
             suffix,
             languageId: document.languageId,
           }),
@@ -156,6 +164,45 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     this.cache.set(document.uri.toString(), prefix, text);
     return [new vscode.InlineCompletionItem(text, new vscode.Range(position, position))];
   }
+}
+
+/**
+ * Similar snippets from elsewhere in the repo (via the semantic-search
+ * index), as commented-out context — the same idea as collectCrossFileContext
+ * but sourced from the whole workspace instead of just open editors.
+ * Typing-triggered completions use BM25-only retrieval (no model call, safe
+ * inside the debounce window); manual-trigger completions use the fuller
+ * embeddings+hybrid+rerank pipeline since the user is explicitly waiting.
+ */
+async function collectRepoContext(
+  rag: RagIndexer,
+  current: vscode.TextDocument,
+  prefix: string,
+  triggerKind: vscode.InlineCompletionTriggerKind,
+): Promise<string> {
+  if (!rag.ready) return '';
+  const queryText = prefix.split('\n').slice(-REPO_QUERY_LINES).join('\n').slice(-REPO_QUERY_CHARS);
+  if (!queryText.trim()) return '';
+
+  const currentPath = vscode.workspace.asRelativePath(current.uri, false);
+  const hits =
+    triggerKind === vscode.InlineCompletionTriggerKind.Invoke
+      ? await rag.query(queryText, 4)
+      : rag.keywordSearch(queryText, 4);
+
+  const parts: string[] = [];
+  let used = 0;
+  for (const hit of hits) {
+    if (hit.record.path === currentPath) continue;
+    const commented = commentOut(
+      `From ${hit.record.path}:${hit.record.startLine}-${hit.record.endLine}:\n${hit.record.text}`,
+      current.languageId,
+    );
+    if (used + commented.length > REPO_CONTEXT_CHARS) break;
+    parts.push(commented);
+    used += commented.length;
+  }
+  return parts.length > 0 ? parts.join('\n') + '\n' : '';
 }
 
 /** Short snippets from other visible editors, as commented-out context. */

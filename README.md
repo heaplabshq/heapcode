@@ -17,7 +17,7 @@ Your code never leaves your machine except to the endpoint **you** configure. No
 ## Features
 
 - **Chat** — streaming markdown with syntax highlighting; history per workspace; slash commands (`/explain`, `/fix`, `/review`, …) with autocomplete; custom prompts; `@selection` `@file` `@problems` `@workspace` context mentions; code-block Copy / Insert / Apply actions
-- **Completions** — ghost text with proper FIM formats per model family (Qwen, DeepSeek, StarCoder, CodeLlama, Codestral, CodeGemma), native server-side FIM on Ollama, debounced + cancellable, latency stats in the output panel
+- **Completions** — ghost text with proper FIM formats per model family (Qwen, DeepSeek, StarCoder, CodeLlama, Codestral, CodeGemma), native server-side FIM on Ollama, debounced + cancellable, latency stats in the output panel; repo-level context from the semantic-search index (keyword-only while typing, full semantic search on manual trigger) alongside open-editor snippets
 - **Inline edit** — select code, `Ctrl+I`/`Cmd+I`, describe the change, review a native diff, accept from the diff title bar
 - **Agent mode** — reads, searches, edits files and runs commands to complete tasks autonomously; every non-read action goes through permission prompts (Allow Once / Session / Always, Safe Mode); one-click **Revert all** restores every touched file byte-identical
 - **Semantic search (RAG)** — background incremental index using your embeddings model; AST-aware chunking (TS/TSX/JS/JSX/Python, line-window fallback elsewhere); hybrid search (embeddings + BM25 keyword, fused) on by default; optional contextual retrieval (LLM blurb per chunk) via the Context model role; powers `@workspace` and the agent's `semantic_search`; degrades gracefully to text search with no embedder

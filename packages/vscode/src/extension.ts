@@ -13,6 +13,7 @@ import { trackActiveEditor, trackTerminal } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager } from './profileManager.js';
 import { RagIndexer } from './rag/indexer.js';
+import { RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { ShadowGit } from './agent/shadowGit.js';
 
 const AST_GRAMMAR_FILES = [
@@ -59,6 +60,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const permissions = new PermissionEngine(context.workspaceState, log);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   const rag = new RagIndexer(profiles, storageDir, log);
+  const repoMap = new RepoMapIndexer(storageDir, log);
   const mcp = new McpManager(log);
   chatProvider.rag = rag;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -76,6 +78,7 @@ export function activate(context: vscode.ExtensionContext): void {
     (msg) => chatProvider.postToWebview(msg),
     rag,
     mcp,
+    repoMap,
   );
   chatProvider.agent.askUser = (question, options) =>
     chatProvider.askAgentQuestion(question, options);
@@ -129,6 +132,7 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar,
     completionStatus,
     rag,
+    repoMap,
     ragStatus,
     mcp,
     rag.onStatus(updateRagStatus),
@@ -236,6 +240,8 @@ export function activate(context: vscode.ExtensionContext): void {
     // Background, off the activation path.
     setTimeout(() => void rag.buildIndex().then(updateRagStatus), 5_000);
   }
+  // Repo map needs no embeddings model, but stays off the activation path too.
+  setTimeout(() => void repoMap.buildIndex(), 5_000);
 
   updateStatusBar();
   log.appendLine('Heap Code activated.');

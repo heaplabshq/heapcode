@@ -14,7 +14,7 @@ export interface Chunk {
 export { fnv1a } from './hash.js';
 
 /** Lines that look like a good place to start a chunk (symbol boundaries). */
-const BOUNDARY =
+export const BOUNDARY =
   /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|interface|type|enum|const|def |fn |func |impl |struct |trait |public|private|protected )/;
 
 export interface ChunkOptions {

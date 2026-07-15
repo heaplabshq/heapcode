@@ -15,6 +15,7 @@ import { callLmTool, getLmToolDefinitions, getLmToolGroups, isLmTool } from './l
 import { getActiveEditor } from '../contextCollector.js';
 import type { ProfileManager } from '../profileManager.js';
 import type { RagIndexer } from '../rag/indexer.js';
+import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import type { McpManager } from './mcp.js';
 import { loadProjectInstructions } from '../memory.js';
 
@@ -31,7 +32,7 @@ export class AgentController {
       label: 'Built-in · Read',
       names: ['read_file', 'list_dir', 'get_symbols', 'find_references', 'go_to_definition', 'get_diagnostics'],
     },
-    { label: 'Built-in · Search', names: ['search', 'semantic_search'] },
+    { label: 'Built-in · Search', names: ['search', 'semantic_search', 'repo_map'] },
     {
       label: 'Built-in · Edit',
       names: ['write_file', 'edit_file', 'multi_edit', 'rename_file', 'delete_file', 'create_directory'],
@@ -89,6 +90,7 @@ export class AgentController {
     private readonly post: (msg: ExtensionToWebview) => void,
     private readonly rag?: RagIndexer,
     private readonly mcp?: McpManager,
+    private readonly repoMapIndexer?: RepoMapIndexer,
   ) {}
 
   get running(): boolean {
@@ -134,6 +136,7 @@ export class AgentController {
       this.checkpoint,
       cfg.get<number>('commandTimeout', 60) * 1000,
       this.rag ? (query) => this.rag!.queryFormatted(query) : undefined,
+      this.repoMapIndexer ? (pathPrefix) => this.repoMapIndexer!.format(pathPrefix) : undefined,
     );
     this.abort = new AbortController();
     this.post({ type: 'agentStatus', status: 'running', changedFiles: [] });

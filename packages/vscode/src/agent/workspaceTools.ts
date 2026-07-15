@@ -134,6 +134,22 @@ export const agentToolDefinitions: ToolDefinition[] = [
     permission: 'read',
   },
   {
+    name: 'repo_map',
+    description:
+      'Get an outline of the workspace: every file and its top-level symbols (functions, classes, methods) with line numbers — no code bodies. Use it to orient before searching, e.g. to check whether something already exists before writing it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Optional path prefix to scope the map to a directory or file (e.g. "packages/core/src/rag"). Omit for the whole workspace.',
+        },
+      },
+    },
+    permission: 'read',
+  },
+  {
     name: 'run_command',
     description:
       'Run a shell command (npm/pnpm/git/tests/etc). Returns stdout, stderr, and exit code. ' +
@@ -320,6 +336,7 @@ export class WorkspaceToolExecutor {
     private readonly checkpoint: SessionCheckpoint,
     private readonly commandTimeoutMs: number,
     private readonly semanticSearch?: (query: string) => Promise<string>,
+    private readonly repoMap?: (pathPrefix?: string) => string,
   ) {
     this.cwd = root.fsPath;
   }
@@ -338,6 +355,8 @@ export class WorkspaceToolExecutor {
         return `Search for /${a.pattern}/${a.glob ? ` in ${a.glob}` : ''}`;
       case 'semantic_search':
         return `Semantic search: "${a.query}"`;
+      case 'repo_map':
+        return a.path ? `Repo map: ${a.path}` : 'Repo map';
       case 'get_diagnostics':
         return a.path ? `Check problems in ${a.path}` : 'Check workspace problems';
       case 'write_file':
@@ -445,6 +464,11 @@ export class WorkspaceToolExecutor {
         const words = query.split(/\W+/).filter((w) => w.length > 3);
         if (words.length === 0) return ok('No semantic index and query too short for text search.');
         return ok(await this.search(words.join('|')));
+      }
+      case 'repo_map': {
+        if (!this.repoMap) return ok('Repo map is not available.');
+        const map = this.repoMap(a.path);
+        return ok(map || 'Repo map is empty — still building, or no indexable files found.');
       }
       case 'get_diagnostics': {
         const all = a.path

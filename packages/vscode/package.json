@@ -453,6 +453,11 @@
           "default": true,
           "markdownDescription": "Index the workspace in the background for semantic search. No-op until the active profile has an `embeddingsModel` (e.g. `nomic-embed-text` on Ollama). Respects `.heapcodeignore`."
         },
+        "heapcode.repoMap.enable": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Build and maintain a persisted symbol outline of the workspace in the background (file paths + top-level function/class names, no code) for the agent's `repo_map` tool. No model required — pure parsing. Respects `.heapcodeignore`."
+        },
         "heapcode.rag.rerank": {
           "type": "boolean",
           "default": true,

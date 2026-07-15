@@ -75,6 +75,22 @@ function loadLanguage(id: string): Promise<Language | undefined> {
   return cached;
 }
 
+/**
+ * Resolves the grammar for a file and returns a ready-to-use `Parser`, or
+ * undefined when the language has no configured grammar or no loader is
+ * wired up. Shared by chunkFileAst and symbols.ts's AST-based symbol
+ * extraction — both need the same "get me a parser for this path" step.
+ */
+export async function parserForPath(path: string): Promise<Parser | undefined> {
+  const id = LANGUAGE_BY_EXT[extOf(path)];
+  if (!id || !resolveWasm) return undefined;
+  const language = await loadLanguage(id);
+  if (!language) return undefined;
+  const parser = new Parser();
+  parser.setLanguage(language);
+  return parser;
+}
+
 function lineSpan(node: TSNode): number {
   return node.endPosition.row - node.startPosition.row + 1;
 }
@@ -112,15 +128,10 @@ export async function chunkFileAst(
   if (!content.trim()) return [];
   if (content.length > MAX_CONTENT_LENGTH) return undefined;
 
-  const id = LANGUAGE_BY_EXT[extOf(path)];
-  if (!id || !resolveWasm) return undefined;
-
-  const language = await loadLanguage(id);
-  if (!language) return undefined;
+  const parser = await parserForPath(path);
+  if (!parser) return undefined;
 
   try {
-    const parser = new Parser();
-    parser.setLanguage(language);
     const tree = parser.parse(content);
     if (!tree) return undefined;
 

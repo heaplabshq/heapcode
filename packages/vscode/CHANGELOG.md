@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- No functional changes from 0.2.1 — version bump only, to republish after 0.2.1 was already live on the Marketplace
+
 ## 0.2.1
 
 - Fixed the Marketplace listing (Details tab) showing stale content — it's a separate README from the repo root one and had been missed, still showing the old Apache-2.0 license and an outdated feature list

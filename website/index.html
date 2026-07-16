@@ -1,0 +1,670 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Heap Code — A GitHub Copilot Alternative for VS Code (Local or Cloud Models)</title>
+<meta name="description" content="Heap Code is a model-agnostic AI coding assistant for VS Code: chat, completions, inline edit, and an autonomous agent — on Ollama, LM Studio, OpenAI, or any OpenAI-compatible API. No telemetry, no account, no lock-in." />
+<meta property="og:title" content="Heap Code — A GitHub Copilot Alternative for VS Code" />
+<meta property="og:description" content="Model-agnostic AI coding assistant for VS Code. Local models or your own cloud key. No telemetry, no account." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='20' width='24' height='6' fill='%23d98e4a'/%3E%3Crect x='8' y='13' width='16' height='6' fill='%23d98e4a'/%3E%3Crect x='12' y='6' width='8' height='6' fill='%23d98e4a'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #081524;
+    --bg-deep: #050d17;
+    --bg-panel: #1c3d5c;
+    --line: #8fb9d1;
+    --line-dim: #2f5674;
+    --ink: #f3f8fa;
+    --ink-dim: #b9d0de;
+    --copper: #e2a05f;
+    --copper-ink: #241205;
+    --cyan: #7fc4d9;
+    --radius: 3px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    background-image:
+      linear-gradient(rgba(143, 185, 209, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(143, 185, 209, 0.08) 1px, transparent 1px);
+    background-size: 32px 32px;
+    background-attachment: fixed;
+    color: var(--ink);
+    font-family: "IBM Plex Sans", sans-serif;
+    line-height: 1.5;
+  }
+
+  .mono { font-family: "IBM Plex Mono", monospace; }
+
+  a { color: inherit; }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* ---------- nav ---------- */
+
+  .nav {
+    border-bottom: 1px solid var(--line-dim);
+    background: rgba(5, 13, 23, 0.82);
+    backdrop-filter: blur(6px);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .nav-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-decoration: none;
+    font-size: 15px;
+  }
+
+  .brand svg { display: block; }
+
+  .nav-links {
+    display: flex;
+    gap: 28px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+  }
+
+  .nav-links a {
+    text-decoration: none;
+    color: var(--ink-dim);
+    border-bottom: 1px solid transparent;
+    padding-bottom: 2px;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+
+  .nav-links a:hover,
+  .nav-links a:focus-visible {
+    color: var(--copper);
+    border-color: var(--copper);
+  }
+
+  /* ---------- title block ---------- */
+
+  .titleblock {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--line);
+    padding: 14px 24px;
+    border-bottom: 1px dashed var(--line-dim);
+  }
+
+  .titleblock span b {
+    color: var(--ink-dim);
+    font-weight: 500;
+  }
+
+  /* ---------- hero ---------- */
+
+  .hero {
+    padding: 64px 0 40px;
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 56px;
+    align-items: start;
+  }
+
+  @media (max-width: 860px) {
+    .hero-grid { grid-template-columns: 1fr; }
+  }
+
+  h1 {
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: clamp(32px, 4.4vw, 50px);
+    line-height: 1.12;
+    letter-spacing: -0.01em;
+    margin: 0 0 20px;
+  }
+
+  h1 .accent { color: var(--copper); }
+
+  .lede {
+    font-size: 17px;
+    color: var(--ink-dim);
+    max-width: 46ch;
+    margin: 0 0 28px;
+  }
+
+  .lede b { color: var(--ink); font-weight: 600; }
+
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-bottom: 8px;
+  }
+
+  .btn {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    text-decoration: none;
+    padding: 12px 20px;
+    border-radius: var(--radius);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid transparent;
+    transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+
+  .btn:hover, .btn:focus-visible { transform: translateY(-1px); }
+
+  .btn-primary {
+    background: var(--copper);
+    color: var(--copper-ink);
+    font-weight: 600;
+  }
+
+  .btn-primary:hover, .btn-primary:focus-visible { background: #e6a05f; }
+
+  .btn-ghost {
+    border-color: var(--line);
+    color: var(--ink);
+  }
+
+  .btn-ghost:hover, .btn-ghost:focus-visible {
+    border-color: var(--cyan);
+    color: var(--cyan);
+  }
+
+  .fine {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    color: var(--line);
+    margin-top: 14px;
+  }
+
+  /* ---------- diagram ---------- */
+
+  .diagram-card {
+    background: var(--bg-panel);
+    border: 1px solid var(--line-dim);
+    border-radius: var(--radius);
+    padding: 20px 20px 16px;
+  }
+
+  .diagram-toggle {
+    display: inline-flex;
+    border: 1px solid var(--line-dim);
+    border-radius: 999px;
+    padding: 3px;
+    margin-bottom: 16px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+  }
+
+  .diagram-toggle button {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--ink-dim);
+    padding: 7px 16px;
+    border-radius: 999px;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+    font-family: inherit;
+    font-size: inherit;
+  }
+
+  .diagram-toggle button[aria-pressed="true"] {
+    background: var(--copper);
+    color: var(--copper-ink);
+    font-weight: 600;
+  }
+
+  .diagram-toggle button:focus-visible {
+    outline: 2px solid var(--cyan);
+    outline-offset: 2px;
+  }
+
+  .schematic { width: 100%; height: auto; display: block; }
+
+  .schem-label { fill: var(--line); }
+
+  .schem-boundary {
+    stroke: var(--line);
+    stroke-dasharray: 5 4;
+    fill: none;
+    transition: stroke 0.25s ease;
+  }
+
+  .schem-node rect {
+    fill: var(--bg-deep);
+    stroke: var(--line);
+    transition: stroke 0.25s ease, opacity 0.25s ease;
+  }
+
+  .schem-node text {
+    fill: var(--ink);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+  }
+
+  .schem-node.dim rect { opacity: 0.35; stroke: var(--line-dim); }
+  .schem-node.dim text { opacity: 0.4; }
+
+  .schem-line {
+    stroke: var(--line);
+    stroke-width: 1.5;
+    fill: none;
+    transition: opacity 0.25s ease, stroke 0.25s ease;
+  }
+
+  .schem-line.hidden { opacity: 0; }
+
+  .schem-node.active rect { stroke: var(--copper); }
+  .schem-line.active { stroke: var(--copper); }
+
+  .diagram-caption {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12.5px;
+    color: var(--ink-dim);
+    border-top: 1px dashed var(--line-dim);
+    margin-top: 14px;
+    padding-top: 12px;
+    min-height: 2.6em;
+  }
+
+  .diagram-caption b { color: var(--copper); }
+
+  /* ---------- sections ---------- */
+
+  section.panel {
+    border-top: 1px solid var(--line-dim);
+    padding: 48px 0;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--copper);
+    margin: 0 0 18px;
+  }
+
+  /* spec sheet */
+
+  .spec-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+  }
+
+  .spec-table tr { border-bottom: 1px solid var(--line-dim); }
+  .spec-table tr:last-child { border-bottom: none; }
+
+  .spec-table td {
+    padding: 14px 0;
+    vertical-align: top;
+  }
+
+  .spec-table td:first-child {
+    font-family: "IBM Plex Mono", monospace;
+    color: var(--ink-dim);
+    width: 40%;
+    padding-right: 20px;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+  }
+
+  .spec-table td:last-child { color: var(--ink); }
+
+  .spec-yes { color: var(--cyan); font-family: "IBM Plex Mono", monospace; }
+
+  /* parts list */
+
+  .parts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+  }
+
+  @media (max-width: 700px) {
+    .parts-grid { grid-template-columns: 1fr; }
+  }
+
+  .parts-col {
+    border: 1px solid var(--line-dim);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+  }
+
+  .parts-col h3 {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin: 0 0 12px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .parts-col ul { margin: 0; padding: 0; list-style: none; }
+
+  .parts-col li {
+    padding: 7px 0;
+    border-top: 1px dashed var(--line-dim);
+    font-size: 14.5px;
+  }
+
+  .parts-col li:first-child { border-top: none; }
+
+  /* features */
+
+  .feature-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 2px;
+    border: 1px solid var(--line-dim);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  @media (max-width: 700px) {
+    .feature-list { grid-template-columns: 1fr; }
+  }
+
+  .feature-item {
+    background: var(--bg-panel);
+    padding: 18px 20px;
+  }
+
+  .feature-item h4 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .feature-item p {
+    margin: 0;
+    font-size: 13.5px;
+    color: var(--ink-dim);
+  }
+
+  /* footer */
+
+  footer {
+    border-top: 1px solid var(--line-dim);
+    padding: 36px 0 48px;
+  }
+
+  .footer-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 20px;
+    align-items: center;
+  }
+
+  .footer-row .mono { font-size: 12px; color: var(--line); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; scroll-behavior: auto !important; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="#top">
+      <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="4" y="20" width="24" height="6" fill="#d98e4a"/>
+        <rect x="8" y="13" width="16" height="6" fill="#d98e4a"/>
+        <rect x="12" y="6" width="8" height="6" fill="#d98e4a"/>
+      </svg>
+      HEAP CODE
+    </a>
+    <div class="nav-links">
+      <a href="#spec">Spec sheet</a>
+      <a href="#works-with">Works with</a>
+      <a href="#features">Features</a>
+      <a href="https://github.com/sid7631/heapcode">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="titleblock">
+  <span>DWG NO. <b>HC-0.2.2</b></span>
+  <span>SCALE <b>LOCAL = CLOUD</b></span>
+  <span>LICENSE <b>PolyForm Noncommercial 1.0</b></span>
+  <span>TELEMETRY <b>NONE</b></span>
+</div>
+
+<main id="top">
+  <section class="hero wrap">
+    <div class="hero-grid">
+      <div>
+        <h1>Your code doesn&rsquo;t<br />leave <span class="accent">the building.</span></h1>
+        <p class="lede">
+          Heap Code is a <b>model-agnostic</b> AI coding assistant for VS Code &mdash; chat,
+          completions, inline edit, and an autonomous agent. Point it at Ollama on your own
+          machine, or bring your own key to OpenAI, Groq, or any OpenAI-compatible endpoint.
+          <b>No account. No proprietary backend. No telemetry.</b>
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
+          <a class="btn btn-ghost" href="https://github.com/sid7631/heapcode">View source on GitHub</a>
+        </div>
+        <p class="fine">v0.2.2 · free for personal, internal &amp; noncommercial use</p>
+      </div>
+
+      <div class="diagram-card">
+        <div class="diagram-toggle" role="group" aria-label="Where your code goes">
+          <button type="button" id="btn-local" aria-pressed="true">LOCAL</button>
+          <button type="button" id="btn-cloud" aria-pressed="false">CLOUD</button>
+        </div>
+
+        <svg class="schematic" viewBox="0 0 460 220" role="img" aria-labelledby="schem-title">
+          <title id="schem-title">Diagram of where your code travels depending on local or cloud mode</title>
+
+          <rect class="schem-boundary" x="16" y="16" width="260" height="188" rx="6"></rect>
+          <text x="28" y="36" class="mono schem-label" font-size="10" letter-spacing="1">YOUR MACHINE</text>
+
+          <g class="schem-node" id="node-editor">
+            <rect x="34" y="56" width="96" height="40" rx="3"></rect>
+            <text x="82" y="80" text-anchor="middle">VS Code</text>
+          </g>
+
+          <line class="schem-line" x1="130" y1="76" x2="168" y2="76"></line>
+
+          <g class="schem-node" id="node-heap">
+            <rect x="168" y="56" width="96" height="40" rx="3"></rect>
+            <text x="216" y="80" text-anchor="middle">Heap Code</text>
+          </g>
+
+          <line class="schem-line" x1="216" y1="96" x2="216" y2="130"></line>
+
+          <g class="schem-node" id="node-local">
+            <rect x="150" y="130" width="112" height="40" rx="3"></rect>
+            <text x="206" y="154" text-anchor="middle">Ollama / LM Studio</text>
+          </g>
+
+          <line class="schem-line" id="line-out" x1="264" y1="76" x2="340" y2="76"></line>
+
+          <g class="schem-node dim" id="node-cloud">
+            <rect x="340" y="56" width="104" height="40" rx="3"></rect>
+            <text x="392" y="80" text-anchor="middle">OpenAI / Groq / …</text>
+          </g>
+        </svg>
+
+        <p class="diagram-caption" id="diagram-caption">
+          <b>Local:</b> prompts, completions, and embeddings run entirely inside the boundary above &mdash; nothing crosses the line.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel wrap" id="spec">
+    <p class="eyebrow">Spec sheet</p>
+    <table class="spec-table">
+      <tr>
+        <td>Telemetry</td>
+        <td>None &mdash; no analytics, no crash reporting phoning home.</td>
+      </tr>
+      <tr>
+        <td>Account required</td>
+        <td>No. No sign-in, no license server.</td>
+      </tr>
+      <tr>
+        <td>Model lock-in</td>
+        <td>None &mdash; any OpenAI-compatible endpoint, switch providers per-role (chat / edit / apply / completion / agent / embeddings / rerank).</td>
+      </tr>
+      <tr>
+        <td>Local model support</td>
+        <td><span class="spec-yes">Yes</span> &mdash; Ollama, LM Studio, vLLM, LocalAI.</td>
+      </tr>
+      <tr>
+        <td>API key storage</td>
+        <td>OS keychain via VS Code SecretStorage &mdash; never in settings files.</td>
+      </tr>
+      <tr>
+        <td>License / price</td>
+        <td>Free for personal, internal, research, nonprofit, education, and government use (PolyForm Noncommercial 1.0).</td>
+      </tr>
+    </table>
+  </section>
+
+  <section class="panel wrap" id="works-with">
+    <p class="eyebrow">Parts list &mdash; works with</p>
+    <div class="parts-grid">
+      <div class="parts-col">
+        <h3><span>Local</span><span>runs on your machine</span></h3>
+        <ul>
+          <li>Ollama</li>
+          <li>LM Studio</li>
+          <li>vLLM</li>
+          <li>LocalAI</li>
+        </ul>
+      </div>
+      <div class="parts-col">
+        <h3><span>Cloud</span><span>bring your own key</span></h3>
+        <ul>
+          <li>OpenAI</li>
+          <li>Azure OpenAI</li>
+          <li>OpenRouter</li>
+          <li>Groq</li>
+          <li>Together AI</li>
+          <li>NVIDIA NIM</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel wrap" id="features">
+    <p class="eyebrow">Features</p>
+    <div class="feature-list">
+      <div class="feature-item">
+        <h4>Chat</h4>
+        <p>Streaming markdown, slash commands, @file/@selection/@workspace context, per-workspace history.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Completions</h4>
+        <p>Ghost-text FIM tuned per model family, debounced and cancellable, repo-aware via the semantic index.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Inline edit</h4>
+        <p>Select code, describe the change, review a native diff, accept from the title bar.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Agent mode</h4>
+        <p>Reads, searches, edits, and runs commands autonomously &mdash; every action gated by permission prompts, one-click revert.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Semantic search</h4>
+        <p>AST-aware chunking, hybrid embeddings + keyword search, degrades gracefully with no embedder configured.</p>
+      </div>
+      <div class="feature-item">
+        <h4>MCP &amp; tool interop</h4>
+        <p>Register Model Context Protocol servers; other extensions' language-model tools show up in agent mode too.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap footer-row">
+    <span class="mono">HEAP CODE &middot; HC-0.2.2 &middot; POLYFORM-NC-1.0</span>
+    <div class="cta-row" style="margin:0;">
+      <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
+      <a class="btn btn-ghost" href="https://github.com/sid7631/heapcode">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var btnLocal = document.getElementById('btn-local');
+    var btnCloud = document.getElementById('btn-cloud');
+    var nodeLocal = document.getElementById('node-local');
+    var nodeCloud = document.getElementById('node-cloud');
+    var nodeHeap = document.getElementById('node-heap');
+    var lineOut = document.getElementById('line-out');
+    var caption = document.getElementById('diagram-caption');
+
+    function setMode(mode) {
+      var isLocal = mode === 'local';
+      btnLocal.setAttribute('aria-pressed', String(isLocal));
+      btnCloud.setAttribute('aria-pressed', String(!isLocal));
+
+      nodeLocal.classList.toggle('dim', !isLocal);
+      nodeLocal.classList.toggle('active', isLocal);
+      nodeCloud.classList.toggle('dim', isLocal);
+      nodeCloud.classList.toggle('active', !isLocal);
+      lineOut.classList.toggle('hidden', isLocal);
+      lineOut.classList.toggle('active', !isLocal);
+      nodeHeap.classList.toggle('active', true);
+
+      caption.innerHTML = isLocal
+        ? '<b>Local:</b> prompts, completions, and embeddings run entirely inside the boundary above &mdash; nothing crosses the line.'
+        : '<b>Cloud:</b> only the prompt goes out, straight to the endpoint <i>you</i> configured &mdash; no proprietary backend in between.';
+    }
+
+    btnLocal.addEventListener('click', function () { setMode('local'); });
+    btnCloud.addEventListener('click', function () { setMode('cloud'); });
+    setMode('local');
+  })();
+</script>
+
+</body>
+</html>

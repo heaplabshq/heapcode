@@ -30,4 +30,4 @@ Named profiles with per-role models — chat, edit, apply, autocomplete, agent, 
 
 ## License
 
-[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) — free for any noncommercial use (personal, private/internal, research, nonprofit, education, government); not for commercial productization. `0.1.x` remains available under its original Apache-2.0 terms. Source: [github.com/sid7631/heapcode](https://github.com/sid7631/heapcode)
+[PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) — free for any noncommercial use (personal, private/internal, research, nonprofit, education, government); not for commercial productization. `0.1.x` remains available under its original Apache-2.0 terms. Source: [github.com/heaplabshq/heapcode](https://github.com/heaplabshq/heapcode)

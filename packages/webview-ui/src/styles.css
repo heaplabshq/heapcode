@@ -10,6 +10,10 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
+  /* This is a narrow docked sidebar — it must never scroll horizontally, even
+     if something (e.g. an absolutely-positioned popover in a very narrow
+     panel) would otherwise overflow and drag the viewport sideways. */
+  overflow-x: hidden;
 }
 
 body {
@@ -240,15 +244,38 @@ button.ghost:not(:disabled):hover {
 
 .empty {
   margin: auto;
+  max-width: 320px;
   text-align: center;
-  opacity: 0.7;
   padding: 0 20px;
   animation: fade-in 0.25s ease;
 }
 
-.empty .hint {
-  font-size: 0.85em;
-  line-height: 1.8;
+.empty-icon {
+  display: block;
+  width: 36px;
+  height: 36px;
+  opacity: 0.5;
+  margin: 0 auto 10px;
+}
+
+.empty-title {
+  font-size: 1.05em;
+  font-weight: 600;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+
+.empty-tagline {
+  opacity: 0.7;
+  margin-bottom: 16px;
+}
+
+.empty-chip {
+  display: block;
+  font-size: 0.8em;
+  opacity: 0.6;
+  line-height: 1.6;
+  margin-bottom: 6px;
 }
 
 @keyframes fade-in {
@@ -1253,10 +1280,10 @@ select.settings-input {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
-  min-width: 250px;
-  max-width: 340px;
-  max-height: 340px;
-  overflow-y: auto;
+  width: max-content;
+  min-width: min(250px, calc(100vw - 24px));
+  max-width: min(340px, calc(100vw - 24px));
+  max-height: 420px;
   background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background));
   color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
   border: 1px solid var(--vscode-dropdown-border, var(--vscode-editorWidget-border, var(--vscode-panel-border)));
@@ -1266,11 +1293,49 @@ select.settings-input {
   display: flex;
   flex-direction: column;
   padding: 6px;
+  overflow: hidden;
 }
 
-/* Never compress items to fit max-height — scroll instead. */
-.model-menu > * {
+/* Provider switcher stays fixed up top; the "Model roles" link stays fixed at
+   the bottom (see .model-menu-bottom) — only the model list in between
+   scrolls, so it's never necessary to scroll past a long model list to reach
+   either. */
+.model-menu-top {
   flex-shrink: 0;
+}
+
+.model-menu-models {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-top: 1px solid var(--vscode-panel-border);
+  margin-top: 6px;
+}
+
+.model-menu-bottom {
+  flex-shrink: 0;
+  border-top: 1px solid var(--vscode-panel-border);
+  margin-top: 6px;
+  padding-top: 4px;
+}
+
+.model-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 4px;
+  padding: 4px 8px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.85em;
+  outline: none;
+}
+
+.model-search:focus {
+  border-color: var(--vscode-focusBorder);
 }
 
 .menu-section {
@@ -1287,13 +1352,9 @@ select.settings-input {
   margin-top: 6px;
 }
 
-.menu-section:empty {
-  padding: 0 0 4px;
-  margin-top: 6px;
-  border-top: 1px solid var(--vscode-panel-border);
-}
-
 .menu-item {
+  display: block;
+  width: 100%;
   text-align: left;
   padding: 5px 10px;
   border-radius: 4px;

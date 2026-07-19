@@ -308,6 +308,7 @@ export function App() {
   );
   const [includeCurrentFile, setIncludeCurrentFile] = useState(true);
   const [modelMenu, setModelMenu] = useState<ModelMenu | null>(null);
+  const [modelFilter, setModelFilter] = useState('');
   const [toolStreamChars, setToolStreamChars] = useState(0);
   const [contextUsage, setContextUsage] = useState<{
     used: number;
@@ -320,6 +321,7 @@ export function App() {
   const nearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const modelSearchRef = useRef<HTMLInputElement>(null);
   const modePickerRef = useRef<HTMLDivElement>(null);
   const plusPickerRef = useRef<HTMLDivElement>(null);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
@@ -353,6 +355,7 @@ export function App() {
     if (!modelMenu && !modeMenuOpen && !plusMenuOpen && !toolsMenuOpen) return;
     const closeAll = () => {
       setModelMenu(null);
+      setModelFilter('');
       setModeMenuOpen(false);
       setPlusMenuOpen(false);
       setToolsMenuOpen(false);
@@ -378,6 +381,15 @@ export function App() {
       document.removeEventListener('mousedown', onMouseDown);
     };
   }, [modelMenu, modeMenuOpen, plusMenuOpen, toolsMenuOpen]);
+
+  // Focus the model-filter input once the list loads — preventScroll avoids
+  // the browser's default "scroll the focused element into view", which in
+  // a narrow docked sidebar would otherwise drag the whole panel sideways.
+  useEffect(() => {
+    if (modelMenu && !modelMenu.loading && modelMenu.models.length > 8) {
+      modelSearchRef.current?.focus({ preventScroll: true });
+    }
+  }, [modelMenu?.loading, modelMenu?.models.length]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<ExtensionToWebview>) => {
@@ -848,12 +860,41 @@ export function App() {
         <div className="messages" ref={scrollRef} onScroll={onScroll} onClick={onMessagesClick}>
           {messages.length === 0 && (
             <div className="empty">
-              <p>Ask about your code, or switch to Agent for autonomous tasks.</p>
-              <p className="hint">
-                <code>/</code> for commands · <code>@selection</code> <code>@file</code>{' '}
-                <code>@problems</code> <code>@workspace</code> for context · <code>+</code> to
-                upload, or drag &amp; drop files/folders · paste screenshots for vision models
+              <svg
+                className="empty-icon"
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12 3a4.5 4.5 0 0 0-4.4 3.5A4 4 0 0 0 5 14a3.5 3.5 0 0 0 3 5h1" />
+                <path d="M12 3a4.5 4.5 0 0 1 4.4 3.5A4 4 0 0 1 19 14a3.5 3.5 0 0 1-3 5h-1" />
+                <path d="M12 3v18" />
+                <path d="M9 9.5h-1.5" />
+                <path d="M15 9.5h1.5" />
+                <path d="M9 14.5H7.5" />
+                <path d="M15 14.5h1.5" />
+              </svg>
+              <div className="empty-title">Heap Code</div>
+              <p className="empty-tagline">
+                Ask about your code, or switch to Agent for autonomous, multi-file tasks.
               </p>
+              <div className="empty-chips">
+                <span className="empty-chip">
+                  <code>/</code> for commands
+                </span>
+                <span className="empty-chip">
+                  <code>@file</code> <code>@selection</code> <code>@problems</code>{' '}
+                  <code>@workspace</code> for context
+                </span>
+                <span className="empty-chip">
+                  <code>+</code> to attach, or drag &amp; drop files/folders
+                </span>
+                <span className="empty-chip">paste a screenshot for vision models</span>
+              </div>
             </div>
           )}
           {messages.map((m, i) => {
@@ -1320,6 +1361,148 @@ export function App() {
                 +
               </button>
             </div>
+            <div className="mode-picker" ref={modePickerRef}>
+              {modeMenuOpen && (
+                <div className="model-menu mode-menu">
+                  {(
+                    [
+                      { id: 'chat', label: 'Ask', hint: 'Chat about your code' },
+                      { id: 'agent', label: 'Agent', hint: 'Autonomously edit files & run commands' },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.id}
+                      className={`menu-item${mode === option.id ? ' active' : ''}`}
+                      onClick={() => {
+                        setMode(option.id);
+                        setModeMenuOpen(false);
+                      }}
+                    >
+                      {mode === option.id ? '✓ ' : ''}
+                      {option.label}
+                      <span className="menu-hint"> — {option.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                className="mode-chip"
+                disabled={busy}
+                title="Mode"
+                onClick={() => setModeMenuOpen((v) => !v)}
+              >
+                {mode === 'agent' ? 'Agent' : 'Ask'} ▾
+              </button>
+            </div>
+            <div className="model-picker" ref={modelPickerRef}>
+              {modelMenu && (
+                <div className="model-menu">
+                  <div className="model-menu-top">
+                    <div className="menu-section">Provider</div>
+                    {modelMenu.profiles.map((p) => (
+                      <button
+                        key={p.name}
+                        className={`menu-item${p.active ? ' active' : ''}`}
+                        onClick={() => {
+                          postToExtension({ type: 'setProfile', name: p.name });
+                          setModelMenu({ loading: true, profiles: [], models: [] });
+                          setModelFilter('');
+                          postToExtension({ type: 'listModels' });
+                        }}
+                      >
+                        {p.active ? '✓ ' : ''}
+                        {p.name}
+                      </button>
+                    ))}
+                    <button
+                      className="menu-item"
+                      onClick={() => {
+                        setModelMenu(null);
+                        postToExtension({ type: 'runCommand', command: 'addProfile' });
+                      }}
+                    >
+                      ＋ Add provider…
+                    </button>
+                    <button
+                      className="menu-item"
+                      onClick={() => {
+                        setModelMenu(null);
+                        postToExtension({ type: 'runCommand', command: 'setApiKey' });
+                      }}
+                    >
+                      🔑 Set API key…
+                    </button>
+                  </div>
+                  <div className="model-menu-models">
+                    <div className="menu-section">Model</div>
+                    {modelMenu.models.length > 8 && (
+                      <input
+                        ref={modelSearchRef}
+                        className="model-search"
+                        type="text"
+                        placeholder={`Filter ${modelMenu.models.length} models…`}
+                        value={modelFilter}
+                        onChange={(e) => setModelFilter(e.target.value)}
+                      />
+                    )}
+                    {modelMenu.loading && <div className="menu-note">Loading…</div>}
+                    {!modelMenu.loading && modelMenu.models.length === 0 && (
+                      <div className="menu-note">Could not list models</div>
+                    )}
+                    {(() => {
+                      const filtered = modelFilter.trim()
+                        ? modelMenu.models.filter((id) =>
+                            id.toLowerCase().includes(modelFilter.trim().toLowerCase()),
+                          )
+                        : modelMenu.models;
+                      if (!modelMenu.loading && modelMenu.models.length > 0 && filtered.length === 0) {
+                        return <div className="menu-note">No models match "{modelFilter}"</div>;
+                      }
+                      return filtered.map((id) => (
+                        <button
+                          key={id}
+                          className={`menu-item${id === config?.model ? ' active' : ''}`}
+                          onClick={() => {
+                            postToExtension({ type: 'setModel', model: id });
+                            setModelMenu(null);
+                            setModelFilter('');
+                          }}
+                        >
+                          {id === config?.model ? '✓ ' : ''}
+                          {id}
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                  <div className="model-menu-bottom">
+                    <button
+                      className="menu-item"
+                      onClick={() => {
+                        setModelMenu(null);
+                        postToExtension({ type: 'runCommand', command: 'selectModel' });
+                      }}
+                    >
+                      Model roles (edit/apply/autocomplete…) →
+                    </button>
+                  </div>
+                </div>
+              )}
+              <button
+                className="model-chip"
+                title="Provider & model"
+                onClick={() => {
+                  if (modelMenu) {
+                    setModelMenu(null);
+                  } else {
+                    setModelMenu({ loading: true, profiles: [], models: [] });
+                    setModelFilter('');
+                    postToExtension({ type: 'listModels' });
+                  }
+                }}
+              >
+                {config ? `${config.profile} · ${config.model || 'no model'}` : '…'} ▾
+              </button>
+            </div>
             <div className="mode-picker" ref={toolsPickerRef}>
               {toolsMenuOpen && (
                 <div className="model-menu tools-menu">
@@ -1411,120 +1594,6 @@ export function App() {
                 }}
               >
                 🔧
-              </button>
-            </div>
-            <div className="mode-picker" ref={modePickerRef}>
-              {modeMenuOpen && (
-                <div className="model-menu mode-menu">
-                  {(
-                    [
-                      { id: 'chat', label: 'Ask', hint: 'Chat about your code' },
-                      { id: 'agent', label: 'Agent', hint: 'Autonomously edit files & run commands' },
-                    ] as const
-                  ).map((option) => (
-                    <button
-                      key={option.id}
-                      className={`menu-item${mode === option.id ? ' active' : ''}`}
-                      onClick={() => {
-                        setMode(option.id);
-                        setModeMenuOpen(false);
-                      }}
-                    >
-                      {mode === option.id ? '✓ ' : ''}
-                      {option.label}
-                      <span className="menu-hint"> — {option.hint}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <button
-                className="mode-chip"
-                disabled={busy}
-                title="Mode"
-                onClick={() => setModeMenuOpen((v) => !v)}
-              >
-                {mode === 'agent' ? 'Agent' : 'Ask'} ▾
-              </button>
-            </div>
-            <div className="model-picker" ref={modelPickerRef}>
-              {modelMenu && (
-                <div className="model-menu">
-                  <div className="menu-section">Provider</div>
-                  {modelMenu.profiles.map((p) => (
-                    <button
-                      key={p.name}
-                      className={`menu-item${p.active ? ' active' : ''}`}
-                      onClick={() => {
-                        postToExtension({ type: 'setProfile', name: p.name });
-                        setModelMenu({ loading: true, profiles: [], models: [] });
-                        postToExtension({ type: 'listModels' });
-                      }}
-                    >
-                      {p.active ? '✓ ' : ''}
-                      {p.name}
-                    </button>
-                  ))}
-                  <button
-                    className="menu-item"
-                    onClick={() => {
-                      setModelMenu(null);
-                      postToExtension({ type: 'runCommand', command: 'addProfile' });
-                    }}
-                  >
-                    ＋ Add provider…
-                  </button>
-                  <button
-                    className="menu-item"
-                    onClick={() => {
-                      setModelMenu(null);
-                      postToExtension({ type: 'runCommand', command: 'setApiKey' });
-                    }}
-                  >
-                    🔑 Set API key…
-                  </button>
-                  <div className="menu-section">Model</div>
-                  {modelMenu.loading && <div className="menu-note">Loading…</div>}
-                  {!modelMenu.loading && modelMenu.models.length === 0 && (
-                    <div className="menu-note">Could not list models</div>
-                  )}
-                  {modelMenu.models.map((id) => (
-                    <button
-                      key={id}
-                      className={`menu-item${id === config?.model ? ' active' : ''}`}
-                      onClick={() => {
-                        postToExtension({ type: 'setModel', model: id });
-                        setModelMenu(null);
-                      }}
-                    >
-                      {id === config?.model ? '✓ ' : ''}
-                      {id}
-                    </button>
-                  ))}
-                  <div className="menu-section" />
-                  <button
-                    className="menu-item"
-                    onClick={() => {
-                      setModelMenu(null);
-                      postToExtension({ type: 'runCommand', command: 'selectModel' });
-                    }}
-                  >
-                    Model roles (edit/apply/autocomplete…) →
-                  </button>
-                </div>
-              )}
-              <button
-                className="model-chip"
-                title="Provider & model"
-                onClick={() => {
-                  if (modelMenu) {
-                    setModelMenu(null);
-                  } else {
-                    setModelMenu({ loading: true, profiles: [], models: [] });
-                    postToExtension({ type: 'listModels' });
-                  }
-                }}
-              >
-                {config ? `${config.profile} · ${config.model || 'no model'}` : '…'} ▾
               </button>
             </div>
             <span className="spacer" />

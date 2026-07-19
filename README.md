@@ -4,7 +4,9 @@
 
 ## Privacy first
 
-Your code never leaves your machine except to the endpoint **you** configure. No telemetry, no proprietary backend, no account, no automatic uploads. Point it at Ollama on your LAN and everything stays home.
+Your code never leaves your machine except to the model endpoint **you** configure — no proprietary backend, no account. Point it at Ollama on your LAN and your code stays home.
+
+Heap Code does send anonymous usage telemetry by default (which features get used, coarse error counts — never code, prompts, or file contents/paths). Turn it off via `heapcode.telemetry.enabled` or VS Code's own `telemetry.telemetryLevel`. See [packages/vscode/README.md](packages/vscode/README.md#telemetry) for details.
 
 ## Works with
 

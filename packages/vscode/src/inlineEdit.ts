@@ -45,13 +45,23 @@ export function registerInlineEdit(
   profiles: ProfileManager,
   log: vscode.OutputChannel,
   rag: RagIndexer,
+  track?: (name: string, meta?: Record<string, unknown>) => void,
 ): void {
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new ProposalContentProvider()),
     vscode.languages.registerCodeLensProvider({ scheme: SCHEME }, new ProposalCodeLensProvider()),
-    vscode.commands.registerCommand('heapcode.inlineEdit', () => inlineEdit(profiles, log, rag)),
-    vscode.commands.registerCommand('heapcode.acceptEdit', () => pendingReview?.(true)),
-    vscode.commands.registerCommand('heapcode.rejectEdit', () => pendingReview?.(false)),
+    vscode.commands.registerCommand('heapcode.inlineEdit', () => {
+      track?.('inlineEdit.invoked');
+      void inlineEdit(profiles, log, rag);
+    }),
+    vscode.commands.registerCommand('heapcode.acceptEdit', () => {
+      track?.('inlineEdit.accepted');
+      pendingReview?.(true);
+    }),
+    vscode.commands.registerCommand('heapcode.rejectEdit', () => {
+      track?.('inlineEdit.rejected');
+      pendingReview?.(false);
+    }),
   );
 }
 

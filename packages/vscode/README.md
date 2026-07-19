@@ -4,7 +4,15 @@ Model-agnostic AI coding assistant for VS Code. Works with **any OpenAI-compatib
 
 ## Privacy
 
-Your code never leaves your machine except to the endpoint **you** configure. No telemetry, no proprietary backend, no account. Point it at Ollama on your LAN and everything stays home. API keys live in your OS keychain, never in settings files.
+Your code never leaves your machine except to the model endpoint **you** configure — no proprietary backend, no account. Point it at Ollama on your LAN and your code stays home. API keys live in your OS keychain, never in settings files.
+
+## Telemetry
+
+Heap Code sends anonymous usage telemetry by default: which commands/features are used and coarse error counts, tagged with a random per-install ID (not your identity), extension/VS Code version, and OS. It **never** includes your code, prompts, file contents, or file paths.
+
+To turn it off:
+- Extension setting: `heapcode.telemetry.enabled` → `false`, or
+- VS Code's own `telemetry.telemetryLevel` → `off` (this disables it for every extension, including Heap Code, regardless of the setting above).
 
 ## Quick start
 

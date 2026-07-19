@@ -91,6 +91,7 @@ export class AgentController {
     private readonly rag?: RagIndexer,
     private readonly mcp?: McpManager,
     private readonly repoMapIndexer?: RepoMapIndexer,
+    private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
   ) {}
 
   get running(): boolean {
@@ -129,6 +130,7 @@ export class AgentController {
       return;
     }
 
+    this.track?.('agent.task.started');
     this.checkpoint = new SessionCheckpoint();
     this.permissions.resetSession();
     const executor = new WorkspaceToolExecutor(
@@ -273,6 +275,7 @@ export class AgentController {
         signal: this.abort.signal,
       });
       this.log.appendLine(`[agent] finished: ${outcome}`);
+      this.track?.('agent.task.completed', { outcome });
       // Snapshot the agent's final version of each touched file — this is
       // what makes Reapply possible after a revert or a manual undo.
       await this.checkpoint.captureFinals();

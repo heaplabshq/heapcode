@@ -31,6 +31,7 @@ function getRepository(): GitRepository | undefined {
 export async function generateCommitMessage(
   profiles: ProfileManager,
   log: vscode.OutputChannel,
+  track?: (name: string, meta?: Record<string, unknown>) => void,
 ): Promise<void> {
   const repo = getRepository();
   if (!repo) {
@@ -73,7 +74,10 @@ export async function generateCommitMessage(
         // Models occasionally fence or quote the message despite instructions.
         let message = (extractFirstCodeBlock(result.content) ?? result.content).trim();
         message = message.replace(/^["'`]+|["'`]+$/g, '').trim();
-        if (message) repo.inputBox.value = message;
+        if (message) {
+          repo.inputBox.value = message;
+          track?.('commit.generated');
+        }
       } catch (err) {
         if (isAbortError(err)) return;
         const message = err instanceof Error ? err.message : String(err);

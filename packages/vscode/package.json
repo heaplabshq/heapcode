@@ -2,7 +2,7 @@
   "name": "heap-code",
   "displayName": "Heap Code",
   "description": "Model-agnostic AI coding assistant. Works with any OpenAI-compatible API — Ollama, OpenAI, OpenRouter, Groq, LM Studio, vLLM, and more.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "publisher": "heapcode",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -518,6 +518,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "At the end of a successful agent session, ask whether anything's worth remembering long-term (a convention, constraint, or gotcha discovered) and — with your confirmation — append it to `.heapcode/memory.md`. Never writes without asking first."
+        },
+        "heapcode.telemetry.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Send anonymous usage telemetry (which commands/features are used, coarse error counts) to help prioritize development. Never includes code, prompts, file contents, or file paths. Also honors VS Code's own `#telemetry.telemetryLevel#` — set that to `off` and Heap Code sends nothing regardless of this setting. See the README \"Telemetry\" section for exactly what's collected."
         },
         "heapcode.completion.template": {
           "type": "string",

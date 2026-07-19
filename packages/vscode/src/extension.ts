@@ -15,6 +15,7 @@ import { ProfileManager } from './profileManager.js';
 import { RagIndexer } from './rag/indexer.js';
 import { RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { ShadowGit } from './agent/shadowGit.js';
+import { Telemetry } from './telemetry.js';
 
 const AST_GRAMMAR_FILES = [
   'tree-sitter.wasm',
@@ -53,13 +54,15 @@ async function enableAstChunking(
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Heap Code');
   void enableAstChunking(context, log);
+  const telemetry = new Telemetry(context, log);
+  const track = (name: string, meta?: Record<string, unknown>) => telemetry.track(name, meta);
   const profiles = new ProfileManager(context.secrets, log);
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);
-  const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log);
+  const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, track);
   const permissions = new PermissionEngine(context.workspaceState, log);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
-  const rag = new RagIndexer(profiles, storageDir, log);
+  const rag = new RagIndexer(profiles, storageDir, log, track);
   const repoMap = new RepoMapIndexer(storageDir, log);
   const mcp = new McpManager(log);
   chatProvider.rag = rag;
@@ -79,6 +82,7 @@ export function activate(context: vscode.ExtensionContext): void {
     rag,
     mcp,
     repoMap,
+    track,
   );
   chatProvider.agent.askUser = (question, options) =>
     chatProvider.askAgentQuestion(question, options);
@@ -128,6 +132,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     log,
+    telemetry,
     profiles,
     statusBar,
     completionStatus,
@@ -136,7 +141,10 @@ export function activate(context: vscode.ExtensionContext): void {
     ragStatus,
     mcp,
     rag.onStatus(updateRagStatus),
-    vscode.commands.registerCommand('heapcode.buildIndex', () => rag.buildIndex()),
+    vscode.commands.registerCommand('heapcode.buildIndex', () => {
+      track('command.buildIndex');
+      void rag.buildIndex();
+    }),
     vscode.commands.registerCommand('heapcode.clearIndex', () => rag.clear()),
     vscode.commands.registerCommand('heapcode.openMemory', () => openMemoryFile()),
     vscode.commands.registerCommand('heapcode.resetPermissions', async () => {
@@ -202,18 +210,40 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('heapcode.selectModel', () => profiles.selectModelFlow()),
     vscode.commands.registerCommand('heapcode.setApiKey', () => profiles.setApiKeyFlow()),
 
-    vscode.commands.registerCommand('heapcode.explain', () => chatProvider.sendFromCommand('/explain')),
-    vscode.commands.registerCommand('heapcode.fix', () => chatProvider.sendFromCommand('/fix @problems')),
-    vscode.commands.registerCommand('heapcode.refactor', () => chatProvider.sendFromCommand('/refactor')),
-    vscode.commands.registerCommand('heapcode.optimize', () => chatProvider.sendFromCommand('/optimize')),
-    vscode.commands.registerCommand('heapcode.generateTests', () => chatProvider.sendFromCommand('/test')),
-    vscode.commands.registerCommand('heapcode.generateDocs', () => chatProvider.sendFromCommand('/docs')),
-    vscode.commands.registerCommand('heapcode.reviewCode', () => chatProvider.sendFromCommand('/review')),
-    vscode.commands.registerCommand('heapcode.securityReview', () =>
-      chatProvider.sendFromCommand('/security-review'),
-    ),
+    vscode.commands.registerCommand('heapcode.explain', () => {
+      track('command.explain');
+      void chatProvider.sendFromCommand('/explain');
+    }),
+    vscode.commands.registerCommand('heapcode.fix', () => {
+      track('command.fix');
+      void chatProvider.sendFromCommand('/fix @problems');
+    }),
+    vscode.commands.registerCommand('heapcode.refactor', () => {
+      track('command.refactor');
+      void chatProvider.sendFromCommand('/refactor');
+    }),
+    vscode.commands.registerCommand('heapcode.optimize', () => {
+      track('command.optimize');
+      void chatProvider.sendFromCommand('/optimize');
+    }),
+    vscode.commands.registerCommand('heapcode.generateTests', () => {
+      track('command.generateTests');
+      void chatProvider.sendFromCommand('/test');
+    }),
+    vscode.commands.registerCommand('heapcode.generateDocs', () => {
+      track('command.generateDocs');
+      void chatProvider.sendFromCommand('/docs');
+    }),
+    vscode.commands.registerCommand('heapcode.reviewCode', () => {
+      track('command.reviewCode');
+      void chatProvider.sendFromCommand('/review');
+    }),
+    vscode.commands.registerCommand('heapcode.securityReview', () => {
+      track('command.securityReview');
+      void chatProvider.sendFromCommand('/security-review');
+    }),
     vscode.commands.registerCommand('heapcode.generateCommitMessage', () =>
-      generateCommitMessage(profiles, log),
+      generateCommitMessage(profiles, log, track),
     ),
 
     vscode.languages.registerCodeActionsProvider(
@@ -228,14 +258,17 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand('heapcode.toggleCompletion', async () => {
       const cfg = vscode.workspace.getConfiguration('heapcode.completion');
-      await cfg.update('enable', !cfg.get<boolean>('enable', true), vscode.ConfigurationTarget.Global);
+      const next = !cfg.get<boolean>('enable', true);
+      track('command.toggleCompletion', { enabled: next });
+      await cfg.update('enable', next, vscode.ConfigurationTarget.Global);
     }),
-    vscode.commands.registerCommand('heapcode.triggerCompletion', () =>
-      vscode.commands.executeCommand('editor.action.inlineSuggest.trigger'),
-    ),
+    vscode.commands.registerCommand('heapcode.triggerCompletion', () => {
+      track('command.triggerCompletion');
+      return vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+    }),
   );
 
-  registerInlineEdit(context, profiles, log, rag);
+  registerInlineEdit(context, profiles, log, rag, track);
   registerAgentDiffProvider(context);
 
   updateRagStatus();
@@ -247,6 +280,7 @@ export function activate(context: vscode.ExtensionContext): void {
   setTimeout(() => void repoMap.buildIndex(), 5_000);
 
   updateStatusBar();
+  track('extension.activated');
   log.appendLine('Heap Code activated.');
 }
 

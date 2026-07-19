@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- **Added anonymous usage telemetry, on by default** — event names only (which commands/features are used, coarse error counts), never code/prompts/file contents/paths, tagged with a random per-install ID. Turn it off with `heapcode.telemetry.enabled` or VS Code's own `telemetry.telemetryLevel`. See the README "Telemetry" section for exactly what's sent.
+
 ## 0.2.2
 
 - No functional changes from 0.2.1 — version bump only, to republish after 0.2.1 was already live on the Marketplace

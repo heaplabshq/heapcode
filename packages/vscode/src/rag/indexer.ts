@@ -35,6 +35,7 @@ export class RagIndexer implements vscode.Disposable {
     private readonly profiles: ProfileManager,
     private readonly storageDir: vscode.Uri,
     private readonly log: vscode.OutputChannel,
+    private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
   ) {
     this.disposables.push(
       vscode.workspace.onDidSaveTextDocument((doc) => {
@@ -135,6 +136,7 @@ export class RagIndexer implements vscode.Disposable {
       this.log.appendLine(
         `[rag] indexed ${this.store.fileCount} files / ${this.store.chunkCount} chunks (${embedded} re-embedded) in ${Math.round((Date.now() - started) / 1000)}s`,
       );
+      this.track?.('rag.index.built');
     } catch (err) {
       this.state = 'error';
       this.log.appendLine(`[rag] index failed: ${err instanceof Error ? err.message : err}`);

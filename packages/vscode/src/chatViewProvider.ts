@@ -96,6 +96,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly profiles: ProfileManager,
     private readonly store: ConversationStore,
     private readonly log: vscode.OutputChannel,
+    private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
   ) {}
 
   postToWebview(msg: ExtensionToWebview): void {
@@ -961,6 +962,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       userMessage.images = images.slice(0, MAX_IMAGES);
       if (!userMessage.content.trim()) userMessage.content = 'See the attached image(s).';
     }
+    this.track?.('chat.message.sent');
     this.conversation.messages.push(userMessage);
     if (this.conversation.messages.length === 1) {
       this.conversation.title = (text || 'Image').slice(0, 60);

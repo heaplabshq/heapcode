@@ -391,6 +391,22 @@ export function App() {
     }
   }, [modelMenu?.loading, modelMenu?.models.length]);
 
+  // Grow the composer with its content (like Copilot's chat box) instead of
+  // staying a fixed 3 rows and scrolling internally from line 4 on. CSS
+  // max-height + overflow-y caps how tall it gets; past that it scrolls.
+  // Clearing the inline height on empty input lets the `rows` attribute
+  // reclaim the resting size instead of guessing a line-height in px.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    if (!input) {
+      el.style.height = '';
+      return;
+    }
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
+
   useEffect(() => {
     const onMessage = (event: MessageEvent<ExtensionToWebview>) => {
       const msg = event.data;

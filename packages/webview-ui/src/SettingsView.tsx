@@ -161,6 +161,37 @@ function Field({
   );
 }
 
+/** Compact icon + label + input row for a model role — denser than the stacked Field layout. */
+function RoleField({
+  icon,
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  icon: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="settings-role-field">
+      <span className="settings-role-icon" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="settings-role-label">{label}</span>
+      <input
+        className="settings-input"
+        type="text"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
 /** "Run this role on a different profile" dropdown — sits under a role's model Field. */
 function RoleProfileSelect({
   value,
@@ -201,95 +232,115 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
     const otherProfiles = data.profiles.map((p) => p.name).filter((n) => n !== draft.name);
     return (
       <div className="settings">
-        <div className="settings-title">
-          {draft.original ? `Edit profile — ${draft.original}` : 'New profile'}
+        <div className="settings-header">
+          <button className="ghost settings-back" title="Back to profiles" onClick={() => setDraft(null)}>
+            ←
+          </button>
+          <div>
+            <div className="settings-title">{draft.original ? 'Edit profile' : 'New profile'}</div>
+            {draft.original && <div className="settings-subtitle">{draft.original}</div>}
+          </div>
         </div>
 
-        <Field label="Name" value={draft.name} onChange={(name) => set({ name })} />
-        <label className="settings-field">
-          <span className="settings-label">Provider</span>
-          <select
-            className="settings-input"
-            value={draft.preset}
-            onChange={(e) => {
-              const next = data.presets.find((p) => p.id === e.target.value);
-              if (!next) return;
-              // Follow the preset's default URL unless the user customized it.
-              const wasDefault = !draft.baseUrl || draft.baseUrl === preset?.defaultBaseUrl;
-              set({ preset: next.id, baseUrl: wasDefault ? next.defaultBaseUrl : draft.baseUrl });
-            }}
-          >
-            {data.presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-                {p.local ? ' (local)' : ''}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Field label="Base URL" value={draft.baseUrl} onChange={(baseUrl) => set({ baseUrl })} />
-
-        <label className="settings-field">
-          <span className="settings-label">
-            API key{' '}
-            {keySaved && !draft.clearKey && <span className="settings-key-badge">saved</span>}
-          </span>
-          <div className="settings-key-row">
-            <input
+        <div className="settings-section">
+          <div className="settings-section-title">Connection</div>
+          <Field label="Name" value={draft.name} onChange={(name) => set({ name })} />
+          <label className="settings-field">
+            <span className="settings-label">Provider</span>
+            <select
               className="settings-input"
-              type="password"
-              value={draft.apiKey}
-              placeholder={
-                draft.clearKey
-                  ? 'will be cleared on save'
-                  : keySaved
-                    ? '•••••••• (unchanged)'
-                    : preset?.requiresApiKey
-                      ? 'required by this provider'
-                      : 'optional'
-              }
-              onChange={(e) => set({ apiKey: e.target.value, clearKey: false })}
-            />
-            {keySaved && !draft.clearKey && (
-              <button className="ghost danger" onClick={() => set({ apiKey: '', clearKey: true })}>
-                Clear
-              </button>
-            )}
-          </div>
-        </label>
+              value={draft.preset}
+              onChange={(e) => {
+                const next = data.presets.find((p) => p.id === e.target.value);
+                if (!next) return;
+                // Follow the preset's default URL unless the user customized it.
+                const wasDefault = !draft.baseUrl || draft.baseUrl === preset?.defaultBaseUrl;
+                set({ preset: next.id, baseUrl: wasDefault ? next.defaultBaseUrl : draft.baseUrl });
+              }}
+            >
+              {data.presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                  {p.local ? ' (local)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Field label="Base URL" value={draft.baseUrl} onChange={(baseUrl) => set({ baseUrl })} />
 
-        <Field
-          label="Chat model"
-          value={draft.model}
-          onChange={(model) => set({ model })}
-          placeholder="e.g. llama3.1, gpt-4o"
-        />
+          <label className="settings-field">
+            <span className="settings-label">
+              API key{' '}
+              {keySaved && !draft.clearKey && <span className="settings-key-badge">saved</span>}
+            </span>
+            <div className="settings-key-row">
+              <input
+                className="settings-input"
+                type="password"
+                value={draft.apiKey}
+                placeholder={
+                  draft.clearKey
+                    ? 'will be cleared on save'
+                    : keySaved
+                      ? '•••••••• (unchanged)'
+                      : preset?.requiresApiKey
+                        ? 'required by this provider'
+                        : 'optional'
+                }
+                onChange={(e) => set({ apiKey: e.target.value, clearKey: false })}
+              />
+              {keySaved && !draft.clearKey && (
+                <button className="ghost danger" onClick={() => set({ apiKey: '', clearKey: true })}>
+                  Clear
+                </button>
+              )}
+            </div>
+          </label>
+        </div>
 
-        <button className="ghost settings-roles-toggle" onClick={() => setShowRoles((v) => !v)}>
-          {showRoles ? '▾' : '▸'} Model roles &amp; tuning
-        </button>
-        {showRoles && (
-          <>
-            <Field label="Edit model" value={draft.editModel} onChange={(editModel) => set({ editModel })} placeholder={inherits} />
-            <RoleProfileSelect value={draft.editProfile} onChange={(editProfile) => set({ editProfile })} options={otherProfiles} />
-            <Field label="Apply model" value={draft.applyModel} onChange={(applyModel) => set({ applyModel })} placeholder="fast-apply merge model" />
-            <RoleProfileSelect value={draft.applyProfile} onChange={(applyProfile) => set({ applyProfile })} options={otherProfiles} />
-            <Field label="Autocomplete model" value={draft.completionModel} onChange={(completionModel) => set({ completionModel })} placeholder={inherits} />
-            <RoleProfileSelect value={draft.completionProfile} onChange={(completionProfile) => set({ completionProfile })} options={otherProfiles} />
-            <Field label="Agent model" value={draft.agentModel} onChange={(agentModel) => set({ agentModel })} placeholder={inherits} />
-            <RoleProfileSelect value={draft.agentProfile} onChange={(agentProfile) => set({ agentProfile })} options={otherProfiles} />
-            <Field label="Embeddings model" value={draft.embeddingsModel} onChange={(embeddingsModel) => set({ embeddingsModel })} placeholder="for semantic search / RAG" />
-            <RoleProfileSelect value={draft.embeddingsProfile} onChange={(embeddingsProfile) => set({ embeddingsProfile })} options={otherProfiles} />
-            <Field label="Rerank model" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" />
-            <RoleProfileSelect value={draft.rerankProfile} onChange={(rerankProfile) => set({ rerankProfile })} options={otherProfiles} />
-            <Field label="Context model" value={draft.contextModel} onChange={(contextModel) => set({ contextModel })} placeholder="inherits rerank → edit → chat model" />
-            <RoleProfileSelect value={draft.contextProfile} onChange={(contextProfile) => set({ contextProfile })} options={otherProfiles} />
-            <Field label="Context window (tokens)" value={draft.contextWindow} onChange={(contextWindow) => set({ contextWindow })} placeholder="auto — provider default, else 32768" type="number" />
-            <Field label="Temperature" value={draft.temperature} onChange={(temperature) => set({ temperature })} placeholder="provider default" type="number" />
-            <Field label="Max output tokens" value={draft.maxTokens} onChange={(maxTokens) => set({ maxTokens })} placeholder="provider default" type="number" />
-            <Field label="Request timeout (seconds)" value={draft.timeoutSec} onChange={(timeoutSec) => set({ timeoutSec })} placeholder="300 — raise for local/slow models on large prompts" type="number" />
-          </>
-        )}
+        <div className="settings-section">
+          <div className="settings-section-title">Chat model</div>
+          <Field
+            label="Model"
+            value={draft.model}
+            onChange={(model) => set({ model })}
+            placeholder="e.g. llama3.1, gpt-4o"
+          />
+        </div>
+
+        <div className="settings-section">
+          <button className="settings-roles-toggle" onClick={() => setShowRoles((v) => !v)}>
+            <span className="tools-group-chevron">{showRoles ? '▾' : '▸'}</span>
+            <span className="settings-section-title">Model roles &amp; tuning</span>
+          </button>
+          {showRoles && (
+            <div className="settings-roles-body">
+              <div className="settings-subsection-title">Core roles</div>
+              <RoleField icon="✏️" label="Edit" value={draft.editModel} onChange={(editModel) => set({ editModel })} placeholder={inherits} />
+              <RoleProfileSelect value={draft.editProfile} onChange={(editProfile) => set({ editProfile })} options={otherProfiles} />
+              <RoleField icon="🔀" label="Apply" value={draft.applyModel} onChange={(applyModel) => set({ applyModel })} placeholder="fast-apply merge model" />
+              <RoleProfileSelect value={draft.applyProfile} onChange={(applyProfile) => set({ applyProfile })} options={otherProfiles} />
+              <RoleField icon="⚡" label="Autocomplete" value={draft.completionModel} onChange={(completionModel) => set({ completionModel })} placeholder={inherits} />
+              <RoleProfileSelect value={draft.completionProfile} onChange={(completionProfile) => set({ completionProfile })} options={otherProfiles} />
+              <RoleField icon="🤖" label="Agent" value={draft.agentModel} onChange={(agentModel) => set({ agentModel })} placeholder={inherits} />
+              <RoleProfileSelect value={draft.agentProfile} onChange={(agentProfile) => set({ agentProfile })} options={otherProfiles} />
+
+              <div className="settings-subsection-title">Retrieval roles</div>
+              <RoleField icon="🔍" label="Embeddings" value={draft.embeddingsModel} onChange={(embeddingsModel) => set({ embeddingsModel })} placeholder="for semantic search / RAG" />
+              <RoleProfileSelect value={draft.embeddingsProfile} onChange={(embeddingsProfile) => set({ embeddingsProfile })} options={otherProfiles} />
+              <RoleField icon="🔢" label="Rerank" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" />
+              <RoleProfileSelect value={draft.rerankProfile} onChange={(rerankProfile) => set({ rerankProfile })} options={otherProfiles} />
+              <RoleField icon="📝" label="Context" value={draft.contextModel} onChange={(contextModel) => set({ contextModel })} placeholder="inherits rerank → edit → chat model" />
+              <RoleProfileSelect value={draft.contextProfile} onChange={(contextProfile) => set({ contextProfile })} options={otherProfiles} />
+
+              <div className="settings-subsection-title">Tuning</div>
+              <Field label="Context window (tokens)" value={draft.contextWindow} onChange={(contextWindow) => set({ contextWindow })} placeholder="auto — provider default, else 32768" type="number" />
+              <Field label="Temperature" value={draft.temperature} onChange={(temperature) => set({ temperature })} placeholder="provider default" type="number" />
+              <Field label="Max output tokens" value={draft.maxTokens} onChange={(maxTokens) => set({ maxTokens })} placeholder="provider default" type="number" />
+              <Field label="Request timeout (seconds)" value={draft.timeoutSec} onChange={(timeoutSec) => set({ timeoutSec })} placeholder="300 — raise for local/slow models on large prompts" type="number" />
+            </div>
+          )}
+        </div>
 
         <div className="settings-actions">
           <button
@@ -317,45 +368,52 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
 
   return (
     <div className="settings">
-      <div className="settings-title">Provider profiles</div>
-      {data.profiles.map((p) => (
-        <div key={p.name} className={`settings-profile${p.name === data.active ? ' active' : ''}`}>
-          <div className="settings-profile-info">
-            <span className="settings-profile-name">
-              {p.name}
-              {p.name === data.active && <span className="settings-active-badge">active</span>}
-            </span>
-            <span className="settings-profile-detail">
-              {data.presets.find((x) => x.id === p.preset)?.label ?? p.preset} ·{' '}
-              {p.model || 'no model'}
-              {data.keySaved[p.name] ? ' · 🔑' : ''}
-            </span>
-          </div>
-          <div className="settings-profile-actions">
-            {p.name !== data.active && (
-              <button
-                className="ghost"
-                title="Make this the active profile"
-                onClick={() => postToExtension({ type: 'settingsActivateProfile', name: p.name })}
-              >
-                Use
-              </button>
-            )}
-            <button className="ghost" onClick={() => setDraft(toDraft(p))}>
-              Edit
-            </button>
-            <button
-              className="ghost danger"
-              title="Delete profile"
-              onClick={() => postToExtension({ type: 'settingsDeleteProfile', name: p.name })}
-            >
-              ✕
-            </button>
-          </div>
+      <div className="settings-header">
+        <div>
+          <div className="settings-title">Provider profiles</div>
+          <div className="settings-subtitle">AI providers Heap Code connects to — local or cloud.</div>
         </div>
-      ))}
+      </div>
+      <div className="settings-profile-list">
+        {data.profiles.map((p) => (
+          <div key={p.name} className={`settings-profile${p.name === data.active ? ' active' : ''}`}>
+            <div className="settings-profile-info">
+              <span className="settings-profile-name">
+                {p.name}
+                {p.name === data.active && <span className="settings-active-badge">active</span>}
+              </span>
+              <span className="settings-profile-detail">
+                {data.presets.find((x) => x.id === p.preset)?.label ?? p.preset} ·{' '}
+                {p.model || 'no model'}
+                {data.keySaved[p.name] ? ' · 🔑' : ''}
+              </span>
+            </div>
+            <div className="settings-profile-actions">
+              {p.name !== data.active && (
+                <button
+                  className="ghost"
+                  title="Make this the active profile"
+                  onClick={() => postToExtension({ type: 'settingsActivateProfile', name: p.name })}
+                >
+                  Use
+                </button>
+              )}
+              <button className="ghost" onClick={() => setDraft(toDraft(p))}>
+                Edit
+              </button>
+              <button
+                className="ghost danger"
+                title="Delete profile"
+                onClick={() => postToExtension({ type: 'settingsDeleteProfile', name: p.name })}
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
       <button
-        className="ghost settings-add"
+        className="settings-add"
         onClick={() => setDraft(newDraft(data.presets.find((p) => p.id === 'ollama') ?? data.presets[0]!))}
       >
         + Add profile

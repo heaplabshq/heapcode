@@ -110,4 +110,17 @@ describe('formatRepoMap', () => {
     const text = formatRepoMap(entries, { budgetChars: 10 });
     expect(text).toContain('truncated');
   });
+
+  it('orders by rank instead of alphabetically when a rank is given', () => {
+    const text = formatRepoMap(entries, {
+      rank: ['packages/vscode/src/extension.ts', 'packages/core/src/rag/store.ts'],
+    });
+    expect(text.indexOf('extension.ts')).toBeLessThan(text.indexOf('store.ts'));
+  });
+
+  it('falls back to alphabetical for entries missing from the rank', () => {
+    // Only store.ts is ranked; extension.ts (unranked) still appears, sorted after it.
+    const text = formatRepoMap(entries, { rank: ['packages/core/src/rag/store.ts'] });
+    expect(text.indexOf('store.ts')).toBeLessThan(text.indexOf('extension.ts'));
+  });
 });

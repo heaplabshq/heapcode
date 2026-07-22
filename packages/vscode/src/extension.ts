@@ -154,6 +154,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('heapcode.clearIndex', () => rag.clear()),
     vscode.commands.registerCommand('heapcode.openMemory', () => openMemoryFile()),
+    vscode.commands.registerCommand('heapcode.showRepoMapDebug', async () => {
+      if (!repoMap.ready) {
+        void vscode.window.showInformationMessage(
+          'Heap Code: repo map has no files indexed yet — give it a few seconds after opening the workspace, or run "Heap Code: Build Index".',
+        );
+        return;
+      }
+      const doc = await vscode.workspace.openTextDocument({
+        content: repoMap.debugRanking(),
+        language: 'plaintext',
+      });
+      await vscode.window.showTextDocument(doc, { preview: false });
+    }),
     vscode.commands.registerCommand('heapcode.resetPermissions', async () => {
       const cleared = await permissions.reset();
       void vscode.window.showInformationMessage(

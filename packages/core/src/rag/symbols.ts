@@ -91,15 +91,33 @@ export async function extractSymbols(path: string, content: string): Promise<Rep
 
 const DEFAULT_BUDGET_CHARS = 8_000;
 
-/** Formats per-file symbol lists into the text handed to the agent, budgeted with a truncation note. */
+/**
+ * Formats per-file symbol lists into the text handed to the agent, budgeted
+ * with a truncation note. Without `rank`, files are alphabetical (the
+ * original behavior). With `rank` (a path priority order — most-relevant
+ * first, from e.g. rankByCentrality), entries are ordered by their position
+ * in it instead — this is what actually matters once the budget forces
+ * truncation: the most-connected/most-relevant files should survive the cut,
+ * not just whatever sorts first alphabetically. Paths missing from `rank`
+ * (nothing indexed for them, or the graph couldn't place them) fall to the
+ * end, alphabetical among themselves.
+ */
 export function formatRepoMap(
   entries: RepoMapFileEntry[],
-  opts: { pathPrefix?: string; budgetChars?: number } = {},
+  opts: { pathPrefix?: string; budgetChars?: number; rank?: readonly string[] } = {},
 ): string {
   const budget = opts.budgetChars ?? DEFAULT_BUDGET_CHARS;
+  const rankIndex = opts.rank ? new Map(opts.rank.map((p, i) => [p, i])) : undefined;
   const filtered = (opts.pathPrefix ? entries.filter((e) => e.path.startsWith(opts.pathPrefix!)) : entries)
     .filter((e) => e.symbols.length > 0)
-    .sort((a, b) => a.path.localeCompare(b.path));
+    .sort((a, b) => {
+      if (rankIndex) {
+        const ra = rankIndex.get(a.path) ?? Number.MAX_SAFE_INTEGER;
+        const rb = rankIndex.get(b.path) ?? Number.MAX_SAFE_INTEGER;
+        if (ra !== rb) return ra - rb;
+      }
+      return a.path.localeCompare(b.path);
+    });
 
   const parts: string[] = [];
   let used = 0;

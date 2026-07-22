@@ -14,6 +14,8 @@ export * from './rag/rerank.js';
 export * from './rag/bm25.js';
 export * from './rag/contextualize.js';
 export * from './rag/symbols.js';
+export * from './rag/importGraph.js';
+export * from './rag/rank.js';
 export * from './agent/tools.js';
 export * from './agent/textProtocol.js';
 export * from './agent/prompts.js';

@@ -152,6 +152,10 @@
         "title": "Heap Code: Open Project Memory"
       },
       {
+        "command": "heapcode.showRepoMapDebug",
+        "title": "Heap Code: Show Repo Map Ranking (Debug)"
+      },
+      {
         "command": "heapcode.addMcpServer",
         "title": "Heap Code: Add MCP Server"
       },

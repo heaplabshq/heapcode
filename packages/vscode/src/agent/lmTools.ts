@@ -29,6 +29,8 @@ export function getLmToolDefinitions(): ToolDefinition[] {
       description: `[VS Code tool] ${t.description}`,
       parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object' },
       permission: 'execute',
+      // Another extension's output — same injection posture as MCP (PLAN.md M7).
+      untrustedOutput: true,
     }));
 }
 

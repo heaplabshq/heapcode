@@ -48,6 +48,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      ignore:
+        specifier: ^7.0.5
+        version: 7.0.5
     devDependencies:
       '@types/vscode':
         specifier: 1.95.0

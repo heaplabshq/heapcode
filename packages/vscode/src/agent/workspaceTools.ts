@@ -3,12 +3,14 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   applySearchReplace,
+  DEFAULT_IGNORE_GLOB,
   findBestMatch,
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
 } from '@heapcode/core';
 import type { SessionCheckpoint } from './checkpoint.js';
+import { filterIgnored } from '../ignoreFiles.js';
 import { listSkillsFormatted, loadSkill } from './skills.js';
 
 const MAX_READ_CHARS = 50_000;
@@ -20,8 +22,107 @@ const MAX_OUTPUT_CHARS = 8_000;
 const MAX_SEARCH_RESULTS = 40;
 const MAX_SEARCH_FILES = 2_000;
 const MAX_FETCH_CHARS = 20_000;
-const IGNORE_GLOB = '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**';
+// A fast-apply model must re-emit the whole file — same ceiling inline-edit's own apply
+// action uses, past which the round-trip cost outweighs skipping the merge and just failing.
+const MAX_APPLY_MERGE_CHARS = 40_000;
 const CWD_MARKER = '__HEAPCODE_CWD__';
+
+const HEAPCODE_TERMINAL_NAME = 'Heap Code';
+/** Grace period for shell integration to activate on a freshly created terminal. */
+const SHELL_INTEGRATION_TIMEOUT_MS = 4_000;
+/** After Ctrl+C, how long to wait before giving up on a process that won't die. */
+const INTERRUPT_GRACE_MS = 5_000;
+
+/**
+ * The single terminal agent commands and the manual "Run in terminal" button
+ * both use, so a user checking VS Code's terminal list sees one recognizable,
+ * live session rather than a new one per run.
+ */
+export function getHeapCodeTerminal(cwd: vscode.Uri): vscode.Terminal {
+  const existing = vscode.window.terminals.find(
+    (t) => t.name === HEAPCODE_TERMINAL_NAME && t.exitStatus === undefined,
+  );
+  if (existing) return existing;
+  return vscode.window.createTerminal({ name: HEAPCODE_TERMINAL_NAME, cwd });
+}
+
+/** Resolves once shell integration activates for `terminal`, or undefined if it never does within the grace period. */
+function waitForShellIntegration(
+  terminal: vscode.Terminal,
+  timeoutMs = SHELL_INTEGRATION_TIMEOUT_MS,
+): Promise<vscode.TerminalShellIntegration | undefined> {
+  if (terminal.shellIntegration) return Promise.resolve(terminal.shellIntegration);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      sub.dispose();
+      resolve(undefined);
+    }, timeoutMs);
+    const sub = vscode.window.onDidChangeTerminalShellIntegration((e) => {
+      if (e.terminal === terminal) {
+        clearTimeout(timer);
+        sub.dispose();
+        resolve(e.shellIntegration);
+      }
+    });
+  });
+}
+
+/** Strips ANSI/OSC escape sequences (colors, cursor moves, shell-integration markers) from raw terminal output. */
+function stripAnsi(s: string): string {
+  return s
+    .replace(/\x1B\][^\x07\x1B]*(\x07|\x1B\\)/g, '') // OSC ... BEL | ST  (incl. shell-integration markers)
+    .replace(/\x1B\[[0-9;?]*[a-zA-Z]/g, '') // CSI sequences (colors, cursor movement)
+    .replace(/\x1B[()#][0-9A-Za-z]/g, '') // charset selection
+    .replace(/\r/g, '');
+}
+
+function truncate(content: string): string {
+  if (content.length <= MAX_OUTPUT_CHARS) return content;
+  return (
+    content.slice(0, MAX_OUTPUT_CHARS / 2) +
+    '\n…[output truncated]…\n' +
+    content.slice(-MAX_OUTPUT_CHARS / 2)
+  );
+}
+
+/** Builds the tool-facing result text/error flag for a finished (or interrupted) command, uniformly across both execution paths. */
+function buildCommandResult(opts: {
+  content: string;
+  exitCode: number | string | undefined;
+  stoppedByUser: boolean;
+  timedOut: boolean;
+  gaveUp: boolean;
+  timeoutSec: number;
+}): ToolResult {
+  const { content, exitCode, stoppedByUser, timedOut, gaveUp, timeoutSec } = opts;
+  if (stoppedByUser) {
+    return {
+      id: '',
+      name: 'run_command',
+      content: `Stopped by user.${gaveUp ? ' It may still be running in the "Heap Code" terminal — check there or interrupt it manually if needed.' : ''}\n${content}`,
+      isError: true,
+    };
+  }
+  if (timedOut) {
+    return {
+      id: '',
+      name: 'run_command',
+      content:
+        `Command did not finish within ${timeoutSec}s and was interrupted — this usually means it's a ` +
+        'long-running process (a dev server, watcher, REPL…) rather than a one-shot command. Don\'t run ' +
+        'it again the same way; it will just time out again. Either tell the user to run it themselves, ' +
+        'or start it in the background (e.g. append &) and verify separately with a short-lived check ' +
+        `(e.g. curl the port).${gaveUp ? ' It may still be running in the "Heap Code" terminal.' : ''}\n${content}`,
+      isError: true,
+    };
+  }
+  return {
+    id: '',
+    name: 'run_command',
+    content: `exit code: ${exitCode ?? 'unknown'}\n${content}`,
+    isError: exitCode !== 0,
+  };
+}
 
 export const agentToolDefinitions: ToolDefinition[] = [
   {
@@ -152,14 +253,44 @@ export const agentToolDefinitions: ToolDefinition[] = [
   {
     name: 'run_command',
     description:
-      'Run a shell command (npm/pnpm/git/tests/etc). Returns stdout, stderr, and exit code. ' +
-      'The working directory persists between calls (cd carries over); it starts at the workspace root.',
+      'Run a shell command (npm/pnpm/git/etc). Returns stdout, stderr, and exit code. ' +
+      'The working directory persists between calls (cd carries over); it starts at the workspace root. ' +
+      'Prefer run_tests for the project\'s test suite. Package installs are checked against the ' +
+      'registry first and blocked if the package name looks hallucinated.',
     parameters: {
       type: 'object',
       properties: {
         command: { type: 'string' },
       },
       required: ['command'],
+    },
+    permission: 'execute',
+  },
+  {
+    name: 'run_tests',
+    description:
+      'Run the project\'s test command (e.g. "npm test", "pytest", "cargo test", "go test ./...") ' +
+      'and report pass/fail from the exit code. Use this — not run_command — to verify changes before finishing.',
+    parameters: {
+      type: 'object',
+      properties: { command: { type: 'string', description: 'The test command to run' } },
+      required: ['command'],
+    },
+    permission: 'execute',
+    verifies: true,
+  },
+  {
+    name: 'check_package_exists',
+    description:
+      'Check whether a package name actually exists on npm or PyPI before adding it as a dependency — ' +
+      'catches hallucinated package names before they\'re installed.',
+    parameters: {
+      type: 'object',
+      properties: {
+        registry: { type: 'string', enum: ['npm', 'pypi'] },
+        name: { type: 'string' },
+      },
+      required: ['registry', 'name'],
     },
     permission: 'execute',
   },
@@ -213,6 +344,8 @@ export const agentToolDefinitions: ToolDefinition[] = [
       required: ['url'],
     },
     permission: 'execute',
+    // Arbitrary third-party content — same injection posture as MCP (PLAN.md M7).
+    untrustedOutput: true,
   },
   {
     name: 'multi_edit',
@@ -325,6 +458,16 @@ function nearbyHint(content: string, search: string): string {
   return `The closest matching region is:\n${snippet}\n`;
 }
 
+/**
+ * The "update" fed to the fast-apply model when edit_file's exact match fails —
+ * gives it both what should disappear and what should appear, since the search
+ * text alone drifting slightly from the file is exactly why the deterministic
+ * match missed in the first place.
+ */
+function buildEditSnippet(search: string, replace: string): string {
+  return `Replace this code:\n${search}\n\nwith this code:\n${replace}`;
+}
+
 export class WorkspaceToolExecutor {
   /** run_command working directory — persists across calls within a session. */
   private cwd: string;
@@ -337,6 +480,8 @@ export class WorkspaceToolExecutor {
     private readonly commandTimeoutMs: number,
     private readonly semanticSearch?: (query: string) => Promise<string>,
     private readonly repoMap?: (pathPrefix?: string) => string,
+    /** Fast-apply merge (applyModel/applyProfile role) — edit_file's fallback when exact search/replace fails to match. */
+    private readonly applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
   ) {
     this.cwd = root.fsPath;
   }
@@ -372,6 +517,10 @@ export class WorkspaceToolExecutor {
         return `Delete ${a.path}`;
       case 'run_command':
         return `Run: ${a.command}`;
+      case 'run_tests':
+        return `Run tests: ${a.command}`;
+      case 'check_package_exists':
+        return `Check if ${a.name} exists on ${a.registry}`;
       case 'get_symbols':
         return `Outline ${a.path}`;
       case 'find_references':
@@ -397,7 +546,7 @@ export class WorkspaceToolExecutor {
     }
   }
 
-  async execute(call: ToolCall): Promise<ToolResult> {
+  async execute(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const ok = (content: string): ToolResult => ({ id: call.id, name: call.name, content });
     const fail = (content: string): ToolResult => ({
       id: call.id,
@@ -496,16 +645,32 @@ export class WorkspaceToolExecutor {
       case 'edit_file': {
         const uri = this.resolve(a.path);
         const current = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-        const next = applySearchReplace(current, String(a.search ?? ''), String(a.replace ?? ''));
+        const search = String(a.search ?? '');
+        const replace = String(a.replace ?? '');
+        let next = applySearchReplace(current, search, replace);
+        let viaApplyModel = false;
+        // The exact/fuzzy matcher didn't find "search" — before failing outright (which
+        // costs a full agent-model retry round-trip), try the fast-apply model: it gets
+        // both what should disappear and what should appear, so it can often place the
+        // change even when the agent's search text has drifted slightly from the file.
+        if (next === undefined && this.applyMerge && current.length <= MAX_APPLY_MERGE_CHARS) {
+          const merged = await this.applyMerge(current, buildEditSnippet(search, replace));
+          if (merged !== undefined && merged.trim() && merged !== current) {
+            next = merged;
+            viaApplyModel = true;
+          }
+        }
         if (next === undefined) {
           return fail(
-            `The "search" text was not found in ${a.path}. ${nearbyHint(current, String(a.search ?? ''))}` +
+            `The "search" text was not found in ${a.path}. ${nearbyHint(current, search)}` +
               'Provide the exact existing code (copy it from read_file output, without the line numbers).',
           );
         }
         await this.checkpoint.recordBeforeChange(uri);
         await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(next));
-        return ok(`Edited ${a.path}.`);
+        return ok(
+          `Edited ${a.path}.${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}`,
+        );
       }
       case 'rename_file': {
         const from = this.resolve(a.path);
@@ -521,8 +686,41 @@ export class WorkspaceToolExecutor {
         await vscode.workspace.fs.delete(uri, { useTrash: true });
         return ok(`Deleted ${a.path} (moved to trash).`);
       }
-      case 'run_command':
-        return this.runCommand(a.command ?? '');
+      case 'run_command': {
+        const command = a.command ?? '';
+        const install = detectPackageInstall(command);
+        if (install) {
+          const missing: string[] = [];
+          for (const name of install.names) {
+            const exists = await checkPackageExists(install.registry, name).catch(() => true);
+            if (!exists) missing.push(name);
+          }
+          if (missing.length > 0) {
+            const registryLabel = install.registry === 'pypi' ? 'PyPI' : 'npm';
+            return fail(
+              `Blocked: ${missing.join(', ')} could not be found on ${registryLabel} — this looks like ` +
+                `a hallucinated package name. Double-check the spelling, or call check_package_exists ` +
+                'to verify a name before retrying.',
+            );
+          }
+        }
+        return this.runCommand(command, signal);
+      }
+      case 'run_tests': {
+        const result = await this.runCommand(a.command ?? '', signal);
+        return { ...result, id: call.id, name: 'run_tests' };
+      }
+      case 'check_package_exists': {
+        const registry = a.registry === 'pypi' ? 'pypi' : 'npm';
+        const exists = await checkPackageExists(registry, a.name ?? '').catch(() => true);
+        const registryLabel = registry === 'pypi' ? 'PyPI' : 'npm';
+        return ok(
+          exists
+            ? `${a.name} exists on ${registryLabel}.`
+            : `${a.name} was NOT found on ${registryLabel} — likely a hallucinated name. ` +
+                'Do not install it; double-check the spelling or search for the correct package.',
+        );
+      }
       case 'get_symbols': {
         const uri = this.resolve(a.path);
         const outline = await getSymbolOutline(uri);
@@ -602,7 +800,8 @@ export class WorkspaceToolExecutor {
   private async search(pattern: string, glob?: string): Promise<string> {
     if (!pattern) throw new Error('Missing "pattern" argument.');
     const regex = new RegExp(pattern);
-    const files = await vscode.workspace.findFiles(glob || '**/*', IGNORE_GLOB, MAX_SEARCH_FILES);
+    const found = await vscode.workspace.findFiles(glob || '**/*', DEFAULT_IGNORE_GLOB, MAX_SEARCH_FILES);
+    const files = await filterIgnored(this.root, found);
     const results: string[] = [];
     for (const file of files) {
       if (results.length >= MAX_SEARCH_RESULTS) break;
@@ -633,15 +832,104 @@ export class WorkspaceToolExecutor {
     return results.join('\n--\n') || 'No matches.';
   }
 
-  private runCommand(command: string): Promise<ToolResult> {
+  /**
+   * Runs in the real, visible "Heap Code" terminal when shell integration is
+   * available (so the user sees exactly what the agent runs, live, the same
+   * place the manual "Run in terminal" button uses) — falling back to a
+   * hidden child process only if shell integration never activates (e.g.
+   * Command Prompt, or a shell without the integration script sourced).
+   */
+  private async runCommand(command: string, signal?: AbortSignal): Promise<ToolResult> {
     if (!command) {
-      return Promise.resolve({
-        id: '',
-        name: 'run_command',
-        content: 'Missing "command" argument.',
-        isError: true,
-      });
+      return { id: '', name: 'run_command', content: 'Missing "command" argument.', isError: true };
     }
+    const viaTerminal = await this.runCommandInTerminal(command, signal).catch(() => undefined);
+    return viaTerminal ?? this.runCommandHidden(command, signal);
+  }
+
+  private async runCommandInTerminal(
+    command: string,
+    signal?: AbortSignal,
+  ): Promise<ToolResult | undefined> {
+    const terminal = getHeapCodeTerminal(this.root);
+    terminal.show(true);
+    const shellIntegration = await waitForShellIntegration(terminal);
+    if (!shellIntegration) return undefined;
+
+    const execution = shellIntegration.executeCommand(command);
+    const iterator = execution.read()[Symbol.asyncIterator]();
+
+    let raw = '';
+    let stoppedByUser = false;
+    let timedOut = false;
+    let interrupted = false;
+    let gaveUp = false;
+    let hardDeadline: Promise<'deadline'> | undefined;
+
+    const interrupt = () => {
+      if (interrupted) return;
+      interrupted = true;
+      terminal.sendText('\x03', false);
+      hardDeadline = new Promise((r) => setTimeout(() => r('deadline'), INTERRUPT_GRACE_MS));
+    };
+    const onAbort = () => {
+      stoppedByUser = true;
+      interrupt();
+    };
+    signal?.addEventListener('abort', onAbort);
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      interrupt();
+    }, this.commandTimeoutMs);
+
+    const exitCodePromise = new Promise<number | undefined>((resolve) => {
+      const sub = vscode.window.onDidEndTerminalShellExecution((e) => {
+        if (e.execution === execution) {
+          sub.dispose();
+          resolve(e.exitCode);
+        }
+      });
+    });
+
+    try {
+      while (true) {
+        const next = hardDeadline
+          ? await Promise.race([iterator.next(), hardDeadline])
+          : await iterator.next();
+        if (next === 'deadline') {
+          gaveUp = true;
+          void iterator.return?.();
+          break;
+        }
+        if (next.done) break;
+        raw += next.value;
+        // Raw output carries escape sequences, so allow extra headroom before trimming.
+        if (raw.length > MAX_OUTPUT_CHARS * 8) raw = raw.slice(-MAX_OUTPUT_CHARS * 4);
+      }
+    } catch {
+      // the read stream can error if the terminal is closed mid-command
+    }
+
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
+    const exitCode = gaveUp
+      ? undefined
+      : await Promise.race([
+          exitCodePromise,
+          new Promise<undefined>((r) => setTimeout(() => r(undefined), 1_500)),
+        ]);
+
+    return buildCommandResult({
+      content: truncate(stripAnsi(raw).trim() || '(no output)'),
+      exitCode,
+      stoppedByUser,
+      timedOut,
+      gaveUp,
+      timeoutSec: this.commandTimeoutMs / 1000,
+    });
+  }
+
+  private runCommandHidden(command: string, signal?: AbortSignal): Promise<ToolResult> {
     // POSIX: echo the final $PWD behind a marker so `cd` persists to the next call.
     const trackCwd = process.platform !== 'win32';
     const wrapped = trackCwd ? `${command}\n__heapcode_ec=$?; echo "${CWD_MARKER}$PWD"; exit $__heapcode_ec` : command;
@@ -652,6 +940,8 @@ export class WorkspaceToolExecutor {
         env: process.env,
       });
       let out = '';
+      let stoppedByUser = false;
+      let timedOut = false;
       const collect = (chunk: Buffer) => {
         out += chunk.toString();
         if (out.length > MAX_OUTPUT_CHARS * 4) {
@@ -662,12 +952,21 @@ export class WorkspaceToolExecutor {
       child.stderr.on('data', collect);
 
       const timeout = setTimeout(() => {
+        timedOut = true;
         child.kill('SIGKILL');
-        out += `\n[killed after ${this.commandTimeoutMs / 1000}s timeout]`;
       }, this.commandTimeoutMs);
+
+      // Stop must be able to interrupt a command that outlives the LLM
+      // turn — a dev server, a stuck build — not just abort the next fetch.
+      const onAbort = () => {
+        stoppedByUser = true;
+        child.kill('SIGKILL');
+      };
+      signal?.addEventListener('abort', onAbort);
 
       child.on('close', (code) => {
         clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
         const markerAt = out.lastIndexOf(CWD_MARKER);
         if (markerAt !== -1) {
           const nextCwd = out.slice(markerAt + CWD_MARKER.length).split('\n')[0]!.trim();
@@ -680,22 +979,20 @@ export class WorkspaceToolExecutor {
             this.cwd = nextCwd;
           }
         }
-        let content = out.trim() || '(no output)';
-        if (content.length > MAX_OUTPUT_CHARS) {
-          content =
-            content.slice(0, MAX_OUTPUT_CHARS / 2) +
-            '\n…[output truncated]…\n' +
-            content.slice(-MAX_OUTPUT_CHARS / 2);
-        }
-        resolvePromise({
-          id: '',
-          name: 'run_command',
-          content: `exit code: ${code ?? 'unknown'}\n${content}`,
-          isError: code !== 0,
-        });
+        resolvePromise(
+          buildCommandResult({
+            content: truncate(out.trim() || '(no output)'),
+            exitCode: code ?? undefined,
+            stoppedByUser,
+            timedOut,
+            gaveUp: false,
+            timeoutSec: this.commandTimeoutMs / 1000,
+          }),
+        );
       });
       child.on('error', (err) => {
         clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
         resolvePromise({ id: '', name: 'run_command', content: err.message, isError: true });
       });
     });
@@ -807,6 +1104,61 @@ async function fetchUrl(url: string): Promise<string> {
       throw new Error(`Timed out fetching ${url}`);
     }
     throw err instanceof Error ? err : new Error(String(err));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Install-command shapes we recognize per package registry (order doesn't matter — first match wins). */
+const INSTALL_PATTERNS: Array<{ re: RegExp; registry: 'npm' | 'pypi' }> = [
+  { re: /^(?:npm|pnpm)\s+(?:install|i|add)\b/, registry: 'npm' },
+  { re: /^yarn\s+add\b/, registry: 'npm' },
+  { re: /^(?:pip3?|python3?\s+-m\s+pip)\s+install\b/, registry: 'pypi' },
+  { re: /^poetry\s+add\b/, registry: 'pypi' },
+];
+
+/**
+ * Extract package names from an install-shaped command, for the
+ * hallucinated-package guard (PLAN.md M7.2). Returns undefined when the
+ * command isn't an install, installs from a file/lockfile (no new name being
+ * introduced), or only references local paths/VCS URLs.
+ */
+function detectPackageInstall(command: string): { registry: 'npm' | 'pypi'; names: string[] } | undefined {
+  const trimmed = command.trim();
+  const matched = INSTALL_PATTERNS.find((p) => p.re.test(trimmed));
+  if (!matched) return undefined;
+  const rest = trimmed.replace(matched.re, '').trim();
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  const names: string[] = [];
+  for (const t of tokens) {
+    if (t.startsWith('-')) {
+      // Installing from a requirements file/editable local path — not a named package to verify.
+      if (['-r', '--requirement', '-e', '--editable'].includes(t)) return undefined;
+      continue;
+    }
+    if (t === '.' || t.startsWith('./') || t.startsWith('../') || t.startsWith('/') || t.includes('://')) {
+      continue; // local path or VCS/tarball URL — not a registry lookup
+    }
+    const name = matched.registry === 'npm' ? t.replace(/^(@?[^@]+).*$/, '$1') : t.split(/[=<>!~[]/)[0]!;
+    if (name) names.push(name);
+  }
+  return names.length > 0 ? { registry: matched.registry, names } : undefined;
+}
+
+/** Best-effort registry lookup; network failures resolve to "exists" (fail open, never block on our own flakiness). */
+async function checkPackageExists(registry: 'npm' | 'pypi', name: string): Promise<boolean> {
+  if (!name) return true;
+  const url =
+    registry === 'pypi'
+      ? `https://pypi.org/pypi/${encodeURIComponent(name)}/json`
+      : `https://registry.npmjs.org/${name.startsWith('@') ? name.replace('/', '%2f') : encodeURIComponent(name)}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    return res.ok;
+  } catch {
+    return true;
   } finally {
     clearTimeout(timeout);
   }

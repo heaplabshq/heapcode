@@ -22,6 +22,8 @@ interface ToolChip {
   fileEdit?: FileEditInfo;
   terminalCommand?: string;
   expanded?: boolean;
+  /** Shadow-git commit taken just before this call ran — lets the user rewind to this exact step. */
+  checkpoint?: string;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -29,7 +31,16 @@ const STATUS_LABEL: Record<string, string> = {
   stopped: 'Stopped',
   'max-iterations': 'Stopped at iteration limit',
   error: 'Failed',
+  planned: 'Plan ready — review below',
 };
+
+/** Mirrors packages/vscode/src/agent/personas.ts — restricts which tools the agent is offered. */
+const PERSONAS = [
+  { id: 'agent', label: 'Agent', hint: 'Full access — reads, edits, runs commands' },
+  { id: 'architect', label: 'Architect', hint: 'Plans and explores — read-only' },
+  { id: 'debug', label: 'Debug', hint: 'Investigates & runs tests — no file edits' },
+  { id: 'reviewer', label: 'Reviewer', hint: 'Read-only review — no changes' },
+] as const;
 
 const REFERENCE_PATTERN = /^[.#]?[\w@-]+([./\\-][\w@-]+)*(\.\w+)?$/;
 
@@ -78,6 +89,61 @@ function IconGear() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
       <path d="M9.1 1.5l.4 1.8c.4.1.8.3 1.1.5l1.7-.8 1.1 1.9-1.4 1.2c.1.4.1.8 0 1.2l1.4 1.2-1.1 1.9-1.7-.8c-.3.2-.7.4-1.1.5l-.4 1.8H6.9l-.4-1.8c-.4-.1-.8-.3-1.1-.5l-1.7.8-1.1-1.9L4 7.3c-.1-.4-.1-.8 0-1.2L2.6 4.9l1.1-1.9 1.7.8c.3-.2.7-.4 1.1-.5l.4-1.8h2.2zM8 5.2A2.2 2.2 0 1 0 8 9.6 2.2 2.2 0 0 0 8 5.2z" transform="translate(0 1.3)" />
+    </svg>
+  );
+}
+
+/** Right-pointing triangle, rotated 90° when `down` — collapse/expand carets. */
+function IconChevron({ down }: { down?: boolean }) {
+  return (
+    <svg
+      width="9"
+      height="9"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden
+      style={down ? { transform: 'rotate(90deg)' } : undefined}
+    >
+      <path d="M5 2l6 6-6 6V2Z" />
+    </svg>
+  );
+}
+
+function IconPencil() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M12.1 1.6a1.7 1.7 0 0 1 2.4 2.4l-.9.9-2.4-2.4.9-.9ZM10.4 3.3l2.4 2.4L5.2 13.3l-3.2.9.9-3.2 7.5-7.7Z" />
+    </svg>
+  );
+}
+
+function IconUndo() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M6.7 3.1 2.3 7.5l4.4 4.4v-2.8c3.6 0 6 1.2 7.3 3.7C13.7 8 11 5.4 6.7 5.3V3.1Z" />
+    </svg>
+  );
+}
+
+/** Speech-bubble-with-dots glyph for the reasoning/"Thought" header — replaces the 💭 emoji, which renders as a mismatched color glyph on most platforms. */
+function IconThought() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" fillRule="evenodd" aria-hidden>
+      <path d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7.8L5 12.8V10H3a1 1 0 0 1-1-1V3Z M4.5 5.5a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z M8 5.5a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z M11.5 5.5a.8.8 0 1 0 0 1.6.8.8 0 0 0 0-1.6Z" />
+    </svg>
+  );
+}
+
+/** Horizontal sliders/equalizer glyph for "Agent tools" — three rows, each with a toggle handle at a different position. */
+function IconSliders() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <rect x="2" y="3.3" width="12" height="1.4" rx="0.7" />
+      <circle cx="9.5" cy="4" r="1.8" />
+      <rect x="2" y="7.3" width="12" height="1.4" rx="0.7" />
+      <circle cx="6" cy="8" r="1.8" />
+      <rect x="2" y="11.3" width="12" height="1.4" rx="0.7" />
+      <circle cx="11" cy="12" r="1.8" />
     </svg>
   );
 }
@@ -337,6 +403,7 @@ export function App() {
   const [collapsedToolGroups, setCollapsedToolGroups] = useState<Record<string, boolean>>({});
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [persona, setPersona] = useState('agent');
 
   /** Explorer drags carry a uri-list; hand it to the extension to resolve files vs folders. */
   const onDrop = (e: React.DragEvent) => {
@@ -634,6 +701,7 @@ export function App() {
                       summary: msg.summary,
                       label: msg.label,
                       fileEdit: msg.fileEdit,
+                      checkpoint: msg.checkpoint,
                     },
                   }
                 : m,
@@ -738,7 +806,7 @@ export function App() {
     if (editing !== null) {
       // Edited prompt: the extension truncates the conversation, restores the
       // workspace checkpoint, re-renders, and resends — no local append here.
-      postToExtension({ type: 'editUserMessage', ordinal: editing, text, files, mode });
+      postToExtension({ type: 'editUserMessage', ordinal: editing, text, files, mode, persona });
       setEditing(null);
       setInput('');
       return;
@@ -746,7 +814,7 @@ export function App() {
     if (mode === 'agent') {
       setMessages((prev) => [...prev, { role: 'user', content: text, attachedFiles: files, images }]);
       setInput('');
-      postToExtension({ type: 'agentStart', task: text, files, images });
+      postToExtension({ type: 'agentStart', task: text, files, images, persona });
       return;
     }
     setMessages((prev) => [
@@ -938,7 +1006,9 @@ export function App() {
                     <span className="tool-icon">{t.done ? (t.ok ? '✓' : '✗') : '⏳'}</span>
                     <span className="tool-desc">{t.description}</span>
                     {t.label && <span className="tool-label">{t.label}</span>}
-                    <span className="tool-caret">{t.expanded ? '▾' : '▸'}</span>
+                    <span className="tool-caret">
+                      <IconChevron down={t.expanded} />
+                    </span>
                   </button>
                   {t.expanded && (
                     <div className="tool-detail">
@@ -951,6 +1021,17 @@ export function App() {
                           }
                         >
                           $ Run in terminal
+                        </button>
+                      )}
+                      {t.checkpoint && (
+                        <button
+                          className="ghost"
+                          title="Restore workspace files to the state right before this step ran"
+                          onClick={() =>
+                            postToExtension({ type: 'restoreToolCheckpoint', hash: t.checkpoint! })
+                          }
+                        >
+                          ⤺ Rewind to before this step
                         </button>
                       )}
                     </div>
@@ -1041,8 +1122,10 @@ export function App() {
                       )
                     }
                   >
-                    💭 {m.agentStreaming ? 'Thinking…' : 'Thought'}
-                    <span className="tool-caret">{m.collapsed ? '▸' : '▾'}</span>
+                    <IconThought /> {m.agentStreaming ? 'Thinking…' : 'Thought'}
+                    <span className="tool-caret">
+                      <IconChevron down={!m.collapsed} />
+                    </span>
                   </button>
                   {!m.collapsed && <div className="reasoning-body">{m.content}</div>}
                 </div>
@@ -1062,7 +1145,9 @@ export function App() {
                   >
                     <span className="plan-badge">Plan</span>
                     {steps > 0 && <span className="plan-steps">{steps} steps</span>}
-                    <span className="tool-caret">{m.collapsed ? '▸' : '▾'}</span>
+                    <span className="tool-caret">
+                      <IconChevron down={!m.collapsed} />
+                    </span>
                   </button>
                   {!m.collapsed && (
                     <div
@@ -1084,6 +1169,14 @@ export function App() {
                       {changedFiles.length > 0 &&
                         ` · ${changedFiles.length} file${changedFiles.length > 1 ? 's' : ''} changed`}
                     </span>
+                    {state === 'planned' && (
+                      <button
+                        className="ghost"
+                        onClick={() => postToExtension({ type: 'agentApprovePlan' })}
+                      >
+                        ▶ Approve &amp; Run
+                      </button>
+                    )}
                     {changedFiles.some((f) => !f.reverted) && (
                       <button className="ghost" onClick={() => postToExtension({ type: 'agentKeepAll' })}>
                         Keep all
@@ -1179,7 +1272,7 @@ export function App() {
                             inputRef.current?.focus();
                           }}
                         >
-                          ✎
+                          <IconPencil />
                         </button>
                         <button
                           className="ghost edit-msg restore-msg"
@@ -1189,7 +1282,7 @@ export function App() {
                             postToExtension({ type: 'restoreCheckpoint', ordinal });
                           }}
                         >
-                          ⤺
+                          <IconUndo />
                         </button>
                       </>
                     )}
@@ -1399,6 +1492,25 @@ export function App() {
                       <span className="menu-hint"> — {option.hint}</span>
                     </button>
                   ))}
+                  {mode === 'agent' && (
+                    <>
+                      <div className="menu-section">Persona</div>
+                      {PERSONAS.map((option) => (
+                        <button
+                          key={option.id}
+                          className={`menu-item${persona === option.id ? ' active' : ''}`}
+                          onClick={() => {
+                            setPersona(option.id);
+                            setModeMenuOpen(false);
+                          }}
+                        >
+                          {persona === option.id ? '✓ ' : ''}
+                          {option.label}
+                          <span className="menu-hint"> — {option.hint}</span>
+                        </button>
+                      ))}
+                    </>
+                  )}
                 </div>
               )}
               <button
@@ -1407,7 +1519,12 @@ export function App() {
                 title="Mode"
                 onClick={() => setModeMenuOpen((v) => !v)}
               >
-                {mode === 'agent' ? 'Agent' : 'Ask'} ▾
+                {mode === 'agent'
+                  ? persona === 'agent'
+                    ? 'Agent'
+                    : `Agent · ${PERSONAS.find((p) => p.id === persona)?.label ?? persona}`
+                  : 'Ask'}{' '}
+                ▾
               </button>
             </div>
             <div className="model-picker" ref={modelPickerRef}>
@@ -1539,7 +1656,9 @@ export function App() {
                             setCollapsedToolGroups((prev) => ({ ...prev, [g.id]: !collapsed }))
                           }
                         >
-                          <span className="tools-group-chevron">{collapsed ? '▸' : '▾'}</span>
+                          <span className="tools-group-chevron">
+                            <IconChevron down={!collapsed} />
+                          </span>
                           <input
                             type="checkbox"
                             checked={allOn}
@@ -1609,7 +1728,7 @@ export function App() {
                   setToolsMenuOpen((v) => !v);
                 }}
               >
-                🔧
+                <IconSliders />
               </button>
             </div>
             <span className="spacer" />

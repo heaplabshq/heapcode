@@ -11,17 +11,22 @@ import {
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
+import { filterToolsForPersona, getPersona } from './personas.js';
 import { callLmTool, getLmToolDefinitions, getLmToolGroups, isLmTool } from './lmTools.js';
 import { getActiveEditor } from '../contextCollector.js';
+import { mergeWithApplyModel } from '../inlineEdit.js';
 import type { ProfileManager } from '../profileManager.js';
 import type { RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import type { McpManager } from './mcp.js';
+import type { ShadowGit } from './shadowGit.js';
 import { appendMemoryNote, loadProjectInstructions } from '../memory.js';
 
 export class AgentController {
   private abort?: AbortController;
   private checkpoint?: SessionCheckpoint;
+  /** A plan awaiting explicit approval (heapcode.agent.planGate) — see approvePlan(). */
+  private pendingPlan?: { task: string; images?: string[]; personaId?: string; planText: string };
 
   /** ask_user tool: forwards the agent's question to the chat UI; set by extension.ts. */
   askUser?: (question: string, options?: string[]) => Promise<string | undefined>;
@@ -37,7 +42,7 @@ export class AgentController {
       label: 'Built-in · Edit',
       names: ['write_file', 'edit_file', 'multi_edit', 'rename_file', 'delete_file', 'create_directory'],
     },
-    { label: 'Built-in · Execute', names: ['run_command'] },
+    { label: 'Built-in · Execute', names: ['run_command', 'run_tests', 'check_package_exists'] },
     { label: 'Built-in · Skills', names: ['list_skills', 'load_skill'] },
     { label: 'Built-in · Other', names: ['ask_user', 'fetch_url'] },
   ];
@@ -92,13 +97,18 @@ export class AgentController {
     private readonly mcp?: McpManager,
     private readonly repoMapIndexer?: RepoMapIndexer,
     private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
+    private readonly shadowGit?: ShadowGit,
   ) {}
 
   get running(): boolean {
     return this.abort !== undefined;
   }
 
-  async start(task: string, images?: string[]): Promise<void> {
+  async start(
+    task: string,
+    images?: string[],
+    opts?: { personaId?: string; resumePlanText?: string },
+  ): Promise<void> {
     if (this.running) {
       this.post({ type: 'error', message: 'An agent session is already running. Stop it first.' });
       return;
@@ -113,6 +123,9 @@ export class AgentController {
       this.post({ type: 'error', message: 'Agent mode is disabled (heapcode.agent.enable).' });
       return;
     }
+    // A fresh task (not a plan resume) invalidates any previously pending plan.
+    if (!opts?.resumePlanText) this.pendingPlan = undefined;
+    const persona = getPersona(opts?.personaId);
 
     const { provider, profile } = await this.profiles.resolveRole('agentModel');
     if (!profile.model) {
@@ -139,6 +152,9 @@ export class AgentController {
       cfg.get<number>('commandTimeout', 60) * 1000,
       this.rag ? (query) => this.rag!.queryFormatted(query) : undefined,
       this.repoMapIndexer ? (pathPrefix) => this.repoMapIndexer!.format(pathPrefix) : undefined,
+      // edit_file's fast-apply fallback (M10) — no-ops (returns undefined) when no
+      // applyModel is configured for the profile, same as inline-edit's own Apply action.
+      (original, snippet) => mergeWithApplyModel(original, snippet, this.profiles, this.log),
     );
     this.abort = new AbortController();
     this.post({ type: 'agentStatus', status: 'running', changedFiles: [] });
@@ -151,6 +167,9 @@ export class AgentController {
       profile.agentModel || profile.model,
     );
     const fileEdits = new Map<string, FileEditInfo>();
+    // Per-tool-call shadow-git checkpoints (PLAN.md M8) — keyed by call id so
+    // onToolResult can attach the hash taken just before that call ran.
+    const toolCheckpoints = new Map<string, string>();
     let lastToolStreamPost = 0;
     await this.mcp?.ensureConnected();
     const mcpTools = this.mcp?.getToolDefinitions() ?? [];
@@ -160,7 +179,11 @@ export class AgentController {
       ? vscode.workspace.asRelativePath(activeEditor.document.uri, false)
       : undefined;
     const instructions = await loadProjectInstructions(activeFilePath);
-    const fullTask = instructions ? `${instructions}\n\n---\n\nTask: ${task}` : task;
+    const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
+    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+    const planGate = cfg.get<boolean>('planGate', false);
+    const planFirst = cfg.get<boolean>('planFirst', true);
+    let capturedPlanText: string | undefined;
 
     try {
       const outcome = await runAgent({
@@ -169,9 +192,10 @@ export class AgentController {
         task: fullTask,
         images,
         workspaceName: path.basename(root.fsPath),
-        tools: [...agentToolDefinitions, ...mcpTools, ...lmTools].filter(
-          (t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name),
-        ),
+        tools: filterToolsForPersona(
+          [...agentToolDefinitions, ...mcpTools, ...lmTools],
+          persona,
+        ).filter((t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name)),
         nativeToolCalls: capabilities.nativeToolCalls,
         execute: async (call) => {
           if (call.name === 'ask_user') {
@@ -204,7 +228,7 @@ export class AgentController {
               };
             }
           }
-          const result = await executor.execute(call);
+          const result = await executor.execute(call, this.abort?.signal);
           if (!result.isError && (call.name === 'write_file' || call.name === 'edit_file')) {
             const info = await this.computeFileEdit(String(call.args.path ?? ''));
             if (info) fileEdits.set(call.id, info);
@@ -213,6 +237,12 @@ export class AgentController {
         },
         requestPermission: (call, tool) =>
           this.permissions.request(call, tool, this.describe(call, executor)),
+        beforeToolCall: async (call) => {
+          const hash = await this.shadowGit?.snapshot(
+            `${call.name}: ${this.describe(call, executor).slice(0, 80)}`,
+          );
+          if (hash) toolCheckpoints.set(call.id, hash);
+        },
         events: {
           onText: (text) => this.post({ type: 'agentText', text }),
           onTextDelta: (text) => this.post({ type: 'agentTextDelta', text }),
@@ -226,7 +256,10 @@ export class AgentController {
               this.post({ type: 'agentToolStream', chars });
             }
           },
-          onPlan: (text) => this.post({ type: 'agentPlan', text }),
+          onPlan: (text) => {
+            capturedPlanText = text;
+            this.post({ type: 'agentPlan', text });
+          },
           onToolCall: (call) => {
             const description = this.describe(call, executor);
             this.log.appendLine(`[agent] tool: ${description}`);
@@ -236,7 +269,9 @@ export class AgentController {
               name: call.name,
               description,
               terminalCommand:
-                call.name === 'run_command' ? String(call.args.command ?? '') : undefined,
+                call.name === 'run_command' || call.name === 'run_tests'
+                  ? String(call.args.command ?? '')
+                  : undefined,
             });
           },
           onContextUsage: (used, window) =>
@@ -253,6 +288,7 @@ export class AgentController {
               summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
               label: resultLabel(result.name, result.content, result.isError),
               fileEdit: fileEdits.get(result.id),
+              checkpoint: toolCheckpoints.get(result.id),
             }),
           onMemoryCandidate: (note) => {
             void (async () => {
@@ -264,8 +300,11 @@ export class AgentController {
             })();
           },
         },
-        plan: cfg.get<boolean>('planFirst', true),
+        plan: planFirst,
+        planOnly: !opts?.resumePlanText && planFirst && planGate,
+        resumePlan: opts?.resumePlanText,
         proposeMemoryNote: cfg.get<boolean>('memoryDistillation', true),
+        requireVerificationBeforeFinish: cfg.get<boolean>('requireTestsBeforeFinish', false),
         maxIterations: cfg.get<number>('maxIterations', 25),
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
         // which truncates large write_file calls mid-generation. Capped at a
@@ -276,6 +315,10 @@ export class AgentController {
       });
       this.log.appendLine(`[agent] finished: ${outcome}`);
       this.track?.('agent.task.completed', { outcome });
+      this.pendingPlan =
+        outcome === 'planned'
+          ? { task, images, personaId: opts?.personaId, planText: capturedPlanText ?? '' }
+          : undefined;
       // Snapshot the agent's final version of each touched file — this is
       // what makes Reapply possible after a revert or a manual undo.
       await this.checkpoint.captureFinals();
@@ -287,6 +330,17 @@ export class AgentController {
     } finally {
       this.abort = undefined;
     }
+  }
+
+  /** Approve a pending plan (outcome 'planned') and let the agent execute it. */
+  async approvePlan(): Promise<void> {
+    const pending = this.pendingPlan;
+    if (!pending) return;
+    this.pendingPlan = undefined;
+    await this.start(pending.task, pending.images, {
+      personaId: pending.personaId,
+      resumePlanText: pending.planText,
+    });
   }
 
   /** +/− line counts for a just-edited file (checkpoint original vs current). */
@@ -413,10 +467,13 @@ export function resultLabel(name: string, content: string, isError?: boolean): s
       return `${content.split('\n').length} entries`;
     case 'get_diagnostics':
       return content.startsWith('No errors') ? 'clean' : `${content.split('\n').length} problem(s)`;
-    case 'run_command': {
+    case 'run_command':
+    case 'run_tests': {
       const match = /^exit code: (\S+)/.exec(content);
       return match ? `exit ${match[1]}` : 'done';
     }
+    case 'check_package_exists':
+      return content.includes('NOT found') ? 'not found' : 'exists';
     default:
       return 'done';
   }

@@ -1,9 +1,8 @@
 import * as vscode from 'vscode';
-import type { ContextBlock } from '@heapcode/core';
+import { DEFAULT_IGNORE_GLOB, type ContextBlock } from '@heapcode/core';
+import { filterIgnored } from './ignoreFiles.js';
 
 const MAX_FILE_CHARS = 60_000;
-const IGNORE_GLOB =
-  '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next,.heapcode}/**';
 /** Caps for inlining an attached folder's contents. */
 const FOLDER_MAX_FILES_INLINED = 12;
 const FOLDER_MAX_CHARS_PER_FILE = 8_000;
@@ -117,7 +116,7 @@ export function collectTerminal(): ContextBlock | undefined {
     .map((r) => `$ ${r.command}\n${r.output || '(no output)'}`)
     .join('\n\n')
     .slice(-TERMINAL_MAX_TOTAL_CHARS);
-  return { label: 'Recent terminal output', content, priority: 1.5 };
+  return { label: 'Recent terminal output', content, priority: 1.5, trust: 'untrusted' };
 }
 
 export function collectSelection(): ContextBlock | undefined {
@@ -130,6 +129,7 @@ export function collectSelection(): ContextBlock | undefined {
     label: `Selection (${workspaceRelative(editor.document.uri)}:${start}-${end})`,
     content: text,
     priority: 1,
+    trust: 'untrusted',
   };
 }
 
@@ -142,22 +142,20 @@ export function collectActiveFile(): ContextBlock | undefined {
     label: `File (${workspaceRelative(editor.document.uri)})`,
     content,
     priority: 2,
+    trust: 'untrusted',
   };
 }
 
 export async function collectFolder(): Promise<ContextBlock | undefined> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) return undefined;
-  const files = await vscode.workspace.findFiles(
-    '**/*',
-    '**/{node_modules,dist,build,target,.git,coverage,vendor,out}/**',
-    500,
-  );
+  const found = await vscode.workspace.findFiles('**/*', DEFAULT_IGNORE_GLOB, 500);
+  const files = await filterIgnored(folder.uri, found);
   const listing = files
     .map((f) => workspaceRelative(f))
     .sort()
     .join('\n');
-  return { label: `Workspace files (${folder.name})`, content: listing, priority: 4 };
+  return { label: `Workspace files (${folder.name})`, content: listing, priority: 4, trust: 'untrusted' };
 }
 
 export function collectProblems(): ContextBlock | undefined {
@@ -173,7 +171,7 @@ export function collectProblems(): ContextBlock | undefined {
     if (lines.length >= 100) break;
   }
   if (lines.length === 0) return undefined;
-  return { label: 'Problems (diagnostics)', content: lines.join('\n'), priority: 3 };
+  return { label: 'Problems (diagnostics)', content: lines.join('\n'), priority: 3, trust: 'untrusted' };
 }
 
 /** Attachments ending in "/" are folders (set by the picker / drag-and-drop). */
@@ -186,11 +184,12 @@ export async function listFolderFiles(rel: string, max = 400): Promise<string[]>
   const root = vscode.workspace.workspaceFolders?.[0];
   if (!root) return [];
   const base = rel.replace(/\/+$/, '');
-  const files = await vscode.workspace.findFiles(
+  const found = await vscode.workspace.findFiles(
     new vscode.RelativePattern(root, base ? `${base}/**/*` : '**/*'),
-    IGNORE_GLOB,
+    DEFAULT_IGNORE_GLOB,
     max,
   );
+  const files = await filterIgnored(root.uri, found);
   return files.map((f) => workspaceRelative(f)).sort();
 }
 
@@ -209,6 +208,7 @@ export async function collectAttachedFolder(rel: string): Promise<ContextBlock[]
       label: `Attached folder (${rel}) — all ${paths.length} files, nested included`,
       content: paths.join('\n'),
       priority: 2.5,
+      trust: 'untrusted',
     },
   ];
   let total = 0;
@@ -221,7 +221,7 @@ export async function collectAttachedFolder(rel: string): Promise<ContextBlock[]
       const text = new TextDecoder().decode(bytes);
       if (text.includes('\0')) continue; // binary
       const content = text.slice(0, FOLDER_MAX_CHARS_PER_FILE);
-      blocks.push({ label: `Attached file (${p})`, content, priority: 2.6 });
+      blocks.push({ label: `Attached file (${p})`, content, priority: 2.6, trust: 'untrusted' });
       total += content.length;
       inlined++;
     } catch {
@@ -258,7 +258,12 @@ export async function resolveMentions(
     // Semantic retrieval when an index exists; else the file listing.
     const retrieved = retrieve ? await retrieve(text) : '';
     if (retrieved) {
-      blocks.push({ label: 'Relevant code (semantic search)', content: retrieved, priority: 2 });
+      blocks.push({
+        label: 'Relevant code (semantic search)',
+        content: retrieved,
+        priority: 2,
+        trust: 'untrusted',
+      });
     } else {
       push(await collectFolder(), 'folder');
     }

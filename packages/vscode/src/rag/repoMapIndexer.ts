@@ -1,9 +1,14 @@
 import * as vscode from 'vscode';
-import { extractSymbols, fnv1a, formatRepoMap, type RepoSymbol } from '@heapcode/core';
+import {
+  DEFAULT_IGNORE_GLOB,
+  extractSymbols,
+  fnv1a,
+  formatRepoMap,
+  type RepoSymbol,
+} from '@heapcode/core';
+import { filterIgnored } from '../ignoreFiles.js';
 
 const INDEX_FILE = 'repo-map.json';
-const IGNORE_GLOB =
-  '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next,.heapcode}/**';
 const CODE_EXTENSIONS =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|scala|sh|sql|vue|svelte|md|yaml|yml|json|toml|html|htm|css|scss|sass|less|xml|astro|graphql|gql|proto|prisma|lua|dart|ex|exs|zig|tf|ini|conf)$/i;
 const MAX_FILE_BYTES = 200_000;
@@ -95,13 +100,13 @@ export class RepoMapIndexer implements vscode.Disposable {
     this.indexing = true;
     const started = Date.now();
     try {
-      const extraIgnores = await this.readHeapCodeIgnore();
-      const files = await vscode.workspace.findFiles('**/*', IGNORE_GLOB, MAX_FILES);
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const found = await vscode.workspace.findFiles('**/*', DEFAULT_IGNORE_GLOB, MAX_FILES);
+      const files = root ? await filterIgnored(root, found) : found;
       const existing = new Set<string>();
       for (const file of files) {
         const rel = vscode.workspace.asRelativePath(file, false);
         if (!CODE_EXTENSIONS.test(rel)) continue;
-        if (extraIgnores.some((p) => rel.startsWith(p))) continue;
         existing.add(rel);
         await this.indexOne(file);
       }
@@ -145,19 +150,4 @@ export class RepoMapIndexer implements vscode.Disposable {
     return formatRepoMap(entries, { pathPrefix });
   }
 
-  private async readHeapCodeIgnore(): Promise<string[]> {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (!root) return [];
-    try {
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, '.heapcodeignore'));
-      return new TextDecoder()
-        .decode(bytes)
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('#'))
-        .map((l) => l.replace(/^\/+/, '').replace(/\/+$/, ''));
-    } catch {
-      return [];
-    }
-  }
 }

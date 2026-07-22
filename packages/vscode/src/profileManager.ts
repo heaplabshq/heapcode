@@ -116,9 +116,12 @@ export class ProfileManager {
   }
 
   async getApiKey(profile: ProviderProfileConfig): Promise<string | undefined> {
+    // An empty string is treated the same as "not set" (upsertProfile deletes rather
+    // than stores '') — falling through here guards against any stray blank value.
     return (
-      (await this.secrets.get(profileSecretKey(profile.name))) ??
-      (await this.secrets.get(LEGACY_KEY_SECRET))
+      (await this.secrets.get(profileSecretKey(profile.name))) ||
+      (await this.secrets.get(LEGACY_KEY_SECRET)) ||
+      undefined
     );
   }
 
@@ -217,7 +220,7 @@ export class ProfileManager {
   // ---- settings panel (programmatic) ----
 
   async hasApiKey(profileName: string): Promise<boolean> {
-    return (await this.secrets.get(profileSecretKey(profileName))) !== undefined;
+    return !!(await this.secrets.get(profileSecretKey(profileName)));
   }
 
   /**
@@ -243,7 +246,7 @@ export class ProfileManager {
       profiles = existing.map((p) => (p.name === original ? clean : p));
       if (original !== name) {
         const key = await this.secrets.get(profileSecretKey(original));
-        if (key !== undefined) {
+        if (key) {
           await this.secrets.store(profileSecretKey(name), key);
           await this.secrets.delete(profileSecretKey(original));
         }

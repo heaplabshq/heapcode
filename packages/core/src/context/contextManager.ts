@@ -1,9 +1,18 @@
+import { wrapUntrusted } from '../agent/tools.js';
+
 export interface ContextBlock {
   /** Shown to the model as a section header, e.g. "Selection (src/auth.ts)". */
   label: string;
   content: string;
   /** Lower = more important. Blocks are included in priority order. */
   priority: number;
+  /**
+   * 'untrusted' (the default posture for anything read from a file, folder,
+   * terminal, or semantic search rather than typed directly by the user)
+   * gets wrapped with a data-not-instructions notice — see tools.ts
+   * UNTRUSTED_NOTICE / PLAN.md M7.
+   */
+  trust?: 'trusted' | 'untrusted';
 }
 
 export interface AssembledContext {
@@ -26,13 +35,14 @@ export function assembleContext(blocks: ContextBlock[], budgetChars = 24_000): A
 
   for (const block of sorted) {
     if (!block.content.trim()) continue;
-    const header = `\n\n--- ${block.label} ---\n`;
+    const untrusted = block.trust === 'untrusted';
+    const header = `\n\n--- ${block.label}${untrusted ? ' [untrusted data]' : ''} ---\n`;
     const remaining = budgetChars - used - header.length;
     if (remaining <= 200) {
       dropped.push(block.label);
       continue;
     }
-    let content = block.content;
+    let content = untrusted ? wrapUntrusted(block.content) : block.content;
     if (content.length > remaining) {
       content = content.slice(0, remaining) + '\n…[truncated]';
     }

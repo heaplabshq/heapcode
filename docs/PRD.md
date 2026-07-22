@@ -284,7 +284,9 @@ No telemetry in v1. If ever added: opt-in only, anonymous, documented. Code cont
 - **v1.0:** chat, completion, inline edits, provider system (all listed providers), streaming, git integration, prompt library, settings, permissions.
 - **v1.5:** agent mode, multi-file edits, terminal integration, RAG, workspace indexing.
 - **v2.0:** MCP, memory, documentation search, image understanding (vision-capable models), voice commands.
-- **v3.0:** team collaboration, cloud sync, shared prompts, AI PR reviews, distributed agents; JetBrains port begins (core is already IDE-agnostic).
+- **v2.5 (added — M7–M10):** prompt-injection defenses & package-hallucination guard, test-driven self-repair gate, granular per-tool-call checkpoints, a shared mode primitive powering a gated Plan/Act toggle and personas (Architect/Debug/Reviewer), agent-side fast-apply, retention-aware telemetry.
+- **v2.6 (added — M11–M12):** import/dependency-graph-ranked repo map, sub-agent orchestration, background/async agent execution.
+- **v3.0:** file-based team config sharing, PR/CI-integrated review, usage/audit dashboard; standalone CLI, air-gapped/regulated packaging, JetBrains port begins (core is already IDE-agnostic).
 
 ## 22. Success Metrics
 
@@ -298,4 +300,4 @@ No telemetry in v1. If ever added: opt-in only, anonymous, documented. Code cont
 
 ## 23. Future Ideas
 
-Browser automation, mobile companion, AI code-review pipelines, visual architecture diagrams, local fine-tuned models, plugin marketplace, custom agent workflows, multi-agent collaboration, voice-driven development, project health dashboards.
+Browser automation, mobile companion, visual architecture diagrams, local fine-tuned models, plugin marketplace, voice-driven development, project health dashboards (beyond the usage/audit dashboard in v3.0). Multi-agent collaboration, custom agent workflows, and AI code-review pipelines are now scheduled under §21 v2.5–v3.0 (M9, M12, M13), not speculative.

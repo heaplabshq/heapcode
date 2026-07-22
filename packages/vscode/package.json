@@ -448,11 +448,28 @@
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "command": { "type": "string" },
-              "args": { "type": "array", "items": { "type": "string" } },
-              "env": { "type": "object" },
-              "url": { "type": "string" },
-              "transport": { "type": "string", "enum": ["http", "sse"] }
+              "command": {
+                "type": "string"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "type": "object"
+              },
+              "url": {
+                "type": "string"
+              },
+              "transport": {
+                "type": "string",
+                "enum": [
+                  "http",
+                  "sse"
+                ]
+              }
             }
           }
         },
@@ -491,6 +508,11 @@
           "default": true,
           "description": "Agent writes a numbered plan first, then executes it step by step."
         },
+        "heapcode.agent.planGate": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Stop after the plan (`#heapcode.agent.planFirst#`) and wait for you to click \"Approve & Run\" before any files are touched, instead of auto-continuing into execution."
+        },
         "heapcode.agent.maxIterations": {
           "type": "number",
           "default": 50,
@@ -518,6 +540,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "At the end of a successful agent session, ask whether anything's worth remembering long-term (a convention, constraint, or gotcha discovered) and — with your confirmation — append it to `.heapcode/memory.md`. Never writes without asking first."
+        },
+        "heapcode.agent.requireTestsBeforeFinish": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Block the agent's `finish` (once, with a nudge) if it changed files since the last passing `run_tests` call. Off by default — turn on for projects with a fast, reliable test command."
         },
         "heapcode.telemetry.enabled": {
           "type": "boolean",
@@ -550,7 +577,8 @@
   },
   "dependencies": {
     "@heapcode/core": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "ignore": "^7.0.5"
   },
   "devDependencies": {
     "@types/vscode": "1.95.0",

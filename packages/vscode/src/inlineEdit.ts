@@ -13,6 +13,7 @@ import {
 import { getActiveEditor } from './contextCollector.js';
 import type { ProfileManager } from './profileManager.js';
 import type { RagIndexer } from './rag/indexer.js';
+import type { RetentionTracker } from './retentionTracker.js';
 
 const SCHEME = 'heapcode-proposal';
 const CONTEXT_LINES = 40;
@@ -22,6 +23,8 @@ const proposals = new Map<string, string>();
 
 /** The review in progress; resolved by the diff title-bar buttons, the notification, or closing the tab. */
 let pendingReview: ((accepted: boolean) => void) | undefined;
+/** Set once by registerInlineEdit — proposeEdit registers a retention watch after every accepted edit. */
+let activeRetention: RetentionTracker | undefined;
 
 class ProposalContentProvider implements vscode.TextDocumentContentProvider {
   provideTextDocumentContent(uri: vscode.Uri): string {
@@ -46,7 +49,9 @@ export function registerInlineEdit(
   log: vscode.OutputChannel,
   rag: RagIndexer,
   track?: (name: string, meta?: Record<string, unknown>) => void,
+  retention?: RetentionTracker,
 ): void {
+  activeRetention = retention;
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, new ProposalContentProvider()),
     vscode.languages.registerCodeLensProvider({ scheme: SCHEME }, new ProposalCodeLensProvider()),
@@ -250,6 +255,7 @@ export async function proposeEdit(
     return;
   }
   await document.save();
+  activeRetention?.watch('edit', document.uri, newCode);
 }
 
 const MAX_APPLY_FILE_CHARS = 40_000;
@@ -307,6 +313,43 @@ export async function applyCodeToEditor(
   await editor.edit((builder) => builder.insert(editor.selection.active, code));
 }
 
+/**
+ * The bare apply-model round-trip (provider call + extraction), no UI — shared
+ * by inline-edit's "Apply" action (wrapped in a progress notification below)
+ * and the agent's edit_file fallback (packages/vscode/src/agent/workspaceTools.ts),
+ * which runs unattended and shouldn't pop a notification per call.
+ */
+export async function mergeWithApplyModel(
+  original: string,
+  snippet: string,
+  profiles: ProfileManager,
+  log: vscode.OutputChannel,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  try {
+    const { provider, profile } = await profiles.resolveRole('applyModel');
+    if (!profile.applyModel) return undefined;
+    const res = await provider.chat({
+      model: profile.applyModel,
+      messages: buildApplyMessages(original, snippet),
+      temperature: 0,
+      // The model must re-emit the whole file — budget generously.
+      maxTokens: Math.max(4096, Math.ceil(original.length / 2)),
+      signal,
+    });
+    const merged = extractUpdatedCode(res.content) ?? extractFirstCodeBlock(res.content);
+    if (merged === undefined) {
+      log.appendLine('[apply] apply model returned no <updated-code> block; falling back');
+    }
+    return merged;
+  } catch (err) {
+    if (!isAbortError(err)) {
+      log.appendLine(`[apply] apply model failed: ${err instanceof Error ? err.message : err}`);
+    }
+    return undefined;
+  }
+}
+
 async function runApplyModel(
   original: string,
   snippet: string,
@@ -322,27 +365,7 @@ async function runApplyModel(
     async (_progress, token) => {
       const abort = new AbortController();
       token.onCancellationRequested(() => abort.abort());
-      try {
-        const { provider, profile } = await profiles.resolveRole('applyModel');
-        const res = await provider.chat({
-          model: profile.applyModel!,
-          messages: buildApplyMessages(original, snippet),
-          temperature: 0,
-          // The model must re-emit the whole file — budget generously.
-          maxTokens: Math.max(4096, Math.ceil(original.length / 2)),
-          signal: abort.signal,
-        });
-        const merged = extractUpdatedCode(res.content) ?? extractFirstCodeBlock(res.content);
-        if (merged === undefined) {
-          log.appendLine('[apply] apply model returned no <updated-code> block; falling back');
-        }
-        return merged;
-      } catch (err) {
-        if (!isAbortError(err)) {
-          log.appendLine(`[apply] apply model failed: ${err instanceof Error ? err.message : err}`);
-        }
-        return undefined;
-      }
+      return mergeWithApplyModel(original, snippet, profiles, log, abort.signal);
     },
   );
 }

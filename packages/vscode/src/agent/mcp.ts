@@ -75,6 +75,8 @@ export class McpManager implements vscode.Disposable {
           description: `[MCP: ${name}] ${t.description ?? t.name}`,
           parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object' },
           permission: 'execute',
+          // Third-party server output — same injection posture as fetch_url (PLAN.md M7).
+          untrustedOutput: true,
         }));
         this.servers.set(name, { client, tools });
         this.log.appendLine(`[mcp] connected "${name}" (${tools.length} tools)`);

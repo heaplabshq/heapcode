@@ -14,6 +14,8 @@ export interface ToolDisplay {
   /** Truncated tool output for the expandable chip; persisted so history reloads keep it. */
   summary?: string;
   fileEdit?: FileEditInfo;
+  /** Shadow-git commit taken just before this tool call ran — lets the user rewind to this exact step (PLAN.md M8). */
+  checkpoint?: string;
 }
 
 export interface FileEditInfo {
@@ -90,6 +92,17 @@ export type WebviewToExtension =
   | { type: 'settingsSaveProfile'; original?: string; profile: ProviderProfileConfig; apiKey?: string }
   | { type: 'settingsDeleteProfile'; name: string }
   | { type: 'settingsActivateProfile'; name: string }
+  /**
+   * Fetch the model list for the profile being edited (not necessarily saved
+   * yet) so its "Chat model" and role fields can offer a dropdown. `apiKey`:
+   * a freshly-typed key to try, else falls back to `originalName`'s saved key.
+   */
+  | {
+      type: 'settingsTestConnection';
+      profile: ProviderProfileConfig;
+      apiKey?: string;
+      originalName?: string;
+    }
   /** Open the native VS Code settings UI filtered to this extension. */
   | { type: 'openNativeSettings' }
   /** Tools picker: list agent tools with their enabled state. */
@@ -97,7 +110,8 @@ export type WebviewToExtension =
   | { type: 'setToolEnabled'; name: string; enabled: boolean }
   | { type: 'openInTerminal'; command: string }
   | { type: 'openReference'; text: string }
-  | { type: 'agentStart'; task: string; files?: string[]; images?: string[] }
+  /** `persona` selects a built-in tool-scoped persona (see agent/personas.ts); omit for full access. */
+  | { type: 'agentStart'; task: string; files?: string[]; images?: string[]; persona?: string }
   | { type: 'agentStop' }
   | { type: 'agentRevert' }
   | { type: 'agentKeepAll' }
@@ -105,19 +119,30 @@ export type WebviewToExtension =
   | { type: 'agentRevertFile'; path: string }
   | { type: 'agentReapplyFile'; path: string }
   | { type: 'agentKeepFile'; path: string }
+  /** Approve a pending plan (agentStatus status 'planned') and let the agent execute it. */
+  | { type: 'agentApprovePlan' }
   /**
    * Edit the Nth user message (0-based, counting user turns): truncates the
    * conversation there, restores the workspace to that turn's checkpoint,
    * and resends the new text.
    */
-  | { type: 'editUserMessage'; ordinal: number; text: string; files?: string[]; mode: 'chat' | 'agent' }
+  | {
+      type: 'editUserMessage';
+      ordinal: number;
+      text: string;
+      files?: string[];
+      mode: 'chat' | 'agent';
+      persona?: string;
+    }
   /**
    * Restore the workspace files to the checkpoint taken before the Nth user
    * turn (0-based) ran, without touching the conversation.
    */
-  | { type: 'restoreCheckpoint'; ordinal: number };
+  | { type: 'restoreCheckpoint'; ordinal: number }
+  /** Restore the workspace to the shadow-git commit taken before one specific tool call (PLAN.md M8). */
+  | { type: 'restoreToolCheckpoint'; hash: string };
 
-export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error';
+export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned';
 
 export type ExtensionToWebview =
   | {
@@ -168,6 +193,8 @@ export type ExtensionToWebview =
       presets: SettingsPresetInfo[];
       keySaved: Record<string, boolean>;
     }
+  /** Result of 'settingsTestConnection' — empty `models` + `error` set means the test failed. */
+  | { type: 'settingsModels'; models: string[]; error?: string }
   | { type: 'agentText'; text: string }
   | { type: 'agentTextDelta'; text: string }
   | { type: 'agentTextEnd' }
@@ -190,6 +217,8 @@ export type ExtensionToWebview =
       summary: string;
       label: string;
       fileEdit?: FileEditInfo;
+      /** Shadow-git commit taken just before this call ran, if it wasn't read-only (PLAN.md M8). */
+      checkpoint?: string;
     }
   | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: ChangedFile[] }
   /** Estimated prompt tokens vs the model's context window (chat + agent). */

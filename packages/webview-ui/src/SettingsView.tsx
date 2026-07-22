@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import type { ProviderProfileConfig, SettingsPresetInfo } from '@heapcode/core';
+import { useEffect, useRef, useState } from 'react';
+import type { ExtensionToWebview, ProviderProfileConfig, SettingsPresetInfo } from '@heapcode/core';
 import { postToExtension } from './vscodeApi.js';
 
 export interface SettingsData {
@@ -161,6 +161,139 @@ function Field({
   );
 }
 
+/**
+ * A model input that becomes a searchable dropdown once a connection test has
+ * listed models (a plain <select> is unusable past a few hundred entries —
+ * OpenRouter alone lists 342) — with an always-available "type manually"
+ * escape hatch, since some endpoints (Azure deployments, unlisted local
+ * models) never populate a list at all.
+ */
+function ModelPickerInput({
+  value,
+  onChange,
+  models,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  models: string[];
+  placeholder?: string;
+}) {
+  const [manual, setManual] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => {
+      setOpen(false);
+      setFilter('');
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const showPicker = models.length > 0 && !manual;
+  if (!showPicker) {
+    return (
+      <div className="settings-key-row">
+        <input
+          className="settings-input"
+          type="text"
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        {models.length > 0 && (
+          <button className="ghost" title="Pick from the tested model list" onClick={() => setManual(false)}>
+            ▾
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const filtered = filter.trim()
+    ? models.filter((m) => m.toLowerCase().includes(filter.trim().toLowerCase()))
+    : models;
+
+  return (
+    <div className="settings-model-picker" ref={ref}>
+      <div className="settings-key-row">
+        <button
+          type="button"
+          className="settings-input settings-model-chip"
+          onClick={() => setOpen((v) => !v)}
+        >
+          {value || '— none / not set —'}
+        </button>
+        <button
+          className="ghost"
+          title="Type a model id manually instead"
+          onClick={() => {
+            setManual(true);
+            setOpen(false);
+          }}
+        >
+          ✎
+        </button>
+      </div>
+      {open && (
+        <div className="model-menu settings-model-menu">
+          {models.length > 8 && (
+            <input
+              autoFocus
+              className="model-search"
+              type="text"
+              placeholder={`Filter ${models.length} models…`}
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          )}
+          <div className="settings-model-menu-list">
+            <button
+              className={`menu-item${value === '' ? ' active' : ''}`}
+              onClick={() => {
+                onChange('');
+                setOpen(false);
+                setFilter('');
+              }}
+            >
+              {value === '' ? '✓ ' : ''}— none / not set —
+            </button>
+            {filtered.length === 0 && <div className="menu-note">No models match "{filter}"</div>}
+            {filtered.map((m) => (
+              <button
+                key={m}
+                className={`menu-item${m === value ? ' active' : ''}`}
+                onClick={() => {
+                  onChange(m);
+                  setOpen(false);
+                  setFilter('');
+                }}
+              >
+                {m === value ? '✓ ' : ''}
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Compact icon + label + input row for a model role — denser than the stacked Field layout. */
 function RoleField({
   icon,
@@ -168,12 +301,14 @@ function RoleField({
   value,
   onChange,
   placeholder,
+  models,
 }: {
   icon: string;
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  models: string[];
 }) {
   return (
     <label className="settings-role-field">
@@ -181,13 +316,7 @@ function RoleField({
         {icon}
       </span>
       <span className="settings-role-label">{label}</span>
-      <input
-        className="settings-input"
-        type="text"
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      <ModelPickerInput value={value} onChange={onChange} models={models} placeholder={placeholder} />
     </label>
   );
 }
@@ -217,23 +346,64 @@ function RoleProfileSelect({
   );
 }
 
+interface TestState {
+  status: 'idle' | 'loading' | 'ok' | 'error';
+  models: string[];
+  error?: string;
+}
+
 export function SettingsView({ data }: { data: SettingsData | null }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [showRoles, setShowRoles] = useState(false);
+  const [test, setTest] = useState<TestState>({ status: 'idle', models: [] });
+
+  useEffect(() => {
+    const onMessage = (e: MessageEvent<ExtensionToWebview>) => {
+      const msg = e.data;
+      if (msg.type !== 'settingsModels') return;
+      setTest(
+        msg.error
+          ? { status: 'error', models: [], error: msg.error }
+          : { status: 'ok', models: msg.models },
+      );
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
 
   if (!data) return <div className="empty">Loading settings…</div>;
 
   const set = (patch: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+  /** Connection-affecting fields invalidate any previously tested model list. */
+  const setConnection = (patch: Partial<Draft>) => {
+    setTest({ status: 'idle', models: [] });
+    set(patch);
+  };
+  /** Opening/closing a draft always starts with a clean (not stale) test state. */
+  const openDraft = (d: Draft | null) => {
+    setTest({ status: 'idle', models: [] });
+    setDraft(d);
+  };
 
   if (draft) {
     const preset = data.presets.find((p) => p.id === draft.preset);
     const keySaved = draft.original ? (data.keySaved[draft.original] ?? false) : false;
     const inherits = `inherits chat (${draft.model || 'not set'})`;
     const otherProfiles = data.profiles.map((p) => p.name).filter((n) => n !== draft.name);
+    const canTest = draft.baseUrl.trim() !== '' && (draft.apiKey.trim() !== '' || keySaved || !preset?.requiresApiKey);
+    const testConnection = () => {
+      setTest({ status: 'loading', models: [] });
+      postToExtension({
+        type: 'settingsTestConnection',
+        profile: fromDraft(draft),
+        apiKey: draft.clearKey ? undefined : draft.apiKey.trim() !== '' ? draft.apiKey : undefined,
+        originalName: draft.original,
+      });
+    };
     return (
       <div className="settings">
         <div className="settings-header">
-          <button className="ghost settings-back" title="Back to profiles" onClick={() => setDraft(null)}>
+          <button className="ghost settings-back" title="Back to profiles" onClick={() => openDraft(null)}>
             ←
           </button>
           <div>
@@ -255,7 +425,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
                 if (!next) return;
                 // Follow the preset's default URL unless the user customized it.
                 const wasDefault = !draft.baseUrl || draft.baseUrl === preset?.defaultBaseUrl;
-                set({ preset: next.id, baseUrl: wasDefault ? next.defaultBaseUrl : draft.baseUrl });
+                setConnection({ preset: next.id, baseUrl: wasDefault ? next.defaultBaseUrl : draft.baseUrl });
               }}
             >
               {data.presets.map((p) => (
@@ -266,7 +436,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
               ))}
             </select>
           </label>
-          <Field label="Base URL" value={draft.baseUrl} onChange={(baseUrl) => set({ baseUrl })} />
+          <Field label="Base URL" value={draft.baseUrl} onChange={(baseUrl) => setConnection({ baseUrl })} />
 
           <label className="settings-field">
             <span className="settings-label">
@@ -287,25 +457,43 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
                         ? 'required by this provider'
                         : 'optional'
                 }
-                onChange={(e) => set({ apiKey: e.target.value, clearKey: false })}
+                onChange={(e) => setConnection({ apiKey: e.target.value, clearKey: false })}
               />
               {keySaved && !draft.clearKey && (
-                <button className="ghost danger" onClick={() => set({ apiKey: '', clearKey: true })}>
+                <button className="ghost danger" onClick={() => setConnection({ apiKey: '', clearKey: true })}>
                   Clear
                 </button>
               )}
             </div>
           </label>
+
+          <div className="settings-test-row">
+            <button className="ghost" disabled={!canTest || test.status === 'loading'} onClick={testConnection}>
+              {test.status === 'loading' ? 'Testing…' : 'Test connection'}
+            </button>
+            {test.status === 'ok' && (
+              <span className="settings-test-ok">
+                ✓ Connected — {test.models.length} model{test.models.length === 1 ? '' : 's'} found
+              </span>
+            )}
+            {test.status === 'error' && <span className="settings-test-error">✗ {test.error}</span>}
+          </div>
         </div>
 
         <div className="settings-section">
           <div className="settings-section-title">Chat model</div>
-          <Field
-            label="Model"
-            value={draft.model}
-            onChange={(model) => set({ model })}
-            placeholder="e.g. llama3.1, gpt-4o"
-          />
+          <label className="settings-field">
+            <span className="settings-label">Model</span>
+            <ModelPickerInput
+              value={draft.model}
+              onChange={(model) => set({ model })}
+              models={test.models}
+              placeholder="e.g. llama3.1, gpt-4o"
+            />
+          </label>
+          {test.status === 'idle' && (
+            <p className="settings-note">Test the connection above to pick a model from a list.</p>
+          )}
         </div>
 
         <div className="settings-section">
@@ -316,21 +504,21 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
           {showRoles && (
             <div className="settings-roles-body">
               <div className="settings-subsection-title">Core roles</div>
-              <RoleField icon="✏️" label="Edit" value={draft.editModel} onChange={(editModel) => set({ editModel })} placeholder={inherits} />
+              <RoleField icon="✏️" label="Edit" value={draft.editModel} onChange={(editModel) => set({ editModel })} placeholder={inherits} models={test.models} />
               <RoleProfileSelect value={draft.editProfile} onChange={(editProfile) => set({ editProfile })} options={otherProfiles} />
-              <RoleField icon="🔀" label="Apply" value={draft.applyModel} onChange={(applyModel) => set({ applyModel })} placeholder="fast-apply merge model" />
+              <RoleField icon="🔀" label="Apply" value={draft.applyModel} onChange={(applyModel) => set({ applyModel })} placeholder="fast-apply merge model" models={test.models} />
               <RoleProfileSelect value={draft.applyProfile} onChange={(applyProfile) => set({ applyProfile })} options={otherProfiles} />
-              <RoleField icon="⚡" label="Autocomplete" value={draft.completionModel} onChange={(completionModel) => set({ completionModel })} placeholder={inherits} />
+              <RoleField icon="⚡" label="Autocomplete" value={draft.completionModel} onChange={(completionModel) => set({ completionModel })} placeholder={inherits} models={test.models} />
               <RoleProfileSelect value={draft.completionProfile} onChange={(completionProfile) => set({ completionProfile })} options={otherProfiles} />
-              <RoleField icon="🤖" label="Agent" value={draft.agentModel} onChange={(agentModel) => set({ agentModel })} placeholder={inherits} />
+              <RoleField icon="🤖" label="Agent" value={draft.agentModel} onChange={(agentModel) => set({ agentModel })} placeholder={inherits} models={test.models} />
               <RoleProfileSelect value={draft.agentProfile} onChange={(agentProfile) => set({ agentProfile })} options={otherProfiles} />
 
               <div className="settings-subsection-title">Retrieval roles</div>
-              <RoleField icon="🔍" label="Embeddings" value={draft.embeddingsModel} onChange={(embeddingsModel) => set({ embeddingsModel })} placeholder="for semantic search / RAG" />
+              <RoleField icon="🔍" label="Embeddings" value={draft.embeddingsModel} onChange={(embeddingsModel) => set({ embeddingsModel })} placeholder="for semantic search / RAG" models={test.models} />
               <RoleProfileSelect value={draft.embeddingsProfile} onChange={(embeddingsProfile) => set({ embeddingsProfile })} options={otherProfiles} />
-              <RoleField icon="🔢" label="Rerank" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" />
+              <RoleField icon="🔢" label="Rerank" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" models={test.models} />
               <RoleProfileSelect value={draft.rerankProfile} onChange={(rerankProfile) => set({ rerankProfile })} options={otherProfiles} />
-              <RoleField icon="📝" label="Context" value={draft.contextModel} onChange={(contextModel) => set({ contextModel })} placeholder="inherits rerank → edit → chat model" />
+              <RoleField icon="📝" label="Context" value={draft.contextModel} onChange={(contextModel) => set({ contextModel })} placeholder="inherits rerank → edit → chat model" models={test.models} />
               <RoleProfileSelect value={draft.contextProfile} onChange={(contextProfile) => set({ contextProfile })} options={otherProfiles} />
 
               <div className="settings-subsection-title">Tuning</div>
@@ -353,12 +541,12 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
                 profile: fromDraft(draft),
                 apiKey: draft.clearKey ? '' : draft.apiKey !== '' ? draft.apiKey : undefined,
               });
-              setDraft(null);
+              openDraft(null);
             }}
           >
             Save
           </button>
-          <button className="ghost" onClick={() => setDraft(null)}>
+          <button className="ghost" onClick={() => openDraft(null)}>
             Cancel
           </button>
         </div>
@@ -398,7 +586,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
                   Use
                 </button>
               )}
-              <button className="ghost" onClick={() => setDraft(toDraft(p))}>
+              <button className="ghost" onClick={() => openDraft(toDraft(p))}>
                 Edit
               </button>
               <button
@@ -414,7 +602,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
       </div>
       <button
         className="settings-add"
-        onClick={() => setDraft(newDraft(data.presets.find((p) => p.id === 'ollama') ?? data.presets[0]!))}
+        onClick={() => openDraft(newDraft(data.presets.find((p) => p.id === 'ollama') ?? data.presets[0]!))}
       >
         + Add profile
       </button>

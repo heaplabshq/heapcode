@@ -10,12 +10,13 @@ import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol
 import {
   DENIED_RESULT_TEXT,
   FINISH_TOOL,
+  wrapUntrusted,
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
 } from './tools.js';
 
-export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error';
+export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned';
 
 export interface AgentEvents {
   /** Assistant narration/summary text (complete message, non-streamed path). */
@@ -57,11 +58,34 @@ export interface AgentOptions {
   execute(call: ToolCall): Promise<ToolResult>;
   /** Resolve to false to deny; a denial is reported to the model, not fatal. */
   requestPermission(call: ToolCall, tool: ToolDefinition): Promise<boolean>;
+  /**
+   * Called for non-read tools right after a permission grant, before execute()
+   * — e.g. to snapshot the workspace for fine-grained rollback (PLAN.md M8).
+   * Best-effort: never blocks or fails the tool call.
+   */
+  beforeToolCall?(call: ToolCall, tool: ToolDefinition): Promise<void>;
   events: AgentEvents;
   /** Ask for a numbered plan first, then execute it step by step. */
   plan?: boolean;
+  /**
+   * With `plan` set: stop right after the plan is produced (outcome
+   * `'planned'`) instead of auto-continuing into execution. The host resumes
+   * by calling runAgent again with `resumePlan` set to the approved text.
+   */
+  planOnly?: boolean;
+  /**
+   * Resume a previously-produced plan straight into execution, skipping the
+   * plan-generation call — the companion to a prior `planOnly` call.
+   */
+  resumePlan?: string;
   /** On a clean finish, ask the model if anything's worth remembering long-term (see onMemoryCandidate). Off (no extra call at all) unless set. */
   proposeMemoryNote?: boolean;
+  /**
+   * Block `finish` (once, with a nudge) if a write/edit tool ran since the
+   * last successful call to a `verifies`-marked tool (e.g. a test runner).
+   * No-op unless the tool list actually includes a `verifies` tool.
+   */
+  requireVerificationBeforeFinish?: boolean;
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
@@ -188,6 +212,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     { role: 'user', content: opts.task, images: opts.images },
   ];
 
+  // Tests-dirty tracking for requireVerificationBeforeFinish (PLAN.md M7.3):
+  // any successful write flips it on; any successful `verifies` call clears it.
+  const hasVerifyTool = tools.some((t) => t.verifies);
+  let dirtySinceVerify = false;
+
   const execTool = async (call: ToolCall): Promise<ToolResult> => {
     const tool = toolsByName.get(call.name);
     if (!tool) {
@@ -204,7 +233,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       result = { id: call.id, name: call.name, content: DENIED_RESULT_TEXT, isError: true };
     } else {
       try {
+        if (tool.permission !== 'read') await opts.beforeToolCall?.(call, tool);
         result = await opts.execute(call);
+        if (tool.untrustedOutput && !result.isError) {
+          result = { ...result, content: wrapUntrusted(result.content) };
+        }
+        if (!result.isError) {
+          if (tool.verifies) dirtySinceVerify = false;
+          else if (tool.permission === 'write') dirtySinceVerify = true;
+        }
       } catch (err) {
         result = {
           id: call.id,
@@ -221,6 +258,36 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   let repairs = 0;
   let nudges = 0;
   let finishReminderSent = false;
+  let verificationNudges = 0;
+  const MAX_VERIFICATION_NUDGES = 2;
+  const VERIFY_NUDGE =
+    'Files changed since the last passing test run. Run the tests (run_tests) before finishing.';
+
+  /**
+   * True when finish should be deferred — pushes a nudge as a side effect (call
+   * sites `continue` on true). `nativeFinishCall` is only for the native
+   * protocol's real `finish` tool call: that path must pair its declared
+   * `toolCalls` entry with exactly one `role: 'tool'` message, or the next
+   * request violates the wire protocol most native tool-calling APIs enforce.
+   * The fallback (text) protocol and the tool-free "looks finished" paths have
+   * no such pairing to maintain, so they get a plain nudge instead.
+   */
+  const shouldDeferFinish = (
+    content: string,
+    nativeFinishCall?: { id: string; name: string; args: Record<string, unknown> },
+  ): boolean => {
+    if (!opts.requireVerificationBeforeFinish || !hasVerifyTool || !dirtySinceVerify) return false;
+    if (verificationNudges >= MAX_VERIFICATION_NUDGES) return false;
+    verificationNudges++;
+    if (nativeFinishCall) {
+      messages.push({ role: 'assistant', content, toolCalls: [nativeFinishCall] });
+      messages.push({ role: 'tool', content: VERIFY_NUDGE, toolCallId: nativeFinishCall.id });
+    } else {
+      if (content.trim()) messages.push({ role: 'assistant', content });
+      messages.push({ role: 'user', content: VERIFY_NUDGE });
+    }
+    return true;
+  };
 
   const contextWindow = opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   // Compact when prompt + a reply would cross the threshold. Cap the output
@@ -325,7 +392,19 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   };
 
   try {
-    if (opts.plan) {
+    if (opts.resumePlan) {
+      // Companion to a prior planOnly call: reconstruct the transcript as if
+      // the plan had just been produced and approved, then fall straight
+      // through to the tool-calling loop below.
+      messages.push({ role: 'user', content: PLAN_REQUEST });
+      messages.push({ role: 'assistant', content: opts.resumePlan });
+      messages.push({
+        role: 'user',
+        content:
+          'The plan above was approved. Now execute it step by step using tools, starting with ' +
+          'step 1. Briefly state which step you are on as you go.',
+      });
+    } else if (opts.plan) {
       const { response: planRes } = await respondLive(
         [...messages, { role: 'user', content: PLAN_REQUEST }],
         false,
@@ -334,6 +413,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       const planText = planRes.content.trim();
       if (planText) {
         events.onPlan?.(planText);
+        if (opts.planOnly) return 'planned';
         messages.push({ role: 'user', content: PLAN_REQUEST });
         messages.push({ role: 'assistant', content: planText });
         messages.push({
@@ -361,6 +441,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           else if (!response.content.trim()) {
             await summarize('Summarize what you did and whether the task is complete.');
           }
+          if (shouldDeferFinish(response.content, finishCall)) continue;
           return finish();
         }
         if (response.toolCalls && response.toolCalls.length > 0) {
@@ -414,6 +495,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         else if (!response.content.trim()) {
           await summarize('Summarize what you did and whether the task is complete.');
         }
+        if (shouldDeferFinish(response.content)) continue;
         return finish();
       }
 
@@ -435,6 +517,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         }
         if (response.content.trim()) events.onText(response.content);
         else await summarize('Summarize what you did and whether the task is complete.');
+        if (shouldDeferFinish(response.content)) continue;
         return finish();
       }
 
@@ -443,6 +526,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         if (parsed.narration) events.onText(parsed.narration);
         const summary = String(first.args?.summary ?? '').trim();
         if (summary) events.onText(summary);
+        if (shouldDeferFinish(response.content)) continue;
         return finish();
       }
       if (parsed.narration) events.onText(parsed.narration);

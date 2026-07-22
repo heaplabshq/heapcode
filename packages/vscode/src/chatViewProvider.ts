@@ -5,6 +5,8 @@ import {
   assembleContext,
   builtinPrompts,
   COMPACTION_THRESHOLD,
+  createProvider,
+  DEFAULT_IGNORE_GLOB,
   estimateMessagesTokens,
   isAbortError,
   parseSlashCommand,
@@ -31,9 +33,10 @@ import {
   listFolderFiles,
   resolveMentions,
 } from './contextCollector.js';
+import { filterIgnored } from './ignoreFiles.js';
 import { loadProjectInstructions } from './memory.js';
 import { applyCodeToEditor, insertCodeAtCursor } from './inlineEdit.js';
-import { agentToolDefinitions, WorkspaceToolExecutor } from './agent/workspaceTools.js';
+import { agentToolDefinitions, getHeapCodeTerminal, WorkspaceToolExecutor } from './agent/workspaceTools.js';
 import { SessionCheckpoint } from './agent/checkpoint.js';
 import { resultLabel, TOOL_SUMMARY_CHARS, type AgentController } from './agent/controller.js';
 import type { ShadowGit } from './agent/shadowGit.js';
@@ -89,7 +92,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
   private pendingQuestions = new Map<string, (answer: string | undefined) => void>();
-  private terminal?: vscode.Terminal;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -105,12 +107,38 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private agentStreamBuffer = '';
+  private saveDebounceTimer?: ReturnType<typeof setTimeout>;
+
+  /**
+   * Debounced save so a long-running agent turn is periodically flushed to
+   * disk, not just at completion — a run stuck on a hung command (or force-
+   * closing the window mid-run) previously lost the whole in-progress
+   * conversation, since it only ever saved once the agent reached a terminal
+   * status. Worst case now is losing the last ~2s of activity, not the run.
+   */
+  private scheduleSave(): void {
+    this.conversation.updatedAt = Date.now();
+    if (this.saveDebounceTimer) clearTimeout(this.saveDebounceTimer);
+    this.saveDebounceTimer = setTimeout(() => {
+      this.saveDebounceTimer = undefined;
+      void this.store.save(this.conversation);
+    }, 2000);
+  }
+
+  /** Belt-and-suspenders flush for a graceful shutdown (window reload, extension disable) — see deactivate(). */
+  async flushPendingSave(): Promise<void> {
+    if (!this.saveDebounceTimer) return;
+    clearTimeout(this.saveDebounceTimer);
+    this.saveDebounceTimer = undefined;
+    await this.store.save(this.conversation);
+  }
 
   /** Persist agent transcript entries so history reloads show the full session. */
   private recordAgentMessage(msg: ExtensionToWebview): void {
     switch (msg.type) {
       case 'agentText':
         this.conversation.messages.push({ role: 'assistant', content: msg.text });
+        this.scheduleSave();
         break;
       case 'agentTextDelta':
         this.agentStreamBuffer += msg.text;
@@ -118,6 +146,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'agentTextEnd':
         if (this.agentStreamBuffer.trim()) {
           this.conversation.messages.push({ role: 'assistant', content: this.agentStreamBuffer });
+          this.scheduleSave();
         }
         this.agentStreamBuffer = '';
         break;
@@ -127,6 +156,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           content: msg.text,
           ui: { plan: true },
         });
+        this.scheduleSave();
         break;
       case 'agentToolCall':
         this.conversation.messages.push({
@@ -134,6 +164,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           content: '',
           ui: { tool: { id: msg.id, name: msg.name, description: msg.description, ok: true } },
         });
+        this.scheduleSave();
         break;
       case 'agentToolResult': {
         for (let i = this.conversation.messages.length - 1; i >= 0; i--) {
@@ -143,9 +174,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             tool.label = msg.label;
             tool.summary = msg.summary;
             tool.fileEdit = msg.fileEdit;
+            tool.checkpoint = msg.checkpoint;
             break;
           }
         }
+        this.scheduleSave();
         break;
       }
       case 'agentStatus':
@@ -159,6 +192,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             content: '',
             ui: { status: { state: msg.status } },
           });
+          if (this.saveDebounceTimer) {
+            clearTimeout(this.saveDebounceTimer);
+            this.saveDebounceTimer = undefined;
+          }
           this.conversation.updatedAt = Date.now();
           void this.store.save(this.conversation);
         }
@@ -347,11 +384,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // not a file path — fall through to content search
     }
 
-    const files = await vscode.workspace.findFiles(
-      '**/*',
-      '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**',
-      800,
-    );
+    const found = await vscode.workspace.findFiles('**/*', DEFAULT_IGNORE_GLOB, 800);
+    const files = await filterIgnored(root, found);
     for (const file of files) {
       let content: string;
       try {
@@ -476,6 +510,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.profiles.setActiveByName(msg.name);
         await this.postSettingsData();
         break;
+      case 'settingsTestConnection': {
+        try {
+          const apiKey =
+            msg.apiKey ??
+            (msg.originalName ? await this.profiles.getApiKey({ ...msg.profile, name: msg.originalName }) : undefined);
+          const provider = createProvider(msg.profile, apiKey);
+          const models = (await provider.listModels()).map((m) => m.id);
+          this.post({ type: 'settingsModels', models });
+        } catch (err) {
+          this.post({
+            type: 'settingsModels',
+            models: [],
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
       case 'listTools': {
         const disabled = new Set(
           vscode.workspace.getConfiguration('heapcode.agent').get<string[]>('disabledTools', []),
@@ -507,11 +558,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:heapcode.heap-code');
         break;
       case 'pickContextFiles': {
-        const files = await vscode.workspace.findFiles(
-          '**/*',
-          '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next}/**',
-          5000,
-        );
+        const pickRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+        const found = await vscode.workspace.findFiles('**/*', DEFAULT_IGNORE_GLOB, 5000);
+        const files = pickRoot ? await filterIgnored(pickRoot, found) : found;
         const rels = files.map((f) => vscode.workspace.asRelativePath(f, false)).sort();
         // Folders (derived from the file list, up to 3 levels) are attachable
         // too — an attached folder means "everything under it, recursively".
@@ -630,21 +679,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await applyCodeToEditor(msg.code, this.profiles, this.log);
         break;
       case 'agentStart':
-        await this.startAgentTask(msg.task, msg.files, msg.images);
+        await this.startAgentTask(msg.task, msg.files, msg.images, msg.persona);
+        break;
+      case 'agentApprovePlan':
+        await this.agent?.approvePlan();
         break;
       case 'editUserMessage':
-        await this.editUserMessage(msg.ordinal, msg.text, msg.files, msg.mode);
+        await this.editUserMessage(msg.ordinal, msg.text, msg.files, msg.mode, msg.persona);
         break;
       case 'restoreCheckpoint':
         await this.restoreCheckpoint(msg.ordinal);
         break;
+      case 'restoreToolCheckpoint':
+        await this.restoreToolCheckpoint(msg.hash);
+        break;
       case 'openInTerminal': {
-        if (!this.terminal || this.terminal.exitStatus) {
-          this.terminal = vscode.window.createTerminal('Heap Code');
-        }
-        this.terminal.show();
+        // Same terminal the agent's own run_command uses (getHeapCodeTerminal) —
+        // one recognizable "Heap Code" terminal, not a new one per click.
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+        const terminal = root ? getHeapCodeTerminal(root) : vscode.window.createTerminal('Heap Code');
+        terminal.show();
         // Insert without executing — the user reviews and presses Enter.
-        this.terminal.sendText(msg.command, false);
+        terminal.sendText(msg.command, false);
         break;
       }
       case 'openReference':
@@ -675,7 +731,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Agent turn: checkpoint the workspace, expand attachments, run the agent. */
-  private async startAgentTask(rawTask: string, files?: string[], images?: string[]): Promise<void> {
+  private async startAgentTask(
+    rawTask: string,
+    files?: string[],
+    images?: string[],
+    persona?: string,
+  ): Promise<void> {
     let task = rawTask.trim() === '/init' ? INIT_TASK : rawTask;
     if (files && files.length > 0) {
       // "path#L10-80" (selection chip) → tell the agent which lines matter.
@@ -717,7 +778,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.conversation.messages.length === 1) {
       this.conversation.title = (rawTask || 'Image').slice(0, 60);
     }
-    await this.agent?.start(task, images?.slice(0, MAX_IMAGES));
+    await this.agent?.start(task, images?.slice(0, MAX_IMAGES), { personaId: persona });
   }
 
   /** Index in conversation.messages of the Nth real (non-UI) user turn, or -1. */
@@ -763,6 +824,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Granular timeline restore (PLAN.md M8): rewind to the shadow-git snapshot
+   * taken right before one specific tool call, not the whole turn.
+   */
+  private async restoreToolCheckpoint(hash: string): Promise<void> {
+    const restored = await this.shadowGit?.restore(hash);
+    this.post({
+      type: 'agentText',
+      text:
+        restored && restored.length > 0
+          ? `⤺ Restored ${restored.length} file(s) to the workspace state before this step.`
+          : 'Workspace already matches the state before this step — nothing to restore.',
+    });
+  }
+
+  /**
    * Edit a previous prompt: truncate the conversation at that user turn,
    * restore the workspace to the checkpoint taken before the first agent
    * turn from that point on, and resend the new text.
@@ -772,6 +848,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     text: string,
     files: string[] | undefined,
     mode: 'chat' | 'agent',
+    persona?: string,
   ): Promise<void> {
     const index = this.userMessageIndex(ordinal);
     if (index === -1) {
@@ -816,7 +893,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     if (mode === 'agent') {
       this.post({ type: 'userTurn', text, files });
-      await this.startAgentTask(text, files);
+      await this.startAgentTask(text, files, undefined, persona);
     } else {
       this.post({ type: 'userMessage', text });
       await this.handleSend(text, files);
@@ -889,7 +966,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               .join('\n');
             label = `Attached selection (${rel}:${start}-${end})`;
           }
-          blocks.push({ label, content: content.slice(0, 20_000), priority: 1.5 });
+          blocks.push({ label, content: content.slice(0, 20_000), priority: 1.5, trust: 'untrusted' });
         } catch {
           unresolved.push(rel);
         }

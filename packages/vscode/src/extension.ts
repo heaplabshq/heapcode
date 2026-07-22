@@ -14,6 +14,7 @@ import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager } from './profileManager.js';
 import { RagIndexer } from './rag/indexer.js';
 import { RepoMapIndexer } from './rag/repoMapIndexer.js';
+import { RetentionTracker } from './retentionTracker.js';
 import { ShadowGit } from './agent/shadowGit.js';
 import { Telemetry } from './telemetry.js';
 
@@ -51,15 +52,20 @@ async function enableAstChunking(
   }
 }
 
+/** Set at the end of activate() — deactivate() flushes any debounced conversation save through it. */
+let activeChatProvider: ChatViewProvider | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Heap Code');
   void enableAstChunking(context, log);
   const telemetry = new Telemetry(context, log);
   const track = (name: string, meta?: Record<string, unknown>) => telemetry.track(name, meta);
+  const retention = new RetentionTracker(context.workspaceState, track);
   const profiles = new ProfileManager(context.secrets, log);
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, track);
+  activeChatProvider = chatProvider;
   const permissions = new PermissionEngine(context.workspaceState, log);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   const rag = new RagIndexer(profiles, storageDir, log, track);
@@ -83,6 +89,7 @@ export function activate(context: vscode.ExtensionContext): void {
     mcp,
     repoMap,
     track,
+    chatProvider.shadowGit,
   );
   chatProvider.agent.askUser = (question, options) =>
     chatProvider.askAgentQuestion(question, options);
@@ -266,9 +273,19 @@ export function activate(context: vscode.ExtensionContext): void {
       track('command.triggerCompletion');
       return vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
     }),
+    // Fired via the `command` VS Code attaches to an accepted InlineCompletionItem
+    // (completionProvider.ts) — not user-invoked.
+    vscode.commands.registerCommand(
+      'heapcode.completionAccepted',
+      (uri: string, text: string) => {
+        track('completion.accepted');
+        retention.watch('completion', vscode.Uri.parse(uri), text);
+      },
+    ),
+    vscode.workspace.onDidSaveTextDocument((document) => retention.checkOnSave(document)),
   );
 
-  registerInlineEdit(context, profiles, log, rag, track);
+  registerInlineEdit(context, profiles, log, rag, track, retention);
   registerAgentDiffProvider(context);
 
   updateRagStatus();
@@ -284,4 +301,6 @@ export function activate(context: vscode.ExtensionContext): void {
   log.appendLine('Heap Code activated.');
 }
 
-export function deactivate(): void {}
+export function deactivate(): Thenable<void> | undefined {
+  return activeChatProvider?.flushPendingSave();
+}

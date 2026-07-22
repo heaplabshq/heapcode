@@ -60,7 +60,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     // Instant path: the user is typing through the previous suggestion.
     const cached = this.cache.get(document.uri.toString(), prefix);
     if (cached) {
-      return [new vscode.InlineCompletionItem(cached, new vscode.Range(position, position))];
+      return [acceptTrackedItem(cached, position, document.uri)];
     }
 
     // Debounce: VS Code cancels this call on the next keystroke.
@@ -162,8 +162,27 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     }
 
     this.cache.set(document.uri.toString(), prefix, text);
-    return [new vscode.InlineCompletionItem(text, new vscode.Range(position, position))];
+    return [acceptTrackedItem(text, position, document.uri)];
   }
+}
+
+/**
+ * An inline completion item whose `command` fires on accept (Tab) — not on
+ * partial/word-by-word accept, which VS Code doesn't route through `command`,
+ * but that's an acceptable gap for a coarse accept/retention signal.
+ */
+function acceptTrackedItem(
+  text: string,
+  position: vscode.Position,
+  uri: vscode.Uri,
+): vscode.InlineCompletionItem {
+  const item = new vscode.InlineCompletionItem(text, new vscode.Range(position, position));
+  item.command = {
+    command: 'heapcode.completionAccepted',
+    title: '',
+    arguments: [uri.toString(), text],
+  };
+  return item;
 }
 
 /**

@@ -184,7 +184,13 @@ button.ghost:not(:disabled):hover {
   top: 2px;
   right: 2px;
   opacity: 0;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
 }
 
 .restore-msg {
@@ -192,7 +198,7 @@ button.ghost:not(:disabled):hover {
 }
 
 .turn.user:hover .edit-msg {
-  opacity: 0.7;
+  opacity: 0.85;
 }
 
 .edit-msg:hover {
@@ -423,8 +429,9 @@ button.ghost:not(:disabled):hover {
 
 .tool-caret {
   flex-shrink: 0;
-  opacity: 0.5;
-  font-size: 0.85em;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.7;
 }
 
 .tool-row.ok .tool-icon {
@@ -992,6 +999,44 @@ select.settings-input {
   min-width: 0;
 }
 
+.settings-role-field .settings-key-row,
+.settings-role-field .settings-model-picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-model-picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-model-chip {
+  width: 100%;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-test-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.settings-test-ok {
+  font-size: 0.85em;
+  color: var(--vscode-testing-iconPassed, #73c991);
+}
+
+.settings-test-error {
+  font-size: 0.85em;
+  color: var(--vscode-editorError-foreground, #f14c4c);
+}
+
 /* Sits directly under a role's model row — reads as "this model's provider", not a new setting. */
 .settings-role-profile {
   margin-top: -2px;
@@ -1225,6 +1270,8 @@ select.settings-input {
 .mode-chip,
 .model-chip {
   height: 22px;
+  display: inline-flex;
+  align-items: center;
   font-size: 0.82em;
   border-radius: 4px;
   line-height: 22px;
@@ -1272,8 +1319,9 @@ select.settings-input {
 
 .tools-group-chevron {
   width: 10px;
+  display: inline-flex;
+  align-items: center;
   opacity: 0.7;
-  font-size: 0.85em;
 }
 
 .tools-group-label {
@@ -1500,6 +1548,30 @@ select.settings-input {
   padding: 5px 10px;
   font-size: 0.85em;
   opacity: 0.6;
+}
+
+/* Overrides just the positioning from the composer's upward-opening .model-menu —
+   a settings form scrolls top-to-bottom, so this one opens downward instead. Must
+   come after .model-menu in source order: same specificity, and .model-menu also
+   sets `bottom`, which would otherwise win and leave both `top` and `bottom` set
+   at once — an over-constrained absolute position that collapses the box's height. */
+.settings-model-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  min-width: 240px;
+  max-width: none;
+  max-height: 280px;
+  z-index: 20;
+}
+
+.settings-model-menu-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ============================================================= slash menu */

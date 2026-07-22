@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
   chunkFile,
   contextualizeChunks,
+  DEFAULT_IGNORE_GLOB,
   fnv1a,
   RERANK_CANDIDATES,
   rerankHits,
@@ -9,11 +10,10 @@ import {
   type SearchHit,
   type VectorRecord,
 } from '@heapcode/core';
+import { filterIgnored } from '../ignoreFiles.js';
 import type { ProfileManager } from '../profileManager.js';
 
 const INDEX_FILE = 'rag-index.json';
-const IGNORE_GLOB =
-  '**/{node_modules,dist,build,target,.git,coverage,vendor,out,.next,.heapcode}/**';
 const CODE_EXTENSIONS =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|scala|sh|sql|vue|svelte|md|yaml|yml|json|toml|html|htm|css|scss|sass|less|xml|astro|graphql|gql|proto|prisma|lua|dart|ex|exs|zig|tf|ini|conf)$/i;
 const MAX_FILE_BYTES = 200_000;
@@ -117,15 +117,15 @@ export class RagIndexer implements vscode.Disposable {
     const started = Date.now();
 
     try {
-      const extraIgnores = await this.readHeapCodeIgnore();
-      const files = await vscode.workspace.findFiles('**/*', IGNORE_GLOB, MAX_FILES);
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const found = await vscode.workspace.findFiles('**/*', DEFAULT_IGNORE_GLOB, MAX_FILES);
+      const files = root ? await filterIgnored(root, found) : found;
       const existing = new Set<string>();
       let embedded = 0;
 
       for (const file of files) {
         const rel = vscode.workspace.asRelativePath(file, false);
         if (!CODE_EXTENSIONS.test(rel)) continue;
-        if (extraIgnores.some((p) => rel.startsWith(p))) continue;
         existing.add(rel);
         if (await this.indexOne(file)) embedded++;
         if (embedded > 0 && embedded % 20 === 0) this.onStatusEmitter.fire();
@@ -275,19 +275,4 @@ export class RagIndexer implements vscode.Disposable {
       .join('\n\n');
   }
 
-  private async readHeapCodeIgnore(): Promise<string[]> {
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (!root) return [];
-    try {
-      const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, '.heapcodeignore'));
-      return new TextDecoder()
-        .decode(bytes)
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('#'))
-        .map((l) => l.replace(/^\/+/, '').replace(/\/+$/, ''));
-    } catch {
-      return [];
-    }
-  }
 }

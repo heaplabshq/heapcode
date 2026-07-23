@@ -10,6 +10,8 @@ export type TranscriptItem =
       description: string;
       status: 'running' | 'ok' | 'error';
       summary?: string;
+      /** highlight.js language id for `summary`, inferred from the tool call's path arg — undefined renders as plain dim text. */
+      language?: string;
       /** Called by a delegate_task sub-agent — rendered indented, under its parent's tool chip. */
       indent?: boolean;
     }

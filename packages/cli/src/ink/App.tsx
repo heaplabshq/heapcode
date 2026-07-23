@@ -44,9 +44,12 @@ import { MessageView } from './MessageView.js';
 import { PermissionPrompt, type PermissionRequest } from './PermissionPrompt.js';
 import { AskUserPrompt, type AskUserRequest } from './AskUserPrompt.js';
 import { ToolChip } from './ToolChip.js';
+import { languageForPath } from './codeLanguage.js';
 import type { TranscriptItem } from './types.js';
 
-const TOOL_SUMMARY_CHARS = 400;
+// Matches ToolChip's own SUMMARY_CHARS — no point sending more to the chip
+// than it will ever show, but this is the true "how much can survive" cap.
+const TOOL_SUMMARY_CHARS = 800;
 
 const COMMANDS: SlashCommand[] = [
   { name: '/help', description: 'Show available commands' },
@@ -271,6 +274,8 @@ export function App({
 
   const abortRef = useRef<AbortController>();
   const toolDescriptions = useRef(new Map<string, string>());
+  /** highlight.js language per in-flight call, inferred from a `path` arg — read_file's numbered content is the case this exists for. */
+  const toolLanguages = useRef(new Map<string, string | undefined>());
 
   useEffect(() => {
     permissions.attachRequester(
@@ -825,6 +830,7 @@ export function App({
                 onSubToolCall: (subCall) => {
                   const description = executor.describe(subCall);
                   toolDescriptions.current.set(subCall.id, description);
+                  if (subCall.name === 'read_file') toolLanguages.current.set(subCall.id, languageForPath(String(subCall.args.path ?? '')));
                   setLiveSubTool({ kind: 'tool', id: subCall.id, name: subCall.name, description, status: 'running', indent: true });
                 },
                 onSubToolResult: (result) => {
@@ -836,6 +842,7 @@ export function App({
                     description: toolDescriptions.current.get(result.id) ?? result.name,
                     status: result.isError ? 'error' : 'ok',
                     summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
+                    language: toolLanguages.current.get(result.id),
                     indent: true,
                   });
                 },
@@ -889,6 +896,7 @@ export function App({
           onToolCall: (call) => {
             const description = call.name === 'ask_user' ? `Ask: ${String(call.args.question ?? '').slice(0, 80)}` : executor.describe(call);
             toolDescriptions.current.set(call.id, description);
+            if (call.name === 'read_file') toolLanguages.current.set(call.id, languageForPath(String(call.args.path ?? '')));
             setLiveTool({ kind: 'tool', id: call.id, name: call.name, description, status: 'running' });
           },
           onToolResult: (result) => {
@@ -900,6 +908,7 @@ export function App({
               description: toolDescriptions.current.get(result.id) ?? result.name,
               status: result.isError ? 'error' : 'ok',
               summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
+              language: toolLanguages.current.get(result.id),
             });
           },
         },

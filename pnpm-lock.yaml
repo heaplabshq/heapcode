@@ -35,6 +35,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      cli-highlight:
+        specifier: ^2.1.11
+        version: 2.1.11
       fast-glob:
         specifier: ^3.3.2
         version: 3.3.3

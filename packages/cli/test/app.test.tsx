@@ -86,6 +86,13 @@ const WRITE_FILE_TOOL: ToolDefinition = {
   permission: 'write',
 };
 
+const READ_FILE_TOOL: ToolDefinition = {
+  name: 'read_file',
+  description: 'Read a file',
+  parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+  permission: 'read',
+};
+
 const profile: ProviderProfileConfig = { name: 'test', preset: 'custom', baseUrl: 'http://x', model: 'mock' };
 
 let root: string;
@@ -945,6 +952,31 @@ describe('App', () => {
     stdin.write('\r');
     await vi.waitFor(() => expect(lastFrame()).toContain('Rewound to before'), { timeout: 2_000 });
     await expect(readFile(join(root, 'a.txt'), 'utf8')).rejects.toThrow(); // write_file created it; rewind removed it
+  });
+
+  it('a read_file result renders as multi-line, syntax-highlighted code instead of one squashed gray line', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(root, 'add.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = scriptedProvider([
+      { content: '<tool name="read_file">\n{"path": "add.ts"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Read add.ts."}\n</tool>' },
+    ]);
+
+    const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore, tools: [READ_FILE_TOOL] });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('read add.ts');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('Read add.ts'), { timeout: 2_000 });
+
+    // Newlines preserved (not squashed to one line via the old .replace(/\n/g, ' ')) — the
+    // function signature and its body render as separate rows in the frame.
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('function');
+    expect(frame).toContain('return a + b');
+    const sigLine = frame.split('\n').find((l) => l.includes('function'));
+    expect(sigLine).not.toContain('return a + b'); // on its own line, not squashed together
   });
 
   it('/revert with nothing to revert reports that instead of erroring', async () => {

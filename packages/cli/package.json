@@ -16,6 +16,7 @@
   "dependencies": {
     "@heapcode/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "cli-highlight": "^2.1.11",
     "fast-glob": "^3.3.2",
     "ignore": "^7.0.5",
     "ink": "^5.0.1",

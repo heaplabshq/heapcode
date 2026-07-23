@@ -153,6 +153,29 @@ function looksUnfinished(text: string): boolean {
 
 const MAX_REPAIRS = 3;
 
+/**
+ * Some models (observed live: a local Gemma fine-tune) consistently wrap
+ * their tool arguments in an extra envelope key — `{"arg": {"pattern": "x"}}`
+ * instead of `{"pattern": "x"}` — for every call, never self-correcting even
+ * after repeated "Missing X argument" errors. Unwraps that shape precisely:
+ * only when there's exactly one top-level key, that key doesn't match any of
+ * the tool's own declared parameter names (so a tool that legitimately takes
+ * one argument, e.g. semantic_search's `query`, is never touched), and the
+ * value under it is itself a plain object. A tool call that already matches
+ * its schema is always returned unchanged.
+ */
+function unwrapMisenvelopedArgs(args: Record<string, unknown>, tool: ToolDefinition): Record<string, unknown> {
+  const keys = Object.keys(args);
+  if (keys.length !== 1) return args;
+  const onlyKey = keys[0]!;
+  const schema = tool.parameters as { properties?: Record<string, unknown> } | undefined;
+  const declared = Object.keys(schema?.properties ?? {});
+  if (declared.includes(onlyKey)) return args;
+  const nested = args[onlyKey];
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) return nested as Record<string, unknown>;
+  return args;
+}
+
 const MEMORY_NOTE_PROMPT =
   'Is there anything about this codebase worth remembering long-term — a non-obvious ' +
   'convention, constraint, or gotcha you discovered while working on this task? ' +
@@ -240,16 +263,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const hasVerifyTool = tools.some((t) => t.verifies);
   let dirtySinceVerify = false;
 
-  const execTool = async (call: ToolCall): Promise<ToolResult> => {
-    const tool = toolsByName.get(call.name);
+  const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
+    const tool = toolsByName.get(rawCall.name);
     if (!tool) {
       return {
-        id: call.id,
-        name: call.name,
-        content: `Unknown tool "${call.name}". Available: ${tools.map((t) => t.name).join(', ')}.`,
+        id: rawCall.id,
+        name: rawCall.name,
+        content: `Unknown tool "${rawCall.name}". Available: ${tools.map((t) => t.name).join(', ')}.`,
         isError: true,
       };
     }
+    const call: ToolCall = { ...rawCall, args: unwrapMisenvelopedArgs(rawCall.args, tool) };
     events.onToolCall(call);
     let result: ToolResult;
     if (tool.permission !== 'read' && !(await opts.requestPermission(call, tool))) {

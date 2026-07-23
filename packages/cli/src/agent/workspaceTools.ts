@@ -456,6 +456,7 @@ export class WorkspaceToolExecutor {
         return ok(await this.search(a.pattern ?? '', a.glob));
       case 'semantic_search': {
         const query = a.query ?? '';
+        if (!query.trim()) return fail('Missing "query" argument.');
         if (this.semanticSearch) {
           const formatted = await this.semanticSearch(query);
           if (formatted) return ok(formatted);

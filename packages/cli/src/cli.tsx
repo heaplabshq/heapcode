@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   if (promptIndex >= 0) {
     const prompt = argv[promptIndex + 1];
     if (!prompt) {
-      console.error('Usage: heapcode -p "<task>" [--json] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--continue]');
+      console.error('Usage: heapcode -p "<task>" [--json] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--reindex] [--continue]');
       process.exitCode = 1;
       return;
     }
@@ -97,6 +97,7 @@ async function main(): Promise<void> {
       personaId,
       permissionMode: modeArg as (typeof PERMISSION_MODES)[number] | undefined,
       subAgents: argv.includes('--sub-agents'),
+      reindex: argv.includes('--reindex'),
       telemetryEnabled: telemetryFlag,
     });
     process.exitCode = code;
@@ -226,6 +227,7 @@ Headless (-p) flags:
   --persona NAME                    agent (default), architect (read-only), debug (no edits), reviewer
   --permission-mode MODE            plan | default | auto-edit | full-auto — see below; default: "default"
   --sub-agents                      Offer delegate_task (off by default, same as interactive's /subagents)
+  --reindex                         Rebuild the semantic search + repo map indexes before running the task (headless never auto-indexes)
   --continue | -c                   Continue this directory's most recent conversation instead of starting fresh
   --no-telemetry                    Skip the local audit-log entry for this run (see "heapcode audit" — no remote sending exists to opt out of)
 

@@ -205,6 +205,38 @@ describe('runHeadless — --persona', () => {
   });
 });
 
+describe('runHeadless — --reindex', () => {
+  it('without --reindex, a file never touched by a tool call is invisible to repo_map (no auto-indexing in headless mode)', async () => {
+    await writeFile(join(project, 'untouched.ts'), 'export function neverIndexed() {}\n');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sse(toolBlock('repo_map', {})), sse(finishBlock('done'))],
+    });
+
+    await runHeadless({ prompt: 'map the repo', json: true, cwd: project });
+
+    const secondTurn = (server.requests[1]!.body as { messages: Array<{ content: string }> }).messages;
+    // The system prompt also contains the literal string "<tool_result>" (documenting the
+    // protocol) — match the tool-named opening tag specifically, not just any occurrence.
+    const toolResultMsg = secondTurn.find((m) => m.content.includes('<tool_result name="repo_map"'))!.content;
+    expect(toolResultMsg).not.toContain('neverIndexed');
+  });
+
+  it('with --reindex, the same file is indexed and shows up in repo_map', async () => {
+    await writeFile(join(project, 'untouched.ts'), 'export function neverIndexed() {}\n');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sse(toolBlock('repo_map', {})), sse(finishBlock('done'))],
+    });
+
+    await runHeadless({ prompt: 'map the repo', json: true, cwd: project, reindex: true });
+
+    const secondTurn = (server.requests[1]!.body as { messages: Array<{ content: string }> }).messages;
+    const toolResultMsg = secondTurn.find((m) => m.content.includes('<tool_result name="repo_map"'))!.content;
+    expect(toolResultMsg).toContain('neverIndexed');
+  });
+});
+
 describe('runHeadless — --sub-agents', () => {
   it('delegate_task runs a nested agent loop; its tool activity is tagged with a parent field in the NDJSON stream', async () => {
     await writeFile(join(project, 'trigger.txt'), 'x');

@@ -170,6 +170,14 @@ describe('WorkspaceToolExecutor — search', () => {
   });
 });
 
+describe('WorkspaceToolExecutor — semantic_search', () => {
+  it('rejects an empty/missing query with the same "Missing X argument" convention as search/get_symbols/read_file, instead of silently searching for ""', async () => {
+    const result = await executor.execute(call('semantic_search', { query: '' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('Missing "query" argument.');
+  });
+});
+
 describe('WorkspaceToolExecutor — run_command', () => {
   it('reports exit code and stdout', async () => {
     const result = await executor.execute(call('run_command', { command: 'echo hello' }));

@@ -89,6 +89,34 @@ describe('runAgent — native tool calls', () => {
     expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish']);
   });
 
+  it('unwraps a stray {"arg": {...}} envelope some models consistently emit, so the tool sees the real arguments', async () => {
+    // Observed live with a local Gemma fine-tune: every tool call wrapped in
+    // an extra "arg" key, never self-correcting even after repeated
+    // "Missing X argument" errors from the real (un-normalized) args.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { arg: { path: 'a.ts', content: 'hi' } } }] },
+      { content: 'Wrote it.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(outcome).toBe('done');
+    expect(h.calls[0]!.args).toEqual({ path: 'a.ts', content: 'hi' });
+  });
+
+  it('does not unwrap a single top-level arg that legitimately matches the tool\'s own schema', async () => {
+    // read_file's schema declares a "path" key — {"path": "a.ts"} must pass through untouched,
+    // not be mistaken for an envelope just because it also has exactly one key.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'Read it.' },
+    ]);
+    const h = harness();
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(h.calls[0]!.args).toEqual({ path: 'a.ts' });
+  });
+
   it('reports permission denial to the model instead of failing', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a', content: 'b' } }] },

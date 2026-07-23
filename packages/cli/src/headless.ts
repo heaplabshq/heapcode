@@ -63,6 +63,16 @@ export interface HeadlessOptions {
   subAgents?: boolean;
   /** false disables local audit-log recording (no remote sending exists to opt out of — see audit.ts). Default true. */
   telemetryEnabled?: boolean;
+  /**
+   * Rebuild the semantic-search + repo-map indexes before running the task.
+   * Unlike the interactive UI (which kicks off a background build on every
+   * launch), headless mode only loads whatever was already persisted —
+   * cheap and fast for a CI job that runs the same repo repeatedly, but
+   * blind to any file the agent's own tool calls haven't touched yet on a
+   * fresh checkout. Off by default (indexing takes real time); pass this
+   * for the first run against a repo, or after files changed outside heapcode.
+   */
+  reindex?: boolean;
 }
 
 /**
@@ -128,6 +138,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
     await Promise.all([ragIndexer.init(), repoMapIndexer.init(), mcpManager.ensureConnected()]);
+    if (opts.reindex) await Promise.all([ragIndexer.buildIndex(), repoMapIndexer.buildIndex()]);
 
     const mode: PermissionMode = opts.permissionMode ?? 'default';
     // "plan" forces read-only regardless of the chosen persona — the same

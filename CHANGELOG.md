@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.0
+
+- **Safety:** external content (files, URLs, MCP/tool results, RAG hits) is now trust-tagged and wrapped as inert data before reaching the model, so a maliciously-crafted file or web page can't smuggle instructions into a session
+- **Safety:** package installs are checked against the npm/PyPI registry first and blocked if the name looks hallucinated (`check_package_exists` tool + automatic `run_command` guard)
+- **Safety:** optional `heapcode.agent.requireTestsBeforeFinish` blocks the agent from finishing while a file write hasn't been verified by a test run
+- **Checkpoints:** every non-read tool call now gets its own shadow-git snapshot with a "Rewind to before this step" button, in addition to the existing per-turn/session-level restore
+- **Modes:** new persona picker — Agent (full access), Architect (read-only), Debug (read + execute, no writes), Reviewer (read-only) — restricts which tools the agent is even offered
+- **Plan/Act:** optional `heapcode.agent.planGate` stops after a plan and waits for an explicit "Approve & Run" before any tool executes
+- Agent-side fast-apply: an `edit_file` search-replace that fails to match now falls back to the apply model instead of erroring outright
+- Repo map (`repo_map` tool) now orders files by import/dependency-graph centrality personalized to open tabs and recent edits, instead of alphabetically
+- **Sub-agents:** optional `heapcode.agent.subAgents` (toggle in-app under Settings → Agent, or via the setting directly) offers a `delegate_task` tool that hands a self-contained piece of work to an isolated sub-agent — its own context, optionally its own persona/model, capped at one level of nesting, never more permissive than its parent
+- Agent runs now survive the chat sidebar being closed or the window reloading — reconnecting rehydrates the live transcript instead of showing a blank chat, and a native notification fires if a run finishes while the panel isn't visible
+- **Team/Enterprise:** `.heapcode/` bundle export/import as a single JSON file (project instructions, memory, skills, workspace agent settings)
+- **Team/Enterprise:** "Review Current PR & Comment" — generates a review via `gh`, always opens it in an editor tab first, requires explicit confirmation before posting
+- **Team/Enterprise:** local usage/audit dashboard — retention stats, permission decisions, checkpoint activity — nothing leaves the machine to produce it
+- Fixed: a Debug-persona agent (read + execute, no writes) could still create/edit/delete files by running a shell command like `mkdir`/`rm`/`sed -i` — `run_command` now blocks filesystem-mutating commands for any persona without write access
+
+## 0.3.0
+
+- **Added anonymous usage telemetry, on by default** — event names only (which commands/features are used, coarse error counts), never code/prompts/file contents/paths, tagged with a random per-install ID. Turn it off with `heapcode.telemetry.enabled` or VS Code's own `telemetry.telemetryLevel`. See the README "Telemetry" section for exactly what's sent.
+
 ## 0.2.2
 
 - No functional changes from 0.2.1 — version bump only, to republish after 0.2.1 was already live on the Marketplace

@@ -24,7 +24,10 @@ async function main(): Promise<void> {
 
   if (argv[0] === 'profile') {
     const [, sub, arg] = argv;
-    if (sub === 'add') return profileAdd();
+    if (sub === 'add') {
+      await profileAdd();
+      return;
+    }
     if (sub === 'list') return profileList();
     if (sub === 'use' && arg) return profileUse(arg);
     if (sub === 'remove' && arg) return profileRemove(arg);
@@ -57,12 +60,19 @@ async function main(): Promise<void> {
 
   // Interactive mode.
   const config = new ConfigStore();
-  const profile = profileName ? await config.getProfile(profileName) : await config.getActiveProfile();
+  let profile = profileName ? await config.getProfile(profileName) : await config.getActiveProfile();
   if (!profile) {
-    console.log('No provider profile configured yet.\n');
-    console.log('Run "heapcode profile add" to set one up (Ollama, OpenAI, OpenRouter, and more).');
-    process.exitCode = 1;
-    return;
+    if (profileName) {
+      // An explicit --profile NAME that doesn't exist is a mistake worth surfacing
+      // clearly, not something to silently paper over with a fresh setup wizard.
+      console.error(`No profile named "${profileName}". Run "heapcode profile list" to see configured profiles.`);
+      process.exitCode = 1;
+      return;
+    }
+    // No profile configured — walk straight into onboarding instead of erroring
+    // out and telling the user to run a separate command (Setup's own banner
+    // explains what's happening; no extra console.log needed here).
+    profile = await profileAdd();
   }
 
   const { provider, contextWindow } = await resolveProvider(profile);

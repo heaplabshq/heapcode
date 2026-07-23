@@ -192,6 +192,25 @@ describe('runAgent — native tool calls', () => {
     expect(provider.requests.length).toBe(3);
   });
 
+  it('threads prior conversation history between the system prompt and the current task', async () => {
+    const provider = scriptedProvider([{ content: 'The second option it is — all done.' }]);
+    const h = harness({
+      task: 'ok do the second option',
+      history: [
+        { role: 'user', content: 'what are my options?' },
+        { role: 'assistant', content: '1. add tests 2. refactor auth' },
+      ],
+    });
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(outcome).toBe('done');
+    const sent = provider.requests[0]!.messages;
+    expect(sent.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(sent[1]!.content).toBe('what are my options?');
+    expect(sent[2]!.content).toContain('refactor auth');
+    expect(sent[3]!.content).toBe('ok do the second option');
+  });
+
   it('nudges the model to continue when it narrates without acting', async () => {
     const provider = scriptedProvider([
       { content: 'I listed the files. The task is not complete; the next step will be reading a.ts.' },
@@ -221,6 +240,39 @@ describe('runAgent — native tool calls', () => {
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
     expect(outcome).toBe('done');
     expect(h.calls.map((c) => c.name)).toEqual(['write_file']);
+  });
+
+  it('a tool-free reply that asks the user a question ends the turn — no continue-nudge (field report: model answered its own "Would you like to: 1/2/3")', async () => {
+    const provider = scriptedProvider([
+      {
+        content:
+          'I listed the workspace. How about we start by exploring src/? Would you like to:\n1. List files\n2. Read README\n3. Run tests',
+      },
+      // If the loop wrongly nudges, this scripted follow-up would run — the
+      // assertions below prove it never gets requested.
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'src/index.ts' } }] },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(outcome).toBe('done');
+    expect(h.calls).toEqual([]); // never answered its own question with a tool call
+    expect(provider.requests.length).toBe(1);
+    expect(h.texts[0]).toContain('Would you like to');
+  });
+
+  it('a question beats the unfinished-narration heuristic even when both match (fallback protocol)', async () => {
+    const provider = scriptedProvider([
+      // "i need to" matches looksUnfinished — the trailing question must win.
+      { content: 'I need to know which config file you mean. Which one would you like me to edit?' },
+      { content: '<tool name="write_file">\n{"path": "x", "content": "y"}\n</tool>' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
+
+    expect(outcome).toBe('done');
+    expect(h.calls).toEqual([]);
+    expect(provider.requests.length).toBe(1);
   });
 
   it('nudges to continue in smaller steps when the reply was truncated (finish_reason=length)', async () => {

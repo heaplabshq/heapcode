@@ -1,7 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput } from 'ink';
 import Spinner from 'ink-spinner';
+import SelectInput from 'ink-select-input';
 import {
+  builtinPrompts,
+  parseSlashCommand,
+  renderTemplate,
   runAgent,
   type Conversation,
   type PermissionChoice,
@@ -10,12 +15,26 @@ import {
   type StoredMessage,
   type ToolDefinition,
 } from '@heapcode/core';
+import type { ConfigStore } from '../config/store.js';
+import type { SecretsStore } from '../config/secrets.js';
 import type { JsonConversationStore } from '../history/store.js';
 import type { WorkspaceToolExecutor } from '../agent/workspaceTools.js';
 import type { SessionCheckpoint } from '../agent/checkpoint.js';
 import type { PermissionEngine } from '../agent/permissions.js';
 import type { ShadowGit } from '../agent/shadowGit.js';
-import { Composer } from './Composer.js';
+import {
+  BUILTIN_PERSONAS,
+  filterToolsForPersona,
+  getPersona,
+  looksFilesystemMutating,
+  type AgentPersona,
+} from '../agent/personas.js';
+import { listSkillsFormatted } from '../agent/skills.js';
+import { loadProjectInstructions } from '../memory.js';
+import { configFile, secretsFile } from '../paths.js';
+import { Composer, type SlashCommand } from './Composer.js';
+import { Header } from './Header.js';
+import { Setup } from './Setup.js';
 import { MessageView } from './MessageView.js';
 import { PermissionPrompt, type PermissionRequest } from './PermissionPrompt.js';
 import { AskUserPrompt, type AskUserRequest } from './AskUserPrompt.js';
@@ -23,6 +42,39 @@ import { ToolChip } from './ToolChip.js';
 import type { TranscriptItem } from './types.js';
 
 const TOOL_SUMMARY_CHARS = 400;
+// Multi-turn context passed to each agent run: recent turns only, trimmed —
+// enough for "ok do that" to mean something, small enough not to crowd the
+// context window (core compacts long transcripts, but why start bloated).
+const HISTORY_MAX_TURNS = 12;
+const HISTORY_MAX_CHARS = 4_000;
+
+const COMMANDS: SlashCommand[] = [
+  { name: '/help', description: 'Show available commands' },
+  { name: '/model', args: '[id]', description: 'Switch the model (fetches the provider’s list)' },
+  { name: '/profile', args: '[add|list|remove|name]', description: 'Switch, add, list, or remove provider profiles' },
+  { name: '/persona', args: '[name]', description: 'Switch persona: agent, architect, debug, reviewer' },
+  { name: '/settings', description: 'Show current configuration' },
+  { name: '/memory', description: 'Show the project instructions & memory the agent sees' },
+  { name: '/skills', description: 'List available Skills' },
+  { name: '/clear', description: 'Clear the screen and start a new conversation' },
+  { name: '/new', description: 'Start a new conversation' },
+  { name: '/resume', description: 'Pick an earlier conversation to continue' },
+  { name: '/rewind', args: '[n]', description: 'Undo the last n tool calls' },
+  { name: '/revert', description: 'Restore every file this session touched' },
+  { name: '/checkpoints', description: 'List this session’s checkpoints' },
+  { name: '/exit', description: 'Quit heapcode' },
+  // Prompt templates (core's builtinPrompts): /explain, /fix, /review, … —
+  // rendered into a task and run through the normal agent loop.
+  ...builtinPrompts.map((p) => ({ name: `/${p.command}`, args: '<input>', description: p.title })),
+];
+
+const HELP_TEXT = COMMANDS.map((c) => `  ${(c.name + (c.args ? ` ${c.args}` : '')).padEnd(18)}${c.description}`).join('\n');
+
+interface Picker {
+  title: string;
+  items: Array<{ label: string; value: string }>;
+  onPick(value: string): void;
+}
 
 export interface AppProps {
   provider: Provider;
@@ -37,6 +89,19 @@ export interface AppProps {
   nativeToolCalls: boolean;
   workspaceName: string;
   contextWindow: number;
+  /** Enables /model and /profile persistence; omitted in tests. */
+  configStore?: ConfigStore;
+  /** Needed by "/profile add" (stores the API key) and "/profile remove" (deletes it). */
+  secretsStore?: SecretsStore;
+  /** Re-resolves a provider (API key lookup + client construction) for /profile switches. */
+  switchProvider?(profile: ProviderProfileConfig): Promise<{ provider: Provider; contextWindow: number }>;
+  version?: string;
+  cwd?: string;
+  safeMode?: boolean;
+  /** Earlier conversations exist in this project at launch — shows the /resume hint. */
+  canResume?: boolean;
+  /** Lazy source for `@` mention autocomplete (ignore-aware workspace paths, folders end with `/`). */
+  listWorkspaceFiles?(): Promise<string[]>;
 }
 
 export function App({
@@ -52,18 +117,49 @@ export function App({
   nativeToolCalls,
   workspaceName,
   contextWindow,
+  configStore,
+  secretsStore,
+  switchProvider,
+  version,
+  cwd,
+  safeMode,
+  canResume,
+  listWorkspaceFiles,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
-  const [items, setItems] = useState<TranscriptItem[]>(
-    conversation.messages
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ kind: 'message' as const, message: m })),
-  );
+
+  // Session state that /model and /profile can change mid-session. The props
+  // are just the initial values resolved by cli.tsx.
+  const [active, setActive] = useState({ provider, profile, contextWindow });
+  const [model, setModel] = useState(profile.agentModel || profile.model);
+
+  const headerItem = (messageCount: number): TranscriptItem => ({
+    kind: 'header',
+    version,
+    profileName: active.profile.name,
+    model,
+    baseUrl: active.profile.baseUrl,
+    cwd,
+    messageCount,
+    canResume,
+  });
+
+  const initialMessages = conversation.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+  const [items, setItems] = useState<TranscriptItem[]>([
+    headerItem(initialMessages.length),
+    ...initialMessages.map((m) => ({ kind: 'message' as const, message: m })),
+  ]);
   const itemsRef = useRef(items);
+  // Remount key for <Static>: Static only ever appends, so /new replaces the
+  // whole element (fresh key) instead of trying to shrink its item list.
+  const [staticKey, setStaticKey] = useState(0);
   const pushItem = (item: TranscriptItem) => {
     itemsRef.current = [...itemsRef.current, item];
     setItems(itemsRef.current);
   };
+  const pushSystem = (text: string) => pushItem({ kind: 'system', text });
+
+  const conversationRef = useRef(conversation);
 
   const [liveText, setLiveText] = useState('');
   const [liveTool, setLiveTool] = useState<Extract<TranscriptItem, { kind: 'tool' }>>();
@@ -71,6 +167,28 @@ export function App({
   const [error, setError] = useState<string>();
   const [pendingPermission, setPendingPermission] = useState<{ req: PermissionRequest; resolve: (c: PermissionChoice) => void }>();
   const [pendingQuestion, setPendingQuestion] = useState<{ req: AskUserRequest; resolve: (a: string) => void }>();
+  const [picker, setPicker] = useState<Picker>();
+  const [setupActive, setSetupActive] = useState(false);
+  const [persona, setPersona] = useState<AgentPersona>(getPersona(undefined));
+  const [mentionCandidates, setMentionCandidates] = useState<string[]>();
+  const mentionLoadStarted = useRef(false);
+
+  const handleMentionTrigger = (): void => {
+    if (mentionLoadStarted.current || !listWorkspaceFiles) return;
+    mentionLoadStarted.current = true;
+    void listWorkspaceFiles()
+      .then(setMentionCandidates)
+      .catch(() => {
+        // Autocomplete is best-effort — mentions still work as typed text.
+      });
+  };
+
+  // Ctrl+C protocol: clear typed input first; on an empty prompt, arm a
+  // two-second "press again to exit" window instead of exiting outright.
+  const [composerHasText, setComposerHasText] = useState(false);
+  const [clearToken, setClearToken] = useState(0);
+  const [exitArmed, setExitArmed] = useState(false);
+  const exitTimer = useRef<ReturnType<typeof setTimeout>>();
 
   const abortRef = useRef<AbortController>();
   const toolCheckpoints = useRef(new Map<string, string>());
@@ -82,10 +200,47 @@ export function App({
     );
   }, [permissions]);
 
+  useEffect(() => () => clearTimeout(exitTimer.current), []);
+
+  function doExit(): void {
+    exit();
+  }
+
   useInput((input, key) => {
+    if (key.escape) {
+      if (setupActive) {
+        setSetupActive(false);
+        pushSystem('Profile setup cancelled.');
+      } else if (picker) setPicker(undefined);
+      else if (busy && abortRef.current) abortRef.current.abort();
+      return;
+    }
     if (key.ctrl && input === 'c') {
-      if (busy && abortRef.current) abortRef.current.abort();
-      else exit();
+      if (busy && abortRef.current) {
+        abortRef.current.abort();
+        return;
+      }
+      if (setupActive) {
+        setSetupActive(false);
+        pushSystem('Profile setup cancelled.');
+        return;
+      }
+      if (picker) {
+        setPicker(undefined);
+        return;
+      }
+      if (composerHasText) {
+        setClearToken((t) => t + 1);
+        setComposerHasText(false);
+        return;
+      }
+      if (exitArmed) {
+        doExit();
+        return;
+      }
+      setExitArmed(true);
+      clearTimeout(exitTimer.current);
+      exitTimer.current = setTimeout(() => setExitArmed(false), 2_000);
     }
   });
 
@@ -93,54 +248,299 @@ export function App({
     const messages: StoredMessage[] = itemsRef.current
       .filter((i): i is Extract<TranscriptItem, { kind: 'message' }> => i.kind === 'message')
       .map((i) => i.message);
-    conversation.messages = messages;
-    conversation.updatedAt = Date.now();
-    await historyStore.save(conversation);
+    conversationRef.current.messages = messages;
+    conversationRef.current.updatedAt = Date.now();
+    // Title from the first user message so /resume shows something meaningful.
+    const firstUser = messages.find((m) => m.role === 'user');
+    if (firstUser && (!conversationRef.current.title || conversationRef.current.title === 'New conversation')) {
+      conversationRef.current.title = firstUser.content.length > 60 ? `${firstUser.content.slice(0, 60)}…` : firstUser.content;
+    }
+    await historyStore.save(conversationRef.current);
   }
 
   /** /rewind [n] — undo the effects of the last n tool calls (default 1) via their shadow-git checkpoints. */
   async function handleRewind(arg: string): Promise<void> {
     if (!shadowGit) {
-      pushItem({ kind: 'system', text: 'Rewind is unavailable — shadow git could not be initialized.' });
+      pushSystem('Rewind is unavailable — shadow git could not be initialized.');
       return;
     }
     const n = Math.max(1, Number.parseInt(arg, 10) || 1);
     const toolItems = itemsRef.current.filter((i): i is Extract<TranscriptItem, { kind: 'tool' }> => i.kind === 'tool' && Boolean(i.checkpoint));
     const target = toolItems[toolItems.length - n];
     if (!target?.checkpoint) {
-      pushItem({ kind: 'system', text: `No checkpoint ${n} step(s) back.` });
+      pushSystem(`No checkpoint ${n} step(s) back.`);
       return;
     }
     const restored = await shadowGit.restore(target.checkpoint);
-    pushItem({
-      kind: 'system',
-      text:
-        restored === undefined
-          ? 'Rewind failed.'
-          : `Rewound to before "${target.description}" (${restored.length} file(s) restored).`,
+    pushSystem(
+      restored === undefined
+        ? 'Rewind failed.'
+        : `Rewound to before "${target.description}" (${restored.length} file(s) restored).`,
+    );
+  }
+
+  /** Reset the transcript view to `initial` under a fresh screen — shared by /new, /clear, and /resume. */
+  function resetTranscript(initial: TranscriptItem[]): void {
+    itemsRef.current = initial;
+    setItems(itemsRef.current);
+    setStaticKey((k) => k + 1);
+    setError(undefined);
+    // Clear the screen and scrollback so the fresh header starts at the top,
+    // like Claude Code's /clear. Skipped off-TTY (tests, pipes).
+    if (process.stdout.isTTY) process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+  }
+
+  function startNewConversation(): void {
+    conversationRef.current = { id: randomUUID(), title: 'New conversation', updatedAt: Date.now(), messages: [] };
+    resetTranscript([headerItem(0)]);
+  }
+
+  async function handleResume(): Promise<void> {
+    const metas = await historyStore.list();
+    if (metas.length === 0) {
+      pushSystem('No saved conversations in this project yet.');
+      return;
+    }
+    setPicker({
+      title: 'Resume a conversation',
+      items: metas.map((m) => ({
+        label: `${m.title} · ${new Date(m.updatedAt).toLocaleString()}${m.id === conversationRef.current.id ? ' — current' : ''}`,
+        value: m.id,
+      })),
+      onPick: (id) => {
+        setPicker(undefined);
+        void (async () => {
+          const conv = await historyStore.get(id);
+          if (!conv) {
+            pushSystem('That conversation could not be loaded.');
+            return;
+          }
+          conversationRef.current = conv;
+          const loaded = conv.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
+          resetTranscript([headerItem(loaded.length), ...loaded.map((m) => ({ kind: 'message' as const, message: m }))]);
+        })();
+      },
     });
+  }
+
+  async function applyModel(id: string): Promise<void> {
+    setModel(id);
+    // Keep agentModel in sync when the profile pins one — otherwise the
+    // switch would silently not apply (runAgent prefers agentModel).
+    const updated: ProviderProfileConfig = {
+      ...active.profile,
+      model: id,
+      ...(active.profile.agentModel ? { agentModel: id } : {}),
+    };
+    setActive((a) => ({ ...a, profile: updated }));
+    if (configStore) {
+      await configStore.saveProfile(updated);
+      pushSystem(`Model set to ${id} (saved to profile "${updated.name}").`);
+    } else {
+      pushSystem(`Model set to ${id} for this session.`);
+    }
+  }
+
+  async function handleModel(arg?: string): Promise<void> {
+    if (arg) return applyModel(arg);
+    try {
+      const models = await active.provider.listModels();
+      if (models.length === 0) {
+        pushSystem('This endpoint does not list models. Set one directly with "/model <id>".');
+        return;
+      }
+      setPicker({
+        title: `Select a model (current: ${model})`,
+        items: models.map((m) => ({ label: m.id === model ? `${m.id} (current)` : m.id, value: m.id })),
+        onPick: (id) => {
+          setPicker(undefined);
+          void applyModel(id);
+        },
+      });
+    } catch (err) {
+      pushSystem(`Could not fetch models: ${err instanceof Error ? err.message : String(err)}. Set one directly with "/model <id>".`);
+    }
+  }
+
+  async function handleProfile(sub?: string, arg?: string): Promise<void> {
+    if (!configStore || !switchProvider) {
+      pushSystem('Profile management is unavailable in this session.');
+      return;
+    }
+    if (sub === 'add') {
+      setSetupActive(true);
+      return;
+    }
+    const profiles = await configStore.listProfiles();
+    if (sub === 'list') {
+      pushSystem(
+        profiles.length === 0
+          ? 'No profiles configured yet — "/profile add" creates one.'
+          : profiles
+              .map((p) => `${p.name === active.profile.name ? '*' : ' '} ${p.name}  (${p.preset}, ${p.model})`)
+              .join('\n'),
+      );
+      return;
+    }
+    if (sub === 'remove') {
+      if (!arg) {
+        pushSystem('Usage: /profile remove <name>');
+        return;
+      }
+      if (!profiles.some((p) => p.name === arg)) {
+        pushSystem(`No profile named "${arg}".`);
+        return;
+      }
+      if (arg === active.profile.name) {
+        pushSystem('That profile is currently in use — switch to another with /profile first.');
+        return;
+      }
+      await configStore.deleteProfile(arg);
+      await secretsStore?.deleteApiKey(arg);
+      pushSystem(`Removed profile "${arg}".`);
+      return;
+    }
+    if (profiles.length === 0) {
+      // Nothing to switch to — go straight into adding one.
+      setSetupActive(true);
+      return;
+    }
+    const apply = async (name: string): Promise<void> => {
+      const target = profiles.find((p) => p.name === name);
+      if (!target) {
+        pushSystem(`No profile named "${name}". Configured: ${profiles.map((p) => p.name).join(', ')}.`);
+        return;
+      }
+      try {
+        const next = await switchProvider(target);
+        await configStore.setActiveProfile(target.name);
+        setActive({ provider: next.provider, profile: target, contextWindow: next.contextWindow });
+        setModel(target.agentModel || target.model);
+        pushSystem(`Switched to profile "${target.name}" (${target.preset}, ${target.agentModel || target.model}).`);
+      } catch (err) {
+        pushSystem(`Could not switch profile: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    if (sub) return apply(sub);
+    setPicker({
+      title: 'Select a profile',
+      items: [
+        ...profiles.map((p) => ({
+          label: `${p.name} (${p.preset}, ${p.model})${p.name === active.profile.name ? ' — current' : ''}`,
+          value: p.name,
+        })),
+        { label: '+ Add a new profile…', value: '__add__' },
+      ],
+      onPick: (name) => {
+        setPicker(undefined);
+        if (name === '__add__') setSetupActive(true);
+        else void apply(name);
+      },
+    });
+  }
+
+  function handlePersona(arg?: string): void {
+    const describe = (p: AgentPersona): string => `Persona: ${p.label} — ${p.description}`;
+    if (arg) {
+      const target = BUILTIN_PERSONAS.find((p) => p.id === arg.toLowerCase());
+      if (!target) {
+        pushSystem(`No persona "${arg}". Available: ${BUILTIN_PERSONAS.map((p) => p.id).join(', ')}.`);
+        return;
+      }
+      setPersona(target);
+      pushSystem(describe(target));
+      return;
+    }
+    setPicker({
+      title: `Select a persona (current: ${persona.label})`,
+      items: BUILTIN_PERSONAS.map((p) => ({
+        label: `${p.label} — ${p.description}${p.id === persona.id ? ' (current)' : ''}`,
+        value: p.id,
+      })),
+      onPick: (id) => {
+        setPicker(undefined);
+        const target = getPersona(id);
+        setPersona(target);
+        pushSystem(describe(target));
+      },
+    });
+  }
+
+  function showSettings(): void {
+    const p = active.profile;
+    pushSystem(
+      [
+        `Profile     ${p.name} (${p.preset})`,
+        `Endpoint    ${p.baseUrl}`,
+        `Model       ${model}${p.agentModel && p.agentModel !== p.model ? ` (agent: ${p.agentModel})` : ''}`,
+        `Persona     ${persona.label}`,
+        `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
+        `Config      ${configFile()}`,
+        `Secrets     ${secretsFile()}`,
+        '',
+        'Change with /model and /profile · add providers with "/profile add"',
+      ].join('\n'),
+    );
   }
 
   async function handleCommand(input: string): Promise<boolean> {
     const [cmd, ...rest] = input.trim().split(/\s+/);
     switch (cmd) {
+      case '/help':
+        pushSystem(`Commands:\n${HELP_TEXT}`);
+        return true;
+      case '/model':
+        await handleModel(rest[0]);
+        return true;
+      case '/profile':
+      case '/provider':
+        await handleProfile(rest[0], rest[1]);
+        return true;
+      case '/persona':
+        handlePersona(rest[0]);
+        return true;
+      case '/memory': {
+        const instructions = await loadProjectInstructions(cwd ?? process.cwd());
+        pushSystem(
+          instructions
+            ? `Project context loaded into every agent run:\n\n${instructions}`
+            : 'No project memory yet. Create .heapcode/HEAPCODE.md (project instructions) or .heapcode/memory.md (notes) — AGENTS.md is honored as a fallback.',
+        );
+        return true;
+      }
+      case '/skills':
+        pushSystem(await listSkillsFormatted(cwd ?? process.cwd()));
+        return true;
+      case '/settings':
+      case '/config':
+        showSettings();
+        return true;
+      case '/new':
+      case '/clear':
+        startNewConversation();
+        return true;
+      case '/resume':
+        await handleResume();
+        return true;
+      case '/exit':
+      case '/quit':
+        doExit();
+        return true;
       case '/rewind':
         await handleRewind(rest[0] ?? '1');
         return true;
       case '/revert': {
         const reverted = await checkpoint.revertAll();
-        pushItem({ kind: 'system', text: reverted.length > 0 ? `Reverted: ${reverted.join(', ')}` : 'Nothing to revert.' });
+        pushSystem(reverted.length > 0 ? `Reverted: ${reverted.join(', ')}` : 'Nothing to revert.');
         return true;
       }
       case '/checkpoints': {
         const toolItems = itemsRef.current.filter((i): i is Extract<TranscriptItem, { kind: 'tool' }> => i.kind === 'tool' && Boolean(i.checkpoint));
-        pushItem({
-          kind: 'system',
-          text:
-            toolItems.length === 0
-              ? 'No checkpoints yet.'
-              : toolItems.map((t, i) => `${toolItems.length - i}. ${t.description}`).reverse().join('\n'),
-        });
+        pushSystem(
+          toolItems.length === 0
+            ? 'No checkpoints yet.'
+            : toolItems.map((t, i) => `${toolItems.length - i}. ${t.description}`).reverse().join('\n'),
+        );
         return true;
       }
       default:
@@ -151,25 +551,66 @@ export function App({
   async function handleSubmit(text: string): Promise<void> {
     if (text.startsWith('/')) {
       if (await handleCommand(text)) return;
+      // Prompt templates (/explain, /fix, /review, …) render into a task and
+      // run through the normal agent loop.
+      const prompt = parseSlashCommand(text);
+      if (prompt) {
+        if (!prompt.input) {
+          pushSystem(`Usage: /${prompt.prompt.command} <code, file path, or question>`);
+          return;
+        }
+        await runTask(text, renderTemplate(prompt.prompt.template, { input: prompt.input }));
+        return;
+      }
+      const [cmd] = text.trim().split(/\s+/);
+      if (/^\/[a-z-]+$/.test(cmd ?? '')) {
+        pushSystem(`Unknown command ${cmd}. Type /help for the list.`);
+        return;
+      }
     }
+    await runTask(text, text);
+  }
 
+  /** Run one agent turn: `display` is what the transcript shows; `task` is what the agent gets. */
+  async function runTask(display: string, task: string): Promise<void> {
     setError(undefined);
     setBusy(true);
-    pushItem({ kind: 'message', message: { role: 'user', content: text } });
+    // Snapshot prior turns BEFORE pushing the new task message.
+    const history = itemsRef.current
+      .filter((i): i is Extract<TranscriptItem, { kind: 'message' }> => i.kind === 'message')
+      .slice(-HISTORY_MAX_TURNS)
+      .map((i) => ({
+        role: i.message.role,
+        content:
+          i.message.content.length > HISTORY_MAX_CHARS
+            ? `${i.message.content.slice(0, HISTORY_MAX_CHARS)}…`
+            : i.message.content,
+      }));
+    pushItem({ kind: 'message', message: { role: 'user', content: display } });
     setLiveText('');
     let acc = '';
     const abort = new AbortController();
     abortRef.current = abort;
 
+    // Task preamble, same shape as the extension's controller: persona
+    // constraints + project instructions/memory, then the task itself.
+    const instructions = await loadProjectInstructions(cwd ?? process.cwd()).catch(() => '');
+    const mentionNote = /(^|\s)@[^\s@]+/.test(display)
+      ? 'Paths prefixed with @ in the task are file/folder references in this workspace — read them for context.'
+      : '';
+    const preamble = [persona.taskAddendum, instructions, mentionNote].filter(Boolean).join('\n\n---\n\n');
+    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+
     try {
-      await runAgent({
-        provider,
-        model: profile.agentModel || profile.model,
-        task: text,
+      const outcome = await runAgent({
+        provider: active.provider,
+        model,
+        task: fullTask,
+        history,
         workspaceName,
-        tools,
+        tools: filterToolsForPersona(tools, persona),
         nativeToolCalls,
-        contextWindow,
+        contextWindow: active.contextWindow,
         signal: abort.signal,
         execute: async (call) => {
           if (call.name === 'ask_user') {
@@ -182,6 +623,23 @@ export function App({
               id: call.id,
               name: call.name,
               content: answer.trim() ? `User answered: ${answer}` : 'The user did not answer. Proceed with your best judgment.',
+            };
+          }
+          // A shell command can mutate files as easily as write_file — block
+          // it for write-restricted personas (same guard as the extension).
+          if (
+            call.name === 'run_command' &&
+            persona.allowedPermissions &&
+            !persona.allowedPermissions.includes('write') &&
+            looksFilesystemMutating(String(call.args.command ?? ''))
+          ) {
+            return {
+              id: call.id,
+              name: call.name,
+              content:
+                `Blocked: this command looks like it would create, modify, or delete files, which the ` +
+                `${persona.label} persona does not allow. Use a persona with file-editing tools instead.`,
+              isError: true,
             };
           }
           return executor.execute(call, abort.signal);
@@ -222,6 +680,7 @@ export function App({
           },
         },
       });
+      if (outcome === 'stopped') pushSystem('Interrupted — send a new message to continue.');
       await persist();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -233,11 +692,42 @@ export function App({
     }
   }
 
+  /** A freshly added profile becomes the active one for both the config and this session. */
+  function completeSetup(added: ProviderProfileConfig): void {
+    setSetupActive(false);
+    void (async () => {
+      try {
+        const next = await switchProvider!(added);
+        await configStore!.setActiveProfile(added.name);
+        setActive({ provider: next.provider, profile: added, contextWindow: next.contextWindow });
+        setModel(added.agentModel || added.model);
+        pushSystem(`Profile "${added.name}" added and active (${added.preset}, ${added.model}).`);
+      } catch (err) {
+        pushSystem(`Profile "${added.name}" was saved, but activating it failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
+  }
+
+  const inputBlocked = busy || Boolean(pendingPermission) || Boolean(pendingQuestion) || Boolean(picker) || setupActive;
+
   return (
     <Box flexDirection="column">
-      <Static items={items}>
+      <Static key={staticKey} items={items}>
         {(item, i) => {
           switch (item.kind) {
+            case 'header':
+              return (
+                <Header
+                  key={`h${i}`}
+                  version={item.version}
+                  profileName={item.profileName}
+                  model={item.model}
+                  baseUrl={item.baseUrl}
+                  cwd={item.cwd}
+                  messageCount={item.messageCount}
+                  canResume={item.canResume}
+                />
+              );
             case 'message':
               return <MessageView key={i} message={item.message} />;
             case 'tool':
@@ -267,7 +757,7 @@ export function App({
             <MessageView message={{ role: 'assistant', content: liveText }} />
           ) : !liveTool ? (
             <Text dimColor>
-              <Spinner type="dots" /> working…
+              <Spinner type="dots" /> working… <Text dimColor>(esc to interrupt)</Text>
             </Text>
           ) : null}
         </Box>
@@ -295,10 +785,46 @@ export function App({
           }}
         />
       )}
-      <Composer onSubmit={handleSubmit} disabled={busy || Boolean(pendingPermission) || Boolean(pendingQuestion)} />
-      <Text dimColor>
-        {profile.name} · {profile.model} · Ctrl+C to {busy ? 'stop' : 'exit'}
-      </Text>
+      {picker && (
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
+          <Text color="cyan" bold>
+            {picker.title}
+          </Text>
+          <Box marginTop={1}>
+            <SelectInput items={picker.items} onSelect={(item) => picker.onPick(item.value)} />
+          </Box>
+          <Text dimColor>esc to cancel</Text>
+        </Box>
+      )}
+      {setupActive && (
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
+          <Text color="cyan" bold>
+            Add a provider profile
+          </Text>
+          <Setup banner={false} configStore={configStore} secretsStore={secretsStore} onComplete={completeSetup} />
+          <Text dimColor>esc to cancel</Text>
+        </Box>
+      )}
+      <Composer
+        onSubmit={handleSubmit}
+        disabled={inputBlocked}
+        commands={COMMANDS}
+        mentionCandidates={mentionCandidates}
+        onMentionTrigger={handleMentionTrigger}
+        onActivity={setComposerHasText}
+        clearToken={clearToken}
+      />
+      <Box justifyContent="space-between">
+        <Text dimColor>
+          {active.profile.name} · {model} · {workspaceName}
+          {persona.id !== 'agent' ? ` · ${persona.label}` : ''}
+        </Text>
+        {exitArmed ? (
+          <Text color="yellow">press Ctrl+C again to exit</Text>
+        ) : (
+          <Text dimColor>{busy ? 'esc to interrupt' : '/ for commands · Ctrl+C twice to exit'}</Text>
+        )}
+      </Box>
     </Box>
   );
 }

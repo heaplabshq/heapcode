@@ -15,14 +15,22 @@ import { Setup } from './ink/Setup.js';
  */
 export function profileAdd(): Promise<ProviderProfileConfig> {
   return new Promise((resolve) => {
-    const { unmount } = render(
+    let completed = false;
+    const instance = render(
       <Setup
         onComplete={(profile) => {
-          unmount();
+          completed = true;
+          instance.unmount();
           resolve(profile);
         }}
       />,
     );
+    // Ctrl+C during onboarding exits the Ink app (default exitOnCtrlC) but
+    // would leave this promise pending forever — the process would hang with
+    // no UI. Treat an incomplete exit as the user bailing out.
+    void instance.waitUntilExit().then(() => {
+      if (!completed) process.exit(130);
+    });
   });
 }
 

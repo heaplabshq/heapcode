@@ -49,6 +49,14 @@ export interface AgentOptions {
   provider: Provider;
   model: string;
   task: string;
+  /**
+   * Prior conversation turns (user/assistant text only) inserted between the
+   * system prompt and the current task, so follow-up messages ("ok do that",
+   * "the second option") actually carry their context. Hosts should cap this
+   * (recent turns, trimmed content) — a long history is subject to compaction
+   * like any other transcript content.
+   */
+  history?: ChatMessage[];
   /** Images attached to the task (data: URLs) — needs a vision-capable model. */
   images?: string[];
   workspaceName: string;
@@ -121,6 +129,20 @@ const TRUNCATED_NUDGE =
   'Your reply was cut off by the output token limit. Continue the work with SMALLER steps: ' +
   'write large files in sections (write_file for the first part, then edit_file to extend), ' +
   'and keep each tool call comfortably small.';
+
+/**
+ * A tool-free reply that ends by asking the user something is a turn
+ * boundary — hand control back instead of nudging the model onward. A nudged
+ * model answers its own question and picks an option on the user's behalf
+ * (observed live: "Would you like to: 1… 2… 3…" followed by "I'll start by…"
+ * in the same session with no user input in between).
+ */
+function asksTheUser(text: string): boolean {
+  const trimmed = text.trim();
+  if (/[?？]\s*$/.test(trimmed)) return true;
+  const tail = trimmed.slice(-400).toLowerCase();
+  return /\b(would you like|do you want|shall i|should i|which (one|option|file|approach)|let me know (which|what|how|if)|please (choose|pick|confirm|clarify))\b/.test(tail);
+}
 
 /** Narration that announces more work while stopping — the premature-finish signature. */
 function looksUnfinished(text: string): boolean {
@@ -209,6 +231,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
+    ...(opts.history ?? []).map((m): ChatMessage => ({ role: m.role, content: m.content })),
     { role: 'user', content: opts.task, images: opts.images },
   ];
 
@@ -473,9 +496,12 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: TRUNCATED_NUDGE });
           continue;
         }
+        // A question addressed to the user beats every nudge below: the reply
+        // is a turn boundary, and nudging would make the model answer itself.
+        const awaitingUser = asksTheUser(response.content);
         // Tool-free reply that announces more work → nudge it to keep going
         // instead of ending the session prematurely.
-        if (looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+        if (!awaitingUser && looksUnfinished(response.content) && nudges < MAX_NUDGES) {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
@@ -484,7 +510,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         }
         // Tool-free and not clearly finished: protocol violation — remind once
         // that ending goes through finish(summary).
-        if (!looksFinished(response.content) && !finishReminderSent) {
+        if (!awaitingUser && !looksFinished(response.content) && !finishReminderSent) {
           finishReminderSent = true;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
@@ -508,7 +534,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: REPAIR_PROMPT });
           continue;
         }
-        if (looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+        if (!asksTheUser(response.content) && looksUnfinished(response.content) && nudges < MAX_NUDGES) {
           nudges++;
           if (response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });

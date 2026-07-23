@@ -1,13 +1,30 @@
 import esbuild from 'esbuild';
-import { chmodSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { chmodSync, copyFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 const watch = process.argv.includes('--watch');
+const require = createRequire(import.meta.url);
 
-// NOTE: once CLI-M1 (get_symbols via core's tree-sitter symbol extraction)
-// or CLI-M3 (RAG) land, this needs the same web-tree-sitter/tree-sitter-wasms
-// asset-copy step packages/vscode/esbuild.mjs does — add `web-tree-sitter`
-// and `tree-sitter-wasms` as direct deps of this package first (require.resolve
-// only sees a package's own dependency tree under pnpm's strict node_modules).
+/**
+ * Same reasoning as packages/vscode/esbuild.mjs: get_symbols (CLI-M1) needs
+ * web-tree-sitter's runtime + grammar wasm files as plain assets alongside
+ * the bundle — esbuild doesn't see them since they're only ever read by
+ * filesystem path at runtime (configureAstChunker in cli.tsx), never
+ * imported. Copied once per build/watch start.
+ */
+function copyWasmAssets() {
+  const outDir = 'dist/wasm';
+  mkdirSync(outDir, { recursive: true });
+  copyFileSync(require.resolve('web-tree-sitter/tree-sitter.wasm'), join(outDir, 'tree-sitter.wasm'));
+  for (const grammar of ['typescript', 'tsx', 'javascript', 'python']) {
+    copyFileSync(
+      require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammar}.wasm`),
+      join(outDir, `tree-sitter-${grammar}.wasm`),
+    );
+  }
+}
+copyWasmAssets();
 
 const ctx = await esbuild.context({
   entryPoints: ['src/cli.tsx'],

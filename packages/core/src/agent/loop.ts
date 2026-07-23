@@ -144,12 +144,6 @@ function asksTheUser(text: string): boolean {
   return /\b(would you like|do you want|shall i|should i|which (one|option|file|approach)|let me know (which|what|how|if)|please (choose|pick|confirm|clarify))\b/.test(tail);
 }
 
-/** Narration that announces more work while stopping — the premature-finish signature. */
-function looksUnfinished(text: string): boolean {
-  return /\b(not (yet )?(complete|done|finished)|next step|will (now|then|proceed)|proceed(ing)? to|i need to|i am now|remaining steps?|continuing (with|to)|now (executing|creating|writing|implementing|building|adding|moving|starting)|executing steps?|let me (now )?(create|write|implement|add|start)|going to (create|write|implement|add|start)|starting (with|on|step))\b/i.test(
-    text,
-  );
-}
 
 const MAX_REPAIRS = 3;
 
@@ -523,9 +517,16 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         // A question addressed to the user beats every nudge below: the reply
         // is a turn boundary, and nudging would make the model answer itself.
         const awaitingUser = asksTheUser(response.content);
-        // Tool-free reply that announces more work → nudge it to keep going
-        // instead of ending the session prematurely.
-        if (!awaitingUser && looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+        // Default to NOT finished: a tool-free reply only ends the task
+        // outright when it clearly reads as complete (looksFinished).
+        // Nudging is the safe default here, not the exception — a narrower
+        // "does this specific phrasing announce more work" check used to
+        // gate this (looksUnfinished), but that whack-a-mole regex missed
+        // real phrasings ("I will first add…", "I am adding…") a live local
+        // model used, silently ending a task after one reply that never
+        // called a tool. Worst case of over-nudging is a few extra turns
+        // before MAX_NUDGES is exhausted, not a wrong answer.
+        if (!awaitingUser && !looksFinished(response.content) && nudges < MAX_NUDGES) {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
@@ -558,7 +559,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: REPAIR_PROMPT });
           continue;
         }
-        if (!asksTheUser(response.content) && looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+        // Same "default to not-finished" reasoning as the native branch above.
+        if (!asksTheUser(response.content) && !looksFinished(response.content) && nudges < MAX_NUDGES) {
           nudges++;
           if (response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });

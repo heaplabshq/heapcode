@@ -118,6 +118,39 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     const saved = JSON.parse(await readFile(conversationsFile(project), 'utf8'));
     expect(saved).toHaveLength(2);
   });
+
+  it('--resume <id> continues a specific (not necessarily the most recent) conversation, by unambiguous prefix', async () => {
+    await configureProfile(sse('ok'));
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'about the older one', json: true, cwd: project, newConversation: true });
+    await runHeadless({ prompt: 'about the newer one', json: true, cwd: project, newConversation: true }); // becomes "most recent"
+
+    const saved: Array<{ id: string; updatedAt: number; messages: Array<{ content: string }> }> = JSON.parse(
+      await readFile(conversationsFile(project), 'utf8'),
+    );
+    const older = saved.find((c) => c.messages.some((m) => m.content === 'about the older one'))!;
+
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    await runHeadless({ prompt: 'follow-up', json: true, cwd: project, resumeId: older.id.slice(0, 8) });
+
+    const events = parseNdjson(write);
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ sessionId: older.id });
+    const resaved = JSON.parse(await readFile(conversationsFile(project), 'utf8'));
+    const resumed = resaved.find((c: { id: string }) => c.id === older.id);
+    expect(resumed.messages.map((m: { content: string }) => m.content)).toContain('about the older one');
+  });
+
+  it('--resume with an unknown/ambiguous id exits non-zero with a clear error', async () => {
+    await configureProfile(sse('ok'));
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, resumeId: 'no-such-session' });
+
+    expect(code).toBe(1);
+    expect(JSON.parse(write.mock.calls[0]![0] as string).error).toContain('No saved conversation matching');
+  });
 });
 
 describe('runHeadless — full agent loop (tools)', () => {

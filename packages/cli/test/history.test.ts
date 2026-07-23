@@ -42,4 +42,32 @@ describe('JsonConversationStore', () => {
     await store.delete('a');
     expect(await store.get('a')).toBeUndefined();
   });
+
+  describe('findByIdOrPrefix', () => {
+    it('resolves an exact id', async () => {
+      const store = new JsonConversationStore(join(dir, 'conversations.json'));
+      await store.save(conversation('abc12345-full-id', 1));
+      expect((await store.findByIdOrPrefix('abc12345-full-id'))?.id).toBe('abc12345-full-id');
+    });
+
+    it('resolves an unambiguous short prefix — same convenience as a git short hash', async () => {
+      const store = new JsonConversationStore(join(dir, 'conversations.json'));
+      await store.save(conversation('abc12345-full-id', 1));
+      await store.save(conversation('def67890-other-id', 2));
+      expect((await store.findByIdOrPrefix('abc123'))?.id).toBe('abc12345-full-id');
+    });
+
+    it('returns undefined for an ambiguous prefix rather than guessing', async () => {
+      const store = new JsonConversationStore(join(dir, 'conversations.json'));
+      await store.save(conversation('abc111', 1));
+      await store.save(conversation('abc222', 2));
+      expect(await store.findByIdOrPrefix('abc')).toBeUndefined();
+    });
+
+    it('returns undefined for no match', async () => {
+      const store = new JsonConversationStore(join(dir, 'conversations.json'));
+      await store.save(conversation('abc12345', 1));
+      expect(await store.findByIdOrPrefix('zzz')).toBeUndefined();
+    });
+  });
 });

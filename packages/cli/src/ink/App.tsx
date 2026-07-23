@@ -121,6 +121,8 @@ export interface AppProps {
   mcpManager?: McpManager;
   /** Local audit log (see audit.ts) — best-effort, never blocks on failure. */
   onTrack?(name: string, meta?: Record<string, unknown>): void;
+  /** Fired once on mount and again whenever the active conversation changes (/new, /resume) — lets the host print the session id on exit. */
+  onSessionChange?(id: string): void;
 }
 
 export function App({
@@ -148,6 +150,7 @@ export function App({
   repoMapIndexer,
   mcpManager,
   onTrack,
+  onSessionChange,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
 
@@ -183,6 +186,10 @@ export function App({
   const pushSystem = (text: string) => pushItem({ kind: 'system', text });
 
   const conversationRef = useRef(conversation);
+  // Reports only the initial id, once — /new and /resume report their own changes at the point they happen.
+  useEffect(() => {
+    onSessionChange?.(conversationRef.current.id);
+  }, []);
 
   const [liveText, setLiveText] = useState('');
   const [liveTool, setLiveTool] = useState<Extract<TranscriptItem, { kind: 'tool' }>>();
@@ -394,6 +401,7 @@ export function App({
 
   function startNewConversation(): void {
     conversationRef.current = { id: randomUUID(), title: 'New conversation', updatedAt: Date.now(), messages: [] };
+    onSessionChange?.(conversationRef.current.id);
     resetTranscript([headerItem(0)]);
   }
 
@@ -406,7 +414,7 @@ export function App({
     setPicker({
       title: 'Resume a conversation',
       items: metas.map((m) => ({
-        label: `${m.title} · ${new Date(m.updatedAt).toLocaleString()}${m.id === conversationRef.current.id ? ' — current' : ''}`,
+        label: `${m.title} · ${new Date(m.updatedAt).toLocaleString()} · ${m.id.slice(0, 8)}${m.id === conversationRef.current.id ? ' — current' : ''}`,
         value: m.id,
       })),
       onPick: (id) => {
@@ -418,6 +426,7 @@ export function App({
             return;
           }
           conversationRef.current = conv;
+          onSessionChange?.(conv.id);
           const loaded = conv.messages.filter((m) => m.role === 'user' || m.role === 'assistant');
           resetTranscript([headerItem(loaded.length), ...loaded.map((m) => ({ kind: 'message' as const, message: m }))]);
         })();
@@ -594,6 +603,7 @@ export function App({
     const ragStatus = await ragIndexer?.status();
     pushSystem(
       [
+        `Session     ${conversationRef.current.id.slice(0, 8)}  (heapcode --resume ${conversationRef.current.id.slice(0, 8)} to continue this later)`,
         `Profile     ${p.name} (${p.preset})`,
         `Endpoint    ${p.baseUrl}`,
         `Model       ${model}${p.agentModel && p.agentModel !== p.model ? ` (agent: ${p.agentModel})` : ''}`,

@@ -210,13 +210,13 @@ describe('runAgent — native tool calls', () => {
   it('requests a wrap-up summary when the final reply is empty', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: {} }] },
-      { content: '' }, // finishes silently…
-      { content: 'Summary: read the file, nothing to change.' },
+      { content: '' }, // ambiguous (empty, no tool call) — nudged once
+      { content: 'Task complete: read the file, nothing to change.' },
     ]);
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
     expect(outcome).toBe('done');
-    expect(h.texts).toEqual(['Summary: read the file, nothing to change.']);
+    expect(h.texts).toEqual(['Task complete: read the file, nothing to change.']);
     expect(provider.requests.length).toBe(3);
   });
 
@@ -334,17 +334,38 @@ describe('runAgent — native tool calls', () => {
     expect(provider.requests[0]!.tools!.some((t) => t.name === 'finish')).toBe(true);
   });
 
-  it('reminds once about finish() on an ambiguous tool-free reply, then accepts', async () => {
-    const provider = scriptedProvider([
-      { content: 'Interesting workspace layout.' }, // ambiguous: not unfinished, not finished
-      { content: 'Interesting workspace layout.' },
-    ]);
+  it('keeps nudging a reply that never clearly finishes (up to MAX_NUDGES), rather than giving up after one ambiguous turn', async () => {
+    // Field bug (2026-07-24, live local model): phrasings like "I will first
+    // add…"/"I am adding…" matched neither the old looksUnfinished regex nor
+    // looksFinished, so the loop accepted a narration-only reply as done
+    // after a single ambiguous turn — the task silently never ran. Default
+    // is now "nudge unless it clearly looks finished", not the reverse.
+    const provider = scriptedProvider([{ content: 'Interesting workspace layout.' }]); // never finishes, never calls a tool
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done'); // MAX_NUDGES exhausts and it accepts anyway — bounded, not an infinite loop
+    expect(provider.requests.length).toBeGreaterThan(2); // nudged more than once, not accepted on the first ambiguous reply
+    const nudgeMessages = provider.requests.slice(1).map((r) => r.messages.at(-1)!.content);
+    expect(nudgeMessages.every((c) => c.includes('continue working') || c.includes('finish tool'))).toBe(true);
+  });
+
+  it('nudges (does not silently accept) a narration-only reply whose phrasing the old looksUnfinished regex never covered', async () => {
+    // The exact live failure: a local model announced intent ("I will
+    // first add the multiply function...") without ever emitting a tool
+    // block, three times in a row across a real session — none of those
+    // phrasings ("will first", "I am adding", "I'll place it") matched the
+    // old regex, so the task silently never ran.
+    const provider = scriptedProvider([
+      { content: "I will first add the multiply function to src/math.js. I'll place it logically with the others." },
+      { content: '<tool name="write_file">\n{"path": "src/math.js", "content": "..."}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Added multiply."}\n</tool>' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
+
     expect(outcome).toBe('done');
-    expect(provider.requests.length).toBe(2); // one reminder round-trip
-    const reminder = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
-    expect(reminder.content).toContain('finish tool');
+    expect(h.calls.map((c) => c.name)).toEqual(['write_file']); // the tool actually ran, not just narrated
+    expect(provider.requests.length).toBe(3); // narration nudged once, then the tool call, then finish
   });
 
   it('ends the fallback session on a finish block', async () => {
@@ -753,14 +774,14 @@ describe('runAgent — structured-text fallback', () => {
   it('parses a tool block, executes, and finishes on a block-free reply', async () => {
     const provider = scriptedProvider([
       { content: 'Let me read it.\n<tool name="read_file">\n{"path": "a.ts"}\n</tool>' },
-      { content: 'Finished the task.' },
+      { content: 'Task complete: read the file successfully.' },
     ]);
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
 
     expect(outcome).toBe('done');
     expect(h.calls.map((c) => c.name)).toEqual(['read_file']);
-    expect(h.texts).toEqual(['Let me read it.', 'Finished the task.']);
+    expect(h.texts).toEqual(['Let me read it.', 'Task complete: read the file successfully.']);
     const second = provider.requests[1]!;
     const resultMsg = second.messages[second.messages.length - 1]!;
     expect(resultMsg.role).toBe('user');

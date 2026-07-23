@@ -66,7 +66,14 @@ async function main(): Promise<void> {
   // continuing is an explicit choice: --continue here, /resume in-session.
   // --new is accepted silently for back-compat with the old default.
   const continueLatest = argv.includes('--continue') || argv.includes('-c');
-  const newConversation = !continueLatest;
+  const resumeFlagIndex = argv.findIndex((a) => a === '--resume');
+  const resumeId = resumeFlagIndex >= 0 ? argv[resumeFlagIndex + 1] : undefined;
+  if (resumeFlagIndex >= 0 && !resumeId) {
+    console.error('Usage: heapcode --resume <session-id-or-prefix>  (the id is printed when a session exits, or run /resume in-session to pick from a list)');
+    process.exitCode = 1;
+    return;
+  }
+  const newConversation = !continueLatest && !resumeId;
   // Local-only audit log (see audit.ts) — opt out with --no-telemetry or
   // { "telemetryEnabled": false } in ~/.heapcode/config.json. There is no
   // remote sending to opt out of; this flag controls local recording only.
@@ -75,7 +82,7 @@ async function main(): Promise<void> {
   if (promptIndex >= 0) {
     const prompt = argv[promptIndex + 1];
     if (!prompt) {
-      console.error('Usage: heapcode -p "<task>" [--json] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--reindex] [--continue]');
+      console.error('Usage: heapcode -p "<task>" [--json] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--reindex] [--continue | --resume <id>]');
       process.exitCode = 1;
       return;
     }
@@ -94,6 +101,7 @@ async function main(): Promise<void> {
       json: argv.includes('--json'),
       profileName,
       newConversation,
+      resumeId,
       personaId,
       permissionMode: modeArg as (typeof PERMISSION_MODES)[number] | undefined,
       subAgents: argv.includes('--sub-agents'),
@@ -128,7 +136,17 @@ async function main(): Promise<void> {
   const root = canonicalize(process.cwd());
   const historyStore = new JsonConversationStore(conversationsFile(root));
   const priorConversations = (await historyStore.list()).length;
-  let conversation: Conversation | undefined = newConversation ? undefined : await historyStore.mostRecent();
+  let conversation: Conversation | undefined;
+  if (resumeId) {
+    conversation = await historyStore.findByIdOrPrefix(resumeId);
+    if (!conversation) {
+      console.error(`No saved conversation matching "${resumeId}" in this project (or the prefix is ambiguous). Run "heapcode" and use /resume to see what's available.`);
+      process.exitCode = 1;
+      return;
+    }
+  } else if (!newConversation) {
+    conversation = await historyStore.mostRecent();
+  }
   conversation ??= { id: randomUUID(), title: 'New conversation', updatedAt: Date.now(), messages: [] };
 
   const safeMode = argv.includes('--safe-mode');
@@ -152,6 +170,12 @@ async function main(): Promise<void> {
     config,
     secrets,
   );
+
+  // Tracks the active conversation id across /new and /resume so it can be
+  // printed on exit — App owns the actual conversation object (including
+  // swapping it out entirely on /new/resume), so this is the one thing it
+  // reports back up rather than cli.tsx reading its internal state.
+  let sessionId = conversation.id;
 
   // exitOnCtrlC: false — Ink's built-in handler would unmount the UI on the
   // first Ctrl+C even mid-agent-run, leaving the terminal in a broken state.
@@ -185,6 +209,9 @@ async function main(): Promise<void> {
       repoMapIndexer={repoMapIndexer}
       mcpManager={mcpManager}
       onTrack={(name, meta) => void audit.track(name, meta)}
+      onSessionChange={(id) => {
+        sessionId = id;
+      }}
       listWorkspaceFiles={async () => {
         const entries = await fg(['**/*'], {
           cwd: root,
@@ -204,6 +231,10 @@ async function main(): Promise<void> {
   );
   await instance.waitUntilExit();
   mcpManager.dispose();
+  // Printed after Ink has fully unmounted (not while it's still managing
+  // the screen) so it survives in real scrollback instead of being erased
+  // by the next redraw.
+  console.log(`Session: ${sessionId}\nResume with: heapcode --resume ${sessionId.slice(0, 8)}  (or --continue for the most recent, /resume to pick from a list)`);
   // In-flight provider sockets or timers can keep the event loop alive after
   // the UI is gone — end the process explicitly once Ink has cleaned up.
   process.exit(process.exitCode ?? 0);
@@ -215,6 +246,7 @@ function printHelp(): void {
 Usage:
   heapcode                          Start an interactive agent session (fresh conversation) in the current directory
   heapcode --continue | -c          Continue this directory's most recent conversation (in-session: /resume picks any)
+  heapcode --resume <id>            Continue a specific past conversation by id or unambiguous prefix — printed when a session exits, or shown in /settings and /resume's picker
   heapcode --profile NAME           Use a specific provider profile for this session
   heapcode --safe-mode              Ask for permission on every action, even ones with a persisted "Always allow" grant
   heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG, MCP) with no TTY required — see below
@@ -229,6 +261,7 @@ Headless (-p) flags:
   --sub-agents                      Offer delegate_task (off by default, same as interactive's /subagents)
   --reindex                         Rebuild the semantic search + repo map indexes before running the task (headless never auto-indexes)
   --continue | -c                   Continue this directory's most recent conversation instead of starting fresh
+  --resume <id>                     Continue a specific conversation by id or unambiguous prefix instead of the most recent
   --no-telemetry                    Skip the local audit-log entry for this run (see "heapcode audit" — no remote sending exists to opt out of)
 
 Permission modes (headless has no one to prompt, so every mode resolves permissions on its own):

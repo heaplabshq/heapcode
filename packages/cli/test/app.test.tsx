@@ -136,6 +136,7 @@ function renderApp(overrides: {
   repoMapIndexer?: RepoMapIndexer;
   mcpManager?: McpManager;
   shadowGit?: ShadowGit;
+  onSessionChange?(id: string): void;
 }) {
   const checkpoint = new SessionCheckpoint(root);
   const executor = new WorkspaceToolExecutor(root, checkpoint, 5_000);
@@ -150,6 +151,7 @@ function renderApp(overrides: {
       checkpoint={checkpoint}
       permissions={permissions}
       shadowGit={overrides.shadowGit}
+      onSessionChange={overrides.onSessionChange}
       tools={overrides.tools ?? []}
       nativeToolCalls={false}
       workspaceName="test"
@@ -723,7 +725,11 @@ describe('App', () => {
   it('/subagents toggles delegate_task availability; off by default, and it never reaches the system prompt until enabled', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
-    const provider = recordingProvider('Done.');
+    // Must clearly match looksFinished so each turn ends in exactly one
+    // request — a reply that doesn't (e.g. a bare "Done.") now gets nudged
+    // to continue instead of accepted, which would shift the request index
+    // this test relies on to identify "the second turn's first request".
+    const provider = recordingProvider('Task complete.');
 
     const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore });
 
@@ -977,6 +983,35 @@ describe('App', () => {
     expect(frame).toContain('return a + b');
     const sigLine = frame.split('\n').find((l) => l.includes('function'));
     expect(sigLine).not.toContain('return a + b'); // on its own line, not squashed together
+  });
+
+  it('onSessionChange fires with the initial conversation id, and again with a new one on /new', async () => {
+    const conversation: Conversation = { id: 'session-abc', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const ids: string[] = [];
+
+    const { stdin } = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, onSessionChange: (id) => ids.push(id) });
+    await vi.waitFor(() => expect(ids).toEqual(['session-abc']));
+
+    stdin.write('/new');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(ids.length).toBe(2));
+
+    expect(ids[1]).not.toBe('session-abc'); // a fresh id, not a repeat
+  });
+
+  it('/settings shows the session id and how to resume it later', async () => {
+    const conversation: Conversation = { id: 'session-abc12345', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+
+    const { stdin, lastFrame } = renderApp({ provider: fakeProvider('unused'), conversation, historyStore });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/settings');
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Session'));
+    expect(lastFrame()).toContain('session-');
+    expect(lastFrame()).toContain('--resume');
   });
 
   it('/revert with nothing to revert reports that instead of erroring', async () => {

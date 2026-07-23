@@ -56,6 +56,8 @@ export interface HeadlessOptions {
   json: boolean;
   profileName?: string;
   newConversation?: boolean;
+  /** Continue a specific conversation by id (exact or unambiguous prefix) instead of the most recent — see the "Session:" line printed on interactive exit. */
+  resumeId?: string;
   cwd?: string;
   personaId?: string;
   permissionMode?: PermissionMode;
@@ -90,7 +92,7 @@ export type HeadlessEvent =
   | { type: 'plan'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown>; parent?: string }
   | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean; parent?: string }
-  | { type: 'result'; outcome: AgentOutcome; response: string; model: string; profile: string };
+  | { type: 'result'; outcome: AgentOutcome; response: string; model: string; profile: string; sessionId: string };
 
 /** outcome → process exit code: a clean finish is 0; anything that didn't actually complete the task is non-zero. */
 function exitCodeFor(outcome: AgentOutcome): number {
@@ -130,7 +132,16 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     const capabilities = resolveCapabilities(profile);
 
     const historyStore = new JsonConversationStore(conversationsFile(root));
-    let conversation: Conversation | undefined = opts.newConversation ? undefined : await historyStore.mostRecent();
+    let conversation: Conversation | undefined;
+    if (opts.resumeId) {
+      conversation = await historyStore.findByIdOrPrefix(opts.resumeId);
+      if (!conversation) {
+        printError(opts.json, `No saved conversation matching "${opts.resumeId}" in this project (or the prefix is ambiguous).`);
+        return 1;
+      }
+    } else if (!opts.newConversation) {
+      conversation = await historyStore.mostRecent();
+    }
     conversation ??= { id: randomUUID(), title: opts.prompt.slice(0, 60), updatedAt: Date.now(), messages: [] };
     const history = trimHistoryForAgent(conversation.messages);
 
@@ -277,11 +288,13 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     conversation.updatedAt = Date.now();
     await historyStore.save(conversation);
 
-    emit({ type: 'result', outcome, response: lastText, model: profile.model, profile: profile.name });
+    emit({ type: 'result', outcome, response: lastText, model: profile.model, profile: profile.name, sessionId: conversation.id });
     if (!opts.json) {
       // Plain-text mode prints the final response exactly once — tool
       // activity and streamed deltas are headless-JSON-only concerns.
       process.stdout.write(`${lastText}\n`);
+      // Same discoverability as the interactive exit line — stderr so it never pollutes a piped stdout.
+      process.stderr.write(`Session: ${conversation.id.slice(0, 8)}  (--resume ${conversation.id.slice(0, 8)} to continue this later)\n`);
     }
     return exitCodeFor(outcome);
   } catch (err) {

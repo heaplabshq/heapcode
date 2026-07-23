@@ -41,6 +41,21 @@ export class JsonConversationStore implements ConversationStore {
     return (await this.load()).find((c) => c.id === id);
   }
 
+  /**
+   * Resolves an exact id or an unambiguous short prefix (same convenience as
+   * a git short hash) — what `heapcode --resume <id>` and its headless
+   * equivalent take, matching the short id printed on exit. Returns
+   * undefined for no match OR an ambiguous prefix (multiple conversations
+   * share it) — callers should treat both the same: ask for more characters.
+   */
+  async findByIdOrPrefix(idOrPrefix: string): Promise<Conversation | undefined> {
+    const all = await this.load();
+    const exact = all.find((c) => c.id === idOrPrefix);
+    if (exact) return exact;
+    const matches = all.filter((c) => c.id.startsWith(idOrPrefix));
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
   async mostRecent(): Promise<Conversation | undefined> {
     const all = await this.load();
     return all.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];

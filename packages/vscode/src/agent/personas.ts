@@ -67,3 +67,19 @@ export function filterToolsForPersona(
   const allowed = new Set(persona.allowedPermissions);
   return tools.filter((t) => allowed.has(t.permission));
 }
+
+/**
+ * The stricter of two personas — a restricted persona can never grant a
+ * delegated sub-agent (PLAN.md M12) more access than it has itself. Without
+ * this, a Debug-persona agent (read+execute, no writes) could delegate_task
+ * without naming a persona and the sub-agent would default to unrestricted
+ * "agent", silently escaping the very restriction the user picked Debug for.
+ */
+export function intersectPersonas(parent: AgentPersona, requested: AgentPersona): AgentPersona {
+  if (!parent.allowedPermissions) return requested;
+  if (!requested.allowedPermissions) return parent;
+  return {
+    ...requested,
+    allowedPermissions: requested.allowedPermissions.filter((p) => parent.allowedPermissions!.includes(p)),
+  };
+}

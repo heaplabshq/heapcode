@@ -1,17 +1,22 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
+  createProvider,
   lineDiffStats,
   runAgent,
   resolveCapabilities,
   type ExtensionToWebview,
   type FileEditInfo,
+  type Provider,
+  type ProviderProfileConfig,
   type ToolCall,
+  type ToolDefinition,
+  type ToolResult,
 } from '@heapcode/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
-import { filterToolsForPersona, getPersona } from './personas.js';
+import { filterToolsForPersona, getPersona, intersectPersonas, type AgentPersona } from './personas.js';
 import { callLmTool, getLmToolDefinitions, getLmToolGroups, isLmTool } from './lmTools.js';
 import { getActiveEditor } from '../contextCollector.js';
 import { mergeWithApplyModel } from '../inlineEdit.js';
@@ -44,7 +49,7 @@ export class AgentController {
     },
     { label: 'Built-in · Execute', names: ['run_command', 'run_tests', 'check_package_exists'] },
     { label: 'Built-in · Skills', names: ['list_skills', 'load_skill'] },
-    { label: 'Built-in · Other', names: ['ask_user', 'fetch_url'] },
+    { label: 'Built-in · Other', names: ['ask_user', 'fetch_url', 'delegate_task'] },
   ];
 
   /** All tools the agent could use, grouped by source (for the composer's tools picker). */
@@ -195,9 +200,26 @@ export class AgentController {
         tools: filterToolsForPersona(
           [...agentToolDefinitions, ...mcpTools, ...lmTools],
           persona,
-        ).filter((t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name)),
+        )
+          .filter((t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name))
+          // Sub-agent orchestration (M12) is opt-in — a new, autonomy-increasing
+          // capability, same posture as planGate/requireTestsBeforeFinish.
+          .filter((t) => t.name !== 'delegate_task' || cfg.get<boolean>('subAgents', false)),
         nativeToolCalls: capabilities.nativeToolCalls,
         execute: async (call) => {
+          if (call.name === 'delegate_task') {
+            return this.runSubAgent(call, {
+              executor,
+              provider,
+              profile,
+              capabilities,
+              mcpTools,
+              lmTools,
+              cfg,
+              root,
+              persona,
+            });
+          }
           if (call.name === 'ask_user') {
             const options = Array.isArray(call.args.options)
               ? call.args.options.map(String)
@@ -330,6 +352,138 @@ export class AgentController {
     } finally {
       this.abort = undefined;
     }
+  }
+
+  /**
+   * Runs a delegated sub-agent to completion (PLAN.md M12) — an isolated,
+   * fresh-context `runAgent()` call sharing the parent's workspace executor
+   * (so checkpoints and revert-all cover its edits too, M8) and abort signal
+   * (so Stop interrupts it), but not the parent's conversation history.
+   * Sequential by design: the parent's own tool-call slot blocks on this,
+   * same as any other tool — no concurrent sub-agents, see PLAN.md's M12
+   * decision log (local-model inference doesn't parallelize usefully anyway).
+   * Sub-agents never get delegate_task themselves — one level of nesting only.
+   */
+  private async runSubAgent(
+    call: ToolCall,
+    ctx: {
+      executor: WorkspaceToolExecutor;
+      provider: Provider;
+      profile: ProviderProfileConfig;
+      capabilities: ReturnType<typeof resolveCapabilities>;
+      mcpTools: ToolDefinition[];
+      lmTools: ToolDefinition[];
+      cfg: vscode.WorkspaceConfiguration;
+      root: vscode.Uri;
+      /** The parent's own persona — a sub-agent can never be more permissive than it, see intersectPersonas. */
+      persona: AgentPersona;
+    },
+  ): Promise<ToolResult> {
+    const task = String(call.args.task ?? '').trim();
+    if (!task) {
+      return { id: call.id, name: call.name, content: 'Missing "task" argument.', isError: true };
+    }
+
+    let provider = ctx.provider;
+    let profile = ctx.profile;
+    let capabilities = ctx.capabilities;
+    const profileName = call.args.profile ? String(call.args.profile) : undefined;
+    if (profileName && profileName !== ctx.profile.name) {
+      const named = this.profiles.getProfiles().find((p) => p.name === profileName);
+      if (named) {
+        provider = createProvider(named, await this.profiles.getApiKey(named));
+        profile = named;
+        capabilities = resolveCapabilities(named);
+      }
+      // Unknown profile name — falls back to the parent's own, same lenient
+      // pattern profileManager.ts already uses for role-profile redirects.
+    }
+    const model = profile.agentModel || profile.model;
+    if (!model) {
+      return { id: call.id, name: call.name, content: `Profile "${profile.name}" has no model configured.`, isError: true };
+    }
+
+    const requestedPersona = getPersona(call.args.persona ? String(call.args.persona) : undefined);
+    const persona = intersectPersonas(ctx.persona, requestedPersona);
+    const subTools = filterToolsForPersona(
+      [...agentToolDefinitions.filter((t) => t.name !== 'delegate_task'), ...ctx.mcpTools, ...ctx.lmTools],
+      persona,
+    );
+    const contextWindow = await this.profiles.contextWindowFor(profile, model);
+
+    const subExecute = async (subCall: ToolCall): Promise<ToolResult> => {
+      if (subCall.name === 'ask_user') {
+        const options = Array.isArray(subCall.args.options) ? subCall.args.options.map(String) : undefined;
+        const answer = await this.askUser?.(String(subCall.args.question ?? ''), options);
+        return {
+          id: subCall.id,
+          name: subCall.name,
+          content: answer?.trim()
+            ? `User answered: ${answer}`
+            : 'The user did not answer. Proceed with your best judgment.',
+        };
+      }
+      if (this.mcp?.isMcpTool(subCall.name)) {
+        return { id: subCall.id, name: subCall.name, content: await this.mcp.call(subCall.name, subCall.args) };
+      }
+      if (isLmTool(subCall.name)) {
+        try {
+          return { id: subCall.id, name: subCall.name, content: await callLmTool(subCall.name, subCall.args) };
+        } catch (err) {
+          return {
+            id: subCall.id,
+            name: subCall.name,
+            content: err instanceof Error ? err.message : String(err),
+            isError: true,
+          };
+        }
+      }
+      return ctx.executor.execute(subCall, this.abort?.signal);
+    };
+
+    const toolLog: string[] = [];
+    let summaryText = '';
+    let deltaBuffer = '';
+
+    const outcome = await runAgent({
+      provider,
+      model,
+      task: [persona.taskAddendum, task].filter(Boolean).join('\n\n---\n\n'),
+      workspaceName: path.basename(ctx.root.fsPath),
+      tools: subTools,
+      nativeToolCalls: capabilities.nativeToolCalls,
+      execute: subExecute,
+      requestPermission: (subCall, tool) =>
+        this.permissions.request(subCall, tool, this.describe(subCall, ctx.executor)),
+      beforeToolCall: async (subCall) => {
+        await this.shadowGit?.snapshot(`${subCall.name}: ${this.describe(subCall, ctx.executor).slice(0, 80)}`);
+      },
+      events: {
+        onText: (text) => {
+          if (text.trim()) summaryText += (summaryText ? '\n\n' : '') + text;
+        },
+        onTextDelta: (text) => {
+          deltaBuffer += text;
+        },
+        onTextEnd: () => {
+          if (deltaBuffer.trim()) summaryText += (summaryText ? '\n\n' : '') + deltaBuffer;
+          deltaBuffer = '';
+        },
+        onToolCall: (subCall) => toolLog.push(this.describe(subCall, ctx.executor)),
+        onToolResult: () => {},
+      },
+      maxIterations: ctx.cfg.get<number>('maxIterations', 25),
+      maxTokens: profile.maxTokens ?? Math.min(16_384, Math.floor(contextWindow.window / 4)),
+      contextWindow: contextWindow.window,
+      signal: this.abort?.signal,
+    });
+
+    const content =
+      `outcome: ${outcome}\n` +
+      `${toolLog.length} tool call(s)${toolLog.length ? ':\n' + toolLog.map((d, i) => `  ${i + 1}. ${d}`).join('\n') : ''}\n\n` +
+      (summaryText.trim() || '(sub-agent produced no summary text)');
+
+    return { id: call.id, name: call.name, content, isError: outcome === 'error' || outcome === 'max-iterations' };
   }
 
   /** Approve a pending plan (outcome 'planned') and let the agent execute it. */
@@ -474,6 +628,10 @@ export function resultLabel(name: string, content: string, isError?: boolean): s
     }
     case 'check_package_exists':
       return content.includes('NOT found') ? 'not found' : 'exists';
+    case 'delegate_task': {
+      const match = /^outcome: (\S+)/.exec(content);
+      return match ? `sub-agent ${match[1]}` : 'done';
+    }
     default:
       return 'done';
   }

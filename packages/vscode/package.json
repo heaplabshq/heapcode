@@ -550,6 +550,11 @@
           "default": false,
           "markdownDescription": "Block the agent's `finish` (once, with a nudge) if it changed files since the last passing `run_tests` call. Off by default — turn on for projects with a fast, reliable test command."
         },
+        "heapcode.agent.subAgents": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Offer the agent a `delegate_task` tool to hand off a self-contained piece of work to an isolated sub-agent (its own fresh context, optionally a different persona/model profile), one at a time. Off by default — this is a new, autonomy-increasing capability, same posture as `#heapcode.agent.planGate#` and `#heapcode.agent.requireTestsBeforeFinish#`."
+        },
         "heapcode.telemetry.enabled": {
           "type": "boolean",
           "default": true,

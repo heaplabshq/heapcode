@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolDefinition } from '@heapcode/core';
-import { BUILTIN_PERSONAS, filterToolsForPersona, getPersona } from '../src/agent/personas.js';
+import { BUILTIN_PERSONAS, filterToolsForPersona, getPersona, intersectPersonas } from '../src/agent/personas.js';
 
 const TOOLS: ToolDefinition[] = [
   { name: 'read_file', description: '', parameters: {}, permission: 'read' },
@@ -47,5 +47,33 @@ describe('filterToolsForPersona', () => {
       expect(persona.label.length).toBeGreaterThan(0);
       expect(persona.description.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('intersectPersonas', () => {
+  it('a delegated sub-agent cannot exceed a restricted parent persona (the escalation this exists to prevent)', () => {
+    // Debug (read+execute) delegates without naming a persona — requested defaults to
+    // unrestricted "agent". The sub-agent must still be capped at read+execute, not
+    // silently gain write/destructive access the parent itself doesn't have.
+    const effective = intersectPersonas(getPersona('debug'), getPersona('agent'));
+    const filtered = filterToolsForPersona(TOOLS, effective);
+    expect(filtered.map((t) => t.name)).toEqual(['read_file', 'run_command']);
+  });
+
+  it('narrows further when the requested persona is stricter than the parent', () => {
+    const effective = intersectPersonas(getPersona('debug'), getPersona('reviewer'));
+    const filtered = filterToolsForPersona(TOOLS, effective);
+    expect(filtered.map((t) => t.name)).toEqual(['read_file']);
+  });
+
+  it('an unrestricted parent (default agent) imposes no extra narrowing', () => {
+    const effective = intersectPersonas(getPersona('agent'), getPersona('debug'));
+    const filtered = filterToolsForPersona(TOOLS, effective);
+    expect(filtered.map((t) => t.name)).toEqual(['read_file', 'run_command']);
+  });
+
+  it('both unrestricted stays unrestricted', () => {
+    const effective = intersectPersonas(getPersona('agent'), getPersona('agent'));
+    expect(filterToolsForPersona(TOOLS, effective).map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
   });
 });

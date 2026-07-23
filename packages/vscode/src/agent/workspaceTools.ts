@@ -400,6 +400,37 @@ export const agentToolDefinitions: ToolDefinition[] = [
     permission: 'read',
   },
   {
+    name: 'delegate_task',
+    description:
+      'Delegate a self-contained, well-scoped piece of this task to an isolated sub-agent with its own ' +
+      'fresh context — useful for decomposing a large task into independent chunks so each piece gets a ' +
+      'focused conversation instead of one long, sprawling one (e.g. "implement the backend endpoint" and ' +
+      '"write the frontend form" as two separate delegations). Runs to completion before you continue, one ' +
+      'at a time, not in parallel. The sub-agent reports back a summary; it cannot delegate further. Use ' +
+      'sparingly — only for genuinely separable work, not routine steps you could just do directly.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: 'The self-contained task for the sub-agent — include enough context to work independently.',
+        },
+        persona: {
+          type: 'string',
+          description:
+            'Optional persona to scope the sub-agent\'s tool access (e.g. "architect" for read-only investigation, "debug" for read+execute). Defaults to full access.',
+        },
+        profile: {
+          type: 'string',
+          description:
+            'Optional provider profile name to run the sub-agent on a different model (e.g. a cheaper/faster one for a simple sub-task). Defaults to the current profile.',
+        },
+      },
+      required: ['task'],
+    },
+    permission: 'execute',
+  },
+  {
     name: 'list_skills',
     description:
       'List available Skills (name + description) from .claude/skills/ (project) and ~/.claude/skills/ ' +
@@ -537,6 +568,8 @@ export class WorkspaceToolExecutor {
         return `Create directory ${a.path}`;
       case 'ask_user':
         return `Ask: ${String(a.question ?? '').slice(0, 80)}`;
+      case 'delegate_task':
+        return `Delegate: "${String(a.task ?? '').slice(0, 100)}"${a.persona ? ` (${a.persona})` : ''}`;
       case 'list_skills':
         return 'List available skills';
       case 'load_skill':

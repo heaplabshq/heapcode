@@ -104,6 +104,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   postToWebview(msg: ExtensionToWebview): void {
     this.recordAgentMessage(msg);
     this.post(msg);
+    // Notify on completion (PLAN.md M12) when nobody's watching — the agent
+    // loop runs in the extension host regardless of whether the sidebar view
+    // is visible, so a run that finishes while it's hidden/disposed would
+    // otherwise go completely unnoticed until the user happens to look.
+    if (msg.type === 'agentStatus' && msg.status !== 'running' && !this.view?.visible) {
+      this.notifyAgentFinished(msg.status);
+    }
+  }
+
+  private notifyAgentFinished(status: string): void {
+    const message =
+      status === 'done'
+        ? 'Heap Code: agent task finished.'
+        : status === 'error'
+          ? 'Heap Code: agent task failed.'
+          : status === 'stopped'
+            ? 'Heap Code: agent task stopped.'
+            : status === 'max-iterations'
+              ? 'Heap Code: agent hit its iteration limit.'
+              : status === 'planned'
+                ? 'Heap Code: agent has a plan ready for your approval.'
+                : 'Heap Code: agent task finished.';
+    void vscode.window.showInformationMessage(message, 'Show').then((choice) => {
+      if (choice === 'Show') void vscode.commands.executeCommand('heapcode.chatView.focus');
+    });
   }
 
   private agentStreamBuffer = '';
@@ -436,6 +461,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case 'ready': {
         this.viewReady = true;
         this.postConfig();
+        // Reconnecting to an in-progress (or just-finished) conversation — the
+        // agent loop itself runs in the extension host and isn't tied to the
+        // webview's lifecycle, so a task started before the view was hidden/
+        // disposed keeps running regardless; this just rehydrates a freshly-
+        // mounted webview with what it missed (PLAN.md M12).
+        if (this.conversation.messages.length > 0) {
+          this.post({
+            type: 'conversation',
+            id: this.conversation.id,
+            messages: this.toDisplayMessages(this.conversation.messages),
+          });
+          if (this.agent?.running) this.post({ type: 'agentStatus', status: 'running', changedFiles: [] });
+        }
         const pending = this.pendingSends;
         this.pendingSends = [];
         for (const text of pending) {
@@ -879,16 +917,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.post({
       type: 'conversation',
       id: this.conversation.id,
-      messages: this.conversation.messages.map(
-        (m): DisplayMessage => ({
-          role: m.role === 'assistant' ? 'assistant' : 'user',
-          content: m.display ?? m.content,
-          images: m.images,
-          plan: m.ui?.plan,
-          tool: m.ui?.tool,
-          status: m.ui?.status,
-        }),
-      ),
+      messages: this.toDisplayMessages(this.conversation.messages),
     });
 
     if (mode === 'agent') {
@@ -917,20 +946,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.store.save(this.conversation);
     }
     this.conversation = loaded;
-    this.post({
-      type: 'conversation',
-      id: loaded.id,
-      messages: loaded.messages.map(
-        (m): DisplayMessage => ({
-          role: m.role === 'assistant' ? 'assistant' : 'user',
-          content: m.display ?? m.content,
-          images: m.images,
-          plan: m.ui?.plan,
-          tool: m.ui?.tool,
-          status: m.ui?.status,
-        }),
-      ),
-    });
+    this.post({ type: 'conversation', id: loaded.id, messages: this.toDisplayMessages(loaded.messages) });
+  }
+
+  private toDisplayMessages(messages: StoredMessage[]): DisplayMessage[] {
+    return messages.map((m) => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.display ?? m.content,
+      images: m.images,
+      plan: m.ui?.plan,
+      tool: m.ui?.tool,
+      status: m.ui?.status,
+    }));
   }
 
   /**

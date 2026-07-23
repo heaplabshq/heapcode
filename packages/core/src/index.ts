@@ -38,3 +38,4 @@ export * from './history/types.js';
 export * from './protocol.js';
 export * from './instructions.js';
 export * from './skills.js';
+export * from './audit.js';

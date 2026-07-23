@@ -24,6 +24,7 @@ export class PermissionEngine {
   constructor(
     private readonly state: vscode.Memento,
     private readonly log?: vscode.OutputChannel,
+    private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
   ) {}
 
   /** Clear all persisted "Always Allow" grants (and session grants). */
@@ -55,15 +56,21 @@ export class PermissionEngine {
       .get<boolean>('safeMode', false);
     const key = `heapcode.perm.${tool.permission}.${call.name}`;
 
+    // Coarse metadata only (tool name + permission class + decision) — never the
+    // description text, which can carry command args/file paths (PLAN.md M13 audit trail).
+    const audit = (decision: string) => this.track?.('permission.decision', { tool: call.name, permission: tool.permission, decision });
+
     if (!safeMode) {
       if (this.sessionAllowed.has(key)) {
         this.log?.appendLine(`[perm] auto-allowed (session grant): ${description}`);
+        audit('auto-session');
         return true;
       }
       if (this.state.get<Decision>(key) === 'always') {
         this.log?.appendLine(
           `[perm] auto-allowed (persisted "Always" grant — reset via "Heap Code: Reset Agent Permissions"): ${description}`,
         );
+        audit('auto-always');
         return true;
       }
     }
@@ -76,6 +83,7 @@ export class PermissionEngine {
       allowPersist,
     });
     const choice = inChat ?? (await this.modalRequest(tool.permission, description, allowPersist));
+    audit(choice);
 
     switch (choice) {
       case 'allow':

@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
-import { configureAstChunker } from '@heapcode/core';
+import { configureAstChunker, formatAuditDashboard } from '@heapcode/core';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
 import { McpManager } from './agent/mcp.js';
 import { PermissionEngine } from './agent/permissions.js';
+import { exportBundle, importBundle } from './bundle.js';
 import { openMemoryFile } from './memory.js';
+import { reviewCurrentPr } from './prReview.js';
 import { ChatViewProvider } from './chatViewProvider.js';
 import { HeapCodeActionProvider } from './codeActions.js';
 import { HeapCodeCompletionProvider } from './completionProvider.js';
@@ -66,7 +68,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new JsonConversationStore(storageDir);
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, track);
   activeChatProvider = chatProvider;
-  const permissions = new PermissionEngine(context.workspaceState, log);
+  const permissions = new PermissionEngine(context.workspaceState, log, track);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   const rag = new RagIndexer(profiles, storageDir, log, track);
   const repoMap = new RepoMapIndexer(storageDir, log);
@@ -166,6 +168,25 @@ export function activate(context: vscode.ExtensionContext): void {
         language: 'plaintext',
       });
       await vscode.window.showTextDocument(doc, { preview: false });
+    }),
+    vscode.commands.registerCommand('heapcode.exportBundle', () => {
+      track('command.exportBundle');
+      return exportBundle();
+    }),
+    vscode.commands.registerCommand('heapcode.importBundle', () => {
+      track('command.importBundle');
+      return importBundle();
+    }),
+    vscode.commands.registerCommand('heapcode.showAuditDashboard', async () => {
+      const doc = await vscode.workspace.openTextDocument({
+        content: formatAuditDashboard(telemetry.auditHistory()),
+        language: 'plaintext',
+      });
+      await vscode.window.showTextDocument(doc, { preview: false });
+    }),
+    vscode.commands.registerCommand('heapcode.reviewPr', () => {
+      track('command.reviewPr');
+      return reviewCurrentPr(profiles, log);
     }),
     vscode.commands.registerCommand('heapcode.resetPermissions', async () => {
       const cleared = await permissions.reset();

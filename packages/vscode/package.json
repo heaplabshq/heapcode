@@ -156,6 +156,22 @@
         "title": "Heap Code: Show Repo Map Ranking (Debug)"
       },
       {
+        "command": "heapcode.exportBundle",
+        "title": "Heap Code: Export Team Bundle"
+      },
+      {
+        "command": "heapcode.importBundle",
+        "title": "Heap Code: Import Team Bundle"
+      },
+      {
+        "command": "heapcode.showAuditDashboard",
+        "title": "Heap Code: Show Usage & Audit Dashboard"
+      },
+      {
+        "command": "heapcode.reviewPr",
+        "title": "Heap Code: Review Current PR & Comment"
+      },
+      {
         "command": "heapcode.addMcpServer",
         "title": "Heap Code: Add MCP Server"
       },

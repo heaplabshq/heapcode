@@ -18,6 +18,11 @@ import { loadIgnoreMatcher } from './agent/ignoreFiles.js';
 import { SessionCheckpoint } from './agent/checkpoint.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { ShadowGit } from './agent/shadowGit.js';
+import { RoleResolver } from './provider/roles.js';
+import { RagIndexer } from './rag/indexer.js';
+import { RepoMapIndexer } from './rag/repoMapIndexer.js';
+import { McpManager } from './agent/mcp.js';
+import { loadMcpServers } from './agent/mcpConfig.js';
 import { App } from './ink/App.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -104,10 +109,35 @@ async function main(): Promise<void> {
 
   const safeMode = argv.includes('--safe-mode');
   const checkpoint = new SessionCheckpoint(root);
-  const executor = new WorkspaceToolExecutor(root, checkpoint, 60_000);
   const permissions = new PermissionEngine(permissionsFile(root), () => safeMode);
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
   const capabilities = resolveCapabilities(profile);
+
+  // RAG (semantic search) + repo map (structural outline) — CLI-M3. No
+  // filesystem watcher: the CLI has no persistent "open editor" the way the
+  // extension does, so cli.tsx/App.tsx call indexOne/removeFile/renameFile
+  // directly right after the agent's own write tools succeed (see
+  // rag/indexer.ts's own comment for why that's simpler and more precise
+  // than watching here). RepoMapIndexer needs no embeddings model, so it's
+  // always on; RagIndexer no-ops gracefully without one configured.
+  const roles = new RoleResolver(config, secrets, profile);
+  const heapcodeDir = join(root, '.heapcode');
+  const ragIndexer = new RagIndexer(root, heapcodeDir, roles);
+  const repoMapIndexer = new RepoMapIndexer(root, heapcodeDir);
+  const executor = new WorkspaceToolExecutor(
+    root,
+    checkpoint,
+    60_000,
+    async (query) => (ragIndexer.ready ? ragIndexer.queryFormatted(query) : ''),
+    (pathPrefix) => (repoMapIndexer.ready ? repoMapIndexer.format(pathPrefix) : ''),
+  );
+
+  // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with
+  // project-scoped (<cwd>/.heapcode/mcp.json), project wins name collisions.
+  // Reconnected (idempotent) at the start of every task, same pattern as the
+  // extension's controller.ts — not once at startup, so config edits and
+  // dropped servers take effect on the next message without a restart.
+  const mcpManager = new McpManager(() => loadMcpServers(root, config));
 
   // exitOnCtrlC: false — Ink's built-in handler would unmount the UI on the
   // first Ctrl+C even mid-agent-run, leaving the terminal in a broken state.
@@ -137,6 +167,9 @@ async function main(): Promise<void> {
       cwd={root}
       safeMode={safeMode}
       canResume={priorConversations > 0}
+      ragIndexer={ragIndexer}
+      repoMapIndexer={repoMapIndexer}
+      mcpManager={mcpManager}
       listWorkspaceFiles={async () => {
         const entries = await fg(['**/*'], {
           cwd: root,
@@ -155,6 +188,7 @@ async function main(): Promise<void> {
     { exitOnCtrlC: false },
   );
   await instance.waitUntilExit();
+  mcpManager.dispose();
   // In-flight provider sockets or timers can keep the event loop alive after
   // the UI is gone — end the process explicitly once Ink has cleaned up.
   process.exit(process.exitCode ?? 0);
@@ -181,6 +215,9 @@ In-session commands (type / for the autocomplete menu):
   /memory                           Show project instructions & memory (.heapcode/HEAPCODE.md, memory.md, AGENTS.md)
   /skills                           List available Skills (.claude/skills/)
   /explain /fix /refactor /review /security-review /test /docs /optimize <input>   Prompt templates run as agent tasks
+  /search <query>                   Search the workspace (semantic if indexed, plain text otherwise)
+  /index                            Rebuild the semantic search + repo map indexes
+  /mcp                              List configured MCP servers and their connection status
   /clear, /new                      Clear the screen and start a new conversation
   /resume                           Pick an earlier conversation to continue
   /rewind [n]                       Undo the last n tool calls (default 1) via their shadow-git checkpoints
@@ -189,10 +226,13 @@ In-session commands (type / for the autocomplete menu):
   /exit                             Quit (also: Ctrl+C twice)
 
 Keys: Esc interrupts the running agent · Ctrl+C clears typed input · Ctrl+C twice exits
-      Up/Down recall input history · Tab completes a slash command · @ mentions a file/folder
+      Up/Down recall input history · Tab completes a slash command
+      @ mentions a file/folder · @workspace pulls in whole-repo context (semantic search, or a structural outline without an embeddings model)
 
 Config: ~/.heapcode/config.json (profiles)  ·  ~/.heapcode/secrets.json (API keys, chmod 600)
-Per-project: <cwd>/.heapcode/{conversations.json, permissions.json, shadow-git/}`);
+Per-project: <cwd>/.heapcode/{conversations.json, permissions.json, shadow-git/, rag-index.json, repo-map.json, mcp.json}
+Semantic search needs an embeddings model on the active profile (embeddingsModel, e.g. nomic-embed-text on Ollama) — /settings shows whether one is configured.
+MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.`);
 }
 
 main().catch((err) => {

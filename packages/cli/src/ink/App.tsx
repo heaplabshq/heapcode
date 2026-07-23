@@ -32,6 +32,9 @@ import {
 import { listSkillsFormatted } from '../agent/skills.js';
 import { loadProjectInstructions } from '../memory.js';
 import { configFile, secretsFile } from '../paths.js';
+import type { RagIndexer } from '../rag/indexer.js';
+import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
+import type { McpManager } from '../agent/mcp.js';
 import { Composer, type SlashCommand } from './Composer.js';
 import { Header } from './Header.js';
 import { Setup } from './Setup.js';
@@ -56,6 +59,9 @@ const COMMANDS: SlashCommand[] = [
   { name: '/settings', description: 'Show current configuration' },
   { name: '/memory', description: 'Show the project instructions & memory the agent sees' },
   { name: '/skills', description: 'List available Skills' },
+  { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
+  { name: '/index', description: 'Rebuild the semantic search + repo map indexes' },
+  { name: '/mcp', description: 'List configured MCP servers and their connection status' },
   { name: '/clear', description: 'Clear the screen and start a new conversation' },
   { name: '/new', description: 'Start a new conversation' },
   { name: '/resume', description: 'Pick an earlier conversation to continue' },
@@ -69,6 +75,10 @@ const COMMANDS: SlashCommand[] = [
 ];
 
 const HELP_TEXT = COMMANDS.map((c) => `  ${(c.name + (c.args ? ` ${c.args}` : '')).padEnd(18)}${c.description}`).join('\n');
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 interface Picker {
   title: string;
@@ -102,6 +112,12 @@ export interface AppProps {
   canResume?: boolean;
   /** Lazy source for `@` mention autocomplete (ignore-aware workspace paths, folders end with `/`). */
   listWorkspaceFiles?(): Promise<string[]>;
+  /** Semantic search — omitted in tests/headless; /search and @workspace no-op gracefully without one. */
+  ragIndexer?: RagIndexer;
+  /** Structural repo outline — same tool/@workspace fallback path as ragIndexer when no embeddings model is configured. */
+  repoMapIndexer?: RepoMapIndexer;
+  /** MCP servers — reconnected at the start of every task; their tools go through the same permission system as workspace tools. */
+  mcpManager?: McpManager;
 }
 
 export function App({
@@ -125,6 +141,9 @@ export function App({
   safeMode,
   canResume,
   listWorkspaceFiles,
+  ragIndexer,
+  repoMapIndexer,
+  mcpManager,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
 
@@ -177,11 +196,65 @@ export function App({
     if (mentionLoadStarted.current || !listWorkspaceFiles) return;
     mentionLoadStarted.current = true;
     void listWorkspaceFiles()
-      .then(setMentionCandidates)
+      .then((files) => setMentionCandidates(['workspace', ...files]))
       .catch(() => {
         // Autocomplete is best-effort — mentions still work as typed text.
       });
   };
+
+  const [indexProgress, setIndexProgress] = useState<{ embedded: number; total: number }>();
+
+  // Build both indexes once at mount, in the background — never blocks the
+  // composer. RepoMapIndexer needs no embeddings model, so it's always
+  // useful; RagIndexer.buildIndex no-ops (logged, not shown) without one.
+  useEffect(() => {
+    if (!ragIndexer && !repoMapIndexer) return;
+    let cancelled = false;
+    void (async () => {
+      await Promise.all([ragIndexer?.init(), repoMapIndexer?.init()]);
+      if (cancelled) return;
+      void repoMapIndexer?.buildIndex();
+      void ragIndexer
+        ?.buildIndex((embedded, total) => {
+          if (!cancelled) setIndexProgress({ embedded, total });
+        })
+        .then(() => {
+          if (!cancelled) setIndexProgress(undefined);
+        });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Indexers are stable instances for the process lifetime (constructed once in cli.tsx) — run once on mount only.
+  }, []);
+
+  /** Keeps both indexes in sync with the agent's own file edits — see rag/indexer.ts's comment on why no filesystem watcher is used instead. */
+  async function syncIndexesAfterTool(name: string, args: Record<string, unknown>): Promise<void> {
+    if (!ragIndexer && !repoMapIndexer) return;
+    const path = typeof args.path === 'string' ? args.path : undefined;
+    const newPath = typeof args.newPath === 'string' ? args.newPath : undefined;
+    switch (name) {
+      case 'write_file':
+      case 'edit_file':
+      case 'multi_edit':
+        if (!path) return;
+        repoMapIndexer?.noteRecent(path);
+        await Promise.all([ragIndexer?.indexOne(path), repoMapIndexer?.indexOne(path)]);
+        return;
+      case 'rename_file':
+        if (!path || !newPath) return;
+        repoMapIndexer?.noteRecent(newPath);
+        await Promise.all([ragIndexer?.renameFile(path, newPath), repoMapIndexer?.renameFile(path, newPath)]);
+        return;
+      case 'delete_file':
+        if (!path) return;
+        ragIndexer?.removeFile(path);
+        repoMapIndexer?.removeFile(path);
+        return;
+      default:
+        return;
+    }
+  }
 
   // Ctrl+C protocol: clear typed input first; on an empty prompt, arm a
   // two-second "press again to exit" window instead of exiting outright.
@@ -466,8 +539,30 @@ export function App({
     });
   }
 
-  function showSettings(): void {
+  /** /search — semantic when the index is ready, otherwise a plain regex text search via the existing `search` tool. */
+  async function handleSearch(query: string): Promise<void> {
+    if (!query) {
+      pushSystem('Usage: /search <query>');
+      return;
+    }
+    if (ragIndexer?.ready) {
+      const hits = await ragIndexer.query(query);
+      pushSystem(
+        hits.length === 0
+          ? `No semantic matches for "${query}".`
+          : hits.map((h) => `${h.record.path}:${h.record.startLine}-${h.record.endLine}  (score ${h.score.toFixed(2)})`).join('\n'),
+      );
+      return;
+    }
+    const words = query.split(/\W+/).filter((w) => w.length > 2).map(escapeRegExp);
+    const pattern = words.length > 0 ? words.join('|') : escapeRegExp(query);
+    const result = await executor.execute({ id: 'search-cmd', name: 'search', args: { pattern } });
+    pushSystem(`(no semantic index — plain text search for /${pattern}/)\n${result.content}`);
+  }
+
+  async function showSettings(): Promise<void> {
     const p = active.profile;
+    const ragStatus = await ragIndexer?.status();
     pushSystem(
       [
         `Profile     ${p.name} (${p.preset})`,
@@ -475,10 +570,12 @@ export function App({
         `Model       ${model}${p.agentModel && p.agentModel !== p.model ? ` (agent: ${p.agentModel})` : ''}`,
         `Persona     ${persona.label}`,
         `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
+        `Search      ${ragStatus ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
+        `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
         `Secrets     ${secretsFile()}`,
         '',
-        'Change with /model and /profile · add providers with "/profile add"',
+        'Change with /model and /profile · add providers with "/profile add" · /index rebuilds search',
       ].join('\n'),
     );
   }
@@ -511,9 +608,41 @@ export function App({
       case '/skills':
         pushSystem(await listSkillsFormatted(cwd ?? process.cwd()));
         return true;
+      case '/search':
+        await handleSearch(rest.join(' ').trim());
+        return true;
+      case '/mcp': {
+        if (!mcpManager) {
+          pushSystem('MCP is unavailable in this session.');
+          return true;
+        }
+        await mcpManager.ensureConnected();
+        const names = mcpManager.connectedServerNames();
+        pushSystem(
+          names.length === 0
+            ? 'No MCP servers connected. Configure them under "mcpServers" in ~/.heapcode/config.json or <cwd>/.heapcode/mcp.json.'
+            : `Connected: ${names.join(', ')} (${mcpManager.getToolDefinitions().length} tool(s) total).`,
+        );
+        return true;
+      }
+      case '/index': {
+        pushSystem('Rebuilding indexes…');
+        await Promise.all([ragIndexer?.buildIndex(), repoMapIndexer?.buildIndex()]);
+        const status = await ragIndexer?.status();
+        const rmReady = repoMapIndexer?.ready;
+        pushSystem(
+          [
+            status
+              ? `Semantic search: ${status.state} — ${status.files} files, ${status.chunks} chunks.`
+              : 'Semantic search: unavailable.',
+            `Repo map: ${rmReady ? 'ready' : 'empty'}.`,
+          ].join('\n'),
+        );
+        return true;
+      }
       case '/settings':
       case '/config':
-        showSettings();
+        await showSettings();
         return true;
       case '/new':
       case '/clear':
@@ -595,11 +724,24 @@ export function App({
     // Task preamble, same shape as the extension's controller: persona
     // constraints + project instructions/memory, then the task itself.
     const instructions = await loadProjectInstructions(cwd ?? process.cwd()).catch(() => '');
+    let workspaceContext = '';
+    if (/(^|\s)@workspace\b/.test(display)) {
+      const query = display.replace(/(^|\s)@workspace\b/g, ' ').trim() || display;
+      const semantic = ragIndexer?.ready ? await ragIndexer.queryFormatted(query).catch(() => '') : '';
+      if (semantic) workspaceContext = `Relevant workspace context (semantic search):\n${semantic}`;
+      else if (repoMapIndexer?.ready) workspaceContext = `Workspace structure overview (no semantic index configured):\n${repoMapIndexer.format()}`;
+    }
     const mentionNote = /(^|\s)@[^\s@]+/.test(display)
       ? 'Paths prefixed with @ in the task are file/folder references in this workspace — read them for context.'
       : '';
-    const preamble = [persona.taskAddendum, instructions, mentionNote].filter(Boolean).join('\n\n---\n\n');
+    const preamble = [persona.taskAddendum, instructions, workspaceContext, mentionNote].filter(Boolean).join('\n\n---\n\n');
     const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+
+    // Reconnect (idempotent) at the start of every task rather than once at
+    // launch — config edits and dropped servers take effect on the next
+    // message with no restart, same pattern as the extension's controller.
+    await mcpManager?.ensureConnected();
+    const mcpTools = mcpManager?.getToolDefinitions() ?? [];
 
     try {
       const outcome = await runAgent({
@@ -608,7 +750,7 @@ export function App({
         task: fullTask,
         history,
         workspaceName,
-        tools: filterToolsForPersona(tools, persona),
+        tools: filterToolsForPersona([...tools, ...mcpTools], persona),
         nativeToolCalls,
         contextWindow: active.contextWindow,
         signal: abort.signal,
@@ -624,6 +766,13 @@ export function App({
               name: call.name,
               content: answer.trim() ? `User answered: ${answer}` : 'The user did not answer. Proceed with your best judgment.',
             };
+          }
+          if (mcpManager?.isMcpTool(call.name)) {
+            try {
+              return { id: call.id, name: call.name, content: await mcpManager.call(call.name, call.args) };
+            } catch (err) {
+              return { id: call.id, name: call.name, content: err instanceof Error ? err.message : String(err), isError: true };
+            }
           }
           // A shell command can mutate files as easily as write_file — block
           // it for write-restricted personas (same guard as the extension).
@@ -642,7 +791,9 @@ export function App({
               isError: true,
             };
           }
-          return executor.execute(call, abort.signal);
+          const result = await executor.execute(call, abort.signal);
+          if (!result.isError) await syncIndexesAfterTool(call.name, call.args);
+          return result;
         },
         requestPermission: (call, tool) => permissions.request(call, tool, executor.describe(call)),
         beforeToolCall: async (call) => {
@@ -821,6 +972,10 @@ export function App({
         </Text>
         {exitArmed ? (
           <Text color="yellow">press Ctrl+C again to exit</Text>
+        ) : indexProgress ? (
+          <Text dimColor>
+            indexing… {indexProgress.embedded}/{indexProgress.total} files
+          </Text>
         ) : (
           <Text dimColor>{busy ? 'esc to interrupt' : '/ for commands · Ctrl+C twice to exit'}</Text>
         )}

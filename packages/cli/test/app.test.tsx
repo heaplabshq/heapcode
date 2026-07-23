@@ -11,6 +11,37 @@ import { WorkspaceToolExecutor } from '../src/agent/workspaceTools.js';
 import { SessionCheckpoint } from '../src/agent/checkpoint.js';
 import { PermissionEngine } from '../src/agent/permissions.js';
 import { App } from '../src/ink/App.js';
+import type { RagIndexer } from '../src/rag/indexer.js';
+import type { RepoMapIndexer } from '../src/rag/repoMapIndexer.js';
+import type { McpManager } from '../src/agent/mcp.js';
+
+/** App mounts an effect that always calls init()/buildIndex() on both indexers — every duck-typed mock needs them, even when a test only cares about one other method. */
+function stubRag(overrides: Record<string, unknown> = {}): RagIndexer {
+  return {
+    ready: false,
+    init: vi.fn().mockResolvedValue(undefined),
+    buildIndex: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as unknown as RagIndexer;
+}
+function stubRepoMap(overrides: Record<string, unknown> = {}): RepoMapIndexer {
+  return {
+    ready: false,
+    init: vi.fn().mockResolvedValue(undefined),
+    buildIndex: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as unknown as RepoMapIndexer;
+}
+function stubMcp(overrides: Record<string, unknown> = {}): McpManager {
+  return {
+    ensureConnected: vi.fn().mockResolvedValue(undefined),
+    getToolDefinitions: vi.fn().mockReturnValue([]),
+    connectedServerNames: vi.fn().mockReturnValue([]),
+    isMcpTool: (name: string) => name.startsWith('mcp__'),
+    call: vi.fn(),
+    ...overrides,
+  } as unknown as McpManager;
+}
 
 function fakeProvider(reply: string): Provider {
   return {
@@ -93,6 +124,9 @@ function renderApp(overrides: {
   switchProvider?(p: ProviderProfileConfig): Promise<{ provider: Provider; contextWindow: number }>;
   cwd?: string;
   listWorkspaceFiles?(): Promise<string[]>;
+  ragIndexer?: RagIndexer;
+  repoMapIndexer?: RepoMapIndexer;
+  mcpManager?: McpManager;
 }) {
   const checkpoint = new SessionCheckpoint(root);
   const executor = new WorkspaceToolExecutor(root, checkpoint, 5_000);
@@ -114,6 +148,9 @@ function renderApp(overrides: {
       switchProvider={overrides.switchProvider}
       cwd={overrides.cwd}
       listWorkspaceFiles={overrides.listWorkspaceFiles}
+      ragIndexer={overrides.ragIndexer}
+      repoMapIndexer={overrides.repoMapIndexer}
+      mcpManager={overrides.mcpManager}
     />,
   );
 }
@@ -190,6 +227,37 @@ describe('App', () => {
     await vi.waitFor(() => expect(lastFrame()).toContain('Wrote greeting.txt'), { timeout: 2_000 });
     expect(await readFile(join(root, 'greeting.txt'), 'utf8')).toBe('hello from agent');
     await vi.waitFor(() => expect(historyStore.save).toHaveBeenCalled());
+  });
+
+  it('a successful write_file re-indexes that file in both the RAG and repo-map indexes', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = scriptedProvider([
+      { content: '<tool name="write_file">\n{"path": "greeting.txt", "content": "hello from agent"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Wrote greeting.txt as requested."}\n</tool>' },
+    ]);
+    const ragIndexer = stubRag({ indexOne: vi.fn().mockResolvedValue(true) });
+    const repoMapIndexer = stubRepoMap({ noteRecent: vi.fn(), indexOne: vi.fn().mockResolvedValue(undefined) });
+
+    const { stdin, lastFrame } = renderApp({
+      provider,
+      conversation,
+      historyStore,
+      tools: [WRITE_FILE_TOOL],
+      ragIndexer,
+      repoMapIndexer,
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('write a greeting file');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('wants to modify files'), { timeout: 2_000 });
+    stdin.write('\r'); // Allow once
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Wrote greeting.txt'), { timeout: 2_000 });
+    expect(ragIndexer.indexOne).toHaveBeenCalledWith('greeting.txt');
+    expect(repoMapIndexer.indexOne).toHaveBeenCalledWith('greeting.txt');
+    expect(repoMapIndexer.noteRecent).toHaveBeenCalledWith('greeting.txt');
   });
 
   it('denying a permission prompt ("Deny") does not run the tool and reports the denial to the model', async () => {
@@ -640,6 +708,153 @@ describe('App', () => {
     stdin.write('\t');
     await new Promise((r) => setTimeout(r, 20));
     expect(lastFrame()).toContain('look at @src/index.ts');
+  });
+
+  it('/mcp reports "no servers" when none are connected, and lists connected ones otherwise', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+
+    const none = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, mcpManager: stubMcp() });
+    await new Promise((r) => setTimeout(r, 20));
+    none.stdin.write('/mcp');
+    none.stdin.write('\r');
+    await vi.waitFor(() => expect(none.lastFrame()).toContain('No MCP servers connected'));
+    none.unmount();
+
+    const mcpManager = stubMcp({
+      connectedServerNames: vi.fn().mockReturnValue(['filesystem']),
+      getToolDefinitions: vi.fn().mockReturnValue([{ name: 'mcp__filesystem__read', description: '', parameters: {}, permission: 'execute' }]),
+    });
+    const connected = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, mcpManager });
+    await new Promise((r) => setTimeout(r, 20));
+    connected.stdin.write('/mcp');
+    connected.stdin.write('\r');
+    await vi.waitFor(() => expect(connected.lastFrame()).toContain('Connected: filesystem'));
+    expect(mcpManager.ensureConnected).toHaveBeenCalled();
+  });
+
+  it('an MCP tool call is dispatched to McpManager.call, not the workspace executor, and still goes through the permission prompt', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = scriptedProvider([
+      { content: '<tool name="mcp__filesystem__read">\n{"path": "notes.txt"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Read the file via MCP."}\n</tool>' },
+    ]);
+    const mcpManager = stubMcp({
+      getToolDefinitions: vi.fn().mockReturnValue([
+        { name: 'mcp__filesystem__read', description: 'Read a file', parameters: { type: 'object', properties: {} }, permission: 'execute', untrustedOutput: true },
+      ]),
+      call: vi.fn().mockResolvedValue('file contents here'),
+    });
+
+    const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore, mcpManager });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('read notes.txt via mcp');
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('wants to run a command'), { timeout: 2_000 });
+    stdin.write('\r'); // Allow once
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Read the file via MCP'), { timeout: 2_000 });
+    expect(mcpManager.call).toHaveBeenCalledWith('mcp__filesystem__read', { path: 'notes.txt' });
+  });
+
+  it('/search uses the semantic index when ready, falling back to plain text search otherwise', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(root, 'auth.ts'), 'function authenticate() { return true; }\n');
+
+    // No ragIndexer at all → falls all the way back to the search tool.
+    const noIndex = renderApp({ provider: fakeProvider('unused'), conversation, historyStore });
+    await new Promise((r) => setTimeout(r, 20));
+    noIndex.stdin.write('/search authenticate');
+    noIndex.stdin.write('\r');
+    await vi.waitFor(() => expect(noIndex.lastFrame()).toContain('plain text search'), { timeout: 2_000 });
+    expect(noIndex.lastFrame()).toContain('auth.ts');
+    noIndex.unmount();
+
+    // ragIndexer.ready → uses its query() results instead of the text-search tool.
+    const ragIndexer = stubRag({
+      ready: true,
+      query: vi.fn().mockResolvedValue([{ record: { path: 'auth.ts', startLine: 1, endLine: 3 }, score: 0.9 }]),
+    });
+    const withIndex = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, ragIndexer });
+    await new Promise((r) => setTimeout(r, 20));
+    withIndex.stdin.write('/search authenticate');
+    withIndex.stdin.write('\r');
+    await vi.waitFor(() => expect(withIndex.lastFrame()).toContain('auth.ts:1-3'));
+    expect(ragIndexer.query).toHaveBeenCalledWith('authenticate');
+  });
+
+  it('/search with no query shows usage', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const { stdin, lastFrame } = renderApp({ provider: fakeProvider('unused'), conversation, historyStore });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/search');
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastFrame()).toContain('Usage: /search');
+  });
+
+  it('/index rebuilds both indexes and reports their status', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const ragIndexer = stubRag({
+      ready: true,
+      status: vi.fn().mockResolvedValue({ state: 'idle', files: 3, chunks: 12 }),
+    });
+    const repoMapIndexer = stubRepoMap({ ready: true });
+
+    const { stdin, lastFrame } = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, ragIndexer, repoMapIndexer });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/index');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('idle — 3 files, 12 chunks'));
+    expect(lastFrame()).toContain('Repo map: ready');
+  });
+
+  it('@workspace pulls semantic search results into the agent task as context', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = recordingProvider('Done.');
+    const ragIndexer = stubRag({
+      ready: true,
+      queryFormatted: vi.fn().mockResolvedValue('--- auth.ts:1-3 (score 0.90) ---\nfunction authenticate() {}'),
+    });
+
+    const { stdin } = renderApp({ provider, conversation, historyStore, ragIndexer });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('@workspace how does auth work');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
+
+    expect(ragIndexer.queryFormatted).toHaveBeenCalled();
+    const task = provider.requests[0]!.at(-1)!.content;
+    expect(task).toContain('Relevant workspace context');
+    expect(task).toContain('auth.ts:1-3');
+  });
+
+  it('@workspace falls back to the repo-map structural outline when no semantic index is ready', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = recordingProvider('Done.');
+    const repoMapIndexer = stubRepoMap({
+      ready: true,
+      format: vi.fn().mockReturnValue('src/index.ts\n  function main()'),
+    });
+
+    const { stdin } = renderApp({ provider, conversation, historyStore, repoMapIndexer });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('@workspace what does this do');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
+
+    const task = provider.requests[0]!.at(-1)!.content;
+    expect(task).toContain('Workspace structure overview');
+    expect(task).toContain('src/index.ts');
   });
 
   it('/revert with nothing to revert reports that instead of erroring', async () => {

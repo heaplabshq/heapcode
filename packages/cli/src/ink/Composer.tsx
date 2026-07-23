@@ -26,7 +26,11 @@ export interface ComposerProps {
   clearToken?: number;
 }
 
-const MENU_MAX_ROWS = 16;
+// Commands keep growing (guardrail: every feature gets a slash command) —
+// capped generously rather than tightly, since the alternative is a command
+// existing but not fitting in its own menu. Typing more of the name filters
+// the list down long before this cap would ever bite in practice.
+const MENU_MAX_ROWS = 30;
 const MENTION_MAX_ROWS = 8;
 
 /** The `@token` the cursor is currently inside, if any. */

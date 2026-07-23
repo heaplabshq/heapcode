@@ -32,6 +32,9 @@ importers:
       '@heapcode/core':
         specifier: workspace:*
         version: link:../core
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
       fast-glob:
         specifier: ^3.3.2
         version: 3.3.3

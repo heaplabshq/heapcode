@@ -30,11 +30,13 @@ import {
   type AgentPersona,
 } from '../agent/personas.js';
 import { listSkillsFormatted } from '../agent/skills.js';
+import { trimHistoryForAgent } from '../agent/historyWindow.js';
 import { loadProjectInstructions } from '../memory.js';
 import { configFile, secretsFile } from '../paths.js';
 import type { RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import type { McpManager } from '../agent/mcp.js';
+import { DELEGATE_TASK_TOOL, runSubAgent } from '../agent/delegate.js';
 import { Composer, type SlashCommand } from './Composer.js';
 import { Header } from './Header.js';
 import { Setup } from './Setup.js';
@@ -45,11 +47,6 @@ import { ToolChip } from './ToolChip.js';
 import type { TranscriptItem } from './types.js';
 
 const TOOL_SUMMARY_CHARS = 400;
-// Multi-turn context passed to each agent run: recent turns only, trimmed —
-// enough for "ok do that" to mean something, small enough not to crowd the
-// context window (core compacts long transcripts, but why start bloated).
-const HISTORY_MAX_TURNS = 12;
-const HISTORY_MAX_CHARS = 4_000;
 
 const COMMANDS: SlashCommand[] = [
   { name: '/help', description: 'Show available commands' },
@@ -62,12 +59,13 @@ const COMMANDS: SlashCommand[] = [
   { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
   { name: '/index', description: 'Rebuild the semantic search + repo map indexes' },
   { name: '/mcp', description: 'List configured MCP servers and their connection status' },
+  { name: '/subagents', args: '[on|off]', description: 'Toggle delegate_task — lets the agent hand off sub-tasks to a fresh sub-agent' },
   { name: '/clear', description: 'Clear the screen and start a new conversation' },
   { name: '/new', description: 'Start a new conversation' },
   { name: '/resume', description: 'Pick an earlier conversation to continue' },
-  { name: '/rewind', args: '[n]', description: 'Undo the last n tool calls' },
+  { name: '/rewind', args: '[n]', description: 'Undo the last n checkpoints — works even across /new or /resume' },
   { name: '/revert', description: 'Restore every file this session touched' },
-  { name: '/checkpoints', description: 'List this session’s checkpoints' },
+  { name: '/checkpoints', description: 'List recent checkpoints for this project' },
   { name: '/exit', description: 'Quit heapcode' },
   // Prompt templates (core's builtinPrompts): /explain, /fix, /review, … —
   // rendered into a task and run through the normal agent loop.
@@ -118,6 +116,8 @@ export interface AppProps {
   repoMapIndexer?: RepoMapIndexer;
   /** MCP servers — reconnected at the start of every task; their tools go through the same permission system as workspace tools. */
   mcpManager?: McpManager;
+  /** Local audit log (see audit.ts) — best-effort, never blocks on failure. */
+  onTrack?(name: string, meta?: Record<string, unknown>): void;
 }
 
 export function App({
@@ -144,6 +144,7 @@ export function App({
   ragIndexer,
   repoMapIndexer,
   mcpManager,
+  onTrack,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
 
@@ -189,6 +190,11 @@ export function App({
   const [picker, setPicker] = useState<Picker>();
   const [setupActive, setSetupActive] = useState(false);
   const [persona, setPersona] = useState<AgentPersona>(getPersona(undefined));
+  // Sub-agent orchestration (delegate_task) is opt-in — a new,
+  // autonomy-increasing capability, same posture as the extension's own
+  // subAgents setting: off by default, toggled explicitly.
+  const [subAgentsEnabled, setSubAgentsEnabled] = useState(false);
+  const [liveSubTool, setLiveSubTool] = useState<Extract<TranscriptItem, { kind: 'tool' }>>();
   const [mentionCandidates, setMentionCandidates] = useState<string[]>();
   const mentionLoadStarted = useRef(false);
 
@@ -264,7 +270,6 @@ export function App({
   const exitTimer = useRef<ReturnType<typeof setTimeout>>();
 
   const abortRef = useRef<AbortController>();
-  const toolCheckpoints = useRef(new Map<string, string>());
   const toolDescriptions = useRef(new Map<string, string>());
 
   useEffect(() => {
@@ -332,23 +337,42 @@ export function App({
   }
 
   /** /rewind [n] — undo the effects of the last n tool calls (default 1) via their shadow-git checkpoints. */
+  /** Real, user-facing checkpoints — restore/pre-restore markers `/rewind` itself creates are noise, not steps to rewind to. */
+  async function listCheckpoints(): Promise<Array<{ hash: string; label: string; date: number }>> {
+    if (!shadowGit) return [];
+    const entries = await shadowGit.history();
+    return entries.filter((e) => !/^(pre-restore state|restored to )/.test(e.label));
+  }
+
+  /**
+   * Reads straight from the shadow-git commit log (via listCheckpoints), not
+   * any in-memory transcript state — so /rewind and /checkpoints keep
+   * working across /new, /resume, or a fresh process, unlike CLI-M1's
+   * original version (see ShadowGit.log()'s own comment for the real-usage
+   * bug this fixes).
+   */
   async function handleRewind(arg: string): Promise<void> {
     if (!shadowGit) {
       pushSystem('Rewind is unavailable — shadow git could not be initialized.');
       return;
     }
     const n = Math.max(1, Number.parseInt(arg, 10) || 1);
-    const toolItems = itemsRef.current.filter((i): i is Extract<TranscriptItem, { kind: 'tool' }> => i.kind === 'tool' && Boolean(i.checkpoint));
-    const target = toolItems[toolItems.length - n];
-    if (!target?.checkpoint) {
+    const checkpoints = await listCheckpoints();
+    const target = checkpoints[n - 1];
+    if (!target) {
       pushSystem(`No checkpoint ${n} step(s) back.`);
       return;
     }
-    const restored = await shadowGit.restore(target.checkpoint);
+    const restored = await shadowGit.restore(target.hash);
+    if (restored === undefined) {
+      pushSystem('Rewind failed.');
+      return;
+    }
+    onTrack?.('checkpoint.restoreStep', { count: restored.length });
     pushSystem(
-      restored === undefined
-        ? 'Rewind failed.'
-        : `Rewound to before "${target.description}" (${restored.length} file(s) restored).`,
+      restored.length === 0
+        ? `Nothing changed since "${target.label}".`
+        : `Rewound to before "${target.label}": ${restored.join(', ')}`,
     );
   }
 
@@ -569,6 +593,7 @@ export function App({
         `Endpoint    ${p.baseUrl}`,
         `Model       ${model}${p.agentModel && p.agentModel !== p.model ? ` (agent: ${p.agentModel})` : ''}`,
         `Persona     ${persona.label}`,
+        `Sub-agents  ${subAgentsEnabled ? 'on' : 'off'} (/subagents to toggle)`,
         `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
         `Search      ${ragStatus ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
@@ -611,6 +636,17 @@ export function App({
       case '/search':
         await handleSearch(rest.join(' ').trim());
         return true;
+      case '/subagents': {
+        const arg = rest[0]?.toLowerCase();
+        const next = arg === 'on' ? true : arg === 'off' ? false : !subAgentsEnabled;
+        setSubAgentsEnabled(next);
+        pushSystem(
+          next
+            ? 'Sub-agents (delegate_task): on — the agent can now hand off self-contained sub-tasks to a fresh sub-agent.'
+            : 'Sub-agents (delegate_task): off.',
+        );
+        return true;
+      }
       case '/mcp': {
         if (!mcpManager) {
           pushSystem('MCP is unavailable in this session.');
@@ -660,15 +696,16 @@ export function App({
         return true;
       case '/revert': {
         const reverted = await checkpoint.revertAll();
+        if (reverted.length > 0) onTrack?.('checkpoint.revertAll', { count: reverted.length });
         pushSystem(reverted.length > 0 ? `Reverted: ${reverted.join(', ')}` : 'Nothing to revert.');
         return true;
       }
       case '/checkpoints': {
-        const toolItems = itemsRef.current.filter((i): i is Extract<TranscriptItem, { kind: 'tool' }> => i.kind === 'tool' && Boolean(i.checkpoint));
+        const checkpoints = await listCheckpoints();
         pushSystem(
-          toolItems.length === 0
+          checkpoints.length === 0
             ? 'No checkpoints yet.'
-            : toolItems.map((t, i) => `${toolItems.length - i}. ${t.description}`).reverse().join('\n'),
+            : checkpoints.map((c, i) => `${i + 1}. ${c.label} (${new Date(c.date).toLocaleTimeString()})`).join('\n'),
         );
         return true;
       }
@@ -705,16 +742,11 @@ export function App({
     setError(undefined);
     setBusy(true);
     // Snapshot prior turns BEFORE pushing the new task message.
-    const history = itemsRef.current
-      .filter((i): i is Extract<TranscriptItem, { kind: 'message' }> => i.kind === 'message')
-      .slice(-HISTORY_MAX_TURNS)
-      .map((i) => ({
-        role: i.message.role,
-        content:
-          i.message.content.length > HISTORY_MAX_CHARS
-            ? `${i.message.content.slice(0, HISTORY_MAX_CHARS)}…`
-            : i.message.content,
-      }));
+    const history = trimHistoryForAgent(
+      itemsRef.current
+        .filter((i): i is Extract<TranscriptItem, { kind: 'message' }> => i.kind === 'message')
+        .map((i) => i.message),
+    );
     pushItem({ kind: 'message', message: { role: 'user', content: display } });
     setLiveText('');
     let acc = '';
@@ -742,6 +774,7 @@ export function App({
     // message with no restart, same pattern as the extension's controller.
     await mcpManager?.ensureConnected();
     const mcpTools = mcpManager?.getToolDefinitions() ?? [];
+    const offeredTools = subAgentsEnabled ? [...tools, DELEGATE_TASK_TOOL] : tools;
 
     try {
       const outcome = await runAgent({
@@ -750,7 +783,7 @@ export function App({
         task: fullTask,
         history,
         workspaceName,
-        tools: filterToolsForPersona([...tools, ...mcpTools], persona),
+        tools: filterToolsForPersona([...offeredTools, ...mcpTools], persona),
         nativeToolCalls,
         contextWindow: active.contextWindow,
         signal: abort.signal,
@@ -766,6 +799,48 @@ export function App({
               name: call.name,
               content: answer.trim() ? `User answered: ${answer}` : 'The user did not answer. Proceed with your best judgment.',
             };
+          }
+          if (call.name === 'delegate_task') {
+            return runSubAgent(call, {
+              executor,
+              provider: active.provider,
+              profile: active.profile,
+              nativeToolCalls,
+              contextWindow: active.contextWindow,
+              tools,
+              mcpManager,
+              persona,
+              permissions,
+              shadowGit,
+              workspaceName,
+              signal: abort.signal,
+              resolveProfile: async (name) => {
+                if (!configStore || !switchProvider) return undefined;
+                const target = await configStore.getProfile(name);
+                if (!target) return undefined;
+                const next = await switchProvider(target);
+                return { provider: next.provider, profile: target };
+              },
+              events: {
+                onSubToolCall: (subCall) => {
+                  const description = executor.describe(subCall);
+                  toolDescriptions.current.set(subCall.id, description);
+                  setLiveSubTool({ kind: 'tool', id: subCall.id, name: subCall.name, description, status: 'running', indent: true });
+                },
+                onSubToolResult: (result) => {
+                  setLiveSubTool(undefined);
+                  pushItem({
+                    kind: 'tool',
+                    id: result.id,
+                    name: result.name,
+                    description: toolDescriptions.current.get(result.id) ?? result.name,
+                    status: result.isError ? 'error' : 'ok',
+                    summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
+                    indent: true,
+                  });
+                },
+              },
+            });
           }
           if (mcpManager?.isMcpTool(call.name)) {
             try {
@@ -797,8 +872,7 @@ export function App({
         },
         requestPermission: (call, tool) => permissions.request(call, tool, executor.describe(call)),
         beforeToolCall: async (call) => {
-          const hash = await shadowGit?.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
-          if (hash) toolCheckpoints.current.set(call.id, hash);
+          await shadowGit?.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
         },
         events: {
           onText: (text) => pushItem({ kind: 'message', message: { role: 'assistant', content: text } }),
@@ -826,7 +900,6 @@ export function App({
               description: toolDescriptions.current.get(result.id) ?? result.name,
               status: result.isError ? 'error' : 'ok',
               summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-              checkpoint: toolCheckpoints.current.get(result.id),
             });
           },
         },
@@ -902,6 +975,7 @@ export function App({
         }}
       </Static>
       {liveTool && <ToolChip item={liveTool} />}
+      {liveSubTool && <ToolChip item={liveSubTool} />}
       {busy && (
         <Box marginBottom={1} flexDirection="column">
           {liveText ? (

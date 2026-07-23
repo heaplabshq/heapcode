@@ -130,6 +130,32 @@ export class ShadowGit {
     }
   }
 
+  /**
+   * Recent checkpoints, most recent first — read straight from the shadow
+   * repo's own commit log rather than any in-memory transcript state, so
+   * checkpoints stay listable/rewindable across /new, /resume, or a whole
+   * new process (real usage gap found in CLI-M1's version: an in-memory-only
+   * checkpoint list went blind the moment the transcript was cleared, even
+   * though the underlying git history — and therefore the actual ability to
+   * rewind — was still fully intact).
+   */
+  async history(limit = 50): Promise<Array<{ hash: string; label: string; date: number }>> {
+    if (!(await this.ensure())) return [];
+    try {
+      const out = await this.git(['log', `-n${limit}`, '--format=%H%x1f%ct%x1f%s']);
+      return out
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [hash, ts, label] = line.split('\x1f');
+          return { hash: hash!, label: label ?? '', date: Number(ts) * 1000 };
+        });
+    } catch {
+      return [];
+    }
+  }
+
   private git(args: string[], opts: { bare?: boolean } = {}): Promise<string> {
     const fullArgs = opts.bare ? args : ['--git-dir', this.gitDir, '--work-tree', this.workspaceRoot, ...args];
     return new Promise((resolve, reject) => {

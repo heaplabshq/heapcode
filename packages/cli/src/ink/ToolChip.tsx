@@ -16,9 +16,11 @@ export function ToolChip({ item }: { item: Extract<TranscriptItem, { kind: 'tool
     ) : (
       <Text color="red">✗</Text>
     );
+  const indent = item.indent ? 2 : 0;
   return (
-    <Box flexDirection="column" marginBottom={item.status === 'running' ? 0 : 1}>
+    <Box flexDirection="column" marginBottom={item.status === 'running' ? 0 : 1} marginLeft={indent}>
       <Box gap={1}>
+        {item.indent && <Text dimColor>↳</Text>}
         {icon}
         <Text dimColor>{item.description}</Text>
       </Box>

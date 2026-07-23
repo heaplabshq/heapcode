@@ -5,24 +5,18 @@ import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { render } from 'ink';
 import fg from 'fast-glob';
-import { configureAstChunker, resolveCapabilities, type Conversation } from '@heapcode/core';
+import { configureAstChunker, formatAuditDashboard, resolveCapabilities, type Conversation } from '@heapcode/core';
 import { ConfigStore } from './config/store.js';
 import { SecretsStore } from './config/secrets.js';
 import { JsonConversationStore } from './history/store.js';
-import { canonicalize, conversationsFile, permissionsFile, shadowGitDir } from './paths.js';
+import { canonicalize, auditFile, conversationsFile, permissionsFile } from './paths.js';
 import { profileAdd, profileList, profileRemove, profileUse } from './profileCli.js';
 import { resolveProvider } from './provider/resolve.js';
 import { runHeadless } from './headless.js';
-import { agentToolDefinitions, WorkspaceToolExecutor } from './agent/workspaceTools.js';
 import { loadIgnoreMatcher } from './agent/ignoreFiles.js';
-import { SessionCheckpoint } from './agent/checkpoint.js';
 import { PermissionEngine } from './agent/permissions.js';
-import { ShadowGit } from './agent/shadowGit.js';
-import { RoleResolver } from './provider/roles.js';
-import { RagIndexer } from './rag/indexer.js';
-import { RepoMapIndexer } from './rag/repoMapIndexer.js';
-import { McpManager } from './agent/mcp.js';
-import { loadMcpServers } from './agent/mcpConfig.js';
+import { buildAgentSession } from './agentSession.js';
+import { AuditLog } from './audit.js';
 import { App } from './ink/App.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,6 +48,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (argv[0] === 'audit') {
+    const audit = new AuditLog(auditFile());
+    console.log(formatAuditDashboard(await audit.history()));
+    return;
+  }
+
   if (argv.includes('--help') || argv.includes('-h')) {
     printHelp();
     return;
@@ -67,15 +67,38 @@ async function main(): Promise<void> {
   // --new is accepted silently for back-compat with the old default.
   const continueLatest = argv.includes('--continue') || argv.includes('-c');
   const newConversation = !continueLatest;
+  // Local-only audit log (see audit.ts) — opt out with --no-telemetry or
+  // { "telemetryEnabled": false } in ~/.heapcode/config.json. There is no
+  // remote sending to opt out of; this flag controls local recording only.
+  const telemetryFlag = argv.includes('--no-telemetry') ? false : undefined;
 
   if (promptIndex >= 0) {
     const prompt = argv[promptIndex + 1];
     if (!prompt) {
-      console.error('Usage: heapcode -p "<message>" [--json] [--profile NAME] [--new]');
+      console.error('Usage: heapcode -p "<task>" [--json] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--continue]');
       process.exitCode = 1;
       return;
     }
-    const code = await runHeadless({ prompt, json: argv.includes('--json'), profileName, newConversation });
+    const personaFlagIndex = argv.findIndex((a) => a === '--persona');
+    const personaId = personaFlagIndex >= 0 ? argv[personaFlagIndex + 1] : undefined;
+    const modeFlagIndex = argv.findIndex((a) => a === '--permission-mode');
+    const modeArg = modeFlagIndex >= 0 ? argv[modeFlagIndex + 1] : undefined;
+    const PERMISSION_MODES = ['plan', 'default', 'auto-edit', 'full-auto'] as const;
+    if (modeArg !== undefined && !(PERMISSION_MODES as readonly string[]).includes(modeArg)) {
+      console.error(`Invalid --permission-mode "${modeArg}". Must be one of: ${PERMISSION_MODES.join(', ')}.`);
+      process.exitCode = 1;
+      return;
+    }
+    const code = await runHeadless({
+      prompt,
+      json: argv.includes('--json'),
+      profileName,
+      newConversation,
+      personaId,
+      permissionMode: modeArg as (typeof PERMISSION_MODES)[number] | undefined,
+      subAgents: argv.includes('--sub-agents'),
+      telemetryEnabled: telemetryFlag,
+    });
     process.exitCode = code;
     return;
   }
@@ -108,36 +131,26 @@ async function main(): Promise<void> {
   conversation ??= { id: randomUUID(), title: 'New conversation', updatedAt: Date.now(), messages: [] };
 
   const safeMode = argv.includes('--safe-mode');
-  const checkpoint = new SessionCheckpoint(root);
-  const permissions = new PermissionEngine(permissionsFile(root), () => safeMode);
-  const shadowGit = new ShadowGit(root, shadowGitDir(root));
+  const telemetryEnabled = telemetryFlag ?? (await config.load()).telemetryEnabled ?? true;
+  const audit = new AuditLog(auditFile(), () => telemetryEnabled);
+  const permissions = new PermissionEngine(
+    permissionsFile(root),
+    () => safeMode,
+    () => {},
+    (name, meta) => void audit.track(name, meta),
+  );
   const capabilities = resolveCapabilities(profile);
 
-  // RAG (semantic search) + repo map (structural outline) — CLI-M3. No
-  // filesystem watcher: the CLI has no persistent "open editor" the way the
-  // extension does, so cli.tsx/App.tsx call indexOne/removeFile/renameFile
-  // directly right after the agent's own write tools succeed (see
-  // rag/indexer.ts's own comment for why that's simpler and more precise
-  // than watching here). RepoMapIndexer needs no embeddings model, so it's
-  // always on; RagIndexer no-ops gracefully without one configured.
-  const roles = new RoleResolver(config, secrets, profile);
-  const heapcodeDir = join(root, '.heapcode');
-  const ragIndexer = new RagIndexer(root, heapcodeDir, roles);
-  const repoMapIndexer = new RepoMapIndexer(root, heapcodeDir);
-  const executor = new WorkspaceToolExecutor(
+  // Everything else (executor, checkpoint, shadow-git, RAG/repo-map
+  // indexers, MCP) is built by the same shared path headless.ts uses — see
+  // agentSession.ts's own comment on why (guardrail #8: headless is a
+  // first-class peer of the interactive UI, not a bolted-on shortcut).
+  const { checkpoint, executor, shadowGit, ragIndexer, repoMapIndexer, mcpManager, tools } = buildAgentSession(
     root,
-    checkpoint,
-    60_000,
-    async (query) => (ragIndexer.ready ? ragIndexer.queryFormatted(query) : ''),
-    (pathPrefix) => (repoMapIndexer.ready ? repoMapIndexer.format(pathPrefix) : ''),
+    profile,
+    config,
+    secrets,
   );
-
-  // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with
-  // project-scoped (<cwd>/.heapcode/mcp.json), project wins name collisions.
-  // Reconnected (idempotent) at the start of every task, same pattern as the
-  // extension's controller.ts — not once at startup, so config edits and
-  // dropped servers take effect on the next message without a restart.
-  const mcpManager = new McpManager(() => loadMcpServers(root, config));
 
   // exitOnCtrlC: false — Ink's built-in handler would unmount the UI on the
   // first Ctrl+C even mid-agent-run, leaving the terminal in a broken state.
@@ -153,7 +166,7 @@ async function main(): Promise<void> {
       checkpoint={checkpoint}
       permissions={permissions}
       shadowGit={shadowGit}
-      tools={agentToolDefinitions}
+      tools={tools}
       nativeToolCalls={capabilities.nativeToolCalls}
       workspaceName={basename(root)}
       contextWindow={contextWindow}
@@ -170,6 +183,7 @@ async function main(): Promise<void> {
       ragIndexer={ragIndexer}
       repoMapIndexer={repoMapIndexer}
       mcpManager={mcpManager}
+      onTrack={(name, meta) => void audit.track(name, meta)}
       listWorkspaceFiles={async () => {
         const entries = await fg(['**/*'], {
           cwd: root,
@@ -202,9 +216,24 @@ Usage:
   heapcode --continue | -c          Continue this directory's most recent conversation (in-session: /resume picks any)
   heapcode --profile NAME           Use a specific provider profile for this session
   heapcode --safe-mode              Ask for permission on every action, even ones with a persisted "Always allow" grant
-  heapcode -p "<message>" [--json]  Headless: one message in, one reply out, no TTY required (chat only — CLI-M4 adds tools)
+  heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG, MCP) with no TTY required — see below
 
   heapcode profile <add|list|use|remove>   Scriptable profile management (all of it is also available in-session via /profile)
+  heapcode audit                            Local usage/audit dashboard — event names + coarse metadata only, never code/prompts/paths; nothing leaves this machine
+
+Headless (-p) flags:
+  --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text
+  --persona NAME                    agent (default), architect (read-only), debug (no edits), reviewer
+  --permission-mode MODE            plan | default | auto-edit | full-auto — see below; default: "default"
+  --sub-agents                      Offer delegate_task (off by default, same as interactive's /subagents)
+  --continue | -c                   Continue this directory's most recent conversation instead of starting fresh
+  --no-telemetry                    Skip the local audit-log entry for this run (see "heapcode audit" — no remote sending exists to opt out of)
+
+Permission modes (headless has no one to prompt, so every mode resolves permissions on its own):
+  plan        Read-only tools only — nothing offered that could mutate anything
+  default     Every tool is visible, but writes/commands are denied — the agent adapts or reports what it would need
+  auto-edit   File edits auto-approved; shell commands still denied
+  full-auto   Everything auto-approved — for CI automation that should actually finish the task unattended
 
 In-session commands (type / for the autocomplete menu):
   /help                             Show available commands
@@ -218,11 +247,12 @@ In-session commands (type / for the autocomplete menu):
   /search <query>                   Search the workspace (semantic if indexed, plain text otherwise)
   /index                            Rebuild the semantic search + repo map indexes
   /mcp                              List configured MCP servers and their connection status
+  /subagents [on|off]               Toggle delegate_task — lets the agent hand off self-contained sub-tasks (off by default)
   /clear, /new                      Clear the screen and start a new conversation
   /resume                           Pick an earlier conversation to continue
-  /rewind [n]                       Undo the last n tool calls (default 1) via their shadow-git checkpoints
+  /rewind [n]                       Undo the last n tool-call checkpoints (default 1) — persists across /new, /resume, even a restart
   /revert                           Restore every file this session touched to its pre-agent content
-  /checkpoints                      List this session's tool-call checkpoints
+  /checkpoints                      List recent checkpoints for this project (shadow-git history, not just this session)
   /exit                             Quit (also: Ctrl+C twice)
 
 Keys: Esc interrupts the running agent · Ctrl+C clears typed input · Ctrl+C twice exits

@@ -1,11 +1,11 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { startMockServer, type MockServer } from '../../core/test/mockServer.js';
+import { startMockServer, type MockBehavior, type MockServer } from '../../core/test/mockServer.js';
 import { ConfigStore } from '../src/config/store.js';
 import { conversationsFile } from '../src/paths.js';
-import { runHeadless } from '../src/headless.js';
+import { runHeadless, type HeadlessEvent } from '../src/headless.js';
 
 let home: string;
 let project: string;
@@ -24,23 +24,38 @@ afterEach(async () => {
   await rm(project, { recursive: true, force: true });
 });
 
-async function configureProfile(): Promise<void> {
-  server = await startMockServer({ kind: 'sse', chunks: ['Hel', 'lo!'] });
+async function configureProfile(behavior: MockBehavior): Promise<void> {
+  server = await startMockServer(behavior);
   const config = new ConfigStore();
   await config.saveProfile({ name: 'test', preset: 'custom', baseUrl: server.baseUrl, model: 'mock-model' });
 }
 
-describe('runHeadless', () => {
-  it('returns a valid JSON reply with no TTY and persists history', async () => {
-    await configureProfile();
+/** Every stdout write parsed as one NDJSON event per line (blank lines dropped). */
+function parseNdjson(write: { mock: { calls: unknown[][] } }): HeadlessEvent[] {
+  return write.mock.calls
+    .map((c) => c[0] as string)
+    .join('')
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as HeadlessEvent);
+}
+
+type SingleBehavior = Exclude<MockBehavior, { kind: 'sequence' }>;
+const sse = (content: string): SingleBehavior => ({ kind: 'sse', chunks: [content] });
+const toolBlock = (name: string, args: Record<string, unknown>) => `<tool name="${name}">\n${JSON.stringify(args)}\n</tool>`;
+const finishBlock = (summary: string) => toolBlock('finish', { summary });
+
+describe('runHeadless — chat-only parity (no tools used)', () => {
+  it('returns valid JSON events ending in a result, and persists history', async () => {
+    await configureProfile(sse('Hello!'));
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     const code = await runHeadless({ prompt: 'hi', json: true, cwd: project });
 
     expect(code).toBe(0);
-    const printed = write.mock.calls.map((c) => c[0]).join('');
-    const parsed = JSON.parse(printed);
-    expect(parsed).toMatchObject({ response: 'Hello!', model: 'mock-model', profile: 'test' });
+    const events = parseNdjson(write);
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toMatchObject({ type: 'result', outcome: 'done', response: 'Hello!', model: 'mock-model', profile: 'test' });
 
     const saved = JSON.parse(await readFile(conversationsFile(project), 'utf8'));
     expect(saved[0].messages.map((m: { content: string }) => m.content)).toEqual(['hi', 'Hello!']);
@@ -48,7 +63,7 @@ describe('runHeadless', () => {
   });
 
   it('prints plain text (not JSON) without --json', async () => {
-    await configureProfile();
+    await configureProfile(sse('Hello!'));
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     await runHeadless({ prompt: 'hi', json: false, cwd: project });
@@ -67,8 +82,22 @@ describe('runHeadless', () => {
     write.mockRestore();
   });
 
+  it('exits non-zero when the provider itself fails mid-run', async () => {
+    // 401 is non-retryable (unlike 429/5xx) — an immediate throw, no backoff delay.
+    // runAgent absorbs provider errors internally (outcome 'error', an onText
+    // event with the message) rather than throwing back out to runHeadless —
+    // so this surfaces as a normal 'result' event on stdout, exit code 1.
+    await configureProfile({ kind: 'json', status: 401, body: { error: 'unauthorized' } });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project });
+    expect(code).toBe(1);
+    const result = parseNdjson(write).find((e) => e.type === 'result');
+    expect(result).toMatchObject({ outcome: 'error' });
+  });
+
   it('continues the most recent conversation in the project directory across calls', async () => {
-    await configureProfile();
+    await configureProfile(sse('ok'));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     await runHeadless({ prompt: 'first', json: true, cwd: project });
@@ -77,5 +106,134 @@ describe('runHeadless', () => {
     const saved = JSON.parse(await readFile(conversationsFile(project), 'utf8'));
     expect(saved).toHaveLength(1);
     expect(saved[0].messages).toHaveLength(4);
+  });
+
+  it('--continue false (the default) starts a fresh conversation instead', async () => {
+    await configureProfile(sse('ok'));
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'first', json: true, cwd: project, newConversation: true });
+    await runHeadless({ prompt: 'second', json: true, cwd: project, newConversation: true });
+
+    const saved = JSON.parse(await readFile(conversationsFile(project), 'utf8'));
+    expect(saved).toHaveLength(2);
+  });
+});
+
+describe('runHeadless — full agent loop (tools)', () => {
+  it('runs a tool call under full-auto and streams tool_call/tool_result events before the final result', async () => {
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sse(toolBlock('write_file', { path: 'out.txt', content: 'from headless' })), sse(finishBlock('Wrote out.txt.'))],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'write a file', json: true, cwd: project, permissionMode: 'full-auto' });
+
+    expect(code).toBe(0);
+    const events = parseNdjson(write);
+    expect(events.map((e) => e.type)).toEqual(['tool_call', 'tool_result', 'text', 'result']);
+    expect(events[0]).toMatchObject({ type: 'tool_call', name: 'write_file' });
+    expect(events[1]).toMatchObject({ type: 'tool_result', name: 'write_file' });
+    expect((events[1] as { isError?: boolean }).isError).toBeFalsy();
+    expect(await readFile(join(project, 'out.txt'), 'utf8')).toBe('from headless');
+  });
+
+  it('"default" permission mode denies a write and the agent adapts instead of the run erroring', async () => {
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sse(toolBlock('write_file', { path: 'out.txt', content: 'x' })), sse(finishBlock('Could not write; permission denied.'))],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'write a file', json: true, cwd: project }); // default mode
+
+    expect(code).toBe(0); // the agent still finished cleanly, just without writing
+    const events = parseNdjson(write);
+    expect(events.find((e) => e.type === 'tool_result')).toMatchObject({ isError: true });
+    await expect(readFile(join(project, 'out.txt'), 'utf8')).rejects.toThrow();
+  });
+
+  it('"plan" mode never offers write tools at all — the fallback protocol\'s system prompt has no write_file definition', async () => {
+    await configureProfile(sse(finishBlock('Here is my plan.')));
+
+    await runHeadless({ prompt: 'plan a refactor', json: true, cwd: project, permissionMode: 'plan' });
+
+    const sent = server.requests[0]!.body as { messages: Array<{ content: string }> };
+    expect(sent.messages[0]!.content).not.toContain('### write_file');
+    expect(sent.messages[0]!.content).toContain('### read_file');
+  });
+
+  it('"auto-edit" mode allows writes but still denies shell commands', async () => {
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('write_file', { path: 'out.txt', content: 'ok' })),
+        sse(toolBlock('run_command', { command: 'echo hi' })),
+        sse(finishBlock('done')),
+      ],
+    });
+    await runHeadless({ prompt: 'write then run', json: true, cwd: project, permissionMode: 'auto-edit' });
+
+    expect(await readFile(join(project, 'out.txt'), 'utf8')).toBe('ok');
+  });
+
+  it('ask_user is answered automatically instead of hanging — there is no one to ask in headless mode', async () => {
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sse(toolBlock('ask_user', { question: 'which approach?' })), sse(finishBlock('Proceeded with the default approach.'))],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'pick an approach', json: true, cwd: project });
+
+    expect(code).toBe(0);
+    const events = parseNdjson(write);
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ response: 'Proceeded with the default approach.' });
+  });
+});
+
+describe('runHeadless — --persona', () => {
+  it('restricts the offered tools the same way the interactive /persona command does', async () => {
+    await configureProfile(sse(finishBlock('Reviewed.')));
+
+    await runHeadless({ prompt: 'review this', json: true, cwd: project, personaId: 'reviewer' });
+
+    const sent = server.requests[0]!.body as { messages: Array<{ content: string }> };
+    expect(sent.messages[0]!.content).not.toContain('### write_file');
+    expect(sent.messages[1]!.content).toContain('Reviewer persona');
+  });
+});
+
+describe('runHeadless — --sub-agents', () => {
+  it('delegate_task runs a nested agent loop; its tool activity is tagged with a parent field in the NDJSON stream', async () => {
+    await writeFile(join(project, 'trigger.txt'), 'x');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('delegate_task', { task: 'delete trigger.txt' })), // parent
+        sse(toolBlock('delete_file', { path: 'trigger.txt' })), // sub-agent turn 1
+        sse(finishBlock('Deleted trigger.txt.')), // sub-agent turn 2
+        sse(finishBlock('Delegated and done.')), // parent turn 2
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'delegate cleanup', json: true, cwd: project, permissionMode: 'full-auto', subAgents: true });
+
+    expect(code).toBe(0);
+    const events = parseNdjson(write);
+    const delegateCall = events.find((e) => e.type === 'tool_call' && e.name === 'delegate_task');
+    expect(delegateCall).toBeTruthy();
+    const nested = events.find((e) => e.type === 'tool_call' && e.name === 'delete_file');
+    expect(nested).toMatchObject({ type: 'tool_call', name: 'delete_file', parent: (delegateCall as { id: string }).id });
+    await expect(readFile(join(project, 'trigger.txt'), 'utf8')).rejects.toThrow();
+  });
+
+  it('delegate_task is not offered unless --sub-agents is passed', async () => {
+    await configureProfile(sse(finishBlock('done')));
+    await runHeadless({ prompt: 'do something', json: true, cwd: project });
+    const sent = server.requests[0]!.body as { messages: Array<{ content: string }> };
+    expect(sent.messages[0]!.content).not.toContain('delegate_task');
   });
 });

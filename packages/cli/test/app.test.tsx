@@ -10,6 +10,7 @@ import { JsonConversationStore } from '../src/history/store.js';
 import { WorkspaceToolExecutor } from '../src/agent/workspaceTools.js';
 import { SessionCheckpoint } from '../src/agent/checkpoint.js';
 import { PermissionEngine } from '../src/agent/permissions.js';
+import type { ShadowGit } from '../src/agent/shadowGit.js';
 import { App } from '../src/ink/App.js';
 import type { RagIndexer } from '../src/rag/indexer.js';
 import type { RepoMapIndexer } from '../src/rag/repoMapIndexer.js';
@@ -127,6 +128,7 @@ function renderApp(overrides: {
   ragIndexer?: RagIndexer;
   repoMapIndexer?: RepoMapIndexer;
   mcpManager?: McpManager;
+  shadowGit?: ShadowGit;
 }) {
   const checkpoint = new SessionCheckpoint(root);
   const executor = new WorkspaceToolExecutor(root, checkpoint, 5_000);
@@ -140,6 +142,7 @@ function renderApp(overrides: {
       executor={executor}
       checkpoint={checkpoint}
       permissions={permissions}
+      shadowGit={overrides.shadowGit}
       tools={overrides.tools ?? []}
       nativeToolCalls={false}
       workspaceName="test"
@@ -710,6 +713,61 @@ describe('App', () => {
     expect(lastFrame()).toContain('look at @src/index.ts');
   });
 
+  it('/subagents toggles delegate_task availability; off by default, and it never reaches the system prompt until enabled', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = recordingProvider('Done.');
+
+    const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('hi');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
+    expect(provider.requests[0]!.at(0)!.content).not.toContain('delegate_task');
+
+    stdin.write('/subagents on');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('Sub-agents (delegate_task): on'));
+
+    stdin.write('hi again');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(1), { timeout: 2_000 });
+    expect(provider.requests[1]!.at(0)!.content).toContain('delegate_task');
+  });
+
+  it('a delegate_task call runs a full sub-agent turn and renders its tool calls indented under the outer chip', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = scriptedProvider([
+      { content: '<tool name="delegate_task">\n{"task": "write a scratch file"}\n</tool>' }, // parent
+      { content: '<tool name="write_file">\n{"path": "scratch.txt", "content": "hi"}\n</tool>' }, // sub-agent turn 1
+      { content: '<tool name="finish">\n{"summary": "Wrote scratch.txt."}\n</tool>' }, // sub-agent turn 2
+      { content: '<tool name="finish">\n{"summary": "Delegated and done."}\n</tool>' }, // parent turn 2
+    ]);
+
+    const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore, tools: [WRITE_FILE_TOOL] });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/subagents on');
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('delegate the scratch file');
+    stdin.write('\r');
+
+    // Two permission prompts in sequence: delegate_task itself (execute), then
+    // the sub-agent's own write_file (write) — both need "Allow once" (Enter).
+    await vi.waitFor(() => expect(lastFrame()).toContain('wants to run a command'), { timeout: 2_000 });
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('wants to modify files'), { timeout: 2_000 });
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Delegated and done'), { timeout: 3_000 });
+    // The sub-agent's own write_file call rendered indented (↳ marker).
+    expect(lastFrame()).toContain('↳');
+    expect(await readFile(join(root, 'scratch.txt'), 'utf8')).toBe('hi');
+  });
+
   it('/mcp reports "no servers" when none are connected, and lists connected ones otherwise', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
@@ -855,6 +913,38 @@ describe('App', () => {
     const task = provider.requests[0]!.at(-1)!.content;
     expect(task).toContain('Workspace structure overview');
     expect(task).toContain('src/index.ts');
+  });
+
+  it('/checkpoints and /rewind survive /new — they read shadow-git history, not the in-memory transcript', async () => {
+    const { ShadowGit } = await import('../src/agent/shadowGit.js');
+    const shadowGit = new ShadowGit(root, join(root, '.heapcode', 'shadow-git'));
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = scriptedProvider([
+      { content: '<tool name="write_file">\n{"path": "a.txt", "content": "v1"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Wrote a.txt."}\n</tool>' },
+    ]);
+
+    const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore, tools: [WRITE_FILE_TOOL], shadowGit });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('write a.txt');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('wants to modify files'), { timeout: 2_000 });
+    stdin.write('\r'); // Allow once
+    await vi.waitFor(() => expect(lastFrame()).toContain('Wrote a.txt'), { timeout: 2_000 });
+
+    stdin.write('/new');
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 20));
+
+    stdin.write('/checkpoints');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('write_file'), { timeout: 2_000 });
+
+    stdin.write('/rewind 1');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('Rewound to before'), { timeout: 2_000 });
+    await expect(readFile(join(root, 'a.txt'), 'utf8')).rejects.toThrow(); // write_file created it; rewind removed it
   });
 
   it('/revert with nothing to revert reports that instead of erroring', async () => {

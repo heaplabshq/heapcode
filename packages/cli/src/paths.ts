@@ -45,6 +45,11 @@ export function secretsFile(): string {
   return join(globalDir(), 'secrets.json');
 }
 
+/** Local-only, capped audit trail (event name + coarse metadata, never code/prompts/paths) — see audit.ts. */
+export function auditFile(): string {
+  return join(globalDir(), 'audit.json');
+}
+
 export function conversationsFile(cwd?: string): string {
   return join(projectDir(cwd), 'conversations.json');
 }

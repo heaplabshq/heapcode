@@ -576,6 +576,7 @@ export function App() {
             active: msg.active,
             presets: msg.presets,
             keySaved: msg.keySaved,
+            subAgentsEnabled: msg.subAgentsEnabled,
           });
           break;
         case 'permissionRequest':

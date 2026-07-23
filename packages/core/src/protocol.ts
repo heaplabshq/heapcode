@@ -92,6 +92,8 @@ export type WebviewToExtension =
   | { type: 'settingsSaveProfile'; original?: string; profile: ProviderProfileConfig; apiKey?: string }
   | { type: 'settingsDeleteProfile'; name: string }
   | { type: 'settingsActivateProfile'; name: string }
+  /** Toggles `heapcode.agent.subAgents` — surfaced here so the opt-in isn't only discoverable via native VS Code settings. */
+  | { type: 'settingsSetSubAgents'; enabled: boolean }
   /**
    * Fetch the model list for the profile being edited (not necessarily saved
    * yet) so its "Chat model" and role fields can offer a dropdown. `apiKey`:
@@ -192,6 +194,8 @@ export type ExtensionToWebview =
       active: string;
       presets: SettingsPresetInfo[];
       keySaved: Record<string, boolean>;
+      /** Current value of `heapcode.agent.subAgents` (default false — an opt-in, autonomy-increasing capability). */
+      subAgentsEnabled: boolean;
     }
   /** Result of 'settingsTestConnection' — empty `models` + `error` set means the test failed. */
   | { type: 'settingsModels'; models: string[]; error?: string }

@@ -296,6 +296,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         local: p.local,
       })),
       keySaved,
+      subAgentsEnabled: vscode.workspace.getConfiguration('heapcode.agent').get<boolean>('subAgents', false),
     });
   }
 
@@ -546,6 +547,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case 'settingsActivateProfile':
         await this.profiles.setActiveByName(msg.name);
+        await this.postSettingsData();
+        break;
+      case 'settingsSetSubAgents':
+        await vscode.workspace.getConfiguration('heapcode.agent').update(
+          'subAgents',
+          msg.enabled,
+          vscode.workspace.workspaceFolders
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global,
+        );
         await this.postSettingsData();
         break;
       case 'settingsTestConnection': {
@@ -852,6 +863,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const restored = await this.shadowGit?.restore(checkpoint);
+    if (restored && restored.length > 0) this.track?.('checkpoint.restoreTurn', { count: restored.length });
     this.post({
       type: 'agentText',
       text:
@@ -867,6 +879,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   private async restoreToolCheckpoint(hash: string): Promise<void> {
     const restored = await this.shadowGit?.restore(hash);
+    if (restored && restored.length > 0) this.track?.('checkpoint.restoreStep', { count: restored.length });
     this.post({
       type: 'agentText',
       text:

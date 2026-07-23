@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolDefinition } from '@heapcode/core';
-import { BUILTIN_PERSONAS, filterToolsForPersona, getPersona, intersectPersonas } from '../src/agent/personas.js';
+import {
+  BUILTIN_PERSONAS,
+  filterToolsForPersona,
+  getPersona,
+  intersectPersonas,
+  looksFilesystemMutating,
+} from '../src/agent/personas.js';
 
 const TOOLS: ToolDefinition[] = [
   { name: 'read_file', description: '', parameters: {}, permission: 'read' },
@@ -75,5 +81,31 @@ describe('intersectPersonas', () => {
   it('both unrestricted stays unrestricted', () => {
     const effective = intersectPersonas(getPersona('agent'), getPersona('agent'));
     expect(filterToolsForPersona(TOOLS, effective).map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
+  });
+});
+
+describe('looksFilesystemMutating', () => {
+  it('flags directory/file mutation commands (the Debug-persona escape this exists to close)', () => {
+    expect(looksFilesystemMutating('mkdir new-folder')).toBe(true);
+    expect(looksFilesystemMutating('mkdir -p src/new-folder')).toBe(true);
+    expect(looksFilesystemMutating('rm -rf dist')).toBe(true);
+    expect(looksFilesystemMutating('touch notes.txt')).toBe(true);
+    expect(looksFilesystemMutating('cp a.txt b.txt')).toBe(true);
+    expect(looksFilesystemMutating('mv a.txt b.txt')).toBe(true);
+    expect(looksFilesystemMutating('sed -i "s/x/y/" file.ts')).toBe(true);
+    expect(looksFilesystemMutating('git commit -am "wip"')).toBe(true);
+    expect(looksFilesystemMutating('git checkout -- file.ts')).toBe(true);
+    expect(looksFilesystemMutating('echo hi > out.txt')).toBe(true);
+    expect(looksFilesystemMutating('ls -la && mkdir sub')).toBe(true);
+  });
+
+  it('does not flag ordinary read/execute commands', () => {
+    expect(looksFilesystemMutating('npm test')).toBe(false);
+    expect(looksFilesystemMutating('git status')).toBe(false);
+    expect(looksFilesystemMutating('git diff')).toBe(false);
+    expect(looksFilesystemMutating('ls -la')).toBe(false);
+    expect(looksFilesystemMutating('pytest -q')).toBe(false);
+    expect(looksFilesystemMutating('command > /dev/null 2>&1')).toBe(false);
+    expect(looksFilesystemMutating('node script.js 2>&1')).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ export interface SettingsData {
   active: string;
   presets: SettingsPresetInfo[];
   keySaved: Record<string, boolean>;
+  subAgentsEnabled: boolean;
 }
 
 /** Working copy of a profile being edited; strings throughout for form binding. */
@@ -606,6 +607,24 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
       >
         + Add profile
       </button>
+      <div className="settings-section">
+        <div className="settings-section-title">Agent</div>
+        <label className="settings-toggle-row">
+          <input
+            type="checkbox"
+            checked={data.subAgentsEnabled}
+            onChange={(e) => postToExtension({ type: 'settingsSetSubAgents', enabled: e.target.checked })}
+          />
+          <span>
+            <strong>Sub-agent orchestration</strong>
+            <div className="settings-subtitle">
+              Let the agent delegate self-contained work to an isolated sub-agent (own context,
+              optionally its own persona/model). Off by default — a new, autonomy-increasing
+              capability.
+            </div>
+          </span>
+        </label>
+      </div>
       <p className="settings-note">
         API keys are stored in your OS keychain, never in settings files. Editor-level options
         (autocomplete, agent iterations, safe mode…) live in{' '}

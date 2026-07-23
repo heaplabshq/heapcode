@@ -54,6 +54,30 @@ export const BUILTIN_PERSONAS: AgentPersona[] = [
   },
 ];
 
+/**
+ * `run_command` is declared `permission: 'execute'` so personas without
+ * `write` (e.g. Debug) still get it — but a shell command can create, edit,
+ * or delete files just as easily as write_file/edit_file can, which lets a
+ * write-restricted persona escape its own restriction (e.g. `mkdir foo`,
+ * `rm -rf foo`, `echo x > foo`). This heuristic flags commands whose
+ * effect is filesystem mutation, so personas without `write` can be blocked
+ * from running them even though `run_command` itself stays offered for
+ * legitimate read-only/execute use (tests, git status, build, etc).
+ */
+const FS_MUTATING_COMMAND_RE = [
+  /(?:^|[\s;&|])(mkdir|rmdir|rm|touch|cp|mv|ln|tee|truncate|chmod|chown)(?:\s|$)/,
+  /(?:^|[\s;&|])sed\s+(?:-i|--in-place)/,
+  /(?:^|[\s;&|])git\s+(?:add|commit|checkout|reset|clean|rm|mv|apply|stash)\b/,
+  /(?:^|[\s;&|])(?:New-Item|Remove-Item|Copy-Item|Move-Item|Set-Content|Add-Content)\b/i,
+  // Redirection into a real file, e.g. `echo x > out.txt` — excludes fd
+  // duplication (2>&1) and the common no-op `> /dev/null`.
+  /(?<!\d)>{1,2}\s*(?!&|\/dev\/null\b)\S/,
+];
+
+export function looksFilesystemMutating(command: string): boolean {
+  return FS_MUTATING_COMMAND_RE.some((re) => re.test(command));
+}
+
 export function getPersona(id: string | undefined): AgentPersona {
   return BUILTIN_PERSONAS.find((p) => p.id === id) ?? BUILTIN_PERSONAS[0]!;
 }

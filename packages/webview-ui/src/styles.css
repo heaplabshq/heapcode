@@ -1075,6 +1075,17 @@ select.settings-input {
   opacity: 0.6;
 }
 
+.settings-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.settings-toggle-row input {
+  margin-top: 3px;
+}
+
 .settings-roles-toggle {
   display: flex;
   align-items: center;

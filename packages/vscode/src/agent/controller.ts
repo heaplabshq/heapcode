@@ -16,7 +16,13 @@ import {
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
-import { filterToolsForPersona, getPersona, intersectPersonas, type AgentPersona } from './personas.js';
+import {
+  filterToolsForPersona,
+  getPersona,
+  intersectPersonas,
+  looksFilesystemMutating,
+  type AgentPersona,
+} from './personas.js';
 import { callLmTool, getLmToolDefinitions, getLmToolGroups, isLmTool } from './lmTools.js';
 import { getActiveEditor } from '../contextCollector.js';
 import { mergeWithApplyModel } from '../inlineEdit.js';
@@ -250,6 +256,21 @@ export class AgentController {
               };
             }
           }
+          if (
+            call.name === 'run_command' &&
+            persona.allowedPermissions &&
+            !persona.allowedPermissions.includes('write') &&
+            looksFilesystemMutating(String(call.args.command ?? ''))
+          ) {
+            return {
+              id: call.id,
+              name: call.name,
+              content:
+                `Blocked: this command looks like it would create, modify, or delete files, which the ` +
+                `${persona.label} persona does not allow. Use a persona with file-editing tools instead.`,
+              isError: true,
+            };
+          }
           const result = await executor.execute(call, this.abort?.signal);
           if (!result.isError && (call.name === 'write_file' || call.name === 'edit_file')) {
             const info = await this.computeFileEdit(String(call.args.path ?? ''));
@@ -438,6 +459,21 @@ export class AgentController {
           };
         }
       }
+      if (
+        subCall.name === 'run_command' &&
+        persona.allowedPermissions &&
+        !persona.allowedPermissions.includes('write') &&
+        looksFilesystemMutating(String(subCall.args.command ?? ''))
+      ) {
+        return {
+          id: subCall.id,
+          name: subCall.name,
+          content:
+            `Blocked: this command looks like it would create, modify, or delete files, which the ` +
+            `${persona.label} persona does not allow. Use a persona with file-editing tools instead.`,
+          isError: true,
+        };
+      }
       return ctx.executor.execute(subCall, this.abort?.signal);
     };
 
@@ -527,6 +563,7 @@ export class AgentController {
 
   async revert(): Promise<void> {
     const reverted = (await this.checkpoint?.revertAll()) ?? [];
+    if (reverted.length > 0) this.track?.('checkpoint.revertAll', { count: reverted.length });
     this.post({
       type: 'agentText',
       text:
@@ -554,13 +591,17 @@ export class AgentController {
 
   async revertFile(relPath: string): Promise<void> {
     const ok = await this.checkpoint?.revertFile(relPath);
-    if (ok) this.post({ type: 'agentText', text: `Reverted ${relPath}.` });
+    if (ok) {
+      this.track?.('checkpoint.revertFile');
+      this.post({ type: 'agentText', text: `Reverted ${relPath}.` });
+    }
     this.postChangedFiles();
   }
 
   /** Restore the agent's version (after a Revert or a manual undo). */
   async reapplyFile(relPath: string): Promise<void> {
     const ok = await this.checkpoint?.reapplyFile(relPath);
+    if (ok) this.track?.('checkpoint.reapplyFile');
     this.post({
       type: 'agentText',
       text: ok ? `Reapplied the agent's version of ${relPath}.` : `Could not reapply ${relPath}.`,
@@ -570,12 +611,14 @@ export class AgentController {
 
   keepFile(relPath: string): void {
     this.checkpoint?.keepFile(relPath);
+    this.track?.('checkpoint.keepFile');
     this.postChangedFiles();
   }
 
   /** Accept every remaining (non-reverted) file at once — the "Keep all" counterpart to Revert all. */
   keepAll(): void {
     const kept = this.checkpoint?.keepAll() ?? [];
+    if (kept.length > 0) this.track?.('checkpoint.keepAll', { count: kept.length });
     this.post({
       type: 'agentText',
       text: kept.length > 0 ? `Kept ${kept.length} file(s): ${kept.join(', ')}.` : 'Nothing to keep.',

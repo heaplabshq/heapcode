@@ -261,8 +261,11 @@ Keys: Esc interrupts the running agent · Ctrl+C clears typed input · Ctrl+C tw
       Up/Down recall input history · Tab completes a slash command
       @ mentions a file/folder · @workspace pulls in whole-repo context (semantic search, or a structural outline without an embeddings model)
 
-Config: ~/.heapcode/config.json (profiles)  ·  ~/.heapcode/secrets.json (API keys, chmod 600)
-Per-project: <cwd>/.heapcode/{conversations.json, permissions.json, shadow-git/, rag-index.json, repo-map.json, mcp.json}
+Config: ~/.heapcode/config.json (profiles)  ·  ~/.heapcode/secrets.json (API keys, chmod 600)  ·  ~/.heapcode/audit.json (local usage log)
+Per-project session state (history, checkpoints, search index — never in your repo, never at risk of being committed):
+  ~/.heapcode/projects/<name>-<hash>/{conversations.json, permissions.json, shadow-git/, rag-index.json, repo-map.json}
+Per-project CONFIG (meant to live alongside your code, safe to commit and share with a team):
+  <cwd>/.heapcode/{HEAPCODE.md, memory.md, instructions/*.md, mcp.json}
 Semantic search needs an embeddings model on the active profile (embeddingsModel, e.g. nomic-embed-text on Ollama) — /settings shows whether one is configured.
 MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.`);
 }

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ConfigStore, McpServerConfig } from '../config/store.js';
+import { projectConfigDir } from '../paths.js';
 
 /**
  * MCP servers come from two places, merged: `mcpServers` in the global
@@ -14,7 +15,7 @@ export async function loadMcpServers(root: string, config: ConfigStore): Promise
   const global = (await config.load()).mcpServers ?? {};
   let project: Record<string, McpServerConfig> = {};
   try {
-    project = JSON.parse(await readFile(join(root, '.heapcode', 'mcp.json'), 'utf8')) as Record<string, McpServerConfig>;
+    project = JSON.parse(await readFile(join(projectConfigDir(root), 'mcp.json'), 'utf8')) as Record<string, McpServerConfig>;
   } catch {
     // no project-scoped file — global only
   }

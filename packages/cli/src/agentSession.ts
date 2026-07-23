@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import type { ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
 import type { ConfigStore } from './config/store.js';
 import type { SecretsStore } from './config/secrets.js';
@@ -10,7 +9,7 @@ import { loadMcpServers } from './agent/mcpConfig.js';
 import { RoleResolver } from './provider/roles.js';
 import { RagIndexer } from './rag/indexer.js';
 import { RepoMapIndexer } from './rag/repoMapIndexer.js';
-import { shadowGitDir } from './paths.js';
+import { projectStateDir, shadowGitDir } from './paths.js';
 
 export interface AgentSession {
   checkpoint: SessionCheckpoint;
@@ -34,9 +33,11 @@ export function buildAgentSession(root: string, profile: ProviderProfileConfig, 
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
 
   const roles = new RoleResolver(config, secrets, profile);
-  const heapcodeDir = join(root, '.heapcode');
-  const ragIndexer = new RagIndexer(root, heapcodeDir, roles);
-  const repoMapIndexer = new RepoMapIndexer(root, heapcodeDir);
+  // Caches, not project config — live in the global per-project state dir
+  // alongside conversations/checkpoints, not inside the project itself.
+  const stateDir = projectStateDir(root);
+  const ragIndexer = new RagIndexer(root, stateDir, roles);
+  const repoMapIndexer = new RepoMapIndexer(root, stateDir);
   const executor = new WorkspaceToolExecutor(
     root,
     checkpoint,

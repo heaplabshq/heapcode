@@ -424,6 +424,12 @@
     color: var(--ink-dim);
   }
 
+  .feature-item code {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.93em;
+    color: var(--cyan);
+  }
+
   /* footer */
 
   footer {
@@ -468,7 +474,7 @@
 </nav>
 
 <div class="titleblock">
-  <span>DWG NO. <b>HC-0.2.2</b></span>
+  <span>DWG NO. <b>HC-0.4.0</b></span>
   <span>SCALE <b>LOCAL = CLOUD</b></span>
   <span>LICENSE <b>PolyForm Noncommercial 1.0</b></span>
   <span>TELEMETRY <b>ANONYMOUS, OPT-OUT</b></span>
@@ -489,7 +495,7 @@
           <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
           <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">View source on GitHub</a>
         </div>
-        <p class="fine">v0.2.2 · free for personal, internal &amp; noncommercial use</p>
+        <p class="fine">v0.4.0 · free for personal, internal &amp; noncommercial use</p>
       </div>
 
       <div class="diagram-card">
@@ -621,13 +627,37 @@
         <h4>MCP &amp; tool interop</h4>
         <p>Register Model Context Protocol servers; other extensions' language-model tools show up in agent mode too.</p>
       </div>
+      <div class="feature-item">
+        <h4>Safety guardrails</h4>
+        <p>Untrusted content &mdash; files, URLs, MCP output &mdash; is tagged and quarantined before it reaches the model; hallucinated package installs are checked against the registry and blocked automatically.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Granular checkpoints</h4>
+        <p>Every tool call gets its own shadow-git snapshot &mdash; rewind any single step, not just the whole turn or the whole session.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Modes &amp; Plan/Act</h4>
+        <p>Architect, Debug, and Reviewer personas restrict which tools the agent is even offered; an optional plan-then-approve gate holds every change until you say go.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Sub-agent delegation</h4>
+        <p>Opt-in <code>delegate_task</code> hands a self-contained piece of work to an isolated sub-agent with its own context &mdash; never more permissive than the persona that spawned it.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Team bundles &amp; PR review</h4>
+        <p>Export or import a project's memory, instructions, and skills as one file; generate a PR review and post it via <code>gh</code>, with an explicit confirm before anything goes public.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Local audit dashboard</h4>
+        <p>See exactly what ran, what was approved or denied, and what got reverted &mdash; computed entirely on your machine, nothing sent anywhere to produce it.</p>
+      </div>
     </div>
   </section>
 </main>
 
 <footer>
   <div class="wrap footer-row">
-    <span class="mono">HEAP CODE &middot; HC-0.2.2 &middot; POLYFORM-NC-1.0</span>
+    <span class="mono">HEAP CODE &middot; HC-0.4.0 &middot; POLYFORM-NC-1.0</span>
     <div class="cta-row" style="margin:0;">
       <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
       <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">GitHub</a>

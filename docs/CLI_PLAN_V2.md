@@ -12,7 +12,7 @@ Supersedes `docs/CLI_PLAN.md` (kept unchanged as the historical record of the or
 | CLI-M2 — Personas, memory, Skills, commands & mentions | ✅ shipped |
 | CLI-M3 — RAG + MCP | ✅ shipped |
 | CLI-M4 — Parity, sub-agents & real headless mode | ✅ shipped |
-| CLI-M5 — Distribution | 🔄 checklist done, blocked on the actual `npm publish` (needs `NPM_TOKEN` + a tag push) |
+| CLI-M5 — Distribution | ✅ shipped |
 
 Live verification note: v1 flagged CLI-M0/M1 as "code-complete, not yet verified against a real model." That verification has now started — real sessions against a LAN Ollama endpoint surfaced two real bugs (both fixed, see CLI-M1.5): the Ctrl+C terminal-state corruption and the agent answering its own question instead of waiting for the user. Keep running the manual smoke matrix each milestone; live usage finds what `ink-testing-library` can't.
 
@@ -101,14 +101,20 @@ Tests: 352 across the repo (+35 for CLI-M3 — `ragIndexer.test.ts` (8), `repoMa
 
 **Exit criteria: met, verified against the actual packaged binary, not just unit tests.** Ran `dist/cli.js -p "fix the failing test" --json --permission-mode auto-edit` against a real local HTTP mock server (not vitest's in-process mock) end-to-end: valid NDJSON streamed (`tool_call` → `tool_result` → `text` → `result`), the file was actually written, exit code 0; a forced `max-iterations` run (an earlier, buggier version of the same smoke script) confirmed exit code 1 on failure through the same binary. `heapcode audit` showed the run's permission decisions with nothing but event name + coarse metadata — no code, no prompts, no paths. No network call occurred beyond the mock server. `delegate_task` shows up distinctly in both surfaces: indented tool chips interactively, `parent`-tagged NDJSON events headlessly. Tests: 378 across the repo. `packages/vscode` untouched.
 
-## CLI-M5 — Distribution ⬜ (checklist complete; blocked on the actual first `npm publish`)
+## CLI-M5 — Distribution ✅ (shipped 2026-07-24)
 
 Scope unchanged from v1 (name/bin availability check first, production bundle, publish under the license decision, README, opt-out update check, tag-triggered CI). Additional guidance:
 - The first-run experience shipped in CLI-M1.5 *is* the onboarding the README documents — screenshot it, don't invent a parallel quick-start.
 - Update-check result renders as one dim line under the banner, never a blocking prompt.
 - Exit criteria unchanged from v1.
 
-Every checklist item below is done and verified (locally — real registry checks, real `npm pack`/`install -g`/`publish --dry-run` round trips, a hand-tested `install.sh`). What's left is the actual first real `npm publish`, deliberately not done here: it needs the `NPM_TOKEN` GitHub secret configured (an npm automation token for the `@heaplabs` org) and a `v*` tag pushed to trigger the release workflow — an irreversible, publicly-visible action outside what should happen without explicit user action. Once that one step happens, this milestone's exit criteria (`npm i -g @heaplabs/heapcode-cli` works end-to-end from the real registry) is met and CLI-M5 can flip to ✅ shipped.
+**Exit criteria: met, for real, against the live registry — not a dry run.** `v0.1.0` tagged and pushed
+(`cli-m0-walking-skeleton` branch — main not fast-forwarded yet, a deliberate choice at the time); the release
+workflow built, packed, and published `@heaplabs/heapcode-cli@0.1.0` to npm (`NPM_TOKEN` now configured), and
+attached both `heap-code.vsix` and the CLI tarball to the GitHub release. Verified afterward with a genuine
+`npm install -g --prefix <throwaway> @heaplabs/heapcode-cli` against the real registry (not a mock, not
+`--dry-run`) — the installed `heapcode` binary runs correctly. `npm view @heaplabs/heapcode-cli` confirms the
+published metadata (license, keywords, bin, dist-tag) matches what was verified locally beforehand.
 
 Package renamed from the placeholder `@heapcode/cli` to `@heaplabs/heapcode-cli` on 2026-07-24 — see the decisions log below. Checklist entries below that still say `@heapcode/cli`/`@heapcode` are the accurate historical record of what was checked *at the time* under the placeholder name; they were re-verified under the final name before the rename landed.
 
@@ -155,3 +161,5 @@ Carried from v1 unchanged (LSP diagnostics, `node-pty` streaming, short bin alia
 | 2026-07-24 | Added `license`, `repository`, `keywords`, `description`, `engines`, and `publishConfig.access: "public"` to `packages/cli/package.json`; removed `"private": true` | Required for a scoped package (`@heapcode/...`) to `npm publish` as public rather than erroring or silently attempting a private publish; the rest is what `npm publish --dry-run` and the registry's own listing page expect |
 | 2026-07-24 | Update-check is interactive-only, not wired into headless (`-p`) at all | Headless has no banner to render "under," and an unsolicited extra line in `--json` (breaks NDJSON parsers) or plain-text (breaks output piped into another tool) stdout would violate headless's own guardrail of staying script-safe. The interactive UI already has a precedent surface for exactly this kind of best-effort notice (`pushSystem`, used by `/checkpoints` etc.) |
 | 2026-07-24 | Renamed the package from the placeholder `@heapcode/cli` to `@heaplabs/heapcode-cli` (npm scope `@heaplabs` matching the actual GitHub org, `heapcode-cli` rather than bare `heapcode` as the package name) — every reference across `package.json` (both root and `packages/cli`), `install.sh`, `cli.tsx`'s/`App.tsx`'s update-check strings, the CI workflow, `README.md`, and `updateCheck.test.ts` updated together; re-verified `@heaplabs/heapcode-cli`, the bare `@heaplabs` scope, and `@heaplabs/heapcode` are all still unclaimed before landing it | User's explicit branding decision: the npm scope should be the actual company/org name, not the product name, and the package name should say "-cli" explicitly rather than bare `heapcode` — avoids ambiguity if `@heaplabs` ever publishes other packages under the same scope (an SDK, shared libs) and mirrors the existing `@heapcode/cli` → product-scope/cli-name convention this repo already used, just with the org as the scope instead of the product |
+| 2026-07-24 | Marketplace-publish step given `continue-on-error: true` | Found while preparing the actual first tag push: the extension and CLI are versioned/released independently but share one `v*` tag trigger — a CLI-only tag re-submits whatever `.vsix` version is already published (unchanged), which the Marketplace rejects as a duplicate. Without this, that failure would have halted the job before the new npm-publish step ever ran |
+| 2026-07-24 | `cli-m0-walking-skeleton` (this entire CLI product, CLI-M0 through CLI-M5) pushed to origin and tagged `v0.1.0` directly, without first fast-forwarding `main` | User's explicit choice when asked — main can be brought up to date in a separate step later. The tag alone was sufficient to trigger the release workflow regardless of which branch it points to; **`@heaplabs/heapcode-cli@0.1.0` is now genuinely live on the public npm registry**, verified with a real (non-dry-run, non-mocked) `npm install -g` against it, not just CI's own dry-run checks |

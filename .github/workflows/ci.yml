@@ -36,6 +36,18 @@ jobs:
           name: heap-code-vsix
           path: packages/vscode/heap-code.vsix
 
+      # Tarball of the exact bundle the build job just built and tested —
+      # the release job below publishes this artifact verbatim, never a
+      # fresh rebuild, so what gets published is provably what passed CI.
+      - name: Package CLI tarball
+        working-directory: packages/cli
+        run: npm pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heapcode-cli-tarball
+          path: packages/cli/*.tgz
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
@@ -44,14 +56,21 @@ jobs:
       contents: write
     env:
       VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: heap-code-vsix
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: heapcode-cli-tarball
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: heap-code.vsix
+          files: |
+            heap-code.vsix
+            *.tgz
           generate_release_notes: true
 
       # Publishes when the VSCE_PAT secret is configured (a PAT with the
@@ -59,3 +78,20 @@ jobs:
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
         run: npx @vscode/vsce publish --packagePath heap-code.vsix
+
+      - uses: actions/setup-node@v4
+        if: ${{ env.NPM_TOKEN != '' }}
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      # Publishes when the NPM_TOKEN secret is configured (an npm automation
+      # token with publish rights for the @heapcode org); skipped otherwise.
+      # publishConfig.access in packages/cli/package.json (bundled inside the
+      # tarball) is what makes this a public publish of a scoped package —
+      # no --access flag needed here.
+      - name: Publish @heapcode/cli to npm
+        if: ${{ env.NPM_TOKEN != '' }}
+        run: npm publish ./*.tgz
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}

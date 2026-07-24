@@ -121,7 +121,7 @@ Type `/` for the full autocomplete menu; highlights:
 | `/checkpoints` | List recent checkpoints for this project |
 | `/exit` | Quit (also: Ctrl+C twice) |
 
-Keys: `Esc` interrupts the running agent · `Ctrl+C` clears typed input, twice exits · `Up`/`Down` recall input history · `Tab` completes a slash command.
+Keys: `Esc` interrupts the running agent · `Ctrl+C` clears typed input, twice exits · `Up`/`Down` recall input history (or move within a multi-line message, line by line) · `Tab` completes a slash command · `\` then `Enter` inserts a newline instead of submitting · pasting multi-line text keeps it as one message.
 
 ## Storage
 

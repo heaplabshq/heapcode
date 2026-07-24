@@ -298,7 +298,8 @@ In-session commands (type / for the autocomplete menu):
   /exit                             Quit (also: Ctrl+C twice)
 
 Keys: Esc interrupts the running agent · Ctrl+C clears typed input · Ctrl+C twice exits
-      Up/Down recall input history · Tab completes a slash command
+      Up/Down recall input history (or move within a multi-line message, line by line) · Tab completes a slash command
+      \\ then Enter inserts a newline instead of submitting · pasting multi-line text keeps it as one message
       @ mentions a file/folder · @workspace pulls in whole-repo context (semantic search, or a structural outline without an embeddings model)
 
 Config: ~/.heapcode/config.json (profiles)  ·  ~/.heapcode/secrets.json (API keys, chmod 600)  ·  ~/.heapcode/audit.json (local usage log)

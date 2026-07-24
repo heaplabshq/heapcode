@@ -42,10 +42,39 @@ function mentionTokenAt(value: string, cursor: number): { start: number; query: 
 }
 
 /**
- * The prompt line: single-line editing with a visible cursor, arrow-key
- * movement, readline chords (Ctrl+A/E/U/K/W), per-session input history on
- * Up/Down, and a slash-command autocomplete menu. Multi-line input is
- * CLI-M2 scope (docs/CLI_PLAN.md).
+ * Cursor position one visual line up/down from `cursor`, preserving column
+ * as best it can (clamped to the shorter line). Returns undefined at the
+ * first/last line — the caller's cue to fall through to history navigation
+ * instead, exactly like a normal multi-line text box.
+ */
+function moveVertical(value: string, cursor: number, direction: 'up' | 'down'): number | undefined {
+  const lineStart = value.lastIndexOf('\n', cursor - 1) + 1;
+  const lineEndIdx = value.indexOf('\n', cursor);
+  const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
+  const column = cursor - lineStart;
+  if (direction === 'up') {
+    if (lineStart === 0) return undefined;
+    const prevStart = value.lastIndexOf('\n', lineStart - 2) + 1;
+    const prevEnd = lineStart - 1;
+    return Math.min(prevStart + column, prevEnd);
+  }
+  if (lineEnd === value.length) return undefined;
+  const nextStart = lineEnd + 1;
+  const nextEndIdx = value.indexOf('\n', nextStart);
+  const nextEnd = nextEndIdx === -1 ? value.length : nextEndIdx;
+  return Math.min(nextStart + column, nextEnd);
+}
+
+/**
+ * The prompt line: multi-line-capable editing with a visible cursor,
+ * arrow-key movement (vertical arrows move between lines when there are
+ * any, falling through to history navigation only at the first/last line),
+ * readline chords (Ctrl+A/E/U/K/W), per-session input history on Up/Down,
+ * and a slash-command autocomplete menu. A trailing backslash before Enter
+ * inserts a newline instead of submitting (works in any terminal, unlike
+ * Shift+Enter — see the `key.return` handler); a multi-line paste is
+ * inserted as literal text the same way any paste is (Ink already delivers
+ * a paste as one `input` call, newlines and all).
  *
  * Buffer and cursor live in refs mirrored to state: useInput fires from raw
  * stdin events outside React's batching, so back-to-back events in one tick
@@ -134,6 +163,25 @@ export function Composer({
           completeMention(mentionMenu[menuIndex]!);
           return;
         }
+        if (!menuOpen) {
+          const cur = cursorRef.current;
+          // Shift+Enter, on the rare terminal that actually reports it as
+          // such (most send byte-identical Enter either way — see the
+          // trailing-backslash fallback below, which works everywhere).
+          if (key.shift) {
+            setBuffer(valueRef.current.slice(0, cur) + '\n' + valueRef.current.slice(cur), cur + 1);
+            return;
+          }
+          // A trailing backslash right before the cursor is a continuation
+          // marker, not literal content — swap it for the newline it's
+          // standing in for. Net-zero length change, so the cursor's
+          // absolute position is unchanged even though it now sits after a
+          // newline instead of a backslash.
+          if (valueRef.current[cur - 1] === '\\') {
+            setBuffer(valueRef.current.slice(0, cur - 1) + '\n' + valueRef.current.slice(cur), cur);
+            return;
+          }
+        }
         const text = menuOpen ? menu[menuIndex]!.name : valueRef.current.trim();
         if (!text) return;
         if (historyRef.current[historyRef.current.length - 1] !== text) historyRef.current.push(text);
@@ -150,9 +198,21 @@ export function Composer({
       if (key.upArrow) {
         if (mentionOpen) {
           setMenuIndex((i) => (i - 1 + mentionMenu.length) % mentionMenu.length);
-        } else if (menuOpen) {
+          return;
+        }
+        if (menuOpen) {
           setMenuIndex((i) => (i - 1 + menu.length) % menu.length);
-        } else if (historyRef.current.length > 0) {
+          return;
+        }
+        // A multi-line buffer moves the cursor up a line first — only once
+        // it's already on the first line does Up fall through to history,
+        // same as any ordinary multi-line text box.
+        const moved = moveVertical(valueRef.current, cursorRef.current, 'up');
+        if (moved !== undefined) {
+          setBuffer(valueRef.current, moved);
+          return;
+        }
+        if (historyRef.current.length > 0) {
           if (historyPos.current === -1) {
             draftRef.current = valueRef.current;
             historyPos.current = historyRef.current.length - 1;
@@ -166,9 +226,18 @@ export function Composer({
       if (key.downArrow) {
         if (mentionOpen) {
           setMenuIndex((i) => (i + 1) % mentionMenu.length);
-        } else if (menuOpen) {
+          return;
+        }
+        if (menuOpen) {
           setMenuIndex((i) => (i + 1) % menu.length);
-        } else if (historyPos.current !== -1) {
+          return;
+        }
+        const moved = moveVertical(valueRef.current, cursorRef.current, 'down');
+        if (moved !== undefined) {
+          setBuffer(valueRef.current, moved);
+          return;
+        }
+        if (historyPos.current !== -1) {
           historyPos.current += 1;
           if (historyPos.current >= historyRef.current.length) {
             historyPos.current = -1;

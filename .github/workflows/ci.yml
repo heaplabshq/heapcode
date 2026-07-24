@@ -75,8 +75,14 @@ jobs:
 
       # Publishes when the VSCE_PAT secret is configured (a PAT with the
       # Marketplace → Manage scope for the "heapcode" publisher); skipped otherwise.
+      # continue-on-error: this repo's extension and CLI are versioned (and
+      # released) independently but share one "v*" tag trigger — a tag cut
+      # for a CLI-only release re-submits whatever .vsix version is already
+      # current, which the Marketplace rejects as a duplicate. That failure
+      # must not block the unrelated npm publish step below it.
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
+        continue-on-error: true
         run: npx @vscode/vsce publish --packagePath heap-code.vsix
 
       - uses: actions/setup-node@v4

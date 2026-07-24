@@ -28,16 +28,22 @@ importers:
         version: 2.1.9(@types/node@20.19.43)
 
   packages/cli:
-    dependencies:
+    devDependencies:
       '@heapcode/core':
         specifier: workspace:*
         version: link:../core
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      '@types/react':
+        specifier: ^18.3.4
+        version: 18.3.31
       cli-highlight:
         specifier: ^2.1.11
         version: 2.1.11
+      esbuild:
+        specifier: ^0.23.1
+        version: 0.23.1
       fast-glob:
         specifier: ^3.3.2
         version: 3.3.3
@@ -53,6 +59,9 @@ importers:
       ink-spinner:
         specifier: ^5.0.0
         version: 5.0.0(ink@5.2.1(@types/react@18.3.31)(react@18.3.1))(react@18.3.1)
+      ink-testing-library:
+        specifier: ^4.0.0
+        version: 4.0.0(@types/react@18.3.31)
       marked:
         specifier: ^14.1.0
         version: 14.1.4
@@ -62,16 +71,6 @@ importers:
       react:
         specifier: ^18.3.1
         version: 18.3.1
-    devDependencies:
-      '@types/react':
-        specifier: ^18.3.4
-        version: 18.3.31
-      esbuild:
-        specifier: ^0.23.1
-        version: 0.23.1
-      ink-testing-library:
-        specifier: ^4.0.0
-        version: 4.0.0(@types/react@18.3.31)
       tree-sitter-wasms:
         specifier: ^0.1.12
         version: 0.1.13

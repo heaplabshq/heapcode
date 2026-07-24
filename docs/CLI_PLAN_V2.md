@@ -12,7 +12,7 @@ Supersedes `docs/CLI_PLAN.md` (kept unchanged as the historical record of the or
 | CLI-M2 — Personas, memory, Skills, commands & mentions | ✅ shipped |
 | CLI-M3 — RAG + MCP | ✅ shipped |
 | CLI-M4 — Parity, sub-agents & real headless mode | ✅ shipped |
-| CLI-M5 — Distribution | ⬜ next |
+| CLI-M5 — Distribution | 🔄 in progress |
 
 Live verification note: v1 flagged CLI-M0/M1 as "code-complete, not yet verified against a real model." That verification has now started — real sessions against a LAN Ollama endpoint surfaced two real bugs (both fixed, see CLI-M1.5): the Ctrl+C terminal-state corruption and the agent answering its own question instead of waiting for the user. Keep running the manual smoke matrix each milestone; live usage finds what `ink-testing-library` can't.
 
@@ -101,12 +101,20 @@ Tests: 352 across the repo (+35 for CLI-M3 — `ragIndexer.test.ts` (8), `repoMa
 
 **Exit criteria: met, verified against the actual packaged binary, not just unit tests.** Ran `dist/cli.js -p "fix the failing test" --json --permission-mode auto-edit` against a real local HTTP mock server (not vitest's in-process mock) end-to-end: valid NDJSON streamed (`tool_call` → `tool_result` → `text` → `result`), the file was actually written, exit code 0; a forced `max-iterations` run (an earlier, buggier version of the same smoke script) confirmed exit code 1 on failure through the same binary. `heapcode audit` showed the run's permission decisions with nothing but event name + coarse metadata — no code, no prompts, no paths. No network call occurred beyond the mock server. `delegate_task` shows up distinctly in both surfaces: indented tool chips interactively, `parent`-tagged NDJSON events headlessly. Tests: 378 across the repo. `packages/vscode` untouched.
 
-## CLI-M5 — Distribution ⬜
+## CLI-M5 — Distribution ⬜ (in progress)
 
 Scope unchanged from v1 (name/bin availability check first, production bundle, publish under the license decision, README, opt-out update check, tag-triggered CI). Additional guidance:
 - The first-run experience shipped in CLI-M1.5 *is* the onboarding the README documents — screenshot it, don't invent a parallel quick-start.
 - Update-check result renders as one dim line under the banner, never a blocking prompt.
 - Exit criteria unchanged from v1.
+
+- [x] Confirm npm package-name/bin-name availability before anything else here locks in — `@heapcode/cli`, the bare `@heapcode` scope, and the unscoped `heapcode` are all unclaimed on the npm registry (checked 2026-07-24)
+- [x] Production esbuild bundle: single-file `dist/cli.js`; `web-tree-sitter` WASM assets copied alongside, same pattern as the extension's `esbuild.mjs` — already existed from CLI-M1, verified publish-ready: built bundle runs correctly with zero `node_modules` present (esbuild's `bundle: true` inlines every dependency except the intentionally-external `fsevents`), and a real `npm pack` → `npm install -g` round trip into an isolated prefix produces a working `heapcode` binary. Found and fixed one real blocker in the process — see decisions log
+- [x] `npm publish` under the same license as current extension releases (`PolyForm-Noncommercial-1.0.0`) — added to `package.json`, matching the extension's license and the root `LICENSE` file
+- [x] README (`packages/cli/README.md`): install, quick start, headless/CI usage examples, same privacy-first framing as the root README
+- [ ] Version/update-check: lightweight, opt-out-able check against the published npm version (never phones anything but npm's own registry)
+- [ ] Optional: one-line curl installer as a convenience wrapper around `npm i -g`, not a replacement packaging mechanism
+- [ ] CI: tag-triggered publish workflow mirroring the extension's `VSCE_PAT`-gated release CI, using an `NPM_TOKEN` secret
 
 ---
 
@@ -138,3 +146,6 @@ Carried from v1 unchanged (LSP diagnostics, `node-pty` streaming, short bin alia
 | 2026-07-24 | Headless permission modes (`plan`/`default`/`auto-edit`/`full-auto`) always resolve synchronously with no "ask and wait" path, unlike the interactive `PermissionEngine` | There is no human to prompt in a CI job — every mode must be a total function from (tool permission, mode) to a decision. `default` (offer everything, deny mutation) rather than `plan`-level tool hiding is the chosen safe default, so a headless run without an explicit mode still shows the model what it *could* do and why it can't, instead of tools silently not existing |
 | 2026-07-24 | `AuditLog` (CLI-M4) ports only the extension's local-capped-log half of `Telemetry`, never its remote flush to the heaplabs collector endpoint | This milestone's own exit criteria requires a headless CI run to make no network call beyond the configured model endpoint — defaulting in a remote-telemetry endpoint here would risk that on every headless invocation. Local-only, event-name-plus-coarse-metadata, capped at 500 — same privacy bar the plan calls for, none of the remote-sending decision space |
 | 2026-07-24 | `/checkpoints`/`/rewind` re-read from a new `ShadowGit.history()` (the shadow-git commit log itself) instead of scanning the in-memory transcript's tool items for a `checkpoint` field | Found during CLI-M4's checkpoint-polish pass: the CLI-M1 version went completely blind to every checkpoint the instant `/new` or `/resume` reset the transcript, even though the underlying git history — and the actual ability to rewind — was still fully intact on disk. Reading from the source of truth (git) instead of a derived in-memory index closes the gap structurally; the now-unused `checkpoint` field and its backing ref were deleted rather than left as dead weight |
+| 2026-07-24 | CLI-M5 name check: `@heapcode/cli`, the bare `@heapcode` npm scope, and unscoped `heapcode` are all unclaimed (each returns a 404 from the npm registry) | First CLI-M5 checklist item, checked before anything else in the milestone locks in a name; no collision, no rename needed |
+| 2026-07-24 | Moved every bundled runtime package (`ink`, `react`, `@heapcode/core`, `marked`, `fast-glob`, …) from `dependencies` to `devDependencies` in `packages/cli/package.json`, leaving no runtime `dependencies` at all | Found verifying publish-readiness: `@heapcode/core` was listed as a `dependencies` entry pinned to `workspace:*`, but `@heapcode/core` is itself `"private": true` and never published — an `npm install` of a published `@heapcode/cli` would fail trying to resolve it. esbuild's `bundle: true` already inlines every one of these packages into the single `dist/cli.js` (confirmed by running the built bundle with zero `node_modules` present), so none of them are actually needed as runtime dependencies; they only matter at build time |
+| 2026-07-24 | Added `license`, `repository`, `keywords`, `description`, `engines`, and `publishConfig.access: "public"` to `packages/cli/package.json`; removed `"private": true` | Required for a scoped package (`@heapcode/...`) to `npm publish` as public rather than erroring or silently attempting a private publish; the rest is what `npm publish --dry-run` and the registry's own listing page expect |

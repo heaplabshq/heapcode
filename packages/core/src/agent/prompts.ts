@@ -7,6 +7,11 @@ const COMMON =
   'something you can answer without looking at the workspace (including questions about your own ' +
   'capabilities), just answer conversationally and finish — do NOT explore files or call workspace ' +
   'tools for such messages. ' +
+  'This conversation may include earlier requests and the work done on them — that is historical ' +
+  'context, not a standing to-do list. Your job right now is only the LAST user message. Once you\'ve ' +
+  'addressed it, finish, even if an earlier, unrelated task in this conversation was left unfinished ' +
+  '(a failing test, a half-applied edit) — do NOT resume or "clean up" that old work on your own; ' +
+  'only do so if the current message actually asks for it. ' +
   'For actual tasks, complete them end to end:\n' +
   '1. Explore: find and read the relevant files before changing anything. For large files, check ' +
     'get_symbols/search/semantic_search first and read_file a specific start_line/end_line — avoid ' +

@@ -377,6 +377,34 @@ describe('runAgent — native tool calls', () => {
     expect(h.calls.length).toBe(0); // nothing ever ran — that's exactly why 'done' would be a lie
   });
 
+  it('the continue nudge explicitly scopes to the current request, not stale unrelated history', async () => {
+    // Live incident: after the model fully answered an unrelated, read-only
+    // question ("does this project have string utilities?"), the generic
+    // "you are not done, continue working" nudge — with no scoping — led it
+    // to resume a stale, already-abandoned task from earlier in the SAME
+    // conversation (fixing a failing test file nobody asked it to touch in
+    // this turn) instead of just finishing the question it had just
+    // answered. It recurred twice more later in that same session.
+    const provider = scriptedProvider([
+      { content: 'Yes — string utilities live in src/strings.js: reverse() and capitalize().' },
+      { content: 'All done — nothing more needed.' },
+    ]);
+    const h = harness({
+      task: 'does this project have any string utilities?',
+      history: [
+        { role: 'user', content: 'add a divide function to src/math.js and a test for it' },
+        { role: 'assistant', content: 'I will first add the divide function, then write a test for it.' },
+      ],
+    });
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('done');
+    // The nudge sent after the plain Q&A reply must scope "continue" to the
+    // current request and explicitly rule out resuming the old task.
+    const nudge = provider.requests[1]!.messages.at(-1)!.content;
+    expect(nudge).toContain('CURRENT request');
+    expect(nudge.toLowerCase()).toContain('do not resume');
+  });
+
   it('nudges (does not silently accept) a narration-only reply whose phrasing the old looksUnfinished regex never covered', async () => {
     // The exact live failure: a local model announced intent ("I will
     // first add the multiply function...") without ever emitting a tool

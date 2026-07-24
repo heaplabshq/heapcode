@@ -108,15 +108,28 @@ const PLAN_REQUEST =
   'longer numbered plan (up to ~8 steps) for genuinely multi-step build/edit work. ' +
   'Plain text only — do NOT call any tools yet.';
 
+/**
+ * Both nudges below explicitly scope "continue" to the CURRENT request
+ * (the last user message), not to this conversation's history in general.
+ * Observed live: after the model answered an unrelated read-only question
+ * in full (a legitimate finish), this nudge alone — "you are not done,
+ * continue working" — with no such scoping led it to resume a stale,
+ * already-abandoned task from earlier in the same conversation instead of
+ * just finishing the question it had actually just answered. It happened
+ * twice more later in the same session on other unrelated turns.
+ */
 const CONTINUE_NUDGE =
-  'You are not done — continue working. Call the next tool NOW in your reply. ' +
-  'Do not describe what you will do; do it. Reply without a tool call ONLY when the task is fully complete.';
+  'You are not done with the CURRENT request (the last user message) — continue working on THAT only. ' +
+  'Do not resume or "clean up" an unrelated, unfinished earlier task from this conversation unless the ' +
+  'current request actually asks for it. Call the next tool NOW in your reply. ' +
+  'Do not describe what you will do; do it. Reply without a tool call ONLY when the current request is fully complete.';
 
 const MAX_NUDGES = 4;
 
 const FINISH_REMINDER =
-  'If the task is fully complete, call the finish tool with a summary. ' +
-  'Otherwise, continue working by calling the next tool.';
+  'If the CURRENT request (the last user message) is fully complete, call the finish tool with a summary. ' +
+  'Otherwise, continue working on THAT request by calling the next tool — do not switch to an unrelated ' +
+  'unfinished task from earlier in this conversation unless asked.';
 
 /** A tool-free reply that reads as a real completion — accept without ceremony. */
 function looksFinished(text: string): boolean {

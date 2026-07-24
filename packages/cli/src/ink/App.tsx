@@ -199,7 +199,7 @@ export function App({
   // system notice, whenever (if ever) the registry check resolves.
   useEffect(() => {
     void checkUpdate?.().then((result) => {
-      if (result) pushSystem(`Update available: v${result.current} → v${result.latest} · npm i -g @heapcode/cli`);
+      if (result) pushSystem(`Update available: v${result.current} → v${result.latest} · npm i -g @heaplabs/heapcode-cli`);
     });
   }, []);
 

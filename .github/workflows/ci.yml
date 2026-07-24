@@ -86,11 +86,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       # Publishes when the NPM_TOKEN secret is configured (an npm automation
-      # token with publish rights for the @heapcode org); skipped otherwise.
+      # token with publish rights for the @heaplabs org); skipped otherwise.
       # publishConfig.access in packages/cli/package.json (bundled inside the
       # tarball) is what makes this a public publish of a scoped package —
       # no --access flag needed here.
-      - name: Publish @heapcode/cli to npm
+      - name: Publish @heaplabs/heapcode-cli to npm
         if: ${{ env.NPM_TOKEN != '' }}
         run: npm publish ./*.tgz
         env:

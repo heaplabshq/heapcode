@@ -207,7 +207,7 @@ async function main(): Promise<void> {
         return { provider: resolved.provider, contextWindow: resolved.contextWindow };
       }}
       version={cliVersion()}
-      checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heapcode/cli', cliVersion() ?? '0.0.0') : undefined}
+      checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heaplabs/heapcode-cli', cliVersion() ?? '0.0.0') : undefined}
       cwd={root}
       safeMode={safeMode}
       canResume={priorConversations > 0}

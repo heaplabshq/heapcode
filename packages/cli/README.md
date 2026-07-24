@@ -1,4 +1,4 @@
-# @heapcode/cli
+# @heaplabs/heapcode-cli
 
 **Model-agnostic AI coding agent for your terminal.** Chat, autonomous agent mode, semantic codebase search, and MCP — with any OpenAI-compatible API, local or cloud. Same engine as the Heap Code VS Code extension ([`@heapcode/core`](../core)), no editor required.
 
@@ -19,7 +19,7 @@ A local, capped usage log (`~/.heapcode/audit.json`, event names + coarse metada
 ## Install
 
 ```bash
-npm install -g @heapcode/cli
+npm install -g @heaplabs/heapcode-cli
 heapcode
 ```
 
@@ -35,7 +35,7 @@ Building from source instead:
 
 ```bash
 pnpm install
-pnpm --filter @heapcode/cli build
+pnpm --filter @heaplabs/heapcode-cli build
 node packages/cli/dist/cli.js
 ```
 
@@ -145,9 +145,9 @@ A startup check against npm's own registry surfaces an available update as one d
 
 ```bash
 pnpm install
-pnpm --filter @heapcode/cli build      # or: pnpm --filter @heapcode/cli dev  (build + run)
+pnpm --filter @heaplabs/heapcode-cli build      # or: pnpm --filter @heaplabs/heapcode-cli dev  (build + run)
 pnpm test                              # from the repo root — runs packages/cli/test alongside every other package
-pnpm --filter @heapcode/cli typecheck
+pnpm --filter @heaplabs/heapcode-cli typecheck
 ```
 
 ## License

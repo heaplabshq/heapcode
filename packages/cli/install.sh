@@ -1,5 +1,5 @@
 #!/bin/sh
-# Convenience wrapper around `npm install -g @heapcode/cli` — not a
+# Convenience wrapper around `npm install -g @heaplabs/heapcode-cli` — not a
 # replacement packaging mechanism. Never installs or modifies Node/npm
 # itself, never re-execs with sudo: a missing/too-old Node, or an npm global
 # prefix that needs elevated permissions, is surfaced to the user to fix
@@ -29,8 +29,8 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Installing @heapcode/cli..."
-if ! npm install -g @heapcode/cli; then
+echo "Installing @heaplabs/heapcode-cli..."
+if ! npm install -g @heaplabs/heapcode-cli; then
   echo "" >&2
   echo "npm install -g failed — this is often a permissions issue with npm's global" >&2
   echo "install location, not a problem with heapcode itself. Common fixes:" >&2

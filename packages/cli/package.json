@@ -1,5 +1,5 @@
 {
-  "name": "@heapcode/cli",
+  "name": "@heaplabs/heapcode-cli",
   "version": "0.1.0",
   "description": "Model-agnostic AI coding agent for your terminal — chat, autonomous agent mode, semantic codebase search, and MCP, with any OpenAI-compatible API, local or cloud.",
   "license": "PolyForm-Noncommercial-1.0.0",

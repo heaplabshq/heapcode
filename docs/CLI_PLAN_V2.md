@@ -12,7 +12,7 @@ Supersedes `docs/CLI_PLAN.md` (kept unchanged as the historical record of the or
 | CLI-M2 — Personas, memory, Skills, commands & mentions | ✅ shipped |
 | CLI-M3 — RAG + MCP | ✅ shipped |
 | CLI-M4 — Parity, sub-agents & real headless mode | ✅ shipped |
-| CLI-M5 — Distribution | 🔄 in progress |
+| CLI-M5 — Distribution | 🔄 checklist done, blocked on the actual `npm publish` (needs `NPM_TOKEN` + a tag push) |
 
 Live verification note: v1 flagged CLI-M0/M1 as "code-complete, not yet verified against a real model." That verification has now started — real sessions against a LAN Ollama endpoint surfaced two real bugs (both fixed, see CLI-M1.5): the Ctrl+C terminal-state corruption and the agent answering its own question instead of waiting for the user. Keep running the manual smoke matrix each milestone; live usage finds what `ink-testing-library` can't.
 
@@ -101,19 +101,21 @@ Tests: 352 across the repo (+35 for CLI-M3 — `ragIndexer.test.ts` (8), `repoMa
 
 **Exit criteria: met, verified against the actual packaged binary, not just unit tests.** Ran `dist/cli.js -p "fix the failing test" --json --permission-mode auto-edit` against a real local HTTP mock server (not vitest's in-process mock) end-to-end: valid NDJSON streamed (`tool_call` → `tool_result` → `text` → `result`), the file was actually written, exit code 0; a forced `max-iterations` run (an earlier, buggier version of the same smoke script) confirmed exit code 1 on failure through the same binary. `heapcode audit` showed the run's permission decisions with nothing but event name + coarse metadata — no code, no prompts, no paths. No network call occurred beyond the mock server. `delegate_task` shows up distinctly in both surfaces: indented tool chips interactively, `parent`-tagged NDJSON events headlessly. Tests: 378 across the repo. `packages/vscode` untouched.
 
-## CLI-M5 — Distribution ⬜ (in progress)
+## CLI-M5 — Distribution ⬜ (checklist complete; blocked on the actual first `npm publish`)
 
 Scope unchanged from v1 (name/bin availability check first, production bundle, publish under the license decision, README, opt-out update check, tag-triggered CI). Additional guidance:
 - The first-run experience shipped in CLI-M1.5 *is* the onboarding the README documents — screenshot it, don't invent a parallel quick-start.
 - Update-check result renders as one dim line under the banner, never a blocking prompt.
 - Exit criteria unchanged from v1.
 
+Every checklist item below is done and verified (locally — real registry checks, real `npm pack`/`install -g`/`publish --dry-run` round trips, a hand-tested `install.sh`). What's left is the actual first real `npm publish`, deliberately not done here: it needs the `NPM_TOKEN` GitHub secret configured (an npm automation token for the `@heapcode` org) and a `v*` tag pushed to trigger the release workflow — an irreversible, publicly-visible action outside what should happen without explicit user action. Once that one step happens, this milestone's exit criteria (`npm i -g @heapcode/cli` works end-to-end from the real registry) is met and CLI-M5 can flip to ✅ shipped.
+
 - [x] Confirm npm package-name/bin-name availability before anything else here locks in — `@heapcode/cli`, the bare `@heapcode` scope, and the unscoped `heapcode` are all unclaimed on the npm registry (checked 2026-07-24)
 - [x] Production esbuild bundle: single-file `dist/cli.js`; `web-tree-sitter` WASM assets copied alongside, same pattern as the extension's `esbuild.mjs` — already existed from CLI-M1, verified publish-ready: built bundle runs correctly with zero `node_modules` present (esbuild's `bundle: true` inlines every dependency except the intentionally-external `fsevents`), and a real `npm pack` → `npm install -g` round trip into an isolated prefix produces a working `heapcode` binary. Found and fixed one real blocker in the process — see decisions log
 - [x] `npm publish` under the same license as current extension releases (`PolyForm-Noncommercial-1.0.0`) — added to `package.json`, matching the extension's license and the root `LICENSE` file
 - [x] README (`packages/cli/README.md`): install, quick start, headless/CI usage examples, same privacy-first framing as the root README
 - [x] Version/update-check: lightweight, opt-out-able check against the published npm version (never phones anything but npm's own registry) — `updateCheck.ts`'s `checkForUpdate()` hits the registry's abbreviated `/latest` document (smallest payload), 1.5s timeout, never throws; wired into `App.tsx` as a fire-and-forget mount effect that renders one dim system line under the banner if (and only if) a newer version resolves in time — never a blocking prompt, never repeated within a session. Opt out with `--no-update-check` or `{ "updateCheckEnabled": false }` in `~/.heapcode/config.json`; not wired into headless (`-p`), which has no banner and whose `--json`/plain-text stdout an unsolicited extra line would corrupt for scripted consumers
-- [ ] Optional: one-line curl installer as a convenience wrapper around `npm i -g`, not a replacement packaging mechanism
+- [x] Optional: one-line curl installer as a convenience wrapper around `npm i -g`, not a replacement packaging mechanism — `packages/cli/install.sh` (POSIX `sh`, fetched via `curl -fsSL .../packages/cli/install.sh | sh`, not shipped inside the npm tarball itself): checks Node >=20 and npm are present, runs `npm install -g @heapcode/cli`, never re-execs with `sudo` — surfaces a permissions/EACCES failure with a link to npm's own docs instead of silently escalating. All three failure paths (missing Node, Node <20, `npm install` failure) and the real happy path (verified against a locally packed tarball substituted for the registry name, into an isolated prefix) checked by hand
 - [x] CI: tag-triggered publish workflow mirroring the extension's `VSCE_PAT`-gated release CI, using an `NPM_TOKEN` secret — `build` job now also `npm pack`s `packages/cli` and uploads the tarball as an artifact (alongside the existing `.vsix`); `release` job downloads it, attaches it to the GitHub release, and publishes it to npm via `actions/setup-node`'s `registry-url` + `NODE_AUTH_TOKEN`, gated on `NPM_TOKEN` being set (skipped otherwise, same pattern as `VSCE_PAT`). Publishes the exact tarball the `build` job already tested, never a fresh rebuild. Verified locally: `npm pack` → `npm publish --dry-run` on that exact tarball correctly publishes with public access (from `package.json`'s `publishConfig`, no `--access` flag needed) and valid contents
 
 ---

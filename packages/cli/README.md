@@ -23,6 +23,12 @@ npm install -g @heapcode/cli
 heapcode
 ```
 
+Or, as a convenience wrapper around the same `npm install -g` (not a separate packaging mechanism — reads it directly from this repo, and never uses `sudo`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heaplabshq/heapcode/main/packages/cli/install.sh | sh
+```
+
 The first run walks you through adding a provider profile — no separate setup command needed.
 
 Building from source instead:

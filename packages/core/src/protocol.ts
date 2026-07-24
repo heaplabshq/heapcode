@@ -144,7 +144,7 @@ export type WebviewToExtension =
   /** Restore the workspace to the shadow-git commit taken before one specific tool call (PLAN.md M8). */
   | { type: 'restoreToolCheckpoint'; hash: string };
 
-export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned';
+export type AgentRunStatus = 'running' | 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned' | 'incomplete';
 
 export type ExtensionToWebview =
   | {

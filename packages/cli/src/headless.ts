@@ -103,6 +103,7 @@ function exitCodeFor(outcome: AgentOutcome): number {
     case 'stopped':
       return 130;
     case 'max-iterations':
+    case 'incomplete':
     case 'error':
       return 1;
   }
@@ -160,8 +161,13 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     if (mode === 'plan') persona = intersectPersonas(persona, getPersona('architect'));
 
     const mcpTools = mcpManager.getToolDefinitions();
-    const baseTools = opts.subAgents ? [...tools, DELEGATE_TASK_TOOL] : tools;
-    const offeredTools = filterToolsForPersona([...baseTools, ...mcpTools], persona);
+    // delegate_task is always OFFERED so the model can see it exists and
+    // respond honestly when asked to delegate; without --sub-agents, calling
+    // it returns an informative "disabled" error instead of running. (It used
+    // to be hidden entirely when disabled — the model then had no way to know
+    // delegation was even a concept, and a live session responded to
+    // "delegate investigating X" by fabricating a completed delegation.)
+    const offeredTools = filterToolsForPersona([...tools, DELEGATE_TASK_TOOL, ...mcpTools], persona);
 
     // Same task-preamble shape as the interactive UI's runTask: persona
     // constraints + project instructions/memory, then the task itself.
@@ -182,6 +188,16 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
 
     const execute = async (call: ToolCall): Promise<ToolResult> => {
       if (call.name === 'delegate_task') {
+        if (!opts.subAgents) {
+          return {
+            id: call.id,
+            name: call.name,
+            content:
+              'Sub-agent delegation is disabled for this run (the --sub-agents flag was not passed). ' +
+              'Handle the sub-task yourself in this conversation instead — do not claim it was delegated.',
+            isError: true,
+          };
+        }
         return runSubAgent(call, {
           executor,
           provider,
@@ -253,6 +269,10 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       contextWindow,
       execute,
       requestPermission: (call, tool) => {
+        // delegate_task while sub-agents are disabled resolves to an
+        // informative error in execute() — a generic permission denial here
+        // would hide from the model WHY delegation can't happen.
+        if (call.name === 'delegate_task' && !opts.subAgents) return Promise.resolve(true);
         const decision = autoApprove(tool.permission, mode);
         if (tool.permission !== 'read') {
           void audit.track('permission.decision', { tool: call.name, permission: tool.permission, decision: decision ? 'auto-allow' : 'auto-deny' });

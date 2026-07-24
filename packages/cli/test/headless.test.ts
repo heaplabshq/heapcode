@@ -295,10 +295,26 @@ describe('runHeadless — --sub-agents', () => {
     await expect(readFile(join(project, 'trigger.txt'), 'utf8')).rejects.toThrow();
   });
 
-  it('delegate_task is not offered unless --sub-agents is passed', async () => {
-    await configureProfile(sse(finishBlock('done')));
-    await runHeadless({ prompt: 'do something', json: true, cwd: project });
+  it('delegate_task is always visible, but calling it without --sub-agents returns an informative "disabled" error instead of running', async () => {
+    // Hiding the tool entirely left the model with no concept of delegation —
+    // a live session answered "delegate investigating X" by fabricating a
+    // completed delegation. Visible-but-refused lets it respond honestly.
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('delegate_task', { task: 'investigate strings.js' })),
+        sse(finishBlock('Delegation is disabled; investigated it myself.')),
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'delegate something', json: true, cwd: project });
+
     const sent = server.requests[0]!.body as { messages: Array<{ content: string }> };
-    expect(sent.messages[0]!.content).not.toContain('delegate_task');
+    expect(sent.messages[0]!.content).toContain('delegate_task');
+    const events = parseNdjson(write);
+    const result = events.find((e) => e.type === 'tool_result' && e.name === 'delegate_task');
+    expect(result).toMatchObject({ isError: true, content: expect.stringContaining('--sub-agents') });
+    write.mockRestore();
   });
 });

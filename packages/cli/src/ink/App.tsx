@@ -789,7 +789,13 @@ export function App({
     // message with no restart, same pattern as the extension's controller.
     await mcpManager?.ensureConnected();
     const mcpTools = mcpManager?.getToolDefinitions() ?? [];
-    const offeredTools = subAgentsEnabled ? [...tools, DELEGATE_TASK_TOOL] : tools;
+    // delegate_task is always OFFERED so the model can respond honestly when
+    // the user asks it to delegate; while /subagents is off, calling it
+    // returns an informative "disabled" error instead of running. (Hiding it
+    // entirely left the model with no concept of delegation — a live session
+    // answered "delegate investigating X" by fabricating a completed
+    // delegation out of the repo map already in its context.)
+    const offeredTools = [...tools, DELEGATE_TASK_TOOL];
 
     try {
       const outcome = await runAgent({
@@ -816,6 +822,16 @@ export function App({
             };
           }
           if (call.name === 'delegate_task') {
+            if (!subAgentsEnabled) {
+              return {
+                id: call.id,
+                name: call.name,
+                content:
+                  'Sub-agent delegation is disabled in this session. Tell the user they can enable it with ' +
+                  '/subagents on, and handle the sub-task yourself in this conversation — do not claim it was delegated.',
+                isError: true,
+              };
+            }
             return runSubAgent(call, {
               executor,
               provider: active.provider,
@@ -887,7 +903,13 @@ export function App({
           if (!result.isError) await syncIndexesAfterTool(call.name, call.args);
           return result;
         },
-        requestPermission: (call, tool) => permissions.request(call, tool, executor.describe(call)),
+        requestPermission: (call, tool) => {
+          // delegate_task while sub-agents are off resolves to an informative
+          // error in execute() — prompting the user to approve something that
+          // cannot run would be noise.
+          if (call.name === 'delegate_task' && !subAgentsEnabled) return Promise.resolve(true);
+          return permissions.request(call, tool, executor.describe(call));
+        },
         beforeToolCall: async (call) => {
           await shadowGit?.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
         },
@@ -924,6 +946,11 @@ export function App({
         },
       });
       if (outcome === 'stopped') pushSystem('Interrupted — send a new message to continue.');
+      else if (outcome === 'incomplete')
+        pushSystem(
+          'The model kept replying without taking action and never confirmed a real completion — ' +
+            'treat its last reply with suspicion. Rephrase the request or try again.',
+        );
       await persist();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

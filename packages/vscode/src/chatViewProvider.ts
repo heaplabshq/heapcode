@@ -123,9 +123,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ? 'Heap Code: agent task stopped.'
             : status === 'max-iterations'
               ? 'Heap Code: agent hit its iteration limit.'
-              : status === 'planned'
-                ? 'Heap Code: agent has a plan ready for your approval.'
-                : 'Heap Code: agent task finished.';
+              : status === 'incomplete'
+                ? 'Heap Code: agent stopped without completing the task.'
+                : status === 'planned'
+                  ? 'Heap Code: agent has a plan ready for your approval.'
+                  : 'Heap Code: agent task finished.';
     void vscode.window.showInformationMessage(message, 'Show').then((choice) => {
       if (choice === 'Show') void vscode.commands.executeCommand('heapcode.chatView.focus');
     });

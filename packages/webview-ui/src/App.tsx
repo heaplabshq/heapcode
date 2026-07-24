@@ -30,6 +30,7 @@ const STATUS_LABEL: Record<string, string> = {
   done: 'Completed',
   stopped: 'Stopped',
   'max-iterations': 'Stopped at iteration limit',
+  incomplete: 'Ended without completing the task',
   error: 'Failed',
   planned: 'Plan ready — review below',
 };

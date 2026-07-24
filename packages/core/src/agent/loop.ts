@@ -16,7 +16,7 @@ import {
   type ToolResult,
 } from './tools.js';
 
-export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned';
+export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned' | 'incomplete';
 
 export interface AgentEvents {
   /** Assistant narration/summary text (complete message, non-streamed path). */
@@ -154,9 +154,22 @@ function asksTheUser(text: string): boolean {
  * that removing the redundant line did not cause any issues" as one single
  * tool-free reply — the file was never touched. Never trust this as a
  * finish signal, even if it also happens to match looksFinished.
+ *
+ * The same applies to claims of delegated/sub-agent work — observed live:
+ * "The delegated investigation into src/strings.js is complete. The file
+ * contains two exported functions..." with delegate_task never called (it
+ * was not even offered — sub-agents were disabled); the "findings" were
+ * pattern-matched from the repo map already in context.
  */
 function claimsUnverifiedResult(text: string): boolean {
-  return /\b(exit code \d|tests? (passed|failed)|ran successfully|test suite (ran|passed)|confirmed (that|it)|verified (that|it)|no (issues|errors) (were )?(found|occurred))\b/i.test(
+  if (
+    /\b(exit code \d|tests? (passed|failed)|ran successfully|test suite (ran|passed)|confirmed (that|it)|verified (that|it)|no (issues|errors) (were )?(found|occurred))\b/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return /\b(delegat(ed|ion)|sub-?agents?)\b[\s\S]{0,80}?\b(complete[d]?|done|finished|found|returned|report(s|ed)?)\b/i.test(
     text,
   );
 }
@@ -165,6 +178,21 @@ const UNVERIFIED_RESULT_NUDGE =
   'You just described a result (a test run, an edit, an outcome) but did not actually call a tool this turn — ' +
   'you cannot know the outcome of an action you have not taken. Call the tool now. Never state what a tool ' +
   'result was before you have actually received it.';
+
+/**
+ * A reply still announcing work it is ABOUT to do ("I will first add…",
+ * "I am adding…", "I'll place it…"). Only consulted at nudge EXHAUSTION,
+ * never to gate the nudges themselves (the "default to not-finished" rule
+ * covers that without any phrase list): a model that spent the entire nudge
+ * budget narrating intent never acted, so the task verifiably did not
+ * happen — the one case where accepting the reply as 'done' anyway would
+ * silently report success on a skipped task (the original live incident).
+ */
+function announcesIntent(text: string): boolean {
+  return /\b(i['’]ll|i (will|shall)|i am (now |currently )?(going|about) to|i am \w+ing|let me (now |first )?(start|begin|add|create|write|edit|fix|implement|run|check|read|investigate))\b/i.test(
+    text,
+  );
+}
 
 const MAX_REPAIRS = 3;
 
@@ -567,6 +595,20 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : FINISH_REMINDER });
           continue;
         }
+        // Nudges AND the finish reminder are exhausted without a trustworthy
+        // finish. Two shapes of reply are now KNOWN failures and must not be
+        // dressed up as 'done': one that claims results no tool ever produced
+        // (a fabricated "delegated investigation ... is complete" was
+        // presented as success, live), and one still announcing intent (the
+        // model narrated "I will…" for the whole nudge budget — the task
+        // verifiably never ran). A plain answer that merely never phrase-
+        // matched looksFinished (chat, Q&A) keeps the old benefit of the
+        // doubt and falls through to acceptance below. Deliberately not
+        // finish() on 'incomplete': no memory distillation on a non-success.
+        if (!awaitingUser && !trustworthyFinish && (unverified || announcesIntent(response.content))) {
+          if (!streamed && response.content.trim()) events.onText(response.content);
+          return 'incomplete';
+        }
         if (!streamed && response.content.trim()) events.onText(response.content);
         else if (!response.content.trim()) {
           await summarize('Summarize what you did and whether the task is complete.');
@@ -585,14 +627,26 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           continue;
         }
         // Same "default to not-finished" reasoning as the native branch above.
+        const awaitingUserFallback = asksTheUser(response.content);
         const unverifiedFallback = claimsUnverifiedResult(response.content);
         const trustworthyFallbackFinish = looksFinished(response.content) && !unverifiedFallback;
-        if (!asksTheUser(response.content) && !trustworthyFallbackFinish && nudges < MAX_NUDGES) {
+        if (!awaitingUserFallback && !trustworthyFallbackFinish && nudges < MAX_NUDGES) {
           nudges++;
           if (response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
           messages.push({ role: 'user', content: unverifiedFallback ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
           continue;
+        }
+        // Nudge exhaustion — same 'incomplete' termination rules as the
+        // native branch: fabricated results and still-announced intent are
+        // known failures; a plain answer keeps the benefit of the doubt.
+        if (
+          !awaitingUserFallback &&
+          !trustworthyFallbackFinish &&
+          (unverifiedFallback || announcesIntent(response.content))
+        ) {
+          if (response.content.trim()) events.onText(response.content);
+          return 'incomplete';
         }
         if (response.content.trim()) events.onText(response.content);
         else await summarize('Summarize what you did and whether the task is complete.');

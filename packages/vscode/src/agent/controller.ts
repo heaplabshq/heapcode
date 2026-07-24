@@ -519,7 +519,12 @@ export class AgentController {
       `${toolLog.length} tool call(s)${toolLog.length ? ':\n' + toolLog.map((d, i) => `  ${i + 1}. ${d}`).join('\n') : ''}\n\n` +
       (summaryText.trim() || '(sub-agent produced no summary text)');
 
-    return { id: call.id, name: call.name, content, isError: outcome === 'error' || outcome === 'max-iterations' };
+    return {
+      id: call.id,
+      name: call.name,
+      content,
+      isError: outcome === 'error' || outcome === 'max-iterations' || outcome === 'incomplete',
+    };
   }
 
   /** Approve a pending plan (outcome 'planned') and let the agent execute it. */

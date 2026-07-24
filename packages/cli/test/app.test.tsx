@@ -722,31 +722,31 @@ describe('App', () => {
     expect(lastFrame()).toContain('look at @src/index.ts');
   });
 
-  it('/subagents toggles delegate_task availability; off by default, and it never reaches the system prompt until enabled', async () => {
+  it('delegate_task is always visible to the model; calling it with /subagents off returns an informative "disabled" error', async () => {
+    // Hiding the tool entirely when disabled left the model with no concept
+    // of delegation — a live session answered "delegate investigating X" by
+    // fabricating a completed delegation. Visible-but-refused lets it
+    // respond honestly (and point the user at /subagents on).
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
-    // Must clearly match looksFinished so each turn ends in exactly one
-    // request — a reply that doesn't (e.g. a bare "Done.") now gets nudged
-    // to continue instead of accepted, which would shift the request index
-    // this test relies on to identify "the second turn's first request".
-    const provider = recordingProvider('Task complete.');
+    const provider = scriptedProvider([
+      { content: '<tool name="delegate_task">\n{"task": "investigate strings.js"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Delegation is off; investigated it myself."}\n</tool>' },
+    ]);
 
     const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore });
 
     await new Promise((r) => setTimeout(r, 20));
-    stdin.write('hi');
+    stdin.write('delegate investigating strings.js');
     stdin.write('\r');
-    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
-    expect(provider.requests[0]!.at(0)!.content).not.toContain('delegate_task');
 
-    stdin.write('/subagents on');
-    stdin.write('\r');
-    await vi.waitFor(() => expect(lastFrame()).toContain('Sub-agents (delegate_task): on'));
-
-    stdin.write('hi again');
-    stdin.write('\r');
-    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(1), { timeout: 2_000 });
-    expect(provider.requests[1]!.at(0)!.content).toContain('delegate_task');
+    // The tool is in the system prompt even with sub-agents off…
+    await vi.waitFor(() => expect(lastFrame()).toContain('investigated it myself'), { timeout: 3_000 });
+    // …and the call resolved to the disabled notice with NO permission
+    // prompt (nothing can run, so there is nothing to approve) and no
+    // sub-agent activity (no indented ↳ chips).
+    expect(lastFrame()).not.toContain('wants to run a command');
+    expect(lastFrame()).not.toContain('↳');
   });
 
   it('a delegate_task call runs a full sub-agent turn and renders its tool calls indented under the outer chip', async () => {

@@ -258,7 +258,7 @@ Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text
   --persona NAME                    agent (default), architect (read-only), debug (no edits), reviewer
   --permission-mode MODE            plan | default | auto-edit | full-auto — see below; default: "default"
-  --sub-agents                      Offer delegate_task (off by default, same as interactive's /subagents)
+  --sub-agents                      Let delegate_task actually run (always visible to the model; without this flag calls return a "disabled" notice)
   --reindex                         Rebuild the semantic search + repo map indexes before running the task (headless never auto-indexes)
   --continue | -c                   Continue this directory's most recent conversation instead of starting fresh
   --resume <id>                     Continue a specific conversation by id or unambiguous prefix instead of the most recent
@@ -282,7 +282,7 @@ In-session commands (type / for the autocomplete menu):
   /search <query>                   Search the workspace (semantic if indexed, plain text otherwise)
   /index                            Rebuild the semantic search + repo map indexes
   /mcp                              List configured MCP servers and their connection status
-  /subagents [on|off]               Toggle delegate_task — lets the agent hand off self-contained sub-tasks (off by default)
+  /subagents [on|off]               Toggle sub-agent delegation — delegate_task calls are refused while off (the default)
   /clear, /new                      Clear the screen and start a new conversation
   /resume                           Pick an earlier conversation to continue
   /rewind [n]                       Undo the last n tool-call checkpoints (default 1) — persists across /new, /resume, even a restart

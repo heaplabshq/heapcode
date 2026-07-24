@@ -12,10 +12,13 @@ import type { McpManager } from './mcp.js';
 import { filterToolsForPersona, getPersona, intersectPersonas, looksFilesystemMutating, type AgentPersona } from './personas.js';
 
 /**
- * Not baked into `agentToolDefinitions` — offering it is opt-in (see
- * App.tsx's `subAgentsEnabled`) and it needs cross-cutting context
+ * Not baked into `agentToolDefinitions` — it needs cross-cutting context
  * (persona, permissions, shadow-git, MCP) that WorkspaceToolExecutor itself
- * has no business knowing about, unlike every other built-in tool.
+ * has no business knowing about, unlike every other built-in tool. It is
+ * always OFFERED (so the model can respond honestly when asked to delegate),
+ * but EXECUTION is opt-in: while sub-agents are disabled (App.tsx's
+ * `subAgentsEnabled` / headless's `--sub-agents`), calling it returns an
+ * informative "disabled" error instead of running.
  */
 export const DELEGATE_TASK_TOOL: ToolDefinition = {
   name: 'delegate_task',
@@ -169,5 +172,10 @@ export async function runSubAgent(call: ToolCall, ctx: DelegateContext): Promise
     `${toolLog.length} tool call(s)${toolLog.length ? ':\n' + toolLog.map((d, i) => `  ${i + 1}. ${d}`).join('\n') : ''}\n\n` +
     (summaryText.trim() || '(sub-agent produced no summary text)');
 
-  return { id: call.id, name: call.name, content, isError: outcome === 'error' || outcome === 'max-iterations' };
+  return {
+    id: call.id,
+    name: call.name,
+    content,
+    isError: outcome === 'error' || outcome === 'max-iterations' || outcome === 'incomplete',
+  };
 }

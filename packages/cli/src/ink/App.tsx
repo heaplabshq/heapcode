@@ -123,6 +123,8 @@ export interface AppProps {
   onTrack?(name: string, meta?: Record<string, unknown>): void;
   /** Fired once on mount and again whenever the active conversation changes (/new, /resume) — lets the host print the session id on exit. */
   onSessionChange?(id: string): void;
+  /** Best-effort registry check for a newer published version — omitted (no-op) when disabled via --no-update-check or config, or in tests/headless. */
+  checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
 }
 
 export function App({
@@ -151,6 +153,7 @@ export function App({
   mcpManager,
   onTrack,
   onSessionChange,
+  checkUpdate,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
 
@@ -189,6 +192,15 @@ export function App({
   // Reports only the initial id, once — /new and /resume report their own changes at the point they happen.
   useEffect(() => {
     onSessionChange?.(conversationRef.current.id);
+  }, []);
+
+  // Fire-and-forget, once per process — never blocks startup, never a
+  // prompt. Renders as one dim line under the banner, same as any other
+  // system notice, whenever (if ever) the registry check resolves.
+  useEffect(() => {
+    void checkUpdate?.().then((result) => {
+      if (result) pushSystem(`Update available: v${result.current} → v${result.latest} · npm i -g @heapcode/cli`);
+    });
   }, []);
 
   const [liveText, setLiveText] = useState('');

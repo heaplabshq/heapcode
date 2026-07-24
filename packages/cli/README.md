@@ -63,6 +63,7 @@ heapcode --continue | -c          Continue this directory's most recent conversa
 heapcode --resume <id>            Continue a specific past conversation by id or unambiguous prefix
 heapcode --profile NAME           Use a specific provider profile for this session
 heapcode --safe-mode              Ask for permission on every action, even ones with a persisted "Always allow" grant
+heapcode --no-update-check        Skip the startup check against npm for a newer published version
 heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG, MCP) with no TTY required
 
 heapcode profile <add|list|use|remove>   Scriptable profile management (also available in-session via /profile)
@@ -131,6 +132,8 @@ Keys: `Esc` interrupts the running agent · `Ctrl+C` clears typed input, twice e
 ```
 
 Override the config directory with the `HEAPCODE_HOME` environment variable.
+
+A startup check against npm's own registry surfaces an available update as one dim line, never a blocking prompt — nothing else is contacted. Opt out with `--no-update-check` or `{ "updateCheckEnabled": false }` in `~/.heapcode/config.json`.
 
 ## Development
 

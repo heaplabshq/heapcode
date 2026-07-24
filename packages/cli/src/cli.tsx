@@ -17,6 +17,7 @@ import { loadIgnoreMatcher } from './agent/ignoreFiles.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { buildAgentSession } from './agentSession.js';
 import { AuditLog } from './audit.js';
+import { checkForUpdate } from './updateCheck.js';
 import { App } from './ink/App.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -150,6 +151,10 @@ async function main(): Promise<void> {
   conversation ??= { id: randomUUID(), title: 'New conversation', updatedAt: Date.now(), messages: [] };
 
   const safeMode = argv.includes('--safe-mode');
+  // Opt out with --no-update-check or { "updateCheckEnabled": false } in
+  // ~/.heapcode/config.json — see updateCheck.ts; never phones anything but
+  // npm's own registry, never blocks, renders as one dim line under the banner.
+  const updateCheckEnabled = !argv.includes('--no-update-check') && (await config.load()).updateCheckEnabled !== false;
   const telemetryEnabled = telemetryFlag ?? (await config.load()).telemetryEnabled ?? true;
   const audit = new AuditLog(auditFile(), () => telemetryEnabled);
   const permissions = new PermissionEngine(
@@ -202,6 +207,7 @@ async function main(): Promise<void> {
         return { provider: resolved.provider, contextWindow: resolved.contextWindow };
       }}
       version={cliVersion()}
+      checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heapcode/cli', cliVersion() ?? '0.0.0') : undefined}
       cwd={root}
       safeMode={safeMode}
       canResume={priorConversations > 0}
@@ -249,6 +255,7 @@ Usage:
   heapcode --resume <id>            Continue a specific past conversation by id or unambiguous prefix — printed when a session exits, or shown in /settings and /resume's picker
   heapcode --profile NAME           Use a specific provider profile for this session
   heapcode --safe-mode              Ask for permission on every action, even ones with a persisted "Always allow" grant
+  heapcode --no-update-check        Skip the startup check against npm for a newer published version (see "Config" below)
   heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG, MCP) with no TTY required — see below
 
   heapcode profile <add|list|use|remove>   Scriptable profile management (all of it is also available in-session via /profile)
@@ -300,7 +307,8 @@ Per-project session state (history, checkpoints, search index — never in your 
 Per-project CONFIG (meant to live alongside your code, safe to commit and share with a team):
   <cwd>/.heapcode/{HEAPCODE.md, memory.md, instructions/*.md, mcp.json}
 Semantic search needs an embeddings model on the active profile (embeddingsModel, e.g. nomic-embed-text on Ollama) — /settings shows whether one is configured.
-MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.`);
+MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.
+Update check: a one-line startup check against npm's registry for a newer published version — never phones anything else, never blocks. Opt out with --no-update-check or { "updateCheckEnabled": false } in ~/.heapcode/config.json.`);
 }
 
 main().catch((err) => {

@@ -137,6 +137,7 @@ function renderApp(overrides: {
   mcpManager?: McpManager;
   shadowGit?: ShadowGit;
   onSessionChange?(id: string): void;
+  checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
 }) {
   const checkpoint = new SessionCheckpoint(root);
   const executor = new WorkspaceToolExecutor(root, checkpoint, 5_000);
@@ -163,6 +164,7 @@ function renderApp(overrides: {
       ragIndexer={overrides.ragIndexer}
       repoMapIndexer={overrides.repoMapIndexer}
       mcpManager={overrides.mcpManager}
+      checkUpdate={overrides.checkUpdate}
     />,
   );
 }
@@ -1026,5 +1028,36 @@ describe('App', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(lastFrame()).toContain('Nothing to revert');
+  });
+
+  it('shows a dim update-available line under the banner once the registry check resolves', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+
+    const { lastFrame } = renderApp({
+      provider: fakeProvider('unused'),
+      conversation,
+      historyStore,
+      checkUpdate: () => Promise.resolve({ current: '0.1.0', latest: '0.2.0' }),
+    });
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Update available'));
+    expect(lastFrame()).toContain('v0.1.0');
+    expect(lastFrame()).toContain('v0.2.0');
+  });
+
+  it('shows nothing when the registry check finds no newer version (or is disabled entirely)', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+
+    const { lastFrame } = renderApp({
+      provider: fakeProvider('unused'),
+      conversation,
+      historyStore,
+      checkUpdate: () => Promise.resolve(undefined),
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(lastFrame()).not.toContain('Update available');
   });
 });

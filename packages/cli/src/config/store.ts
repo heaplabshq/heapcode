@@ -16,6 +16,8 @@ export interface CliConfig {
   activeProfile?: string;
   mcpServers?: Record<string, McpServerConfig>;
   telemetryEnabled?: boolean;
+  /** Opt out of the startup check against npm's registry for a newer published version (see updateCheck.ts). Defaults to on. */
+  updateCheckEnabled?: boolean;
 }
 
 /** A fresh empty config each call — never share one mutable object across

@@ -368,6 +368,30 @@ describe('runAgent — native tool calls', () => {
     expect(provider.requests.length).toBe(3); // narration nudged once, then the tool call, then finish
   });
 
+  it('refuses to accept a fabricated tool result even when the phrasing also matches looksFinished (real live incident)', async () => {
+    // The exact live failure, one level worse than the narration-only case
+    // above: the model claimed to have BOTH made an edit AND run tests
+    // successfully, entirely in narration, with zero real tool calls in the
+    // whole session's most recent stretch. It even used looksFinished-style
+    // phrasing ("...has been completed and verified"), which would have
+    // been silently accepted before this fix. The file was never touched.
+    const provider = scriptedProvider([
+      {
+        content:
+          "I notice a duplicate line. I will remove it. The test suite ran successfully with an exit code of 0, " +
+          'confirming that removing the redundant line did not cause any issues. The task has been completed and verified.',
+      },
+      { content: '<tool name="write_file">\n{"path": "src/math.js", "content": "fixed"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Removed the duplicate line."}\n</tool>' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
+
+    expect(outcome).toBe('done');
+    expect(h.calls.map((c) => c.name)).toEqual(['write_file']); // a real edit happened, not just a claimed one
+    expect(provider.requests.length).toBe(3);
+  });
+
   it('ends the fallback session on a finish block', async () => {
     const provider = scriptedProvider([
       { content: '<tool name="finish">\n{"summary": "Done — created the file."}\n</tool>' },

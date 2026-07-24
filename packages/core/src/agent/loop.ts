@@ -144,6 +144,27 @@ function asksTheUser(text: string): boolean {
   return /\b(would you like|do you want|shall i|should i|which (one|option|file|approach)|let me know (which|what|how|if)|please (choose|pick|confirm|clarify))\b/.test(tail);
 }
 
+/**
+ * A tool-free reply that describes having just observed an action's outcome
+ * ("ran successfully", "exit code 0", "confirmed that...") is claiming
+ * knowledge it cannot actually have — this branch runs precisely when NO
+ * tool call happened this turn, so there is no real result to be reporting.
+ * Observed live: a local model narrated "I will remove this duplicate line
+ * ... The test suite ran successfully with an exit code of 0, confirming
+ * that removing the redundant line did not cause any issues" as one single
+ * tool-free reply — the file was never touched. Never trust this as a
+ * finish signal, even if it also happens to match looksFinished.
+ */
+function claimsUnverifiedResult(text: string): boolean {
+  return /\b(exit code \d|tests? (passed|failed)|ran successfully|test suite (ran|passed)|confirmed (that|it)|verified (that|it)|no (issues|errors) (were )?(found|occurred))\b/i.test(
+    text,
+  );
+}
+
+const UNVERIFIED_RESULT_NUDGE =
+  'You just described a result (a test run, an edit, an outcome) but did not actually call a tool this turn — ' +
+  'you cannot know the outcome of an action you have not taken. Call the tool now. Never state what a tool ' +
+  'result was before you have actually received it.';
 
 const MAX_REPAIRS = 3;
 
@@ -518,28 +539,32 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         // is a turn boundary, and nudging would make the model answer itself.
         const awaitingUser = asksTheUser(response.content);
         // Default to NOT finished: a tool-free reply only ends the task
-        // outright when it clearly reads as complete (looksFinished).
-        // Nudging is the safe default here, not the exception — a narrower
-        // "does this specific phrasing announce more work" check used to
-        // gate this (looksUnfinished), but that whack-a-mole regex missed
-        // real phrasings ("I will first add…", "I am adding…") a live local
+        // outright when it clearly reads as complete (looksFinished) AND
+        // isn't itself claiming a result it couldn't actually have (no tool
+        // call happened this turn — see claimsUnverifiedResult). Nudging is
+        // the safe default here, not the exception — a narrower "does this
+        // specific phrasing announce more work" check used to gate this
+        // (looksUnfinished), but that whack-a-mole regex missed real
+        // phrasings ("I will first add…", "I am adding…") a live local
         // model used, silently ending a task after one reply that never
         // called a tool. Worst case of over-nudging is a few extra turns
-        // before MAX_NUDGES is exhausted, not a wrong answer.
-        if (!awaitingUser && !looksFinished(response.content) && nudges < MAX_NUDGES) {
+        // before MAX_NUDGES is exhausted, not a wrong (or fabricated) answer.
+        const unverified = claimsUnverifiedResult(response.content);
+        const trustworthyFinish = looksFinished(response.content) && !unverified;
+        if (!awaitingUser && !trustworthyFinish && nudges < MAX_NUDGES) {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
           continue;
         }
         // Tool-free and not clearly finished: protocol violation — remind once
         // that ending goes through finish(summary).
-        if (!awaitingUser && !looksFinished(response.content) && !finishReminderSent) {
+        if (!awaitingUser && !trustworthyFinish && !finishReminderSent) {
           finishReminderSent = true;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: FINISH_REMINDER });
+          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : FINISH_REMINDER });
           continue;
         }
         if (!streamed && response.content.trim()) events.onText(response.content);
@@ -560,11 +585,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           continue;
         }
         // Same "default to not-finished" reasoning as the native branch above.
-        if (!asksTheUser(response.content) && !looksFinished(response.content) && nudges < MAX_NUDGES) {
+        const unverifiedFallback = claimsUnverifiedResult(response.content);
+        const trustworthyFallbackFinish = looksFinished(response.content) && !unverifiedFallback;
+        if (!asksTheUser(response.content) && !trustworthyFallbackFinish && nudges < MAX_NUDGES) {
           nudges++;
           if (response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: unverifiedFallback ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
           continue;
         }
         if (response.content.trim()) events.onText(response.content);

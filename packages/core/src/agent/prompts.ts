@@ -28,7 +28,12 @@ const COMMON =
   'edit_file/write_file tools instead. Narration should be 1-3 sentences about what you are doing. ' +
   'CRITICAL: never stop to report progress or announce what you will do next — DO it by calling ' +
   'the tool in the same reply. A reply without a tool call means the task is FINISHED; it must ' +
-  'contain only the final summary of what was accomplished.';
+  'contain only the final summary of what was accomplished. ' +
+  'CRITICAL: never state a tool\'s result, or that a command/test "ran successfully"/"passed"/"was ' +
+  'confirmed", unless you have ACTUALLY called that tool in this session and are looking at its real ' +
+  'result. Do not narrate a sequence of hypothetical steps and their outcomes as if they already ' +
+  'happened — describing an edit and its test result in the same reply you never called edit_file or ' +
+  'run_tests in is a fabrication, not progress.';
 
 export function buildNativeAgentSystemPrompt(workspaceName: string): string {
   return (

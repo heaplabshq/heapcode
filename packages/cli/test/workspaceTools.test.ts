@@ -1,8 +1,10 @@
+import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolCall } from '@heapcode/core';
+import { configureAstChunker } from '@heapcode/core';
 import { WorkspaceToolExecutor } from '../src/agent/workspaceTools.js';
 import { SessionCheckpoint } from '../src/agent/checkpoint.js';
 import { canonicalize } from '../src/paths.js';
@@ -104,6 +106,15 @@ describe('WorkspaceToolExecutor — file operations', () => {
     const result = await executor.execute(call('edit_file', { path: 'a.txt', search: 'const z = 999;', replace: 'anything' }));
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/was not found/);
+  });
+
+  it('edit_file refuses to guess when the search text matches more than one place, and does not write anything (real live incident: this exact ambiguity once silently corrupted a file)', async () => {
+    const original = 'a();\n});\nb();\n});\nc();\n});';
+    await writeFile(join(root, 'a.txt'), original);
+    const result = await executor.execute(call('edit_file', { path: 'a.txt', search: '});', replace: 'DONE;' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/matches 3 different places/);
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe(original);
   });
 
   it('multi_edit applies all edits atomically — none written if one fails', async () => {
@@ -262,5 +273,57 @@ describe('WorkspaceToolExecutor — describe()', () => {
     expect(executor.describe(call('read_file', { path: 'a.ts' }))).toBe('Read a.ts');
     expect(executor.describe(call('run_command', { command: 'rm -rf x' }))).toBe('Run: rm -rf x');
     expect(executor.describe(call('delete_file', { path: 'a.ts' }))).toBe('Delete a.ts');
+  });
+});
+
+describe('WorkspaceToolExecutor — syntax guard (real live incident: a weak model wrote broken JS to disk)', () => {
+  const require = createRequire(import.meta.url);
+  const WASM_PATHS: Record<string, string> = {
+    'tree-sitter.wasm': require.resolve('web-tree-sitter/tree-sitter.wasm'),
+    'tree-sitter-javascript.wasm': require.resolve('tree-sitter-wasms/out/tree-sitter-javascript.wasm'),
+  };
+
+  beforeAll(() => {
+    configureAstChunker((filename) => {
+      const resolved = WASM_PATHS[filename];
+      if (!resolved) throw new Error(`no test wasm mapped for ${filename}`);
+      return resolved;
+    });
+  });
+
+  afterAll(() => {
+    configureAstChunker(undefined);
+  });
+
+  it('write_file refuses syntactically broken JS and does not create the file', async () => {
+    const result = await executor.execute(call('write_file', { path: 'a.js', content: 'function f( {\n' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/Syntax error/);
+    await expect(readFile(join(root, 'a.js'), 'utf8')).rejects.toThrow();
+  });
+
+  it('edit_file refuses an edit that breaks previously-valid JS syntax, leaving the file untouched', async () => {
+    // The exact shape of corruption a live model once produced: "});" (closing a
+    // test(...) call) got replaced with just "}", dropping the ")" and ";".
+    const original = "test('a', () => {\n  x();\n});\n";
+    await writeFile(join(root, 'a.js'), original);
+    const result = await executor.execute(call('edit_file', { path: 'a.js', search: '  x();\n});', replace: '  x();\n}' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/Syntax error/);
+    expect(await readFile(join(root, 'a.js'), 'utf8')).toBe(original);
+  });
+
+  it('edit_file still allows an edit that keeps the file syntactically valid', async () => {
+    await writeFile(join(root, 'a.js'), "test('a', () => {\n  x();\n});\n");
+    const result = await executor.execute(call('edit_file', { path: 'a.js', search: 'x();', replace: 'y();' }));
+    expect(result.isError).toBeFalsy();
+    expect(await readFile(join(root, 'a.js'), 'utf8')).toBe("test('a', () => {\n  y();\n});\n");
+  });
+
+  it('edit_file does not block further edits to a file that was already syntactically broken', async () => {
+    const alreadyBroken = "test('a', () => {\n  x();\n}\n"; // pre-existing, unrelated syntax error
+    await writeFile(join(root, 'a.js'), alreadyBroken);
+    const result = await executor.execute(call('edit_file', { path: 'a.js', search: 'x();', replace: 'y();' }));
+    expect(result.isError).toBeFalsy();
   });
 });

@@ -64,6 +64,43 @@ describe('findBestMatch', () => {
   it('returns undefined for empty needles', () => {
     expect(findBestMatch(file, '   \n  ')).toBeUndefined();
   });
+
+  it('flags an exact match that occurs in more than one place as ambiguous (real live incident)', () => {
+    // "});\n" closes every test block in a typical test file — matching the first one
+    // silently is exactly how a real live model corrupted a file: it meant the LAST
+    // closing brace but the tool applied the edit to the FIRST one instead.
+    const multi = 'a();\n});\nb();\n});\nc();\n});';
+    const m = findBestMatch(multi, '});');
+    expect(m?.ambiguous).toBe(true);
+    expect(m?.occurrences).toBe(3);
+  });
+
+  it('flags a fuzzy (whitespace-tolerant) match that occurs in more than one place as ambiguous', () => {
+    const twoFns = [
+      'function greetA(name) {',
+      '  if (!name) {',
+      '    return "hello";',
+      '  }',
+      '}',
+      'function greetB(name) {',
+      '  if (!name) {',
+      '    return "hello";',
+      '  }',
+      '}',
+    ].join('\n');
+    // Mangled indentation forces the fuzzy (non-exact) matching path, and the same
+    // guard body appears identically in both functions.
+    const m = findBestMatch(twoFns, 'if (!name) {\nreturn "hello";\n}');
+    expect(m?.exact).toBe(false);
+    expect(m?.ambiguous).toBe(true);
+    expect(m?.occurrences).toBe(2);
+  });
+
+  it('does not flag a match that occurs exactly once', () => {
+    const m = findBestMatch(file, 'return "hello";');
+    expect(m?.ambiguous).toBe(false);
+    expect(m?.occurrences).toBeUndefined();
+  });
 });
 
 describe('applySearchReplace', () => {
@@ -85,6 +122,11 @@ describe('applySearchReplace', () => {
 
   it('returns undefined instead of guessing on no match', () => {
     expect(applySearchReplace('abc', 'xyz', '123')).toBeUndefined();
+  });
+
+  it('returns undefined instead of guessing which of several identical matches was meant', () => {
+    const content = 'a();\n});\nb();\n});\nc();\n});';
+    expect(applySearchReplace(content, '});', 'DONE;')).toBeUndefined();
   });
 });
 

@@ -32,6 +32,7 @@ export * from './completion/latency.js';
 export * from './completion/chatFallback.js';
 export * from './edit/codeBlocks.js';
 export * from './edit/fuzzyMatch.js';
+export * from './edit/syntaxCheck.js';
 export * from './edit/indent.js';
 export * from './edit/diffStats.js';
 export * from './history/types.js';

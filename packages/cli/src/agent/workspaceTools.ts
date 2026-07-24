@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import fg from 'fast-glob';
 import {
   applySearchReplace,
+  checkSyntax,
   DEFAULT_IGNORE_GLOB,
   extractSymbols,
   findBestMatch,
@@ -472,9 +473,12 @@ export class WorkspaceToolExecutor {
       }
       case 'write_file': {
         const abs = this.resolve(a.path);
+        const content = a.content ?? '';
+        const syntaxError = await checkSyntax(a.path ?? '', content);
+        if (syntaxError) return fail(`${syntaxError} The file was NOT written — fix the syntax and try again.`);
         await this.checkpoint.recordBeforeChange(abs);
         await mkdir(path.dirname(abs), { recursive: true });
-        await writeFile(abs, a.content ?? '', 'utf8');
+        await writeFile(abs, content, 'utf8');
         return ok(`Wrote ${a.path}.`);
       }
       case 'edit_file': {
@@ -482,6 +486,13 @@ export class WorkspaceToolExecutor {
         const current = await readFile(abs, 'utf8');
         const search = String(a.search ?? '');
         const replace = String(a.replace ?? '');
+        const match = findBestMatch(current, search);
+        if (match?.ambiguous) {
+          return fail(
+            `The "search" text matches ${match.occurrences} different places in ${a.path} — refusing to guess ` +
+              'which one. Include more surrounding lines so the search text is unique to the intended location.',
+          );
+        }
         let next = applySearchReplace(current, search, replace);
         let viaApplyModel = false;
         if (next === undefined && this.applyMerge && current.length <= MAX_APPLY_MERGE_CHARS) {
@@ -495,6 +506,14 @@ export class WorkspaceToolExecutor {
           return fail(
             `The "search" text was not found in ${a.path}. ${nearbyHint(current, search)}` +
               'Provide the exact existing code (copy it from read_file output, without the line numbers).',
+          );
+        }
+        const beforeError = await checkSyntax(a.path ?? '', current);
+        const afterError = !beforeError ? await checkSyntax(a.path ?? '', next) : undefined;
+        if (afterError) {
+          return fail(
+            `${afterError} The edit was NOT applied — it would break previously-valid syntax. ` +
+              'Provide a corrected search/replace.',
           );
         }
         await this.checkpoint.recordBeforeChange(abs);
@@ -563,17 +582,35 @@ export class WorkspaceToolExecutor {
         const abs = this.resolve(a.path);
         const edits = Array.isArray(call.args.edits) ? (call.args.edits as Array<{ search?: unknown; replace?: unknown }>) : [];
         if (edits.length === 0) return fail('No edits given.');
-        let text = await readFile(abs, 'utf8');
+        const original = await readFile(abs, 'utf8');
+        let text = original;
         for (let i = 0; i < edits.length; i++) {
-          const next = applySearchReplace(text, String(edits[i]!.search ?? ''), String(edits[i]!.replace ?? ''));
+          const search = String(edits[i]!.search ?? '');
+          const match = findBestMatch(text, search);
+          if (match?.ambiguous) {
+            return fail(
+              `Edit ${i + 1}/${edits.length}: "search" matches ${match.occurrences} different places in ` +
+                `${a.path} (earlier edits were NOT applied) — refusing to guess which one. Include more ` +
+                'surrounding lines so the search text is unique to the intended location.',
+            );
+          }
+          const next = applySearchReplace(text, search, String(edits[i]!.replace ?? ''));
           if (next === undefined) {
             return fail(
               `Edit ${i + 1}/${edits.length}: "search" not found in ${a.path} (earlier edits were NOT applied). ` +
-                `${nearbyHint(text, String(edits[i]!.search ?? ''))}` +
+                `${nearbyHint(text, search)}` +
                 'Provide the exact existing code for each edit.',
             );
           }
           text = next;
+        }
+        const beforeError = await checkSyntax(a.path ?? '', original);
+        const afterError = !beforeError ? await checkSyntax(a.path ?? '', text) : undefined;
+        if (afterError) {
+          return fail(
+            `${afterError} None of the edits were applied — the result would break previously-valid syntax. ` +
+              'Provide corrected search/replace edits.',
+          );
         }
         await this.checkpoint.recordBeforeChange(abs);
         await writeFile(abs, text, 'utf8');

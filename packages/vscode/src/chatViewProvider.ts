@@ -123,9 +123,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ? 'Heap Code: agent task stopped.'
             : status === 'max-iterations'
               ? 'Heap Code: agent hit its iteration limit.'
-              : status === 'planned'
-                ? 'Heap Code: agent has a plan ready for your approval.'
-                : 'Heap Code: agent task finished.';
+              : status === 'incomplete'
+                ? 'Heap Code: agent stopped without completing the task.'
+                : status === 'planned'
+                  ? 'Heap Code: agent has a plan ready for your approval.'
+                  : 'Heap Code: agent task finished.';
     void vscode.window.showInformationMessage(message, 'Show').then((choice) => {
       if (choice === 'Show') void vscode.commands.executeCommand('heapcode.chatView.focus');
     });
@@ -1281,14 +1283,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             name: call.name,
             description,
           });
-          const result = call.argsParseError
-            ? {
-                id: call.id,
-                name: call.name,
-                content: `Invalid JSON arguments: ${call.argsParseError}`,
-                isError: true,
-              }
-            : await executor.execute(toolCall);
+          // Same guard as the core agent loop: a failed tool call (e.g. the
+          // model guessing a nonexistent path) becomes an error result the
+          // model can self-correct from, never an exception that kills the
+          // whole ask turn.
+          let result: { id: string; name: string; content: string; isError?: boolean };
+          try {
+            result = call.argsParseError
+              ? {
+                  id: call.id,
+                  name: call.name,
+                  content: `Invalid JSON arguments: ${call.argsParseError}`,
+                  isError: true,
+                }
+              : await executor.execute(toolCall);
+          } catch (err) {
+            result = {
+              id: call.id,
+              name: call.name,
+              content: `Tool failed: ${err instanceof Error ? err.message : String(err)}`,
+              isError: true,
+            };
+          }
           this.postToWebview({
             type: 'agentToolResult',
             id: call.id,

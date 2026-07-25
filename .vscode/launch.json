@@ -8,6 +8,18 @@
       "args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/vscode"],
       "outFiles": ["${workspaceFolder}/packages/vscode/dist/**/*.js"],
       "preLaunchTask": "build"
+    },
+    {
+      // Forces the Dev Host to open this repo itself, regardless of whatever
+      // folder it last restored — needed for anything (like PR review) that
+      // shells out to `gh` and depends on the workspace folder being this
+      // repo's own checkout, not whatever test project was open last.
+      "name": "Run Extension (on heapcode repo)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/vscode", "${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/packages/vscode/dist/**/*.js"],
+      "preLaunchTask": "build"
     }
   ]
 }

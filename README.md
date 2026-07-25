@@ -43,12 +43,14 @@ API keys are stored in the OS keychain via VS Code SecretStorage — never in se
 ```
 packages/core        IDE-agnostic engine: providers, agent loop, tools, RAG, prompts
 packages/vscode      VS Code extension (thin adapter over core)
+packages/cli         Terminal adapter over core (in progress — see docs/CLI_PLAN.md)
 packages/webview-ui  React chat UI
 docs/PRD.md          Product requirements (source of truth)
-PLAN.md              Milestone tracker + decisions log
+docs/PLAN.md         VS Code extension milestone tracker + decisions log
+docs/CLI_PLAN.md     CLI milestone tracker + decisions log
 ```
 
-`core` never imports `vscode` (lint-enforced) — JetBrains/Neovim adapters can reuse it wholesale.
+`core` never imports `vscode` (lint-enforced) — the CLI and any future JetBrains/Neovim adapters reuse it wholesale.
 
 ## Development
 

@@ -33,6 +33,19 @@ import type { McpManager } from './mcp.js';
 import type { ShadowGit } from './shadowGit.js';
 import { appendMemoryNote, loadProjectInstructions } from '../memory.js';
 
+// Sub-agents get the same tools as the parent (minus delegate_task itself)
+// with no path/file scoping — a live incident (CLI side, same delegation
+// contract) had one, tasked only with checking a specific file for bugs,
+// wander off and rewrite an unrelated package.json once it ran out of real
+// bugs to find. This is a soft guardrail (a task-level instruction, not an
+// enforced restriction) — same class of protection personas already rely on
+// via taskAddendum.
+const SCOPE_ADDENDUM =
+  'You are a sub-agent delegated a specific task. Stay strictly within its scope: only create, modify, or ' +
+  "delete files that are explicitly named in the task or unambiguously required to do exactly what it asks. " +
+  "If you notice something else worth changing (missing test infra, an unrelated bug, etc.), mention it in " +
+  'your final summary instead of changing it yourself.';
+
 export class AgentController {
   private abort?: AbortController;
   private checkpoint?: SessionCheckpoint;
@@ -484,7 +497,7 @@ export class AgentController {
     const outcome = await runAgent({
       provider,
       model,
-      task: [persona.taskAddendum, task].filter(Boolean).join('\n\n---\n\n'),
+      task: [SCOPE_ADDENDUM, persona.taskAddendum, task].filter(Boolean).join('\n\n---\n\n'),
       workspaceName: path.basename(ctx.root.fsPath),
       tools: subTools,
       nativeToolCalls: capabilities.nativeToolCalls,
@@ -519,7 +532,12 @@ export class AgentController {
       `${toolLog.length} tool call(s)${toolLog.length ? ':\n' + toolLog.map((d, i) => `  ${i + 1}. ${d}`).join('\n') : ''}\n\n` +
       (summaryText.trim() || '(sub-agent produced no summary text)');
 
-    return { id: call.id, name: call.name, content, isError: outcome === 'error' || outcome === 'max-iterations' };
+    return {
+      id: call.id,
+      name: call.name,
+      content,
+      isError: outcome === 'error' || outcome === 'max-iterations' || outcome === 'incomplete',
+    };
   }
 
   /** Approve a pending plan (outcome 'planned') and let the agent execute it. */

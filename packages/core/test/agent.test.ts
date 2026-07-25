@@ -89,10 +89,38 @@ describe('runAgent — native tool calls', () => {
     expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish']);
   });
 
+  it('unwraps a stray {"arg": {...}} envelope some models consistently emit, so the tool sees the real arguments', async () => {
+    // Observed live with a local Gemma fine-tune: every tool call wrapped in
+    // an extra "arg" key, never self-correcting even after repeated
+    // "Missing X argument" errors from the real (un-normalized) args.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { arg: { path: 'a.ts', content: 'hi' } } }] },
+      { content: 'All done — wrote it.' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(outcome).toBe('done');
+    expect(h.calls[0]!.args).toEqual({ path: 'a.ts', content: 'hi' });
+  });
+
+  it('does not unwrap a single top-level arg that legitimately matches the tool\'s own schema', async () => {
+    // read_file's schema declares a "path" key — {"path": "a.ts"} must pass through untouched,
+    // not be mistaken for an envelope just because it also has exactly one key.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'Read it.' },
+    ]);
+    const h = harness();
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(h.calls[0]!.args).toEqual({ path: 'a.ts' });
+  });
+
   it('reports permission denial to the model instead of failing', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a', content: 'b' } }] },
-      { content: 'Understood, finishing without writing.' },
+      { content: 'Understood — nothing more to do without that permission.' },
     ]);
     const h = harness({ requestPermission: () => Promise.resolve(false) });
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
@@ -121,7 +149,7 @@ describe('runAgent — native tool calls', () => {
     const provider = scriptedProvider([
       { content: '1. Read the file\n2. Fix the bug' },
       { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
-      { content: 'Fixed.' },
+      { content: 'Task complete — fixed.' },
     ]);
     const plans: string[] = [];
     const h = harness();
@@ -161,7 +189,7 @@ describe('runAgent — native tool calls', () => {
   it('resumes a previously-produced plan straight into execution via resumePlan', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
-      { content: 'Fixed.' },
+      { content: 'Task complete — fixed.' },
     ]);
     const h = harness();
     const outcome = await runAgent({
@@ -182,14 +210,33 @@ describe('runAgent — native tool calls', () => {
   it('requests a wrap-up summary when the final reply is empty', async () => {
     const provider = scriptedProvider([
       { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: {} }] },
-      { content: '' }, // finishes silently…
-      { content: 'Summary: read the file, nothing to change.' },
+      { content: '' }, // ambiguous (empty, no tool call) — nudged once
+      { content: 'Task complete: read the file, nothing to change.' },
     ]);
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
     expect(outcome).toBe('done');
-    expect(h.texts).toEqual(['Summary: read the file, nothing to change.']);
+    expect(h.texts).toEqual(['Task complete: read the file, nothing to change.']);
     expect(provider.requests.length).toBe(3);
+  });
+
+  it('threads prior conversation history between the system prompt and the current task', async () => {
+    const provider = scriptedProvider([{ content: 'The second option it is — all done.' }]);
+    const h = harness({
+      task: 'ok do the second option',
+      history: [
+        { role: 'user', content: 'what are my options?' },
+        { role: 'assistant', content: '1. add tests 2. refactor auth' },
+      ],
+    });
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(outcome).toBe('done');
+    const sent = provider.requests[0]!.messages;
+    expect(sent.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(sent[1]!.content).toBe('what are my options?');
+    expect(sent[2]!.content).toContain('refactor auth');
+    expect(sent[3]!.content).toBe('ok do the second option');
   });
 
   it('nudges the model to continue when it narrates without acting', async () => {
@@ -223,6 +270,39 @@ describe('runAgent — native tool calls', () => {
     expect(h.calls.map((c) => c.name)).toEqual(['write_file']);
   });
 
+  it('a tool-free reply that asks the user a question ends the turn — no continue-nudge (field report: model answered its own "Would you like to: 1/2/3")', async () => {
+    const provider = scriptedProvider([
+      {
+        content:
+          'I listed the workspace. How about we start by exploring src/? Would you like to:\n1. List files\n2. Read README\n3. Run tests',
+      },
+      // If the loop wrongly nudges, this scripted follow-up would run — the
+      // assertions below prove it never gets requested.
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'src/index.ts' } }] },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(outcome).toBe('done');
+    expect(h.calls).toEqual([]); // never answered its own question with a tool call
+    expect(provider.requests.length).toBe(1);
+    expect(h.texts[0]).toContain('Would you like to');
+  });
+
+  it('a question beats the unfinished-narration heuristic even when both match (fallback protocol)', async () => {
+    const provider = scriptedProvider([
+      // "i need to" matches looksUnfinished — the trailing question must win.
+      { content: 'I need to know which config file you mean. Which one would you like me to edit?' },
+      { content: '<tool name="write_file">\n{"path": "x", "content": "y"}\n</tool>' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
+
+    expect(outcome).toBe('done');
+    expect(h.calls).toEqual([]);
+    expect(provider.requests.length).toBe(1);
+  });
+
   it('nudges to continue in smaller steps when the reply was truncated (finish_reason=length)', async () => {
     const provider = scriptedProvider([
       { content: '<!DOCTYPE html><html>… giant partial output', finishReason: 'length' },
@@ -254,17 +334,118 @@ describe('runAgent — native tool calls', () => {
     expect(provider.requests[0]!.tools!.some((t) => t.name === 'finish')).toBe(true);
   });
 
-  it('reminds once about finish() on an ambiguous tool-free reply, then accepts', async () => {
+  it('keeps nudging a reply that never clearly finishes (up to MAX_NUDGES), rather than giving up after one ambiguous turn', async () => {
+    // Field bug (2026-07-24, live local model): phrasings like "I will first
+    // add…"/"I am adding…" matched neither the old looksUnfinished regex nor
+    // looksFinished, so the loop accepted a narration-only reply as done
+    // after a single ambiguous turn — the task silently never ran. Default
+    // is now "nudge unless it clearly looks finished", not the reverse.
+    const provider = scriptedProvider([{ content: 'Interesting workspace layout.' }]); // never finishes, never calls a tool
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    // MAX_NUDGES exhausts and a PLAIN reply (no fabricated results, no
+    // announced intent) still gets the benefit of the doubt — bounded, not
+    // an infinite loop, and chat/Q&A answers that never phrase-match
+    // looksFinished keep working. Replies that claim unverified results or
+    // still announce intent at exhaustion end 'incomplete' instead (below).
+    expect(outcome).toBe('done');
+    expect(provider.requests.length).toBeGreaterThan(2); // nudged more than once, not accepted on the first ambiguous reply
+    const nudgeMessages = provider.requests.slice(1).map((r) => r.messages.at(-1)!.content);
+    expect(nudgeMessages.every((c) => c.includes('continue working') || c.includes('finish tool'))).toBe(true);
+  });
+
+  it('ends "incomplete", not "done", when the model exhausts every nudge fabricating results it never produced', async () => {
+    // The live incident behind this: asked to "delegate investigating
+    // src/strings.js", a session with sub-agents disabled replied "The
+    // delegated investigation is complete. The file contains two exported
+    // functions..." — zero tool calls, findings pattern-matched from the
+    // repo map already in context — and the loop, out of nudges, returned
+    // 'done' as if that were a verified success.
     const provider = scriptedProvider([
-      { content: 'Interesting workspace layout.' }, // ambiguous: not unfinished, not finished
-      { content: 'Interesting workspace layout.' },
+      { content: 'The delegated investigation into src/strings.js is complete. The file contains two exported functions.' },
     ]);
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('incomplete');
+  });
+
+  it('ends "incomplete", not "done", when the model spends the whole nudge budget announcing intent without acting', async () => {
+    const provider = scriptedProvider([{ content: 'I will first add the multiply function to src/math.js.' }]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('incomplete');
+    expect(h.calls.length).toBe(0); // nothing ever ran — that's exactly why 'done' would be a lie
+  });
+
+  it('the continue nudge explicitly scopes to the current request, not stale unrelated history', async () => {
+    // Live incident: after the model fully answered an unrelated, read-only
+    // question ("does this project have string utilities?"), the generic
+    // "you are not done, continue working" nudge — with no scoping — led it
+    // to resume a stale, already-abandoned task from earlier in the SAME
+    // conversation (fixing a failing test file nobody asked it to touch in
+    // this turn) instead of just finishing the question it had just
+    // answered. It recurred twice more later in that same session.
+    const provider = scriptedProvider([
+      { content: 'Yes — string utilities live in src/strings.js: reverse() and capitalize().' },
+      { content: 'All done — nothing more needed.' },
+    ]);
+    const h = harness({
+      task: 'does this project have any string utilities?',
+      history: [
+        { role: 'user', content: 'add a divide function to src/math.js and a test for it' },
+        { role: 'assistant', content: 'I will first add the divide function, then write a test for it.' },
+      ],
+    });
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
     expect(outcome).toBe('done');
-    expect(provider.requests.length).toBe(2); // one reminder round-trip
-    const reminder = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
-    expect(reminder.content).toContain('finish tool');
+    // The nudge sent after the plain Q&A reply must scope "continue" to the
+    // current request and explicitly rule out resuming the old task.
+    const nudge = provider.requests[1]!.messages.at(-1)!.content;
+    expect(nudge).toContain('CURRENT request');
+    expect(nudge.toLowerCase()).toContain('do not resume');
+  });
+
+  it('nudges (does not silently accept) a narration-only reply whose phrasing the old looksUnfinished regex never covered', async () => {
+    // The exact live failure: a local model announced intent ("I will
+    // first add the multiply function...") without ever emitting a tool
+    // block, three times in a row across a real session — none of those
+    // phrasings ("will first", "I am adding", "I'll place it") matched the
+    // old regex, so the task silently never ran.
+    const provider = scriptedProvider([
+      { content: "I will first add the multiply function to src/math.js. I'll place it logically with the others." },
+      { content: '<tool name="write_file">\n{"path": "src/math.js", "content": "..."}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Added multiply."}\n</tool>' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
+
+    expect(outcome).toBe('done');
+    expect(h.calls.map((c) => c.name)).toEqual(['write_file']); // the tool actually ran, not just narrated
+    expect(provider.requests.length).toBe(3); // narration nudged once, then the tool call, then finish
+  });
+
+  it('refuses to accept a fabricated tool result even when the phrasing also matches looksFinished (real live incident)', async () => {
+    // The exact live failure, one level worse than the narration-only case
+    // above: the model claimed to have BOTH made an edit AND run tests
+    // successfully, entirely in narration, with zero real tool calls in the
+    // whole session's most recent stretch. It even used looksFinished-style
+    // phrasing ("...has been completed and verified"), which would have
+    // been silently accepted before this fix. The file was never touched.
+    const provider = scriptedProvider([
+      {
+        content:
+          "I notice a duplicate line. I will remove it. The test suite ran successfully with an exit code of 0, " +
+          'confirming that removing the redundant line did not cause any issues. The task has been completed and verified.',
+      },
+      { content: '<tool name="write_file">\n{"path": "src/math.js", "content": "fixed"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Removed the duplicate line."}\n</tool>' },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
+
+    expect(outcome).toBe('done');
+    expect(h.calls.map((c) => c.name)).toEqual(['write_file']); // a real edit happened, not just a claimed one
+    expect(provider.requests.length).toBe(3);
   });
 
   it('ends the fallback session on a finish block', async () => {
@@ -673,14 +854,14 @@ describe('runAgent — structured-text fallback', () => {
   it('parses a tool block, executes, and finishes on a block-free reply', async () => {
     const provider = scriptedProvider([
       { content: 'Let me read it.\n<tool name="read_file">\n{"path": "a.ts"}\n</tool>' },
-      { content: 'Finished the task.' },
+      { content: 'Task complete: read the file successfully.' },
     ]);
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });
 
     expect(outcome).toBe('done');
     expect(h.calls.map((c) => c.name)).toEqual(['read_file']);
-    expect(h.texts).toEqual(['Let me read it.', 'Finished the task.']);
+    expect(h.texts).toEqual(['Let me read it.', 'Task complete: read the file successfully.']);
     const second = provider.requests[1]!;
     const resultMsg = second.messages[second.messages.length - 1]!;
     expect(resultMsg.role).toBe('user');
@@ -694,7 +875,7 @@ describe('runAgent — structured-text fallback', () => {
     const provider = scriptedProvider([
       { content: '<tool name="read_file">\n{"path": broken}\n</tool>' },
       { content: '<tool name="read_file">\n{"path": "a.ts"}\n</tool>' },
-      { content: 'done' },
+      { content: 'All done.' },
     ]);
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: false });

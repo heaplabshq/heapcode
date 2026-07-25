@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Heap Code — model-agnostic AI coding assistant for VS Code",
   "scripts": {
-    "build": "pnpm --filter @heapcode/webview-ui build && pnpm --filter heap-code build",
+    "build": "pnpm --filter @heapcode/webview-ui build && pnpm --filter heap-code build && pnpm --filter @heaplabs/heapcode-cli build",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "test": "vitest run",

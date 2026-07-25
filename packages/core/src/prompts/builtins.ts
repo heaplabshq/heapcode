@@ -4,6 +4,15 @@ export interface PromptTemplate {
   title: string;
   /** `{input}` is replaced with the text after the command. */
   template: string;
+  /**
+   * The template's own wording asks the model to report/describe, not
+   * change anything (e.g. "point out bugs" for /review) — but on personas
+   * with write access, nothing stops the model from acting on its own
+   * findings anyway, quietly turning a report into an edit the user never
+   * asked for. Runs the task read-only (same restriction as the Reviewer
+   * persona, intersected with whatever persona is actually active) instead.
+   */
+  readOnly?: boolean;
 }
 
 export const builtinPrompts: readonly PromptTemplate[] = [
@@ -12,6 +21,7 @@ export const builtinPrompts: readonly PromptTemplate[] = [
     title: 'Explain code',
     template:
       'Explain the following code clearly and concisely. Describe what it does, how it works, and anything non-obvious. {input}',
+    readOnly: true,
   },
   {
     command: 'fix',
@@ -30,6 +40,7 @@ export const builtinPrompts: readonly PromptTemplate[] = [
     title: 'Review code',
     template:
       'Review the following code as a senior engineer. Point out bugs, edge cases, security issues, and style problems, ordered by severity. {input}',
+    readOnly: true,
   },
   {
     command: 'security-review',
@@ -42,6 +53,7 @@ export const builtinPrompts: readonly PromptTemplate[] = [
       'insecure cryptography, and sensitive data exposure. For each finding, give severity, ' +
       'the exact location, why it is exploitable, and a concrete fix. If you find nothing, ' +
       'say so plainly — do not invent issues. {input}',
+    readOnly: true,
   },
   {
     command: 'test',

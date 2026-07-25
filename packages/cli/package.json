@@ -1,0 +1,60 @@
+{
+  "name": "@heaplabs/heapcode-cli",
+  "version": "0.1.1",
+  "description": "Model-agnostic AI coding agent for your terminal — chat, autonomous agent mode, semantic codebase search, and MCP, with any OpenAI-compatible API, local or cloud.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heaplabshq/heapcode.git",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "copilot",
+    "ollama",
+    "openai",
+    "llm",
+    "agent",
+    "local",
+    "privacy"
+  ],
+  "type": "module",
+  "bin": {
+    "heapcode": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "dev": "node esbuild.mjs && node dist/cli.js"
+  },
+  "devDependencies": {
+    "@heapcode/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/react": "^18.3.4",
+    "cli-highlight": "^2.1.11",
+    "esbuild": "^0.23.1",
+    "fast-glob": "^3.3.2",
+    "ignore": "^7.0.5",
+    "ink": "^5.0.1",
+    "ink-select-input": "^6.0.0",
+    "ink-spinner": "^5.0.0",
+    "ink-testing-library": "^4.0.0",
+    "marked": "^14.1.0",
+    "marked-terminal": "^7.1.0",
+    "react": "^18.3.1",
+    "tree-sitter-wasms": "^0.1.12",
+    "typescript": "^5.5.4",
+    "web-tree-sitter": "^0.25.6"
+  }
+}

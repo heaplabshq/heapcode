@@ -16,7 +16,7 @@ import {
   type ToolResult,
 } from './tools.js';
 
-export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned';
+export type AgentOutcome = 'done' | 'stopped' | 'max-iterations' | 'error' | 'planned' | 'incomplete';
 
 export interface AgentEvents {
   /** Assistant narration/summary text (complete message, non-streamed path). */
@@ -49,6 +49,14 @@ export interface AgentOptions {
   provider: Provider;
   model: string;
   task: string;
+  /**
+   * Prior conversation turns (user/assistant text only) inserted between the
+   * system prompt and the current task, so follow-up messages ("ok do that",
+   * "the second option") actually carry their context. Hosts should cap this
+   * (recent turns, trimmed content) — a long history is subject to compaction
+   * like any other transcript content.
+   */
+  history?: ChatMessage[];
   /** Images attached to the task (data: URLs) — needs a vision-capable model. */
   images?: string[];
   workspaceName: string;
@@ -100,15 +108,28 @@ const PLAN_REQUEST =
   'longer numbered plan (up to ~8 steps) for genuinely multi-step build/edit work. ' +
   'Plain text only — do NOT call any tools yet.';
 
+/**
+ * Both nudges below explicitly scope "continue" to the CURRENT request
+ * (the last user message), not to this conversation's history in general.
+ * Observed live: after the model answered an unrelated read-only question
+ * in full (a legitimate finish), this nudge alone — "you are not done,
+ * continue working" — with no such scoping led it to resume a stale,
+ * already-abandoned task from earlier in the same conversation instead of
+ * just finishing the question it had actually just answered. It happened
+ * twice more later in the same session on other unrelated turns.
+ */
 const CONTINUE_NUDGE =
-  'You are not done — continue working. Call the next tool NOW in your reply. ' +
-  'Do not describe what you will do; do it. Reply without a tool call ONLY when the task is fully complete.';
+  'You are not done with the CURRENT request (the last user message) — continue working on THAT only. ' +
+  'Do not resume or "clean up" an unrelated, unfinished earlier task from this conversation unless the ' +
+  'current request actually asks for it. Call the next tool NOW in your reply. ' +
+  'Do not describe what you will do; do it. Reply without a tool call ONLY when the current request is fully complete.';
 
 const MAX_NUDGES = 4;
 
 const FINISH_REMINDER =
-  'If the task is fully complete, call the finish tool with a summary. ' +
-  'Otherwise, continue working by calling the next tool.';
+  'If the CURRENT request (the last user message) is fully complete, call the finish tool with a summary. ' +
+  'Otherwise, continue working on THAT request by calling the next tool — do not switch to an unrelated ' +
+  'unfinished task from earlier in this conversation unless asked.';
 
 /** A tool-free reply that reads as a real completion — accept without ceremony. */
 function looksFinished(text: string): boolean {
@@ -122,14 +143,94 @@ const TRUNCATED_NUDGE =
   'write large files in sections (write_file for the first part, then edit_file to extend), ' +
   'and keep each tool call comfortably small.';
 
-/** Narration that announces more work while stopping — the premature-finish signature. */
-function looksUnfinished(text: string): boolean {
-  return /\b(not (yet )?(complete|done|finished)|next step|will (now|then|proceed)|proceed(ing)? to|i need to|i am now|remaining steps?|continuing (with|to)|now (executing|creating|writing|implementing|building|adding|moving|starting)|executing steps?|let me (now )?(create|write|implement|add|start)|going to (create|write|implement|add|start)|starting (with|on|step))\b/i.test(
+/**
+ * A tool-free reply that ends by asking the user something is a turn
+ * boundary — hand control back instead of nudging the model onward. A nudged
+ * model answers its own question and picks an option on the user's behalf
+ * (observed live: "Would you like to: 1… 2… 3…" followed by "I'll start by…"
+ * in the same session with no user input in between).
+ */
+function asksTheUser(text: string): boolean {
+  const trimmed = text.trim();
+  if (/[?？]\s*$/.test(trimmed)) return true;
+  const tail = trimmed.slice(-400).toLowerCase();
+  return /\b(would you like|do you want|shall i|should i|which (one|option|file|approach)|let me know (which|what|how|if)|please (choose|pick|confirm|clarify))\b/.test(tail);
+}
+
+/**
+ * A tool-free reply that describes having just observed an action's outcome
+ * ("ran successfully", "exit code 0", "confirmed that...") is claiming
+ * knowledge it cannot actually have — this branch runs precisely when NO
+ * tool call happened this turn, so there is no real result to be reporting.
+ * Observed live: a local model narrated "I will remove this duplicate line
+ * ... The test suite ran successfully with an exit code of 0, confirming
+ * that removing the redundant line did not cause any issues" as one single
+ * tool-free reply — the file was never touched. Never trust this as a
+ * finish signal, even if it also happens to match looksFinished.
+ *
+ * The same applies to claims of delegated/sub-agent work — observed live:
+ * "The delegated investigation into src/strings.js is complete. The file
+ * contains two exported functions..." with delegate_task never called (it
+ * was not even offered — sub-agents were disabled); the "findings" were
+ * pattern-matched from the repo map already in context.
+ */
+function claimsUnverifiedResult(text: string): boolean {
+  if (
+    /\b(exit code \d|tests? (passed|failed)|ran successfully|test suite (ran|passed)|confirmed (that|it)|verified (that|it)|no (issues|errors) (were )?(found|occurred))\b/i.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return /\b(delegat(ed|ion)|sub-?agents?)\b[\s\S]{0,80}?\b(complete[d]?|done|finished|found|returned|report(s|ed)?)\b/i.test(
+    text,
+  );
+}
+
+const UNVERIFIED_RESULT_NUDGE =
+  'You just described a result (a test run, an edit, an outcome) but did not actually call a tool this turn — ' +
+  'you cannot know the outcome of an action you have not taken. Call the tool now. Never state what a tool ' +
+  'result was before you have actually received it.';
+
+/**
+ * A reply still announcing work it is ABOUT to do ("I will first add…",
+ * "I am adding…", "I'll place it…"). Only consulted at nudge EXHAUSTION,
+ * never to gate the nudges themselves (the "default to not-finished" rule
+ * covers that without any phrase list): a model that spent the entire nudge
+ * budget narrating intent never acted, so the task verifiably did not
+ * happen — the one case where accepting the reply as 'done' anyway would
+ * silently report success on a skipped task (the original live incident).
+ */
+function announcesIntent(text: string): boolean {
+  return /\b(i['’]ll|i (will|shall)|i am (now |currently )?(going|about) to|i am \w+ing|let me (now |first )?(start|begin|add|create|write|edit|fix|implement|run|check|read|investigate))\b/i.test(
     text,
   );
 }
 
 const MAX_REPAIRS = 3;
+
+/**
+ * Some models (observed live: a local Gemma fine-tune) consistently wrap
+ * their tool arguments in an extra envelope key — `{"arg": {"pattern": "x"}}`
+ * instead of `{"pattern": "x"}` — for every call, never self-correcting even
+ * after repeated "Missing X argument" errors. Unwraps that shape precisely:
+ * only when there's exactly one top-level key, that key doesn't match any of
+ * the tool's own declared parameter names (so a tool that legitimately takes
+ * one argument, e.g. semantic_search's `query`, is never touched), and the
+ * value under it is itself a plain object. A tool call that already matches
+ * its schema is always returned unchanged.
+ */
+function unwrapMisenvelopedArgs(args: Record<string, unknown>, tool: ToolDefinition): Record<string, unknown> {
+  const keys = Object.keys(args);
+  if (keys.length !== 1) return args;
+  const onlyKey = keys[0]!;
+  const schema = tool.parameters as { properties?: Record<string, unknown> } | undefined;
+  const declared = Object.keys(schema?.properties ?? {});
+  if (declared.includes(onlyKey)) return args;
+  const nested = args[onlyKey];
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) return nested as Record<string, unknown>;
+  return args;
+}
 
 const MEMORY_NOTE_PROMPT =
   'Is there anything about this codebase worth remembering long-term — a non-obvious ' +
@@ -209,6 +310,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
+    ...(opts.history ?? []).map((m): ChatMessage => ({ role: m.role, content: m.content })),
     { role: 'user', content: opts.task, images: opts.images },
   ];
 
@@ -217,16 +319,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const hasVerifyTool = tools.some((t) => t.verifies);
   let dirtySinceVerify = false;
 
-  const execTool = async (call: ToolCall): Promise<ToolResult> => {
-    const tool = toolsByName.get(call.name);
+  const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
+    const tool = toolsByName.get(rawCall.name);
     if (!tool) {
       return {
-        id: call.id,
-        name: call.name,
-        content: `Unknown tool "${call.name}". Available: ${tools.map((t) => t.name).join(', ')}.`,
+        id: rawCall.id,
+        name: rawCall.name,
+        content: `Unknown tool "${rawCall.name}". Available: ${tools.map((t) => t.name).join(', ')}.`,
         isError: true,
       };
     }
+    const call: ToolCall = { ...rawCall, args: unwrapMisenvelopedArgs(rawCall.args, tool) };
     events.onToolCall(call);
     let result: ToolResult;
     if (tool.permission !== 'read' && !(await opts.requestPermission(call, tool))) {
@@ -473,23 +576,51 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: TRUNCATED_NUDGE });
           continue;
         }
-        // Tool-free reply that announces more work → nudge it to keep going
-        // instead of ending the session prematurely.
-        if (looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+        // A question addressed to the user beats every nudge below: the reply
+        // is a turn boundary, and nudging would make the model answer itself.
+        const awaitingUser = asksTheUser(response.content);
+        // Default to NOT finished: a tool-free reply only ends the task
+        // outright when it clearly reads as complete (looksFinished) AND
+        // isn't itself claiming a result it couldn't actually have (no tool
+        // call happened this turn — see claimsUnverifiedResult). Nudging is
+        // the safe default here, not the exception — a narrower "does this
+        // specific phrasing announce more work" check used to gate this
+        // (looksUnfinished), but that whack-a-mole regex missed real
+        // phrasings ("I will first add…", "I am adding…") a live local
+        // model used, silently ending a task after one reply that never
+        // called a tool. Worst case of over-nudging is a few extra turns
+        // before MAX_NUDGES is exhausted, not a wrong (or fabricated) answer.
+        const unverified = claimsUnverifiedResult(response.content);
+        const trustworthyFinish = looksFinished(response.content) && !unverified;
+        if (!awaitingUser && !trustworthyFinish && nudges < MAX_NUDGES) {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
           continue;
         }
         // Tool-free and not clearly finished: protocol violation — remind once
         // that ending goes through finish(summary).
-        if (!looksFinished(response.content) && !finishReminderSent) {
+        if (!awaitingUser && !trustworthyFinish && !finishReminderSent) {
           finishReminderSent = true;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: FINISH_REMINDER });
+          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : FINISH_REMINDER });
           continue;
+        }
+        // Nudges AND the finish reminder are exhausted without a trustworthy
+        // finish. Two shapes of reply are now KNOWN failures and must not be
+        // dressed up as 'done': one that claims results no tool ever produced
+        // (a fabricated "delegated investigation ... is complete" was
+        // presented as success, live), and one still announcing intent (the
+        // model narrated "I will…" for the whole nudge budget — the task
+        // verifiably never ran). A plain answer that merely never phrase-
+        // matched looksFinished (chat, Q&A) keeps the old benefit of the
+        // doubt and falls through to acceptance below. Deliberately not
+        // finish() on 'incomplete': no memory distillation on a non-success.
+        if (!awaitingUser && !trustworthyFinish && (unverified || announcesIntent(response.content))) {
+          if (!streamed && response.content.trim()) events.onText(response.content);
+          return 'incomplete';
         }
         if (!streamed && response.content.trim()) events.onText(response.content);
         else if (!response.content.trim()) {
@@ -508,12 +639,27 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: REPAIR_PROMPT });
           continue;
         }
-        if (looksUnfinished(response.content) && nudges < MAX_NUDGES) {
+        // Same "default to not-finished" reasoning as the native branch above.
+        const awaitingUserFallback = asksTheUser(response.content);
+        const unverifiedFallback = claimsUnverifiedResult(response.content);
+        const trustworthyFallbackFinish = looksFinished(response.content) && !unverifiedFallback;
+        if (!awaitingUserFallback && !trustworthyFallbackFinish && nudges < MAX_NUDGES) {
           nudges++;
           if (response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: unverifiedFallback ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
           continue;
+        }
+        // Nudge exhaustion — same 'incomplete' termination rules as the
+        // native branch: fabricated results and still-announced intent are
+        // known failures; a plain answer keeps the benefit of the doubt.
+        if (
+          !awaitingUserFallback &&
+          !trustworthyFallbackFinish &&
+          (unverifiedFallback || announcesIntent(response.content))
+        ) {
+          if (response.content.trim()) events.onText(response.content);
+          return 'incomplete';
         }
         if (response.content.trim()) events.onText(response.content);
         else await summarize('Summarize what you did and whether the task is complete.');

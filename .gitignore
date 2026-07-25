@@ -7,4 +7,6 @@ coverage/
 *.log
 .DS_Store
 packages/vscode/media/webview/
-docs/
+
+# Per-project heapcode CLI session data (conversations, permissions, shadow-git)
+.heapcode/

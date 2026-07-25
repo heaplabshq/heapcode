@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, Static, Text, useApp, useInput } from 'ink';
+import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
+import { useTerminalColumns } from './useTerminalColumns.js';
 import {
   builtinPrompts,
   parseSlashCommand,
@@ -202,6 +203,38 @@ export function App({
       if (result) pushSystem(`Update available: v${result.current} → v${result.latest} · npm i -g @heaplabs/heapcode-cli`);
     });
   }, []);
+
+  // Terminal columns, for the footer's manual truncation below — Ink boxes
+  // stretch to fill exactly what stdout reports, with no safety margin, so a
+  // long dynamic string (e.g. an Ollama model tag) can overflow by a column
+  // or two and wrap ugly instead of just getting clipped. The hook (unlike
+  // reading stdout.columns inline) re-renders on resize, so the truncation
+  // tracks the live width.
+  const { stdout } = useStdout();
+  const columns = useTerminalColumns();
+
+  // Full-UI repaint on terminal resize — transcript included. Ink's own
+  // resize handler re-lays-out only the live region (composer, footer, any
+  // open prompt); everything already emitted through <Static> was written
+  // physically at the old width, and on a narrower window the terminal
+  // rewraps those lines itself. That both leaves the visible transcript
+  // mis-wrapped and invalidates the line counts Ink's incremental eraser
+  // relies on, which is where the stray border fragments came from. So on
+  // the (debounced — see cli.tsx) resize event: wipe screen + scrollback
+  // and remount <Static>, which re-emits the entire transcript laid out
+  // against the new width — the same full-reset mechanism resetTranscript
+  // uses for /clear. Listening on Ink's context stdout (not process.stdout)
+  // keeps this inert under tests' fake streams.
+  useEffect(() => {
+    const repaintOnResize = (): void => {
+      if (process.stdout.isTTY) process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+      setStaticKey((k) => k + 1);
+    };
+    stdout.on('resize', repaintOnResize);
+    return () => {
+      stdout.off('resize', repaintOnResize);
+    };
+  }, [stdout]);
 
   const [liveText, setLiveText] = useState('');
   const [liveTool, setLiveTool] = useState<Extract<TranscriptItem, { kind: 'tool' }>>();
@@ -992,8 +1025,34 @@ export function App({
 
   const inputBlocked = busy || Boolean(pendingPermission) || Boolean(pendingQuestion) || Boolean(picker) || setupActive;
 
+  // The footer's right side (hint text / exit-armed warning / indexing
+  // progress) is short and fixed-ish; the left side embeds the active
+  // model's name, which for some providers (e.g. an Ollama tag) can run
+  // long enough on its own to blow past the terminal width. Box's
+  // justifyContent="space-between" doesn't truncate or wrap either side, so
+  // an overlong left string collides with the right one instead of just
+  // getting clipped — truncate it ourselves to whatever's actually left.
+  const footerRight = exitArmed
+    ? 'press Ctrl+C again to exit'
+    : indexProgress
+      ? `indexing… ${indexProgress.embedded}/${indexProgress.total} files`
+      : busy
+        ? 'esc to interrupt'
+        : '/ for commands · Ctrl+C twice to exit';
+  const footerLeftFull = `${active.profile.name} · ${model} · ${workspaceName}${persona.id !== 'agent' ? ` · ${persona.label}` : ''}`;
+  const footerGap = 2;
+  const footerLeftMax = Math.max(0, columns - footerRight.length - footerGap);
+  const footerLeft =
+    footerLeftFull.length > footerLeftMax ? `${footerLeftFull.slice(0, Math.max(0, footerLeftMax - 1))}…` : footerLeftFull;
+
   return (
-    <Box flexDirection="column">
+    // marginRight reserves one empty column on the right for the whole UI —
+    // a defensive buffer so full-width borders and the footer never render
+    // flush against the terminal's literal last column, which is where a
+    // one-cell width mismatch (an off-by-one in the terminal's own reported
+    // size, a resize the app hasn't repainted for yet, etc.) turns into a
+    // wrapped line and a stale, un-erased fragment on the next redraw.
+    <Box flexDirection="column" marginRight={1}>
       <Static key={staticKey} items={items}>
         {(item, i) => {
           switch (item.kind) {
@@ -1098,19 +1157,10 @@ export function App({
         clearToken={clearToken}
       />
       <Box justifyContent="space-between">
-        <Text dimColor>
-          {active.profile.name} · {model} · {workspaceName}
-          {persona.id !== 'agent' ? ` · ${persona.label}` : ''}
+        <Text dimColor>{footerLeft}</Text>
+        <Text color={exitArmed ? 'yellow' : undefined} dimColor={!exitArmed}>
+          {footerRight}
         </Text>
-        {exitArmed ? (
-          <Text color="yellow">press Ctrl+C again to exit</Text>
-        ) : indexProgress ? (
-          <Text dimColor>
-            indexing… {indexProgress.embedded}/{indexProgress.total} files
-          </Text>
-        ) : (
-          <Text dimColor>{busy ? 'esc to interrupt' : '/ for commands · Ctrl+C twice to exit'}</Text>
-        )}
       </Box>
     </Box>
   );

@@ -23,6 +23,48 @@ describe('Composer — multi-line input', () => {
     expect(onSubmit).toHaveBeenCalledWith('first line\nsecond line');
   });
 
+  it('Option+Enter (ESC CR — also what /terminal-setup-style Shift+Enter bindings send) inserts a newline instead of submitting', async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = render(<Composer onSubmit={onSubmit} />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    stdin.write('first line');
+    stdin.write('\x1b\r');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(lastFrame()).toContain('first line');
+
+    stdin.write('second line');
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith('first line\nsecond line');
+  });
+
+  it('a long unbroken line is pre-wrapped to the terminal width instead of being handed to the terminal to wrap', async () => {
+    const onSubmit = vi.fn();
+    const { stdin, lastFrame } = render(<Composer onSubmit={onSubmit} />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    // ink-testing-library's fake stdout reports 100 columns; content width
+    // is 100 minus the box/gutter overhead. 120 digits must therefore span
+    // two rows, with no rendered row wider than the terminal.
+    const longLine = Array.from({ length: 120 }, (_, i) => String(i % 10)).join('');
+    stdin.write(longLine);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const frame = lastFrame() ?? '';
+    const rows = frame.split('\n');
+    expect(rows.filter((l) => /\d/.test(l)).length).toBeGreaterThanOrEqual(2);
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(100);
+
+    // The buffer itself is untouched by display wrapping — submits as one line.
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onSubmit).toHaveBeenCalledWith(longLine);
+  });
+
   it('a multi-line paste (one stdin write containing embedded newlines) is inserted as literal text, not submitted line by line', async () => {
     const onSubmit = vi.fn();
     const { stdin, lastFrame } = render(<Composer onSubmit={onSubmit} />);

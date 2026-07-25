@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useTerminalColumns } from './useTerminalColumns.js';
 
 export interface SlashCommand {
   /** Including the leading slash, e.g. `/model`. */
@@ -33,6 +34,16 @@ export interface ComposerProps {
 const MENU_MAX_ROWS = 30;
 const MENTION_MAX_ROWS = 8;
 
+// Border (2 cols) + paddingX (2 cols) + the "❯ " gutter (2 cols, which every
+// wrapped row also sits under — see the note by the render block) + a
+// column of slack. The slack absorbs the sort of small, hard-to-pin-down
+// width mismatches (a stale `columns` reading, a boundary cursor rendering
+// one cell past a row's last character) that otherwise turn into a
+// terminal-side wrap Ink doesn't know happened — see wrapValue below for why
+// that matters.
+const ROW_OVERHEAD = 7;
+const MIN_CONTENT_WIDTH = 10;
+
 /** The `@token` the cursor is currently inside, if any. */
 function mentionTokenAt(value: string, cursor: number): { start: number; query: string } | undefined {
   const before = value.slice(0, cursor);
@@ -41,40 +52,86 @@ function mentionTokenAt(value: string, cursor: number): { start: number; query: 
   return { start: cursor - match[2]!.length - 1, query: match[2]! };
 }
 
+interface Row {
+  /** Display text for this physical (wrapped) row — never longer than `width`. */
+  text: string;
+  /** Offset into the raw buffer where this row's text begins. */
+  start: number;
+}
+
 /**
- * Cursor position one visual line up/down from `cursor`, preserving column
- * as best it can (clamped to the shorter line). Returns undefined at the
- * first/last line — the caller's cue to fall through to history navigation
- * instead, exactly like a normal multi-line text box.
+ * Hard-wraps `value` to `width` columns per physical row, breaking on the
+ * user's own newlines first and then again on width. This is the fix for
+ * the actual bug: this composer used to hand Ink one long, unbroken line of
+ * text per user-typed line and trust its border Box to stretch to exactly
+ * the terminal's width. Any small mismatch between what Ink thinks that
+ * width is and what the terminal actually does with it (and in practice,
+ * across real terminals, there always eventually is one — a stale/racy
+ * `columns` reading, a resize the terminal hasn't finished repainting,
+ * whatever) causes the terminal itself to silently wrap a row onto an extra
+ * physical line. Ink's incremental repaint has no idea that happened — it
+ * only erases as many lines as its own layout says it wrote — so the extra
+ * line never gets cleared and lingers as a stray fragment on the next
+ * redraw. Pre-wrapping here means every row handed to Ink is already
+ * guaranteed to fit, so the terminal never needs to wrap anything itself,
+ * regardless of *why* a width mismatch happened.
  */
-function moveVertical(value: string, cursor: number, direction: 'up' | 'down'): number | undefined {
-  const lineStart = value.lastIndexOf('\n', cursor - 1) + 1;
-  const lineEndIdx = value.indexOf('\n', cursor);
-  const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
-  const column = cursor - lineStart;
-  if (direction === 'up') {
-    if (lineStart === 0) return undefined;
-    const prevStart = value.lastIndexOf('\n', lineStart - 2) + 1;
-    const prevEnd = lineStart - 1;
-    return Math.min(prevStart + column, prevEnd);
+function wrapValue(value: string, width: number): Row[] {
+  const rows: Row[] = [];
+  let offset = 0;
+  for (const line of value.split('\n')) {
+    if (line.length === 0) {
+      rows.push({ text: '', start: offset });
+    } else {
+      for (let i = 0; i < line.length; i += width) {
+        rows.push({ text: line.slice(i, i + width), start: offset + i });
+      }
+    }
+    offset += line.length + 1; // +1 skips the '\n' this line was split on.
   }
-  if (lineEnd === value.length) return undefined;
-  const nextStart = lineEnd + 1;
-  const nextEndIdx = value.indexOf('\n', nextStart);
-  const nextEnd = nextEndIdx === -1 ? value.length : nextEndIdx;
-  return Math.min(nextStart + column, nextEnd);
+  return rows;
+}
+
+/** Which physical row (and column within it) a raw buffer offset falls on. */
+function locateCursor(rows: Row[], cursor: number): { row: number; col: number } {
+  for (let i = 0; i < rows.length; i++) {
+    const next = rows[i + 1];
+    if (!next || cursor < next.start) return { row: i, col: cursor - rows[i]!.start };
+  }
+  return { row: 0, col: 0 }; // unreachable — wrapValue always returns at least one row
+}
+
+/**
+ * Raw buffer offset one physical (wrapped) row up/down from `cursor`,
+ * clamped to the shorter row. Returns undefined at the first/last row —
+ * the caller's cue to fall through to history navigation instead, exactly
+ * like a normal multi-line text box. Physical rather than logical rows so
+ * Up/Down walks a long wrapped line the way a real text area does, not just
+ * the lines the user actually pressed Enter on.
+ */
+function moveVertical(rows: Row[], cursor: number, direction: 'up' | 'down'): number | undefined {
+  const { row, col } = locateCursor(rows, cursor);
+  const target = direction === 'up' ? row - 1 : row + 1;
+  if (target < 0 || target >= rows.length) return undefined;
+  return rows[target]!.start + Math.min(col, rows[target]!.text.length);
 }
 
 /**
  * The prompt line: multi-line-capable editing with a visible cursor,
- * arrow-key movement (vertical arrows move between lines when there are
- * any, falling through to history navigation only at the first/last line),
- * readline chords (Ctrl+A/E/U/K/W), per-session input history on Up/Down,
- * and a slash-command autocomplete menu. A trailing backslash before Enter
- * inserts a newline instead of submitting (works in any terminal, unlike
- * Shift+Enter — see the `key.return` handler); a multi-line paste is
- * inserted as literal text the same way any paste is (Ink already delivers
- * a paste as one `input` call, newlines and all).
+ * arrow-key movement (vertical arrows move between physical rows when
+ * there are any, falling through to history navigation only at the
+ * first/last row), readline chords (Ctrl+A/E/U/K/W), per-session input
+ * history on Up/Down, and a slash-command autocomplete menu.
+ *
+ * Newline entry, in order of what actually works where: Option+Enter
+ * (ESC+CR — Terminal.app with "Use Option as Meta key", iTerm2, most
+ * terminals; also what Claude Code's /terminal-setup rebinds Shift+Enter
+ * to send in iTerm2/VS Code), Shift+Enter on terminals that genuinely
+ * report the modifier, and a trailing backslash before Enter as the
+ * everywhere-fallback — most terminals send byte-identical Enter
+ * regardless of Shift, so plain Shift+Enter is undetectable app-side.
+ * A multi-line paste is inserted as literal text the same way any paste
+ * is (Ink already delivers a paste as one `input` call, newlines and all).
  *
  * Buffer and cursor live in refs mirrored to state: useInput fires from raw
  * stdin events outside React's batching, so back-to-back events in one tick
@@ -99,6 +156,11 @@ export function Composer({
   const historyRef = useRef<string[]>([]);
   const historyPos = useRef(-1); // -1 = editing a fresh (non-history) line
   const draftRef = useRef('');
+
+  const columns = useTerminalColumns();
+  const width = Math.max(MIN_CONTENT_WIDTH, columns - ROW_OVERHEAD);
+  const widthRef = useRef(width);
+  widthRef.current = width;
 
   const setBuffer = (text: string, cur: number = text.length): void => {
     valueRef.current = text;
@@ -190,6 +252,20 @@ export function Composer({
         onSubmit(text);
         return;
       }
+      // ESC+CR — what Option+Enter sends (Terminal.app with "Use Option as
+      // Meta key", iTerm2, most others), and what Claude Code's
+      // /terminal-setup binds Shift+Enter to in iTerm2/VS Code. Ink strips
+      // the leading ESC and only names the bare-CR sequence 'return', so
+      // this arrives as input '\r' with key.return unset — which is exactly
+      // the signature to match on. '\n' (linefeed — some terminals'
+      // Shift/Ctrl+Enter) means the same thing. Without this branch both
+      // fell through to the literal-insert path and put a raw control
+      // character in the buffer.
+      if (input === '\r' || input === '\n') {
+        const cur = cursorRef.current;
+        setBuffer(valueRef.current.slice(0, cur) + '\n' + valueRef.current.slice(cur), cur + 1);
+        return;
+      }
       if (key.tab) {
         if (mentionOpen) completeMention(mentionMenu[menuIndex]!);
         else if (menuOpen) setBuffer(menu[menuIndex]!.name + (menu[menuIndex]!.args ? ' ' : ''));
@@ -204,10 +280,10 @@ export function Composer({
           setMenuIndex((i) => (i - 1 + menu.length) % menu.length);
           return;
         }
-        // A multi-line buffer moves the cursor up a line first — only once
-        // it's already on the first line does Up fall through to history,
+        // A multi-line buffer moves the cursor up a row first — only once
+        // it's already on the first row does Up fall through to history,
         // same as any ordinary multi-line text box.
-        const moved = moveVertical(valueRef.current, cursorRef.current, 'up');
+        const moved = moveVertical(wrapValue(valueRef.current, widthRef.current), cursorRef.current, 'up');
         if (moved !== undefined) {
           setBuffer(valueRef.current, moved);
           return;
@@ -232,7 +308,7 @@ export function Composer({
           setMenuIndex((i) => (i + 1) % menu.length);
           return;
         }
-        const moved = moveVertical(valueRef.current, cursorRef.current, 'down');
+        const moved = moveVertical(wrapValue(valueRef.current, widthRef.current), cursorRef.current, 'down');
         if (moved !== undefined) {
           setBuffer(valueRef.current, moved);
           return;
@@ -282,9 +358,19 @@ export function Composer({
     { isActive: !disabled },
   );
 
-  const before = value.slice(0, cursor);
-  const at = value[cursor] ?? ' ';
-  const after = value.slice(cursor + 1);
+  // Every row is already guaranteed to fit within `width` (see wrapValue),
+  // so joining them back with '\n' can never trigger a terminal-side wrap —
+  // the one thing this rewrite exists to prevent. Ink lines up a Text
+  // node's wrapped/newline-broken rows at the node's own x-offset (right
+  // after the "❯ " gutter here), so continuation rows land under the first
+  // row's text for free — no manual per-row indent needed.
+  const rows = wrapValue(value, width);
+  const { row: cursorRow, col: cursorCol } = locateCursor(rows, cursor);
+  const display = rows.map((r) => r.text).join('\n');
+  const displayCursor = rows.slice(0, cursorRow).reduce((acc, r) => acc + r.text.length + 1, 0) + cursorCol;
+  const before = display.slice(0, displayCursor);
+  const at = display[displayCursor] ?? ' ';
+  const after = display.slice(displayCursor + 1);
 
   return (
     <Box flexDirection="column">

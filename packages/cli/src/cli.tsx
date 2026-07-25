@@ -32,6 +32,30 @@ function cliVersion(): string | undefined {
   }
 }
 
+/**
+ * Coalesces the terminal's native `resize` events so the app only reacts
+ * once a live window drag has settled, instead of on every intermediate
+ * tick. A real drag fires `resize` far faster than the terminal can reflow,
+ * and each reaction repaints the entire UI (App.tsx clears the screen and
+ * re-emits the whole transcript on this event — see its resize effect), so
+ * reacting per-tick would both flicker and race the terminal's own reflow.
+ * After the debounce, `stream.columns` reflects the drag's final width and
+ * a single full repaint covers it.
+ */
+function debounceResizeEvents(stream: NodeJS.WriteStream, waitMs = 100): void {
+  const originalEmit = stream.emit.bind(stream);
+  let pending: NodeJS.Timeout | undefined;
+  stream.emit = ((event: string, ...args: unknown[]) => {
+    if (event !== 'resize') return originalEmit(event, ...args);
+    if (pending) clearTimeout(pending);
+    pending = setTimeout(() => {
+      pending = undefined;
+      originalEmit('resize');
+    }, waitMs);
+    return true;
+  }) as typeof stream.emit;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
 
@@ -181,6 +205,8 @@ async function main(): Promise<void> {
   // swapping it out entirely on /new/resume), so this is the one thing it
   // reports back up rather than cli.tsx reading its internal state.
   let sessionId = conversation.id;
+
+  debounceResizeEvents(process.stdout);
 
   // exitOnCtrlC: false — Ink's built-in handler would unmount the UI on the
   // first Ctrl+C even mid-agent-run, leaving the terminal in a broken state.

@@ -9,9 +9,12 @@ import type { TranscriptItem } from './types.js';
 // (file contents, command output) without one big result taking over the
 // transcript. Squashing everything to one line (the old behavior) threw
 // away real information: a read_file result became unreadable, and a
-// run_command's actual output vanished into "npm test 2>&1 | ...".
-const SUMMARY_CHARS = 800;
-const SUMMARY_LINES = 16;
+// run_command's actual output vanished into "npm test 2>&1 | ...". Sized
+// for a real test failure's stack trace or a multi-line edit diff to fit
+// without truncation in the common case — matches App.tsx's TOOL_SUMMARY_CHARS,
+// which is the true upstream cap (raising this alone wouldn't reveal more).
+const SUMMARY_CHARS = 4000;
+const SUMMARY_LINES = 60;
 
 /** Matches a file-path header at the start of a line — search()'s "src/foo.ts:12:" and
  * RagIndexer.queryFormatted()'s "--- src/foo.ts:10-20 (score 0.87) ---", nothing else
@@ -36,6 +39,49 @@ function highlightSafe(text: string, language: string): string {
  * render correctly. Text with no header at all (run_command output, "No
  * matches.") passes through completely unchanged.
  */
+const DIFF_HUNK_RE = /^@@ -\d+,\d+ \+\d+,\d+ @@$/;
+
+/** True when `text` contains a unifiedDiff() hunk header — edit_file/multi_edit
+ * results prefix that with a plain "Edited path." line, so this checks every
+ * line rather than just the first. */
+function isDiffText(text: string): boolean {
+  return text.split('\n').some((line) => DIFF_HUNK_RE.test(line));
+}
+
+/** git-diff-style coloring: red removals, green additions, cyan hunk header,
+ * dim context/prefix lines (e.g. edit_file's leading "Edited path." line). */
+function DiffBody({ text }: { text: string }): React.ReactElement {
+  return (
+    <Box flexDirection="column">
+      {text.split('\n').map((line, i) => {
+        if (DIFF_HUNK_RE.test(line))
+          return (
+            <Text key={i} color="cyan">
+              {line}
+            </Text>
+          );
+        if (line.startsWith('+'))
+          return (
+            <Text key={i} color="green">
+              {line}
+            </Text>
+          );
+        if (line.startsWith('-'))
+          return (
+            <Text key={i} color="red">
+              {line}
+            </Text>
+          );
+        return (
+          <Text key={i} dimColor>
+            {line}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+}
+
 export function highlightPerBlock(text: string): { body: string; highlighted: boolean } {
   const lines = text.split('\n');
   const out: string[] = [];
@@ -78,10 +124,11 @@ export function ToolChip({ item }: { item: Extract<TranscriptItem, { kind: 'tool
     const shown = lines.slice(0, SUMMARY_LINES);
     const omitted = lines.length - shown.length;
     const text = shown.join('\n');
-    const { body, highlighted } = item.language ? { body: highlightSafe(text, item.language), highlighted: true } : highlightPerBlock(text);
+    const diff = isDiffText(text);
+    const { body, highlighted } = diff ? { body: text, highlighted: true } : item.language ? { body: highlightSafe(text, item.language), highlighted: true } : highlightPerBlock(text);
     summaryNode = (
       <Box flexDirection="column">
-        <Text dimColor={!highlighted}>{body}</Text>
+        {diff ? <DiffBody text={body} /> : <Text dimColor={!highlighted}>{body}</Text>}
         {omitted > 0 && <Text dimColor>… {omitted} more line(s)</Text>}
       </Box>
     );

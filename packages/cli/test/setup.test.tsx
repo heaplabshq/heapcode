@@ -117,4 +117,61 @@ describe('Setup', () => {
 
     await vi.waitFor(() => expect(onComplete).toHaveBeenCalled(), { timeout: 2_000 });
   });
+
+  it('filters a large fetched model list by typing, and selects the filtered match', async () => {
+    server = await startMockServer({ kind: 'json', status: 200, body: { data: [{ id: 'llama3.1:8b' }, { id: 'qwen2.5-coder' }, { id: 'qwen2.5:latest' }, { id: 'mistral' }] } });
+
+    const onComplete = vi.fn();
+    const { stdin, lastFrame } = render(<Setup onComplete={onComplete} />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    stdin.write('\r'); // provider: Ollama (default)
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r'); // name: default
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('http://localhost:' + new URL(server.baseUrl).port + '/v1');
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Which model?'), { timeout: 2_000 });
+    stdin.write('coder'); // narrows to just qwen2.5-coder
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lastFrame()).toContain('qwen2.5-coder');
+    expect(lastFrame()).not.toContain('mistral');
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalled(), { timeout: 2_000 });
+    expect(onComplete.mock.calls[0]![0]).toMatchObject({ model: 'qwen2.5-coder' });
+  });
+
+  it('lets the user type a model name manually even when the fetch succeeded, via the trailing "enter manually" row', async () => {
+    server = await startMockServer({ kind: 'json', status: 200, body: { data: [{ id: 'llama3.1:8b' }] } });
+
+    const onComplete = vi.fn();
+    const { stdin, lastFrame } = render(<Setup onComplete={onComplete} />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    stdin.write('\r'); // provider: Ollama (default)
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r'); // name: default
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('http://localhost:' + new URL(server.baseUrl).port + '/v1');
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Which model?'), { timeout: 2_000 });
+    stdin.write('\x1B[B'); // down arrow, past the single fetched model, onto "Enter model name manually…"
+    await new Promise((r) => setTimeout(r, 20));
+    expect(lastFrame()).toContain('Enter model name manually');
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Model id'), { timeout: 2_000 });
+    await new Promise((r) => setTimeout(r, 20)); // let the freshly-mounted TextInput's useInput effect attach
+    stdin.write('a-model-not-in-the-list');
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalled(), { timeout: 2_000 });
+    expect(onComplete.mock.calls[0]![0]).toMatchObject({ model: 'a-model-not-in-the-list' });
+  });
 });

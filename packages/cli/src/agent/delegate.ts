@@ -40,6 +40,18 @@ export const DELEGATE_TASK_TOOL: ToolDefinition = {
   permission: 'execute',
 };
 
+// Sub-agents get the same tools as the parent (minus delegate_task itself)
+// with no path/file scoping — a live incident had one, tasked only with
+// checking a specific file for bugs, wander off and rewrite an unrelated
+// package.json once it ran out of real bugs to find. This is a soft
+// guardrail (a task-level instruction, not an enforced restriction) — same
+// class of protection personas already rely on via taskAddendum.
+const SCOPE_ADDENDUM =
+  'You are a sub-agent delegated a specific task. Stay strictly within its scope: only create, modify, or ' +
+  "delete files that are explicitly named in the task or unambiguously required to do exactly what it asks. " +
+  "If you notice something else worth changing (missing test infra, an unrelated bug, etc.), mention it in " +
+  'your final summary instead of changing it yourself.';
+
 export interface DelegateContext {
   executor: WorkspaceToolExecutor;
   provider: Provider;
@@ -137,7 +149,7 @@ export async function runSubAgent(call: ToolCall, ctx: DelegateContext): Promise
   const outcome = await runAgent({
     provider,
     model,
-    task: [persona.taskAddendum, task].filter(Boolean).join('\n\n---\n\n'),
+    task: [SCOPE_ADDENDUM, persona.taskAddendum, task].filter(Boolean).join('\n\n---\n\n'),
     workspaceName: ctx.workspaceName,
     tools: subTools,
     nativeToolCalls: ctx.nativeToolCalls,

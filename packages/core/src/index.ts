@@ -35,6 +35,7 @@ export * from './edit/fuzzyMatch.js';
 export * from './edit/syntaxCheck.js';
 export * from './edit/indent.js';
 export * from './edit/diffStats.js';
+export * from './edit/diff.js';
 export * from './history/types.js';
 export * from './protocol.js';
 export * from './instructions.js';

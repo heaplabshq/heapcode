@@ -27,6 +27,7 @@ import {
   BUILTIN_PERSONAS,
   filterToolsForPersona,
   getPersona,
+  intersectPersonas,
   looksFilesystemMutating,
   type AgentPersona,
 } from '../agent/personas.js';
@@ -50,7 +51,9 @@ import type { TranscriptItem } from './types.js';
 
 // Matches ToolChip's own SUMMARY_CHARS — no point sending more to the chip
 // than it will ever show, but this is the true "how much can survive" cap.
-const TOOL_SUMMARY_CHARS = 800;
+// Generous on purpose: run_command output (test failures, stack traces) and
+// edit_file/multi_edit's diff both need real room, not a one-line preview.
+const TOOL_SUMMARY_CHARS = 4000;
 
 const COMMANDS: SlashCommand[] = [
   { name: '/help', description: 'Show available commands' },
@@ -785,7 +788,7 @@ export function App({
           pushSystem(`Usage: /${prompt.prompt.command} <code, file path, or question>`);
           return;
         }
-        await runTask(text, renderTemplate(prompt.prompt.template, { input: prompt.input }));
+        await runTask(text, renderTemplate(prompt.prompt.template, { input: prompt.input }), prompt.prompt.readOnly ? getPersona('reviewer') : undefined);
         return;
       }
       const [cmd] = text.trim().split(/\s+/);
@@ -797,8 +800,15 @@ export function App({
     await runTask(text, text);
   }
 
-  /** Run one agent turn: `display` is what the transcript shows; `task` is what the agent gets. */
-  async function runTask(display: string, task: string): Promise<void> {
+  /**
+   * Run one agent turn: `display` is what the transcript shows; `task` is
+   * what the agent gets. `personaOverride` scopes just this turn to a
+   * stricter persona (e.g. a readOnly builtin prompt like /review) without
+   * touching the session's actual active persona — intersected with it, so
+   * it can only ever be as-or-more restrictive, never less.
+   */
+  async function runTask(display: string, task: string, personaOverride?: AgentPersona): Promise<void> {
+    const effectivePersona = personaOverride ? intersectPersonas(persona, personaOverride) : persona;
     setError(undefined);
     setBusy(true);
     // Snapshot prior turns BEFORE pushing the new task message.
@@ -826,7 +836,7 @@ export function App({
     const mentionNote = /(^|\s)@[^\s@]+/.test(display)
       ? 'Paths prefixed with @ in the task are file/folder references in this workspace — read them for context.'
       : '';
-    const preamble = [persona.taskAddendum, instructions, workspaceContext, mentionNote].filter(Boolean).join('\n\n---\n\n');
+    const preamble = [effectivePersona.taskAddendum, instructions, workspaceContext, mentionNote].filter(Boolean).join('\n\n---\n\n');
     const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
 
     // Reconnect (idempotent) at the start of every task rather than once at
@@ -849,7 +859,7 @@ export function App({
         task: fullTask,
         history,
         workspaceName,
-        tools: filterToolsForPersona([...offeredTools, ...mcpTools], persona),
+        tools: filterToolsForPersona([...offeredTools, ...mcpTools], effectivePersona),
         nativeToolCalls,
         contextWindow: active.contextWindow,
         signal: abort.signal,
@@ -885,7 +895,7 @@ export function App({
               contextWindow: active.contextWindow,
               tools,
               mcpManager,
-              persona,
+              persona: effectivePersona,
               permissions,
               shadowGit,
               workspaceName,
@@ -931,8 +941,8 @@ export function App({
           // it for write-restricted personas (same guard as the extension).
           if (
             call.name === 'run_command' &&
-            persona.allowedPermissions &&
-            !persona.allowedPermissions.includes('write') &&
+            effectivePersona.allowedPermissions &&
+            !effectivePersona.allowedPermissions.includes('write') &&
             looksFilesystemMutating(String(call.args.command ?? ''))
           ) {
             return {
@@ -940,7 +950,7 @@ export function App({
               name: call.name,
               content:
                 `Blocked: this command looks like it would create, modify, or delete files, which the ` +
-                `${persona.label} persona does not allow. Use a persona with file-editing tools instead.`,
+                `${effectivePersona.label} persona does not allow. Use a persona with file-editing tools instead.`,
               isError: true,
             };
           }

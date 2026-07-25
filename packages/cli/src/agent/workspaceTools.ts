@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import fg from 'fast-glob';
 import {
@@ -8,6 +8,7 @@ import {
   DEFAULT_IGNORE_GLOB,
   extractSymbols,
   findBestMatch,
+  unifiedDiff,
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
@@ -29,6 +30,42 @@ const MAX_FETCH_CHARS = 20_000;
 // action uses, past which the round-trip cost outweighs skipping the merge and just failing.
 const MAX_APPLY_MERGE_CHARS = 40_000;
 const CWD_MARKER = '__HEAPCODE_CWD__';
+
+// write_file does a blind full-file overwrite — fine for a new file, but a
+// real risk for a manifest/lockfile the model didn't fully re-derive: a live
+// incident had a sub-agent "fixing" an unrelated file rewrite package.json
+// via write_file and silently drop its "name" field. edit_file/multi_edit's
+// targeted search/replace can't lose content this way, so overwriting one of
+// these wholesale is refused in favor of that — only when the file already
+// exists; writing a brand new one is unaffected.
+const PROTECTED_MANIFEST_FILES = new Set([
+  'package.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'Cargo.toml',
+  'Cargo.lock',
+  'go.mod',
+  'go.sum',
+  'requirements.txt',
+  'Pipfile',
+  'Pipfile.lock',
+  'Gemfile',
+  'Gemfile.lock',
+  'composer.json',
+  'composer.lock',
+  'tsconfig.json',
+  'pyproject.toml',
+]);
+
+async function fileExists(abs: string): Promise<boolean> {
+  try {
+    await stat(abs);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function truncate(content: string): string {
   if (content.length <= MAX_OUTPUT_CHARS) return content;
@@ -473,6 +510,14 @@ export class WorkspaceToolExecutor {
       }
       case 'write_file': {
         const abs = this.resolve(a.path);
+        if (PROTECTED_MANIFEST_FILES.has(path.basename(a.path ?? '')) && (await fileExists(abs))) {
+          return fail(
+            `Refusing to overwrite ${a.path} wholesale with write_file — it's a manifest/lockfile, and a full ` +
+              'rewrite risks silently dropping fields the model did not fully re-derive (a real incident: this ' +
+              'exact thing once dropped an unrelated "name" field from package.json). Use edit_file or multi_edit ' +
+              'for a targeted change instead.',
+          );
+        }
         const content = a.content ?? '';
         const syntaxError = await checkSyntax(a.path ?? '', content);
         if (syntaxError) return fail(`${syntaxError} The file was NOT written — fix the syntax and try again.`);
@@ -518,7 +563,10 @@ export class WorkspaceToolExecutor {
         }
         await this.checkpoint.recordBeforeChange(abs);
         await writeFile(abs, next, 'utf8');
-        return ok(`Edited ${a.path}.${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}`);
+        const diff = unifiedDiff(current, next);
+        return ok(
+          `Edited ${a.path}.${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}${diff ? `\n\n${diff}` : ''}`,
+        );
       }
       case 'rename_file': {
         const from = this.resolve(a.path);
@@ -614,7 +662,8 @@ export class WorkspaceToolExecutor {
         }
         await this.checkpoint.recordBeforeChange(abs);
         await writeFile(abs, text, 'utf8');
-        return ok(`Applied ${edits.length} edits to ${a.path}.`);
+        const diff = unifiedDiff(original, text);
+        return ok(`Applied ${edits.length} edits to ${a.path}.${diff ? `\n\n${diff}` : ''}`);
       }
       case 'create_directory': {
         await mkdir(this.resolve(a.path), { recursive: true });

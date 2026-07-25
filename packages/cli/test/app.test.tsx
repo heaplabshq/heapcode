@@ -642,6 +642,27 @@ describe('App', () => {
     expect(lastFrame()).toContain('/explain src/utils.ts'); // transcript shows what the user typed
   });
 
+  it('/review runs read-only even under the default Agent persona — the template says "point out", not "fix"', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = recordingProvider('Found one bug.');
+
+    // Default persona (Agent) has full write access — without the readOnly
+    // scoping, the model would still be offered write_file and could act on
+    // its own findings instead of just reporting them (the live bug this
+    // guards against: /review found issues, then quietly went and fixed them).
+    const { stdin } = renderApp({ provider, conversation, historyStore, tools: [WRITE_FILE_TOOL] });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/review lib/utils.js');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
+
+    const messages = provider.requests[0]!;
+    expect(messages[0]!.content).not.toContain('### write_file');
+    expect(messages[messages.length - 1]!.content).toContain('Reviewer persona');
+  });
+
   it('a bare prompt command reports usage instead of sending an empty template', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;

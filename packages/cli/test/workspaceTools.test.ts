@@ -81,6 +81,20 @@ describe('WorkspaceToolExecutor — file operations', () => {
     expect(result.content).toBe('1\tline1\n2\tline2');
   });
 
+  it('write_file refuses to overwrite an existing package.json wholesale, and does not touch it', async () => {
+    await writeFile(join(root, 'package.json'), '{ "name": "keep-me" }');
+    const result = await executor.execute(call('write_file', { path: 'package.json', content: '{ "scripts": {} }' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/edit_file or multi_edit/);
+    expect(await readFile(join(root, 'package.json'), 'utf8')).toBe('{ "name": "keep-me" }');
+  });
+
+  it('write_file still allows creating a brand-new package.json that does not exist yet', async () => {
+    const result = await executor.execute(call('write_file', { path: 'package.json', content: '{ "name": "fresh" }' }));
+    expect(result.isError).toBeFalsy();
+    expect(await readFile(join(root, 'package.json'), 'utf8')).toBe('{ "name": "fresh" }');
+  });
+
   it('write_file creates missing parent directories', async () => {
     await executor.execute(call('write_file', { path: 'a/b/c.txt', content: 'nested' }));
     expect(await readFile(join(root, 'a/b/c.txt'), 'utf8')).toBe('nested');
@@ -99,6 +113,13 @@ describe('WorkspaceToolExecutor — file operations', () => {
     const result = await executor.execute(call('edit_file', { path: 'a.txt', search: 'const x = 1;', replace: 'const x = 100;' }));
     expect(result.isError).toBeFalsy();
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('const x = 100;\nconst y = 2;');
+  });
+
+  it('edit_file result includes a diff of the actual change, not just a bare confirmation', async () => {
+    await writeFile(join(root, 'a.txt'), 'const x = 1;\nconst y = 2;');
+    const result = await executor.execute(call('edit_file', { path: 'a.txt', search: 'const x = 1;', replace: 'const x = 100;' }));
+    expect(result.content).toContain('-const x = 1;');
+    expect(result.content).toContain('+const x = 100;');
   });
 
   it('edit_file fails with a helpful hint when the search text is not found', async () => {

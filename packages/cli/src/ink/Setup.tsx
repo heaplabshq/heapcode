@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import SelectInput from 'ink-select-input';
 import Spinner from 'ink-spinner';
 import { createProvider, providerPresets, type ProviderPreset, type ProviderProfileConfig } from '@heapcode/core';
@@ -63,6 +63,71 @@ function stepNumber(kind: Step['kind']): number | undefined {
     default:
       return undefined;
   }
+}
+
+const MODEL_LIST_ROWS = 12;
+
+/**
+ * A fetched model list can run into the hundreds (OpenRouter, for one) —
+ * dumping all of them into a plain arrow-key list makes finding one
+ * miserable. Type-to-filter narrows it, and "Enter model name manually" is
+ * always the first row so a model that isn't in the list (or was filtered
+ * out) is never a dead end — this is the *only* escape hatch when the
+ * provider's /models endpoint doesn't happen to list something the user
+ * knows exists.
+ */
+function ModelSelect({ models, onSelect, onManual }: { models: string[]; onSelect(model: string): void; onManual(): void }): React.ReactElement {
+  const [filter, setFilter] = useState('');
+  const [highlight, setHighlight] = useState(0);
+  const filtered = filter ? models.filter((m) => m.toLowerCase().includes(filter.toLowerCase())) : models;
+  const shown = filtered.slice(0, MODEL_LIST_ROWS);
+  const manualIndex = shown.length; // trailing row — Enter still quick-picks the top model by default, same as before
+  const rowCount = shown.length + 1;
+
+  useInput((input, key) => {
+    if (key.upArrow) {
+      setHighlight((h) => (h - 1 + rowCount) % rowCount);
+      return;
+    }
+    if (key.downArrow) {
+      setHighlight((h) => (h + 1) % rowCount);
+      return;
+    }
+    if (key.return) {
+      if (highlight === manualIndex) onManual();
+      else if (shown[highlight]) onSelect(shown[highlight]!);
+      return;
+    }
+    if (key.backspace || key.delete) {
+      setFilter((f) => f.slice(0, -1));
+      setHighlight(0);
+      return;
+    }
+    if (key.ctrl || key.meta || key.tab) return;
+    if (input) {
+      setFilter((f) => f + input);
+      setHighlight(0);
+    }
+  });
+
+  return (
+    <Box flexDirection="column">
+      <Text dimColor>Type to filter{filter ? `: ${filter}` : ''} · ↑↓ to navigate · Enter to select</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {shown.map((m, i) => (
+          <Text key={m} color={highlight === i ? 'cyan' : undefined} bold={highlight === i}>
+            {highlight === i ? '❯ ' : '  '}
+            {m}
+          </Text>
+        ))}
+        {filtered.length > shown.length && <Text dimColor> … {filtered.length - shown.length} more — keep typing to narrow</Text>}
+        {filtered.length === 0 && <Text dimColor> No matches.</Text>}
+        <Text color={highlight === manualIndex ? 'cyan' : undefined} bold={highlight === manualIndex}>
+          {highlight === manualIndex ? '❯ ' : '  '}Enter model name manually…
+        </Text>
+      </Box>
+    </Box>
+  );
 }
 
 function StepLabel({ step, title }: { step: Step['kind']; title: string }): React.ReactElement {
@@ -194,16 +259,17 @@ export function Setup({ onComplete, banner = true, configStore, secretsStore }: 
 
       {step.kind === 'model' && (
         <Box flexDirection="column">
-          <StepLabel step="model" title="Which model?" />
-          <SelectInput
-            items={step.models.map((m) => ({ label: m, value: m }))}
-            onSelect={(item) =>
+          <StepLabel step="model" title={`Which model? (${step.models.length} available)`} />
+          <ModelSelect
+            models={step.models}
+            onSelect={(model) =>
               setStep({
                 kind: 'saving',
-                profile: { name: step.name, preset: step.preset.id, baseUrl: step.baseUrl, model: item.value },
+                profile: { name: step.name, preset: step.preset.id, baseUrl: step.baseUrl, model },
                 apiKey: step.apiKey,
               })
             }
+            onManual={() => setStep({ kind: 'manualModel', preset: step.preset, name: step.name, baseUrl: step.baseUrl, apiKey: step.apiKey })}
           />
         </Box>
       )}
@@ -236,7 +302,18 @@ export function Setup({ onComplete, banner = true, configStore, secretsStore }: 
       )}
 
       {step.kind === 'done' && (
-        <Text color="green">✓ Saved profile "{step.profile.name}" ({step.profile.model}) and set it active.</Text>
+        <Box flexDirection="column">
+          <Text color="green">
+            ✓ Saved profile "{step.profile.name}" ({step.profile.model}) and set it active.
+          </Text>
+          {!step.profile.embeddingsModel && (
+            <Text dimColor>
+              Semantic search needs a separate embeddings model — most chat-only providers don't offer one. Add a
+              provider that does (e.g. Ollama + nomic-embed-text) via "heapcode profile add", then set{' '}
+              {step.profile.name}'s embeddingsProfile to that profile's name in ~/.heapcode/config.json.
+            </Text>
+          )}
+        </Box>
       )}
     </Box>
   );

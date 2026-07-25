@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { extractFirstCodeBlock } from '../src/edit/codeBlocks.js';
+import { unifiedDiff } from '../src/edit/diff.js';
 import { applySearchReplace, findBestMatch } from '../src/edit/fuzzyMatch.js';
 import { minIndent, reindent } from '../src/edit/indent.js';
 import { buildInlineEditMessages } from '../src/prompts/edit.js';
@@ -24,6 +25,30 @@ describe('extractFirstCodeBlock', () => {
 
   it('returns undefined when there is no block', () => {
     expect(extractFirstCodeBlock('just prose')).toBeUndefined();
+  });
+});
+
+describe('unifiedDiff', () => {
+  it('shows a single changed line as -old/+new, with only nearby lines kept as context', () => {
+    const before = ['line1', 'line2', 'line3', 'OLD', 'line5', 'line6', 'line7'].join('\n');
+    const after = ['line1', 'line2', 'line3', 'NEW', 'line5', 'line6', 'line7'].join('\n');
+    const diff = unifiedDiff(before, after);
+    expect(diff).toContain('-OLD');
+    expect(diff).toContain('+NEW');
+    expect(diff).toContain(' line3'); // immediate context before the change
+    expect(diff).toContain(' line5'); // immediate context after
+    expect(diff).not.toContain('line1'); // outside the (default 2-line) context window
+    expect(diff).not.toContain('line7'); // outside the context window
+  });
+
+  it('returns empty string for identical text', () => {
+    expect(unifiedDiff('same\ntext', 'same\ntext')).toBe('');
+  });
+
+  it('handles a pure insertion (no old lines removed)', () => {
+    const diff = unifiedDiff('a\nb', 'a\nnew\nb');
+    expect(diff).toContain('+new');
+    expect(diff.split('\n').some((l) => l.startsWith('-'))).toBe(false); // no removed line, only the hunk header's own "-"
   });
 });
 

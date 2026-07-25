@@ -112,6 +112,15 @@ describe('runSubAgent', () => {
     expect(systemPrompt).not.toContain('### write_file'); // write tools never reached the sub-agent's own tool list
   });
 
+  it('tells the sub-agent to stay within the task\'s scope — a live incident had one edit an unrelated file once it ran out of real work', async () => {
+    const provider = scriptedProvider([{ content: '<tool name="finish">\n{"summary": "done"}\n</tool>' }]);
+    const call: ToolCall = { id: 'c1', name: 'delegate_task', args: { task: 'check lib/target.js for bugs' } };
+    await runSubAgent(call, baseCtx({ provider }));
+    const taskMessage = (provider.requests[0] as { messages: Array<{ content: string }> }).messages[1]!.content;
+    expect(taskMessage).toContain('Stay strictly within its scope');
+    expect(taskMessage).toContain('check lib/target.js for bugs');
+  });
+
   it('a write-restricted persona blocks filesystem-mutating run_command the same way the parent would', async () => {
     const runTool: ToolDefinition = { name: 'run_command', description: '', parameters: { type: 'object', properties: {} }, permission: 'execute' };
     const provider = scriptedProvider([

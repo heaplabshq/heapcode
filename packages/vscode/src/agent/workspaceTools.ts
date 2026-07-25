@@ -27,6 +27,42 @@ const MAX_FETCH_CHARS = 20_000;
 const MAX_APPLY_MERGE_CHARS = 40_000;
 const CWD_MARKER = '__HEAPCODE_CWD__';
 
+// write_file does a blind full-file overwrite — fine for a new file, but a
+// real risk for a manifest/lockfile the model didn't fully re-derive: a live
+// incident (CLI side, same tool contract) had a sub-agent "fixing" an
+// unrelated file rewrite package.json via write_file and silently drop its
+// "name" field. edit_file's targeted search/replace can't lose content this
+// way, so overwriting one of these wholesale is refused in favor of that —
+// only when the file already exists; writing a brand new one is unaffected.
+const PROTECTED_MANIFEST_FILES = new Set([
+  'package.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'Cargo.toml',
+  'Cargo.lock',
+  'go.mod',
+  'go.sum',
+  'requirements.txt',
+  'Pipfile',
+  'Pipfile.lock',
+  'Gemfile',
+  'Gemfile.lock',
+  'composer.json',
+  'composer.lock',
+  'tsconfig.json',
+  'pyproject.toml',
+]);
+
+async function fileExists(uri: vscode.Uri): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(uri);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const HEAPCODE_TERMINAL_NAME = 'Heap Code';
 /** Grace period for shell integration to activate on a freshly created terminal. */
 const SHELL_INTEGRATION_TIMEOUT_MS = 4_000;
@@ -671,6 +707,14 @@ export class WorkspaceToolExecutor {
       }
       case 'write_file': {
         const uri = this.resolve(a.path);
+        if (PROTECTED_MANIFEST_FILES.has(path.basename(a.path ?? '')) && (await fileExists(uri))) {
+          return fail(
+            `Refusing to overwrite ${a.path} wholesale with write_file — it's a manifest/lockfile, and a full ` +
+              'rewrite risks silently dropping fields the model did not fully re-derive (a real incident: this ' +
+              'exact thing once dropped an unrelated "name" field from package.json). Use edit_file for a ' +
+              'targeted change instead.',
+          );
+        }
         await this.checkpoint.recordBeforeChange(uri);
         await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(a.content ?? ''));
         return ok(`Wrote ${a.path}.`);
@@ -843,7 +887,7 @@ export class WorkspaceToolExecutor {
         const bytes = await vscode.workspace.fs.readFile(file);
         if (bytes.byteLength > 1_000_000) continue;
         text = new TextDecoder().decode(bytes);
-        if (text.includes(' ')) continue; // binary
+        if (text.includes('\0')) continue; // binary
       } catch {
         continue;
       }

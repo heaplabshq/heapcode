@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- **PR review, rebuilt:** the reviewer now reads a large PR file by file instead of truncating the diff at a fixed size and silently reviewing only what fit — a real case had it review a plan document and never reach the code. Files it couldn't get to are reported as unreviewed rather than passed over as clean, and findings post as line-anchored inline comments with one-click suggestions instead of one long comment
+- **New command — "Heap Code: Review Current PR (Deep, Verified) & Comment":** adds an independent verification pass that re-reads the code behind each finding and drops false positives before you see them, at roughly double the time and model cost. The existing single-pass command is unchanged and still the default
+- **Security:** `fetch_url` can no longer reach private, loopback, or link-local addresses — including cloud metadata endpoints (`169.254.169.254`), which hand out IAM credentials. This matters because the agent reads web pages and MCP output, and text in those can steer it; redirects are re-checked at every hop, so a public URL can't bounce into your internal network. Your own model endpoint is unaffected — Ollama or LM Studio on localhost or a LAN box works exactly as before
+- The review engine now lives in shared code with the new `heapcode` CLI, so the two can't drift in review quality
+
 ## 0.4.0
 
 - **Safety:** external content (files, URLs, MCP/tool results, RAG hits) is now trust-tagged and wrapped as inert data before reaching the model, so a maliciously-crafted file or web page can't smuggle instructions into a session

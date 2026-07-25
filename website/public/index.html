@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="google-site-verification" content="FQ72KaP0dbpURlH-p7BmP5RQTW5CUF9mpi2JclDjInk" />
-<title>Heap Code — A GitHub Copilot Alternative for VS Code (Local or Cloud Models)</title>
-<meta name="description" content="Heap Code is a model-agnostic AI coding assistant for VS Code: chat, completions, inline edit, and an autonomous agent — on Ollama, LM Studio, OpenAI, or any OpenAI-compatible API. No account, no lock-in." />
-<meta property="og:title" content="Heap Code — A GitHub Copilot Alternative for VS Code" />
-<meta property="og:description" content="Model-agnostic AI coding assistant for VS Code. Local models or your own cloud key. No account, no lock-in." />
+<title>Heap Code — A GitHub Copilot Alternative for VS Code and the Terminal (Local or Cloud Models)</title>
+<meta name="description" content="Heap Code is a model-agnostic AI coding assistant for VS Code and the terminal: chat, completions, inline edit, an autonomous agent, and AI PR review — on Ollama, LM Studio, OpenAI, or any OpenAI-compatible API. No account, no lock-in." />
+<meta property="og:title" content="Heap Code — A GitHub Copilot Alternative for VS Code and the Terminal" />
+<meta property="og:description" content="Model-agnostic AI coding assistant for VS Code and the terminal. Local models or your own cloud key. No account, no lock-in." />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://code.heaplabs.dev/" />
 <link rel="canonical" href="https://code.heaplabs.dev/" />
@@ -392,6 +392,68 @@
 
   .parts-col li:first-child { border-top: none; }
 
+  /* cli */
+
+  .cli-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+
+  @media (max-width: 860px) {
+    .cli-grid { grid-template-columns: 1fr; }
+  }
+
+  .terminal {
+    background: var(--bg-deep);
+    border: 1px solid var(--line-dim);
+    border-radius: var(--radius);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  .terminal-bar {
+    border-bottom: 1px solid var(--line-dim);
+    padding: 8px 14px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--line);
+  }
+
+  .terminal-body {
+    padding: 16px 14px;
+    /* Long commands scroll inside the block instead of widening the page. */
+    overflow-x: auto;
+  }
+
+  .terminal-body div { white-space: pre; padding: 2px 0; }
+
+  .terminal .cmd { color: var(--ink); }
+  .terminal .cmd::before { content: "$ "; color: var(--copper); }
+  .terminal .out { color: var(--ink-dim); }
+  .terminal .out-accent { color: var(--cyan); }
+
+  .cli-points { margin: 0; padding: 0; list-style: none; }
+
+  .cli-points li {
+    padding: 11px 0;
+    border-top: 1px dashed var(--line-dim);
+    font-size: 14.5px;
+    color: var(--ink-dim);
+  }
+
+  .cli-points li:first-child { border-top: none; }
+
+  .cli-points b {
+    color: var(--ink);
+    font-weight: 600;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.95em;
+  }
+
   /* features */
 
   .feature-list {
@@ -465,6 +527,7 @@
       HEAP CODE
     </a>
     <div class="nav-links">
+      <a href="#cli">CLI</a>
       <a href="#spec">Spec sheet</a>
       <a href="#works-with">Works with</a>
       <a href="#features">Features</a>
@@ -474,7 +537,8 @@
 </nav>
 
 <div class="titleblock">
-  <span>DWG NO. <b>HC-0.4.0</b></span>
+  <span>DWG NO. <b>HC-0.5.0</b></span>
+  <span>CLI REV. <b>0.2.0</b></span>
   <span>SCALE <b>LOCAL = CLOUD</b></span>
   <span>LICENSE <b>PolyForm Noncommercial 1.0</b></span>
   <span>TELEMETRY <b>ANONYMOUS, OPT-OUT</b></span>
@@ -486,16 +550,17 @@
       <div>
         <h1>Your code doesn&rsquo;t<br />leave <span class="accent">the building.</span></h1>
         <p class="lede">
-          Heap Code is a <b>model-agnostic</b> AI coding assistant for VS Code &mdash; chat,
-          completions, inline edit, and an autonomous agent. Point it at Ollama on your own
-          machine, or bring your own key to OpenAI, Groq, or any OpenAI-compatible endpoint.
-          <b>No account. No proprietary backend.</b>
+          Heap Code is a <b>model-agnostic</b> AI coding assistant for <b>VS Code and your
+          terminal</b> &mdash; chat, completions, inline edit, an autonomous agent, and AI PR
+          review. Point it at Ollama on your own machine, or bring your own key to OpenAI,
+          Groq, or any OpenAI-compatible endpoint. <b>No account. No proprietary backend.</b>
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
-          <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">View source on GitHub</a>
+          <a class="btn btn-ghost" href="#cli">Install the CLI →</a>
+          <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">Source</a>
         </div>
-        <p class="fine">v0.4.0 · free for personal, internal &amp; noncommercial use</p>
+        <p class="fine">Extension v0.5.0 &middot; CLI v0.2.0 &middot; free for personal, internal &amp; noncommercial use</p>
       </div>
 
       <div class="diagram-card">
@@ -544,6 +609,40 @@
     </div>
   </section>
 
+  <section class="panel wrap" id="cli">
+    <p class="eyebrow">New &mdash; the terminal CLI</p>
+    <div class="cli-grid">
+      <div>
+        <div class="terminal">
+          <div class="terminal-bar">heapcode &mdash; zsh</div>
+          <div class="terminal-body">
+            <div class="cmd">npm install -g @heaplabs/heapcode-cli</div>
+            <div class="cmd">heapcode</div>
+            <div class="out">&nbsp;</div>
+            <div class="out">&gt; add rate limiting to the upload route</div>
+            <div class="out">&nbsp;</div>
+            <div class="out-accent">  ⏺ read_file  src/routes/upload.ts</div>
+            <div class="out-accent">  ⏺ edit_file  src/routes/upload.ts</div>
+            <div class="out-accent">  ⏺ run_tests  pnpm test</div>
+            <div class="out">  ✓ 48 passed</div>
+            <div class="out">&nbsp;</div>
+            <div class="cmd">heapcode -p "fix the failing test" --json</div>
+          </div>
+        </div>
+        <p class="fine">Node.js 20+ &middot; macOS, Linux, Windows &middot; no account, no sign-in</p>
+      </div>
+      <div>
+        <ul class="cli-points">
+          <li><b>Same engine as the extension.</b> The agent, permissions, checkpoints, semantic search, and MCP support are shared code &mdash; not a reduced second implementation.</li>
+          <li><b>/pr-review</b> reviews your branch's PR file by file, then posts a real GitHub review with inline comments and one-click suggestions &mdash; only after you approve it. <b>/pr-review deep</b> adds a verification pass that drops false positives first.</li>
+          <li><b>Headless mode.</b> <b>-p "task"</b> runs the whole agent loop with no TTY &mdash; plain text or <b>--json</b> events, four permission modes for unattended runs, non-zero exit on failure. Built for CI.</li>
+          <li><b>Every action gated.</b> Same permission prompts as the editor, plus shadow-git checkpoints you can rewind step by step.</li>
+          <li><b>Your models.</b> Local Ollama or LM Studio, a box on your LAN, or any OpenAI-compatible endpoint &mdash; configured once, per role.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
   <section class="panel wrap" id="spec">
     <p class="eyebrow">Spec sheet</p>
     <table class="spec-table">
@@ -564,8 +663,12 @@
         <td><span class="spec-yes">Yes</span> &mdash; Ollama, LM Studio, vLLM, LocalAI.</td>
       </tr>
       <tr>
+        <td>Surfaces</td>
+        <td>VS Code extension and a standalone terminal CLI (<span class="spec-yes">heapcode</span>) &mdash; one shared engine, so behaviour matches.</td>
+      </tr>
+      <tr>
         <td>API key storage</td>
-        <td>OS keychain via VS Code SecretStorage &mdash; never in settings files.</td>
+        <td>Extension: OS keychain via VS Code SecretStorage. CLI: a <span class="spec-yes">chmod 600</span> file in <span class="spec-yes">~/.heapcode</span> &mdash; no keychain dependency, so headless and CI machines work. Never in settings files either way.</td>
       </tr>
       <tr>
         <td>License / price</td>
@@ -629,7 +732,7 @@
       </div>
       <div class="feature-item">
         <h4>Safety guardrails</h4>
-        <p>Untrusted content &mdash; files, URLs, MCP output &mdash; is tagged and quarantined before it reaches the model; hallucinated package installs are checked against the registry and blocked automatically.</p>
+        <p>Untrusted content &mdash; files, URLs, MCP output &mdash; is tagged and quarantined before it reaches the model; hallucinated package installs are checked against the registry and blocked automatically; and agent web fetches can't reach private, loopback, or cloud-metadata addresses, at any redirect hop.</p>
       </div>
       <div class="feature-item">
         <h4>Granular checkpoints</h4>
@@ -644,8 +747,16 @@
         <p>Opt-in <code>delegate_task</code> hands a self-contained piece of work to an isolated sub-agent with its own context &mdash; never more permissive than the persona that spawned it.</p>
       </div>
       <div class="feature-item">
-        <h4>Team bundles &amp; PR review</h4>
-        <p>Export or import a project's memory, instructions, and skills as one file; generate a PR review and post it via <code>gh</code>, with an explicit confirm before anything goes public.</p>
+        <h4>AI PR review</h4>
+        <p>Reviews a pull request file by file &mdash; never a truncated diff &mdash; then posts line-anchored comments with one-click suggestions via <code>gh</code>, after an explicit confirm. Deep mode adds a verification pass that drops false positives before you see them.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Terminal CLI</h4>
+        <p><code>npm i -g @heaplabs/heapcode-cli</code> &mdash; the same agent, permissions, and checkpoints in your terminal, plus a headless <code>-p</code> mode with JSON output for CI.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Team bundles</h4>
+        <p>Export or import a project's memory, instructions, and skills as a single file, so a team shares one setup.</p>
       </div>
       <div class="feature-item">
         <h4>Local audit dashboard</h4>
@@ -657,7 +768,7 @@
 
 <footer>
   <div class="wrap footer-row">
-    <span class="mono">HEAP CODE &middot; HC-0.4.0 &middot; POLYFORM-NC-1.0</span>
+    <span class="mono">HEAP CODE &middot; HC-0.5.0 &middot; CLI 0.2.0 &middot; POLYFORM-NC-1.0</span>
     <div class="cta-row" style="margin:0;">
       <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
       <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">GitHub</a>

@@ -1283,14 +1283,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             name: call.name,
             description,
           });
-          const result = call.argsParseError
-            ? {
-                id: call.id,
-                name: call.name,
-                content: `Invalid JSON arguments: ${call.argsParseError}`,
-                isError: true,
-              }
-            : await executor.execute(toolCall);
+          // Same guard as the core agent loop: a failed tool call (e.g. the
+          // model guessing a nonexistent path) becomes an error result the
+          // model can self-correct from, never an exception that kills the
+          // whole ask turn.
+          let result: { id: string; name: string; content: string; isError?: boolean };
+          try {
+            result = call.argsParseError
+              ? {
+                  id: call.id,
+                  name: call.name,
+                  content: `Invalid JSON arguments: ${call.argsParseError}`,
+                  isError: true,
+                }
+              : await executor.execute(toolCall);
+          } catch (err) {
+            result = {
+              id: call.id,
+              name: call.name,
+              content: `Tool failed: ${err instanceof Error ? err.message : String(err)}`,
+              isError: true,
+            };
+          }
           this.postToWebview({
             type: 'agentToolResult',
             id: call.id,

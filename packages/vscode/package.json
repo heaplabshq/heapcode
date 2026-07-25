@@ -172,6 +172,10 @@
         "title": "Heap Code: Review Current PR & Comment"
       },
       {
+        "command": "heapcode.reviewPrDeep",
+        "title": "Heap Code: Review Current PR (Deep, Verified) & Comment"
+      },
+      {
         "command": "heapcode.addMcpServer",
         "title": "Heap Code: Add MCP Server"
       },

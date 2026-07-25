@@ -22,6 +22,8 @@ export * from './agent/prompts.js';
 export * from './agent/loop.js';
 export * from './context/contextManager.js';
 export * from './context/tokens.js';
+export * from './review/prReviewFormat.js';
+export * from './review/prReview.js';
 export * from './prompts/builtins.js';
 export * from './prompts/edit.js';
 export * from './prompts/apply.js';

@@ -8,11 +8,14 @@ import {
   builtinPrompts,
   parseSlashCommand,
   renderTemplate,
+  reviewCurrentPr,
   runAgent,
   type Conversation,
   type PermissionChoice,
+  type PrReviewHost,
   type Provider,
   type ProviderProfileConfig,
+  type ReviewClient,
   type StoredMessage,
   type ToolDefinition,
 } from '@heapcode/core';
@@ -43,6 +46,7 @@ import { Composer, type SlashCommand } from './Composer.js';
 import { Header } from './Header.js';
 import { Setup } from './Setup.js';
 import { MessageView } from './MessageView.js';
+import { renderMarkdown } from '../markdown.js';
 import { PermissionPrompt, type PermissionRequest } from './PermissionPrompt.js';
 import { AskUserPrompt, type AskUserRequest } from './AskUserPrompt.js';
 import { ToolChip } from './ToolChip.js';
@@ -65,6 +69,7 @@ const COMMANDS: SlashCommand[] = [
   { name: '/skills', description: 'List available Skills' },
   { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
   { name: '/index', description: 'Rebuild the semantic search + repo map indexes' },
+  { name: '/pr-review', args: '[deep]', description: "Review the current branch's PR and (on confirmation) post it to GitHub — needs the gh CLI" },
   { name: '/mcp', description: 'List configured MCP servers and their connection status' },
   { name: '/subagents', args: '[on|off]', description: 'Toggle delegate_task — lets the agent hand off sub-tasks to a fresh sub-agent' },
   { name: '/clear', description: 'Clear the screen and start a new conversation' },
@@ -81,6 +86,12 @@ const COMMANDS: SlashCommand[] = [
 
 const HELP_TEXT = COMMANDS.map((c) => `  ${(c.name + (c.args ? ` ${c.args}` : '')).padEnd(18)}${c.description}`).join('\n');
 
+/** How /pr-review identifies itself in the posted review body — the extension passes its own. */
+const CLI_REVIEW_CLIENT: ReviewClient = {
+  attribution: 'the Heap Code CLI',
+  deepHint: 'run "/pr-review deep"',
+};
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -89,6 +100,14 @@ interface Picker {
   title: string;
   items: Array<{ label: string; value: string }>;
   onPick(value: string): void;
+  /** Called when the picker is dismissed with esc/ctrl+c instead of picked. Required by any caller awaiting a choice — without it, esc leaves that promise pending forever. */
+  onCancel?(): void;
+}
+
+/** Dismisses the picker and runs its cancel handler — the single path both esc and ctrl+c go through. */
+function cancelPicker(picker: Picker | undefined, clear: () => void): void {
+  clear();
+  picker?.onCancel?.();
 }
 
 export interface AppProps {
@@ -349,7 +368,7 @@ export function App({
       if (setupActive) {
         setSetupActive(false);
         pushSystem('Profile setup cancelled.');
-      } else if (picker) setPicker(undefined);
+      } else if (picker) cancelPicker(picker, () => setPicker(undefined));
       else if (busy && abortRef.current) abortRef.current.abort();
       return;
     }
@@ -364,7 +383,7 @@ export function App({
         return;
       }
       if (picker) {
-        setPicker(undefined);
+        cancelPicker(picker, () => setPicker(undefined));
         return;
       }
       if (composerHasText) {
@@ -646,6 +665,97 @@ export function App({
     pushSystem(`(no semantic index — plain text search for /${pattern}/)\n${result.content}`);
   }
 
+  /**
+   * /pr-review — the same review the VS Code extension runs (core's
+   * reviewCurrentPr); this only adapts it to the transcript: progress and
+   * warnings as system lines, the preview rendered as markdown, and the
+   * post/cancel decision as a picker. Nothing is posted to GitHub without
+   * that explicit pick.
+   */
+  async function handlePrReview(arg?: string): Promise<void> {
+    const mode = arg?.toLowerCase();
+    if (mode && mode !== 'deep' && mode !== 'fast') {
+      pushSystem('Usage: /pr-review [deep] — reviews the current branch\'s PR (requires the "gh" CLI, authenticated).');
+      return;
+    }
+    if (busy) {
+      pushSystem('Busy — wait for the current task to finish, or press esc to interrupt it.');
+      return;
+    }
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const host: PrReviewHost = {
+        warn: (message) => pushSystem(`PR review: ${message}`),
+        error: (message) => setError(message),
+        // The extension writes these to an output channel; here they'd bury
+        // the transcript under per-tool-call noise, so they're dropped —
+        // tool activity is already visible in the progress lines.
+        log: () => {},
+        progress: (message) => pushSystem(`PR review: ${message}`),
+        confirm: ({ pr, preview, findingCount, inlineCount, plainText }) =>
+          new Promise<boolean>((resolve) => {
+            pushItem({ kind: 'markdown', text: preview });
+            let settled = false;
+            const finish = (value: boolean): void => {
+              if (settled) return;
+              settled = true;
+              abort.signal.removeEventListener('abort', onAbort);
+              resolve(value);
+            };
+            // Esc/ctrl+c during the confirm aborts the run — the picker's own
+            // cancel path and the abort signal both have to settle this
+            // promise, or the command hangs with the composer locked.
+            function onAbort(): void {
+              setPicker(undefined);
+              finish(false);
+            }
+            abort.signal.addEventListener('abort', onAbort, { once: true });
+            setPicker({
+              title: plainText
+                ? `Post this review as a comment on PR #${pr.number}? (posts publicly on GitHub)`
+                : `Post this review on PR #${pr.number}? ${findingCount} finding(s), ${inlineCount} as inline comments — posts publicly on GitHub`,
+              items: [
+                { label: plainText ? 'Post comment' : 'Post review', value: 'post' },
+                { label: "Don't post", value: 'cancel' },
+              ],
+              onPick: (value) => {
+                setPicker(undefined);
+                finish(value === 'post');
+              },
+              onCancel: () => finish(false),
+            });
+          }),
+      };
+
+      const result = await reviewCurrentPr({
+        cwd: cwd ?? process.cwd(),
+        provider: active.provider,
+        model,
+        temperature: active.profile.temperature,
+        maxTokens: active.profile.maxTokens,
+        contextWindow: active.contextWindow,
+        tools,
+        executor,
+        host,
+        client: CLI_REVIEW_CLIENT,
+        signal: abort.signal,
+        deep: mode === 'deep',
+      });
+      onTrack?.(mode === 'deep' ? 'command.reviewPrDeep' : 'command.reviewPr', { status: result.status });
+      if (result.status === 'posted') pushSystem(`PR review: posted on PR #${result.pr.number} — ${result.pr.url}`);
+      else if (result.status === 'cancelled') pushSystem('PR review: nothing was posted.');
+    } catch (err) {
+      if (!abort.signal.aborted) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      abortRef.current = undefined;
+    }
+  }
+
   async function showSettings(): Promise<void> {
     const p = active.profile;
     const ragStatus = await ragIndexer?.status();
@@ -698,6 +808,9 @@ export function App({
         return true;
       case '/search':
         await handleSearch(rest.join(' ').trim());
+        return true;
+      case '/pr-review':
+        await handlePrReview(rest[0]);
         return true;
       case '/subagents': {
         const arg = rest[0]?.toLowerCase();
@@ -1090,6 +1203,12 @@ export function App({
                     Plan
                   </Text>
                   <Text>{item.text}</Text>
+                </Box>
+              );
+            case 'markdown':
+              return (
+                <Box key={i} marginBottom={1} flexDirection="column">
+                  <Text>{renderMarkdown(item.text)}</Text>
                 </Box>
               );
             case 'system':

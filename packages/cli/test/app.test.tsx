@@ -375,6 +375,29 @@ describe('App', () => {
     expect(lastFrame()).toContain('/rewind');
   });
 
+  it('/pr-review is offered as a command and rejects an unknown mode with usage instead of running a review', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    // A provider that would throw if the review actually started — the usage
+    // branch has to bail out before any model call or any `gh` invocation.
+    const provider = { chat: vi.fn(() => Promise.reject(new Error('should not run'))) } as unknown as Provider;
+
+    const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/help');
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastFrame()).toContain('/pr-review');
+
+    stdin.write('/pr-review sideways');
+    stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(lastFrame()).toContain('Usage: /pr-review');
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
   it('/settings shows the current configuration readout', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;

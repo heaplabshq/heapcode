@@ -58,6 +58,7 @@ Recommended local models: chat/agent `llama3.1:8b`+ · embeddings `nomic-embed-t
 - **Semantic search (RAG)** — background index over your embeddings model, hybrid keyword + vector search; powers `@workspace` mentions and `/search`; degrades to plain text search with no embedder configured
 - **MCP** — register Model Context Protocol servers (stdio / HTTP / SSE) in `~/.heapcode/config.json` or a project's `.heapcode/mcp.json`; their tools go through the same permission system as everything else
 - **Sub-agent delegation** — the agent can hand off a self-contained sub-task to a fresh-context sub-agent (`/subagents on`, or `--sub-agents` headlessly); off by default
+- **PR review** — `/pr-review` reviews the current branch's pull request per-file (never a blind truncation), then posts a real GitHub review with line-anchored inline comments and one-click suggestions; `/pr-review deep` adds an independent verification pass that drops false positives first. Uses your existing `gh auth login` session, and always shows the full review for confirmation before anything is posted. Shared with the VS Code extension, so both give the same review
 - **Headless / CI mode** — `-p "<task>"` runs the complete agent loop with no TTY: plain text or `--json` (newline-delimited events), four permission modes for unattended runs, non-zero exit on failure
 - **Slash commands & mentions** — `/` autocomplete menu, prompt templates (`/explain /fix /refactor /review /security-review /test /docs /optimize`), `@file`/`@folder`/`@workspace` context mentions
 
@@ -112,6 +113,7 @@ Type `/` for the full autocomplete menu; highlights:
 | `/skills` | List available Skills |
 | `/search <query>` | Search the workspace (semantic if indexed, plain text otherwise) |
 | `/index` | Rebuild the semantic search + repo map indexes |
+| `/pr-review [deep]` | Review the current branch's PR and, on confirmation, post it to GitHub |
 | `/mcp` | List configured MCP servers and their connection status |
 | `/subagents [on\|off]` | Toggle sub-agent delegation |
 | `/clear`, `/new` | Start a new conversation |

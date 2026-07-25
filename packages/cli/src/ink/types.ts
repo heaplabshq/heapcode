@@ -16,4 +16,12 @@ export type TranscriptItem =
       indent?: boolean;
     }
   | { kind: 'plan'; text: string }
+  /**
+   * Markdown emitted by a command rather than by the model — rendered like an
+   * assistant message but deliberately NOT a 'message', so it never becomes
+   * part of the conversation history fed back to the agent. Used by
+   * /pr-review's preview, which is long and belongs to the command, not the
+   * chat.
+   */
+  | { kind: 'markdown'; text: string }
   | { kind: 'system'; text: string };

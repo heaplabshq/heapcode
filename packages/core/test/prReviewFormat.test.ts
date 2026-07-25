@@ -269,6 +269,18 @@ describe('formatReviewBody', () => {
     expect(body).not.toContain(CRITICAL_ANCHORED.body);
   });
 
+  // The retry path after GitHub 422s the inline comments passes an empty range
+  // map so nothing counts as anchored. Every finding must then survive into the
+  // body in full — the whole point of the retry is not losing the review.
+  it('renders every finding in full when there are no anchors (the inline-rejected retry)', () => {
+    const body = formatReviewBody('Summary.', [CRITICAL_ANCHORED, LOW_UNANCHORED], new Map());
+    expect(body).toContain(CRITICAL_ANCHORED.summary);
+    expect(body).toContain(CRITICAL_ANCHORED.body);
+    expect(body).toContain(LOW_UNANCHORED.summary);
+    expect(body).toContain(LOW_UNANCHORED.body);
+    expect(body).not.toContain('posted as inline comments below');
+  });
+
   it('reports skipped and unreviewed files honestly instead of implying they were clean', () => {
     const body = formatReviewBody('S.', [], ranges, {
       skippedFiles: ['pnpm-lock.yaml'],

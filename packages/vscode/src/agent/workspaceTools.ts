@@ -5,6 +5,7 @@ import {
   applySearchReplace,
   DEFAULT_IGNORE_GLOB,
   findBestMatch,
+  safeFetch,
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
@@ -1161,14 +1162,14 @@ async function formatLocations(
 
 /** Fetch a URL; HTML is reduced to readable text. Throws with a useful message. */
 async function fetchUrl(url: string): Promise<string> {
-  if (!/^https?:\/\//i.test(url)) throw new Error('Only http(s) URLs are supported.');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
-    const res = await fetch(url, {
+    // safeFetch (not fetch) — blocks private/loopback/link-local targets on the
+    // initial URL and on every redirect hop. See core's safeFetch for why.
+    const res = await safeFetch(url, {
       signal: controller.signal,
       headers: { 'user-agent': 'HeapCode-Agent', accept: 'text/html, text/plain, application/json, */*' },
-      redirect: 'follow',
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
     const type = res.headers.get('content-type') ?? '';

@@ -343,7 +343,15 @@ async function postStructuredReview(
   ranges: Map<string, Array<[number, number]>>,
   notes: ReviewNotes,
   client: ReviewClient,
+  /**
+   * Pass false to post everything in the body with no inline comments — the
+   * retry path when GitHub rejects an anchor. Passing an empty range map makes
+   * formatReviewBody treat every finding as unanchored, so each one renders in
+   * full detail instead of the one-line "posted as an inline comment" pointer.
+   */
+  inline = true,
 ): Promise<GhResult> {
+  if (!inline) ranges = new Map();
   const anchored = findings.filter((f) => isAnchorable(ranges, f.file, f.line));
   const payload: Record<string, unknown> = {
     commit_id: pr.headRefOid,
@@ -619,9 +627,23 @@ export async function reviewCurrentPr(opts: PrReviewOptions): Promise<PrReviewRe
   if (!ok) return { status: 'cancelled' };
 
   const postRes = await postStructuredReview(cwd, pr, summary, sorted, diffRanges, notes, client);
-  if (postRes.code !== 0) {
-    host.error(`failed to post the review — ${postRes.stderr.trim() || 'unknown error'}`);
+  if (postRes.code === 0) return { status: 'posted', pr };
+
+  // GitHub's review API is all-or-nothing: one inline comment on a line it
+  // doesn't consider part of the diff 422s the entire submission, losing a
+  // review that cost minutes of model time. Anchoring is a heuristic over
+  // parsed hunk ranges with model-supplied (and verifier-corrected) line
+  // numbers, so this will happen eventually — retry once with everything in
+  // the body, which needs no anchors and cannot be rejected the same way.
+  if (inlineCount > 0) {
+    host.log(`[pr-review] inline post failed (${postRes.stderr.trim() || 'unknown error'}) — retrying without inline comments.`);
+    host.warn('GitHub rejected the line-anchored comments — reposting with every finding in the review body instead.');
+    const retry = await postStructuredReview(cwd, pr, summary, sorted, diffRanges, notes, client, false);
+    if (retry.code === 0) return { status: 'posted', pr };
+    host.error(`failed to post the review — ${retry.stderr.trim() || 'unknown error'}`);
     return { status: 'skipped' };
   }
-  return { status: 'posted', pr };
+
+  host.error(`failed to post the review — ${postRes.stderr.trim() || 'unknown error'}`);
+  return { status: 'skipped' };
 }

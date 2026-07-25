@@ -232,20 +232,29 @@ describe('WorkspaceToolExecutor — run_command', () => {
     expect(result.content).toContain('marker.txt');
   });
 
-  it('kills a command that exceeds the timeout', async () => {
+  // Both kill tests assert on ELAPSED TIME, not just the message. Killing only
+  // the wrapper shell leaves the real process running and holding the stdout
+  // pipe, so 'close' — and therefore the ToolResult — arrives when the command
+  // would have finished anyway. A message-only assertion passes either way;
+  // the timing is the only thing that distinguishes "killed" from "waited".
+  it('kills a command that exceeds the timeout, without waiting for it to finish on its own', async () => {
     const shortExecutor = new WorkspaceToolExecutor(root, checkpoint, 200);
-    const result = await shortExecutor.execute(call('run_command', { command: 'sleep 5' }));
+    const started = Date.now();
+    const result = await shortExecutor.execute(call('run_command', { command: 'sleep 30' }));
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/did not finish within/);
+    expect(Date.now() - started).toBeLessThan(5_000);
   }, 10_000);
 
-  it('an abort signal kills the running command', async () => {
+  it('an abort signal kills the running command, and its children, immediately', async () => {
     const controller = new AbortController();
-    const promise = executor.execute(call('run_command', { command: 'sleep 5' }), controller.signal);
+    const started = Date.now();
+    const promise = executor.execute(call('run_command', { command: 'sleep 30' }), controller.signal);
     setTimeout(() => controller.abort(), 100);
     const result = await promise;
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/Stopped by user/);
+    expect(Date.now() - started).toBeLessThan(5_000);
   }, 10_000);
 
   it('blocks an install command for a hallucinated-looking package name', async () => {
@@ -254,6 +263,17 @@ describe('WorkspaceToolExecutor — run_command', () => {
     );
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/Blocked/);
+  }, 15_000);
+
+  // fetch_url is reachable from injected content (fetched pages, MCP output),
+  // so the SSRF guard is asserted here at the tool boundary the agent actually
+  // calls — not only in core's own unit tests.
+  it('refuses to fetch cloud metadata or other private addresses, as a tool error rather than a throw', async () => {
+    for (const url of ['http://169.254.169.254/latest/meta-data/', 'http://127.0.0.1:8080/', 'http://localhost/']) {
+      const result = await executor.execute(call('fetch_url', { url }));
+      expect(result.isError, `expected ${url} to be refused`).toBe(true);
+      expect(result.content).toMatch(/private, loopback, or link-local/);
+    }
   }, 15_000);
 });
 

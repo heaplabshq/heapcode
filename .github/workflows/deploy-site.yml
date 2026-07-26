@@ -1,0 +1,37 @@
+name: Deploy site
+
+# The marketing site is a Worker serving static assets, and until now it was
+# only ever deployed by someone running `wrangler deploy` by hand. That held up
+# fine while the same person wrote and shipped each change, and broke the first
+# time those were different people: the site sat on a stale version for a day
+# after the change had already merged.
+#
+# Deliberately its own workflow rather than a job in ci.yml — the site is plain
+# HTML with no relationship to the packages' build or tests, so gating it on
+# them would only make it slower and couple two unrelated things. `paths` keeps
+# it from firing on the many commits that never touch website/.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/deploy-site.yml'
+  # Lets a stale site be redeployed without an empty commit.
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `if: secrets... != ''` guard on purpose. The release job's
+      # equivalent guard silently skipped the Marketplace publish when VSCE_PAT
+      # wasn't set, and the release looked green while half of it hadn't
+      # happened. A missing token here fails loudly instead.
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: website

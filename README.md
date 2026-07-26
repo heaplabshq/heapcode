@@ -1,6 +1,13 @@
 # Heap Code
 
-**Model-agnostic AI coding assistant for VS Code.** Chat, ghost-text completions, inline edits, an autonomous agent, and semantic codebase search — with **any OpenAI-compatible API**, local or cloud.
+**Model-agnostic AI coding assistant for VS Code and the terminal.** Chat, ghost-text completions, inline edits, an autonomous agent, AI PR review, and semantic codebase search — with **any OpenAI-compatible API**, local or cloud.
+
+Two surfaces over one shared engine:
+
+| | Install |
+|---|---|
+| **VS Code extension** | [Marketplace](https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code) |
+| **Terminal CLI** | `npm install -g @heaplabs/heapcode-cli` — see [packages/cli/README.md](packages/cli/README.md) |
 
 ## Privacy first
 
@@ -27,23 +34,29 @@ Heap Code does send anonymous usage telemetry by default (which features get use
 - **VS Code tool interop** — any tool another installed extension registered via VS Code's Language Model Tools API (Python, Jupyter, SonarQube, …) shows up in agent mode too, same tools picker, same permission system
 - **Project memory** — `.heapcode/HEAPCODE.md` + `.heapcode/memory.md` are loaded into every chat and agent session (falls back to `AGENTS.md` if neither exists — reads the same instructions you've already written for other AI tools); add path-scoped rules with `.heapcode/instructions/*.md` files (optional front-matter `applyTo: "**/*.tsx"` glob — applies everywhere if omitted); the agent can propose short "worth remembering" notes at the end of a session, added to memory only with your confirmation (`heapcode.agent.memoryDistillation`)
 - **Skills** — model-invoked capabilities from `.claude/skills/<name>/SKILL.md` (project) or `~/.claude/skills/<name>/SKILL.md` (personal) — the same convention Claude Code uses, so Skills are shared with zero setup. The agent calls `list_skills` (name + description only, cheap) then `load_skill` on whichever matches the task, including bundled reference files
+- **AI PR review** — reviews the current branch's pull request file by file (never a blind truncation of a large diff), then posts a real GitHub review with line-anchored inline comments and one-click suggestions, always after an explicit confirmation. Deep mode adds an independent verification pass that re-reads the code and drops false positives first. Uses your existing `gh auth login` session. Available as `/pr-review [deep]` in the CLI and as the *Review Current PR* commands in VS Code — same engine, same result
+- **Terminal CLI** — the same agent, permissions, checkpoints, RAG, and MCP in a standalone `heapcode` binary, plus a headless `-p "task"` mode (`--json` events, four permission modes, non-zero exit on failure) for CI
 - **Git** — commit-message generation from the staged diff (✨ button in Source Control)
 
 ## Quick start
+
+**CLI:** `npm install -g @heaplabs/heapcode-cli`, then run `heapcode` — it walks you through picking a provider and model on first run. `heapcode -p "task"` runs the same agent headlessly.
+
+**VS Code:**
 
 1. `pnpm install && pnpm build`, then press **F5** in VS Code (or install the packaged `.vsix`).
 2. Click the **✨ status bar item** → *Add profile* → pick your provider (e.g. Ollama) → pick a model.
 3. Recommended local models: chat `llama3.1:8b`+ · completion `qwen2.5-coder:1.5b` · embeddings `nomic-embed-text`.
 4. Open the Heap Code icon in the activity bar and start chatting; select code and hit `Cmd+I` to edit.
 
-API keys are stored in the OS keychain via VS Code SecretStorage — never in settings files.
+API keys are stored in the OS keychain via VS Code SecretStorage — never in settings files. The CLI has no keychain dependency (so headless and CI machines work): it uses a `chmod 600` file under `~/.heapcode`.
 
 ## Repository layout
 
 ```
 packages/core        IDE-agnostic engine: providers, agent loop, tools, RAG, prompts
 packages/vscode      VS Code extension (thin adapter over core)
-packages/cli         Terminal adapter over core (in progress — see docs/CLI_PLAN.md)
+packages/cli         Terminal CLI over core — published as @heaplabs/heapcode-cli
 packages/webview-ui  React chat UI
 docs/PRD.md          Product requirements (source of truth)
 docs/PLAN.md         VS Code extension milestone tracker + decisions log

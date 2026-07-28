@@ -2,8 +2,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Conversation } from '@heapcode/core';
-import { JsonConversationStore } from '../src/history/store.js';
+import { JsonConversationStore as CoreStore, nodeTextFile, type Conversation } from '../src/index.js';
+
+/** The CLI's string-path ergonomics, so the cases below read as they did before this moved into core. */
+class JsonConversationStore extends CoreStore {
+  constructor(path: string) {
+    super(nodeTextFile(path));
+  }
+}
 
 let dir: string;
 beforeEach(async () => {

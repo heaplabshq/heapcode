@@ -554,7 +554,7 @@ export class AgentController {
     const entry = this.checkpoint?.entryFor(relPath);
     if (!entry) return undefined;
     try {
-      const current = new TextDecoder().decode(await vscode.workspace.fs.readFile(entry.uri));
+      const current = new TextDecoder().decode(await vscode.workspace.fs.readFile(entry.path));
       const original = entry.original ? new TextDecoder().decode(entry.original) : '';
       const { added, removed } = lineDiffStats(original, current);
       return { path: relPath, added, removed };
@@ -599,7 +599,7 @@ export class AgentController {
     await vscode.commands.executeCommand(
       'vscode.diff',
       originalUri,
-      entry.uri,
+      entry.path,
       `Heap Code Agent: ${relPath}`,
       { preview: true },
     );

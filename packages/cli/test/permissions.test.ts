@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -6,8 +6,6 @@ import type { ToolCall, ToolDefinition } from '@heapcode/core';
 import { PermissionEngine } from '../src/agent/permissions.js';
 
 const WRITE_TOOL: ToolDefinition = { name: 'write_file', description: 'x', parameters: {}, permission: 'write' };
-const DESTRUCTIVE_TOOL: ToolDefinition = { name: 'delete_file', description: 'x', parameters: {}, permission: 'destructive' };
-const READ_TOOL: ToolDefinition = { name: 'read_file', description: 'x', parameters: {}, permission: 'read' };
 const CALL: ToolCall = { id: '1', name: 'write_file', args: {} };
 
 let dir: string;
@@ -20,42 +18,19 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe('PermissionEngine', () => {
-  it('read-permission tools never prompt', async () => {
-    const engine = new PermissionEngine(grantsFile);
-    engine.attachRequester(() => Promise.reject(new Error('should not be called')));
-    expect(await engine.request(CALL, READ_TOOL, 'read something')).toBe(true);
-  });
-
-  it('"deny" from the requester returns false', async () => {
-    const engine = new PermissionEngine(grantsFile);
-    engine.attachRequester(() => Promise.resolve('deny'));
-    expect(await engine.request(CALL, WRITE_TOOL, 'write something')).toBe(false);
-  });
-
-  it('"session" grant auto-allows subsequent calls to the same tool within the session, but not a fresh session', async () => {
-    const engine = new PermissionEngine(grantsFile);
-    let asked = 0;
-    engine.attachRequester(() => {
-      asked++;
-      return Promise.resolve('session');
-    });
-
-    expect(await engine.request(CALL, WRITE_TOOL, 'first')).toBe(true);
-    expect(await engine.request(CALL, WRITE_TOOL, 'second')).toBe(true);
-    expect(asked).toBe(1); // second call was auto-allowed, no prompt
-
-    engine.resetSession();
-    engine.attachRequester(() => Promise.resolve('deny'));
-    expect(await engine.request(CALL, WRITE_TOOL, 'third')).toBe(false);
-  });
-
-  it('"always" grant persists to disk and survives a fresh PermissionEngine instance', async () => {
+/**
+ * The engine's own semantics are covered in packages/core; what's specific to
+ * the CLI is the grants file — its on-disk shape is a compatibility surface
+ * (users' existing permissions.json must keep working), and where the
+ * extension has a Memento the CLI has to survive a process restart.
+ */
+describe('PermissionEngine grants file', () => {
+  it('persists an "always" grant as <permission>.<tool> and honors it in a fresh process', async () => {
     const engine = new PermissionEngine(grantsFile);
     engine.attachRequester(() => Promise.resolve('always'));
     expect(await engine.request(CALL, WRITE_TOOL, 'first')).toBe(true);
 
-    const saved = JSON.parse(await readFile(grantsFile, 'utf8'));
+    const saved = JSON.parse(await readFile(grantsFile, 'utf8')) as Record<string, string>;
     expect(saved['write.write_file']).toBe('always');
 
     const fresh = new PermissionEngine(grantsFile);
@@ -63,57 +38,36 @@ describe('PermissionEngine', () => {
     expect(await fresh.request(CALL, WRITE_TOOL, 'second')).toBe(true);
   });
 
-  it('destructive tools are never offered "always" persistence (allowPersist=false)', async () => {
+  it('reads a grants file written by an earlier version', async () => {
+    await writeFile(grantsFile, JSON.stringify({ 'write.write_file': 'always' }), 'utf8');
+
     const engine = new PermissionEngine(grantsFile);
-    let seenAllowPersist: boolean | undefined;
-    engine.attachRequester((req) => {
-      seenAllowPersist = req.allowPersist;
-      return Promise.resolve('allow');
-    });
-    await engine.request({ ...CALL, name: 'delete_file' }, DESTRUCTIVE_TOOL, 'delete something');
-    expect(seenAllowPersist).toBe(false);
+    engine.attachRequester(() => Promise.reject(new Error('should not be asked')));
+    expect(await engine.request(CALL, WRITE_TOOL, 'covered by the existing file')).toBe(true);
   });
 
-  it('safe mode ignores persisted "always" grants and re-prompts every time', async () => {
+  it('a missing or corrupt grants file is empty, not fatal', async () => {
+    await writeFile(grantsFile, 'not json at all', 'utf8');
     const engine = new PermissionEngine(grantsFile);
-    engine.attachRequester(() => Promise.resolve('always'));
-    await engine.request(CALL, WRITE_TOOL, 'first'); // persists an "always" grant
+    engine.attachRequester(() => Promise.resolve('deny'));
+    expect(await engine.request(CALL, WRITE_TOOL, 'asked because nothing was loaded')).toBe(false);
 
-    let safeMode = false;
-    let asked = 0;
-    const safeEngine = new PermissionEngine(grantsFile, () => safeMode);
-    safeEngine.attachRequester(() => {
-      asked++;
-      return Promise.resolve('allow');
-    });
-    safeMode = true;
-    await safeEngine.request(CALL, WRITE_TOOL, 'second');
-    expect(asked).toBe(1); // prompted despite the persisted grant
+    const absent = new PermissionEngine(join(dir, 'nested', 'never-written.json'));
+    absent.attachRequester(() => Promise.resolve('allow'));
+    expect(await absent.request(CALL, WRITE_TOOL, 'still works')).toBe(true);
   });
 
-  it('reset() clears both session and persisted grants', async () => {
+  it('reset() empties the file and reports how many grants it cleared', async () => {
     const engine = new PermissionEngine(grantsFile);
     engine.attachRequester(() => Promise.resolve('always'));
     await engine.request(CALL, WRITE_TOOL, 'first');
 
-    const cleared = await engine.reset();
-    expect(cleared).toBe(1);
-
-    let asked = 0;
-    engine.attachRequester(() => {
-      asked++;
-      return Promise.resolve('deny');
-    });
-    await engine.request(CALL, WRITE_TOOL, 'second');
-    expect(asked).toBe(1);
+    expect(await engine.reset()).toBe(1);
+    expect(JSON.parse(await readFile(grantsFile, 'utf8'))).toEqual({});
   });
 
-  it('audits every decision with tool/permission/decision only — never the description text', async () => {
-    const events: Array<{ name: string; meta?: Record<string, unknown> }> = [];
-    const engine = new PermissionEngine(grantsFile, undefined, undefined, (name, meta) => events.push({ name, meta }));
-    engine.attachRequester(() => Promise.resolve('allow'));
-    await engine.request(CALL, WRITE_TOOL, 'a description with a secret file path /etc/shadow');
-
-    expect(events).toEqual([{ name: 'permission.decision', meta: { tool: 'write_file', permission: 'write', decision: 'allow' } }]);
+  it('with no prompt attached, the terminal has nowhere to ask and fails closed', async () => {
+    const engine = new PermissionEngine(grantsFile);
+    expect(await engine.request(CALL, WRITE_TOOL, 'write something')).toBe(false);
   });
 });

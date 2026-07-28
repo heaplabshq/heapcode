@@ -188,3 +188,39 @@ describe('WorkspaceToolExecutor — syntax guard (real live incident: a weak mod
     expect(await readFile(join(root, 'a.js'), 'utf8')).toBe(original);
   });
 });
+
+describe('WorkspaceToolExecutor — run_command process-group kill', () => {
+  // The terminal path is unavailable under the stub (createTerminal throws),
+  // so this exercises the hidden child-process fallback — the one that spawns.
+  it.skipIf(process.platform === 'win32')(
+    'a timed-out command does not leave the real program running and blocking the result',
+    async () => {
+      // The CWD_MARKER wrapper makes the command multi-statement, so the shell
+      // forks `sleep` as a grandchild instead of exec-ing into it. Killing only
+      // the wrapper leaves that grandchild alive holding the stdout pipe, so
+      // 'close' never fires and the agent blocks for the sleep's full duration
+      // rather than for the timeout — the hang the CLI's killTree comment
+      // describes. Signalling the whole process group is what fixes it.
+      const shortExecutor = new WorkspaceToolExecutor(Uri.file(root), checkpoint, 300);
+      const started = Date.now();
+      const result = await shortExecutor.execute(call('run_command', { command: 'sleep 5' }));
+      const elapsed = Date.now() - started;
+
+      expect(result.content).toMatch(/did not finish within/i);
+      // Comfortably under the 5s sleep: without the group kill this waits it out.
+      expect(elapsed).toBeLessThan(2_500);
+    },
+    10_000,
+  );
+
+  it.skipIf(process.platform === 'win32')('Stop kills the whole group too, not just the wrapper', async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    const promise = executor.execute(call('run_command', { command: 'sleep 5' }), controller.signal);
+    setTimeout(() => controller.abort(), 200);
+    const result = await promise;
+
+    expect(result.content).toMatch(/stopped/i);
+    expect(Date.now() - started).toBeLessThan(2_500);
+  }, 10_000);
+});

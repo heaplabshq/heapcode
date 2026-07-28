@@ -1052,10 +1052,13 @@ export class WorkspaceToolExecutor {
     const trackCwd = process.platform !== 'win32';
     const wrapped = trackCwd ? `${command}\n__heapcode_ec=$?; echo "${CWD_MARKER}$PWD"; exit $__heapcode_ec` : command;
     return new Promise((resolvePromise) => {
+      // detached: the shell gets its own process group, so killTree below can
+      // signal the whole group rather than just the wrapper (see killTree).
       const child = spawn(wrapped, {
         shell: true,
         cwd: this.cwd,
         env: process.env,
+        detached: trackCwd,
       });
       let out = '';
       let stoppedByUser = false;
@@ -1071,14 +1074,14 @@ export class WorkspaceToolExecutor {
 
       const timeout = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGKILL');
+        killTree(child);
       }, this.commandTimeoutMs);
 
       // Stop must be able to interrupt a command that outlives the LLM
       // turn — a dev server, a stuck build — not just abort the next fetch.
       const onAbort = () => {
         stoppedByUser = true;
-        child.kill('SIGKILL');
+        killTree(child);
       };
       signal?.addEventListener('abort', onAbort);
 
@@ -1198,6 +1201,48 @@ async function formatLocations(
     out.push(`${rel}:${range.start.line + 1}: ${lineText}`);
   }
   return out.join('\n');
+}
+
+/**
+ * Kill a spawned command *and everything it started*.
+ *
+ * `child.kill()` alone only signals the wrapper shell. Because run_command
+ * wraps the user's command in a multi-statement script (the CWD_MARKER echo),
+ * the shell can't exec-optimize it away and instead forks the real program as
+ * a grandchild — which survives the shell's death, reparented to init. That
+ * made both the timeout and the user's Stop a lie: the message said "killed"
+ * while a dev server kept holding its port. Worse, the orphan inherits the
+ * stdout pipe, so 'close' doesn't fire until it exits on its own — a timed-out
+ * long-running process blocked the agent for its entire lifetime, not for the
+ * timeout.
+ *
+ * POSIX: spawning detached puts the shell in its own process group whose id
+ * equals its pid, so a negative pid signals the whole group. Windows has no
+ * process groups to signal this way — taskkill /T walks the child tree
+ * instead, with child.kill() as the last resort if it isn't available.
+ */
+function killTree(child: ReturnType<typeof spawn>): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F']).on('error', () => child.kill('SIGKILL'));
+    } catch {
+      child.kill('SIGKILL');
+    }
+    return;
+  }
+  try {
+    // Negative pid = "every process in this group". ESRCH here just means the
+    // group already exited between the timer firing and this call.
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
 }
 
 /** Fetch a URL; HTML is reduced to readable text. Throws with a useful message. */

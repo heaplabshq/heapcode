@@ -32,6 +32,9 @@ importers:
       '@heapcode/core':
         specifier: workspace:*
         version: link:../core
+      '@heapcode/repomap':
+        specifier: workspace:*
+        version: link:../repomap
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -98,6 +101,10 @@ importers:
         version: 5.9.3
 
   packages/repomap:
+    dependencies:
+      fast-glob:
+        specifier: ^3.3.2
+        version: 3.3.3
     devDependencies:
       typescript:
         specifier: ^5.5.4
@@ -111,6 +118,9 @@ importers:
       '@heapcode/core':
         specifier: workspace:*
         version: link:../core
+      '@heapcode/repomap':
+        specifier: workspace:*
+        version: link:../repomap
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)

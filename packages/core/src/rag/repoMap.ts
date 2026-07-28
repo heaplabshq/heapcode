@@ -29,12 +29,19 @@ export function extractImportTargets(
 
 export {
   centralityStats,
+  formatRankingDebug,
   formatRepoMap,
   rankByCentrality,
+  RepoMapIndexer,
+  REPO_MAP_FILE,
   type CentralityStats,
+  type FileSource,
   type ImportEdge,
   type ParserResolver,
   type RankBoost,
+  type RankingDebugOptions,
   type RepoMapFileEntry,
+  type RepoMapIndexerOptions,
+  type RepoMapStore,
   type RepoSymbol,
 } from '@heapcode/repomap';

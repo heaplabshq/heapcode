@@ -606,6 +606,7 @@
   },
   "dependencies": {
     "@heapcode/core": "workspace:*",
+    "@heapcode/repomap": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ignore": "^7.0.5"
   },

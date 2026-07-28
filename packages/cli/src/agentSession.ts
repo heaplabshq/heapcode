@@ -8,7 +8,7 @@ import { McpManager } from './agent/mcp.js';
 import { loadMcpServers } from './agent/mcpConfig.js';
 import { RoleResolver } from './provider/roles.js';
 import { RagIndexer } from './rag/indexer.js';
-import { RepoMapIndexer } from './rag/repoMapIndexer.js';
+import { createRepoMapIndexer, type RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { projectStateDir, shadowGitDir } from './paths.js';
 
 export interface AgentSession {
@@ -37,7 +37,7 @@ export function buildAgentSession(root: string, profile: ProviderProfileConfig, 
   // alongside conversations/checkpoints, not inside the project itself.
   const stateDir = projectStateDir(root);
   const ragIndexer = new RagIndexer(root, stateDir, roles);
-  const repoMapIndexer = new RepoMapIndexer(root, stateDir);
+  const repoMapIndexer = createRepoMapIndexer(root, stateDir);
   const executor = new WorkspaceToolExecutor(
     root,
     checkpoint,

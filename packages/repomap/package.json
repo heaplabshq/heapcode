@@ -7,11 +7,18 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./node": {
+      "types": "./src/node.ts",
+      "default": "./src/node.ts"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.2"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

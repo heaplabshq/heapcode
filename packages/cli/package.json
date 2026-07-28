@@ -40,6 +40,7 @@
   },
   "devDependencies": {
     "@heapcode/core": "workspace:*",
+    "@heapcode/repomap": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/react": "^18.3.4",
     "cli-highlight": "^2.1.11",

@@ -55,12 +55,26 @@ describe('McpManager', () => {
     // the CLI 'heapcode'; unifying them was a deliberate choice, and this is
     // what third-party servers actually observe, so it is asserted against a
     // real handshake rather than against the constant.
+    const manager = new McpManager(
+      () => Promise.resolve({ fixture: { command: process.execPath, args: [FIXTURE_SERVER] } }),
+      undefined,
+      '9.9.9',
+    );
+    try {
+      await manager.ensureConnected();
+      expect(await manager.call('mcp__fixture__whoami', {})).toBe('heapcode@9.9.9');
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('falls back to 0.0.0 when the host does not supply its version', async () => {
     const manager = new McpManager(() =>
       Promise.resolve({ fixture: { command: process.execPath, args: [FIXTURE_SERVER] } }),
     );
     try {
       await manager.ensureConnected();
-      expect(await manager.call('mcp__fixture__whoami', {})).toBe('heapcode');
+      expect(await manager.call('mcp__fixture__whoami', {})).toBe('heapcode@0.0.0');
     } finally {
       manager.dispose();
     }

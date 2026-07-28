@@ -9,6 +9,7 @@ import { RoleResolver } from './provider/roles.js';
 import { RagIndexer } from './rag/indexer.js';
 import { createRepoMapIndexer, type RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { projectStateDir, shadowGitDir } from './paths.js';
+import { cliVersion } from './version.js';
 
 export interface AgentSession {
   checkpoint: SessionCheckpoint;
@@ -48,7 +49,7 @@ export function buildAgentSession(root: string, profile: ProviderProfileConfig, 
   // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with
   // project-scoped (<cwd>/.heapcode/mcp.json), project wins name collisions.
   // Reconnected (idempotent) at the start of every task by the caller.
-  const mcpManager = new McpManager(() => loadMcpServers(root, config));
+  const mcpManager = new McpManager(() => loadMcpServers(root, config), undefined, cliVersion());
 
   return { checkpoint, executor, shadowGit, ragIndexer, repoMapIndexer, mcpManager, tools: agentToolDefinitions };
 }

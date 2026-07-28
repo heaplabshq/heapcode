@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
@@ -19,18 +18,10 @@ import { buildAgentSession } from './agentSession.js';
 import { AuditLog } from './audit.js';
 import { checkForUpdate } from './updateCheck.js';
 import { App } from './ink/App.js';
+import { cliVersion } from './version.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 configureAstChunker((filename) => join(__dirname, 'wasm', filename));
-
-/** Best-effort version for the banner — dist/cli.js sits next to ../package.json. */
-function cliVersion(): string | undefined {
-  try {
-    return (JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version?: string }).version;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Coalesces the terminal's native `resize` events so the app only reacts

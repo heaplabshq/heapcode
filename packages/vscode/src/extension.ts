@@ -77,6 +77,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const mcp = new McpManager(
     () => vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
     (line) => log.appendLine(`[mcp] ${line}`),
+    String(context.extension.packageJSON.version ?? ''),
   );
   chatProvider.rag = rag;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;

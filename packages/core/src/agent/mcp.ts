@@ -36,6 +36,13 @@ const PREFIX = 'mcp__';
  */
 const CLIENT_NAME = 'heapcode';
 
+/**
+ * Sent alongside CLIENT_NAME when the host doesn't supply its own. Both
+ * hosts used to hardcode '0.1.0' here, which had been wrong for both for
+ * several releases; a host that knows its version should pass it.
+ */
+const UNKNOWN_CLIENT_VERSION = '0.0.0';
+
 interface ConnectedServer {
   client: Client;
   tools: ToolDefinition[];
@@ -64,6 +71,8 @@ export class McpManager {
       | Promise<Record<string, McpServerConfig>>
       | Record<string, McpServerConfig>,
     private readonly onLog?: (line: string) => void,
+    /** This host's own version, reported to servers in the handshake. */
+    private readonly clientVersion: string = UNKNOWN_CLIENT_VERSION,
   ) {}
 
   dispose(): void {
@@ -90,7 +99,7 @@ export class McpManager {
     for (const [name, server] of Object.entries(config)) {
       if (this.servers.has(name)) continue;
       try {
-        const client = new Client({ name: CLIENT_NAME, version: '0.1.0' });
+        const client = new Client({ name: CLIENT_NAME, version: this.clientVersion || UNKNOWN_CLIENT_VERSION });
         const transport = server.url
           ? server.transport === 'sse'
             ? new SSEClientTransport(new URL(server.url))

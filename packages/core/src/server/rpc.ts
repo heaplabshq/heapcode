@@ -15,6 +15,20 @@ import {
 export type RequestHandler = (params: unknown, signal: AbortSignal) => Promise<unknown>;
 export type NotificationHandler = (params: unknown) => void;
 
+/**
+ * Rejection for a call the caller aborted. Named `AbortError` on purpose: it
+ * makes a cancellation that crossed the socket indistinguishable from an
+ * in-process one, so the agent loop's existing abort handling
+ * (packages/core/src/agent/loop.ts:709, via isAbortError) yields outcome
+ * 'stopped' rather than surfacing "Tool failed: cancelled" or throwing out of
+ * agent/run entirely.
+ */
+function abortError(): Error {
+  const err = new Error('cancelled');
+  err.name = 'AbortError';
+  return err;
+}
+
 class RpcCallError extends Error {
   constructor(
     message: string,
@@ -88,7 +102,7 @@ export class RpcPeer {
         // Tell the peer to stop, and settle locally — an aborted caller
         // shouldn't wait on a peer that may never answer.
         if (!this.closed) this.notify(CANCEL_METHOD, { id } satisfies CancelParams);
-        this.pending.get(id)?.reject(new Error('cancelled'));
+        this.pending.get(id)?.reject(abortError());
         this.pending.delete(id);
       };
       if (signal.aborted) onAbort();
@@ -102,7 +116,13 @@ export class RpcPeer {
       const waiter = this.pending.get(message.id);
       if (!waiter) return; // already cancelled or unknown id
       this.pending.delete(message.id);
-      if (message.error) waiter.reject(new RpcCallError(message.error.message, message.error.code, message.error.data));
+      if (message.error) {
+        waiter.reject(
+          message.error.code === RPC_ERRORS.cancelled
+            ? abortError()
+            : new RpcCallError(message.error.message, message.error.code, message.error.data),
+        );
+      }
       else waiter.resolve(message.result);
       return;
     }

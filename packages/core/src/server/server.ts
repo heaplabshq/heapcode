@@ -54,6 +54,8 @@ export class HeapcodeServer {
   private readonly onLog: (line: string) => void;
   private server?: Server;
   private readonly sessions = new Set<Session>();
+  /** Live sockets, so shutdown can drop them — net.Server has no closeAllConnections(). */
+  private readonly sockets = new Set<Socket>();
   private idleTimer?: NodeJS.Timeout;
   private closed = false;
 
@@ -110,6 +112,9 @@ export class HeapcodeServer {
   }
 
   private accept(socket: Socket): void {
+    this.sockets.add(socket);
+    socket.once('close', () => this.sockets.delete(socket));
+
     // Layer 1 (§3): reject any peer whose uid isn't ours, where the platform
     // lets us ask. Node exposes no peer-credential API, so this is a
     // best-effort check and layer 2 (the token) is the real gate — which is
@@ -223,10 +228,15 @@ export class HeapcodeServer {
     for (const session of this.sessions) session.dispose();
     this.sessions.clear();
     await new Promise<void>((resolve) => {
-      if (!this.server) return resolve();
-      this.server.close(() => resolve());
-      // close() only stops accepting; existing sockets are already handled by
-      // their own 'close' listeners.
+      const server = this.server;
+      if (!server) return resolve();
+      server.close(() => resolve());
+      // close() only stops accepting — it resolves once every existing
+      // connection ends, which for a live client is never. Shutdown must not
+      // depend on clients being polite about it, so drop them. (net.Server
+      // has no closeAllConnections(); that one is http.Server's.)
+      for (const socket of this.sockets) socket.destroy();
+      this.sockets.clear();
     });
     if (addressIsFile(this.address)) await unlink(this.address).catch(() => {});
   }

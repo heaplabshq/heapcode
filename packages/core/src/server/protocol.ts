@@ -1,0 +1,260 @@
+import type { AgentOutcome } from '../agent/loop.js';
+import type { ChatMessage } from '../providers/types.js';
+import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
+import type { AgentPersona } from '../agent/personas.js';
+import type { ProviderProfileConfig } from '../config/profiles.js';
+
+/**
+ * The wire protocol between a host (cli, vscode) and the core server.
+ *
+ * Framing is newline-delimited JSON; message semantics are JSON-RPC 2.0.
+ * See docs/phase3-protocol-design.md §1 for why NDJSON over length-prefixed
+ * framing, and §1's correction for why this is bidirectional: the server
+ * issues `id`-bearing requests back to the host (tool execution, permission
+ * prompts, key lookups), not only notifications.
+ */
+
+/** Bumped on any breaking change; it appears in the socket address, so mismatched peers never meet. */
+export const PROTOCOL_VERSION = 1;
+
+// ---------------------------------------------------------------------------
+// JSON-RPC envelopes
+// ---------------------------------------------------------------------------
+
+export type RpcId = string | number;
+
+export interface RpcRequest {
+  jsonrpc: '2.0';
+  id: RpcId;
+  method: string;
+  params?: unknown;
+}
+
+export interface RpcNotification {
+  jsonrpc: '2.0';
+  method: string;
+  params?: unknown;
+}
+
+export interface RpcError {
+  code: number;
+  message: string;
+  data?: unknown;
+}
+
+export interface RpcResponse {
+  jsonrpc: '2.0';
+  id: RpcId;
+  result?: unknown;
+  error?: RpcError;
+}
+
+export type RpcMessage = RpcRequest | RpcNotification | RpcResponse;
+
+export function isRequest(m: RpcMessage): m is RpcRequest {
+  return 'method' in m && 'id' in m;
+}
+
+export function isNotification(m: RpcMessage): m is RpcNotification {
+  return 'method' in m && !('id' in m);
+}
+
+export function isResponse(m: RpcMessage): m is RpcResponse {
+  return !('method' in m) && 'id' in m;
+}
+
+/** Standard JSON-RPC codes plus the ones this protocol adds. */
+export const RPC_ERRORS = {
+  parseError: -32700,
+  invalidRequest: -32600,
+  methodNotFound: -32601,
+  invalidParams: -32602,
+  internalError: -32603,
+  /** Failed `session/hello` — see docs/phase3-protocol-design.md §3. */
+  unauthorized: -32001,
+  /** The request was cancelled via `$/cancelRequest`. */
+  cancelled: -32800,
+} as const;
+
+/** LSP's convention, reused: cancel an in-flight request by id, in either direction. */
+export const CANCEL_METHOD = '$/cancelRequest';
+
+export interface CancelParams {
+  id: RpcId;
+}
+
+// ---------------------------------------------------------------------------
+// host → server
+// ---------------------------------------------------------------------------
+
+/**
+ * First message on every connection. Carries the per-launch token from the
+ * server's 0600 token file (§3) plus everything the session needs that the
+ * server must not read for itself: profiles and key material (§2, custody
+ * note's Option A2).
+ */
+export interface HelloParams {
+  token: string;
+  protocolVersion: number;
+  /** Identifies the host for logs only — never used for authorization. */
+  client: { name: string; version?: string };
+  /** Workspace root this session operates on. */
+  root: string;
+  /** Profile configuration, pushed rather than read — the server has no business reading either host's config (§2). */
+  profiles: ProviderProfileConfig[];
+  /** Which profile this session's runs use unless a call names another. */
+  activeProfile: string;
+  /**
+   * Key material for profiles this session expects to use, `profileName` →
+   * API key. Held in memory for the session's lifetime and never persisted.
+   * Profiles absent here are resolved lazily via `key/request` (§2).
+   */
+  keys?: Record<string, string>;
+}
+
+export interface HelloResult {
+  protocolVersion: number;
+  serverVersion: string;
+  sessionId: string;
+}
+
+/** `agent/run` — AgentOptions minus what can't cross a process boundary (§4). */
+export interface AgentRunParams {
+  /** Replaces `provider`: the server resolves the profile to a Provider itself. */
+  profileName?: string;
+  model: string;
+  task: string;
+  history?: ChatMessage[];
+  images?: string[];
+  workspaceName: string;
+  tools: ToolDefinition[];
+  nativeToolCalls: boolean;
+  contextWindow?: number;
+  plan?: boolean;
+  planOnly?: boolean;
+  resumePlan?: string;
+  proposeMemoryNote?: boolean;
+  requireVerificationBeforeFinish?: boolean;
+  maxIterations?: number;
+  temperature?: number;
+  maxTokens?: number;
+  /**
+   * Sub-agent delegation. Absent/false → `delegate_task` returns the
+   * "disabled" error instead of running, matching the host-side behavior it
+   * replaces (packages/cli/src/headless.ts:189-198 before this moved).
+   */
+  subAgents?: boolean;
+  /**
+   * The **effective** persona, resolved host-side — not an id. Hosts derive
+   * it in ways the server can't reproduce (headless's `plan` mode intersects
+   * the chosen persona with Architect before the run starts), so sending the
+   * resolved object keeps that policy where it belongs and still lets the
+   * server apply the run_command guard and sub-agent intersection.
+   */
+  persona?: AgentPersona;
+  /** Correlates `agent/event` notifications and `agent/cancel` to this run. */
+  runId: string;
+}
+
+export interface AgentRunResult {
+  outcome: AgentOutcome;
+}
+
+export interface AgentCancelParams {
+  runId: string;
+}
+
+// ---------------------------------------------------------------------------
+// server → host
+// ---------------------------------------------------------------------------
+
+/**
+ * Agent progress. Notifications, not requests — a response per token would
+ * double the message count on the hottest path for nothing (§5).
+ *
+ * This union began life as `HeadlessEvent` in packages/cli/src/headless.ts
+ * and moved here because it is a protocol type, not a CLI type (§4). The
+ * six members the CLI's version had are unchanged on the wire, so anything
+ * consuming `heapcode -p --json` sees the same stream it always did.
+ */
+export type AgentEvent =
+  | { type: 'text'; text: string }
+  | { type: 'text_delta'; text: string }
+  | { type: 'text_end' }
+  | { type: 'plan'; text: string }
+  | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown>; parent?: string }
+  | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean; parent?: string }
+  | { type: 'reasoning_delta'; text: string }
+  | { type: 'reasoning_end' }
+  | { type: 'tool_stream'; chars: number }
+  | { type: 'context_usage'; usedTokens: number; windowTokens: number }
+  | { type: 'compaction'; beforeTokens: number; afterTokens: number }
+  | { type: 'memory_candidate'; note: string };
+
+export interface AgentEventParams {
+  runId: string;
+  event: AgentEvent;
+}
+
+/**
+ * `tool/execute` — a server→host **request**. The host runs the tool with
+ * its own executor (the extension's is irreducibly host-side: terminals,
+ * shell integration, language-server diagnostics) and returns the result.
+ *
+ * Deliberately has no server-side timeout: `ask_user` is a tool call the
+ * user may take minutes to answer. See §7 and the known-gap note in the
+ * implementation report.
+ */
+export interface ToolExecuteParams {
+  runId: string;
+  call: ToolCall;
+  /** Set when the call comes from a sub-agent; the id of the delegate_task call that spawned it. */
+  parent?: string;
+}
+
+export type ToolExecuteResult = ToolResult;
+
+/** `permission/request` — a server→host request; the host decides and (for the CLI) audits. */
+export interface PermissionRequestParams {
+  runId: string;
+  call: ToolCall;
+  permission: PermissionClass;
+  /** The host's own rendering of what this call does, for a prompt. */
+  toolName: string;
+}
+
+export interface PermissionRequestResult {
+  granted: boolean;
+}
+
+/** `snapshot/before` — a server→host request fired before non-read tools (AgentOptions.beforeToolCall). */
+export interface SnapshotBeforeParams {
+  runId: string;
+  call: ToolCall;
+}
+
+/**
+ * `key/request` — a server→host request resolving a profile's API key on
+ * demand (§2, option b). Used when a sub-agent or role profile names a
+ * profile whose key wasn't pushed at hello.
+ */
+export interface KeyRequestParams {
+  profileName: string;
+}
+
+export interface KeyRequestResult {
+  /** Absent → no such profile, or no key stored; the server falls back to the parent's provider. */
+  apiKey?: string;
+  profile?: ProviderProfileConfig;
+}
+
+export const METHODS = {
+  hello: 'session/hello',
+  agentRun: 'agent/run',
+  agentCancel: 'agent/cancel',
+  agentEvent: 'agent/event',
+  toolExecute: 'tool/execute',
+  permissionRequest: 'permission/request',
+  snapshotBefore: 'snapshot/before',
+  keyRequest: 'key/request',
+} as const;

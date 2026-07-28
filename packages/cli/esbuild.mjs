@@ -27,12 +27,14 @@ function copyWasmAssets() {
 copyWasmAssets();
 
 const ctx = await esbuild.context({
-  entryPoints: ['src/cli.tsx'],
+  // dist/daemon.js is the core server's entry point — the CLI autostarts it
+  // detached when nothing is listening (docs/phase3-protocol-design.md §6).
+  entryPoints: ['src/cli.tsx', 'src/daemon.ts'],
   bundle: true,
   platform: 'node',
   format: 'esm',
   target: 'node20',
-  outfile: 'dist/cli.js',
+  outdir: 'dist',
   // The createRequire line works around a well-known esbuild+ESM-output
   // limitation: bundled CJS deps that call require('some-builtin') (e.g.
   // signal-exit → require('assert')) hit esbuild's synthesized __require
@@ -60,5 +62,6 @@ if (watch) {
 } else {
   await ctx.rebuild();
   chmodSync('dist/cli.js', 0o755);
+  chmodSync('dist/daemon.js', 0o755);
   await ctx.dispose();
 }

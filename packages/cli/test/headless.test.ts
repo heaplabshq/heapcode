@@ -2,23 +2,45 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HeapcodeServer } from '@heapcode/core';
 import { startMockServer, type MockBehavior, type MockServer } from '../../core/test/mockServer.js';
 import { ConfigStore } from '../src/config/store.js';
 import { conversationsFile } from '../src/paths.js';
 import { runHeadless, type HeadlessEvent } from '../src/headless.js';
 
+/**
+ * These tests used to call runHeadless() and have it run the agent loop
+ * in-process. It is now a client of the core server
+ * (docs/phase3-protocol-design.md §7), so the harness starts a real
+ * HeapcodeServer and points runHeadless at it.
+ *
+ * The server runs in *this* process rather than being spawned: every message
+ * still crosses a real unix socket with real NDJSON framing and real
+ * bidirectional RPC, so what these tests cover is unchanged — but they don't
+ * depend on `pnpm build` having produced dist/daemon.js first. Autostart
+ * (the spawning path) has its own tests in server.test.ts.
+ *
+ * Nothing about the assertions changed: same flags in, same NDJSON out.
+ */
 let home: string;
 let project: string;
 let server: MockServer;
+let core: HeapcodeServer;
+/** Passed to runHeadless so it connects to `core` instead of autostarting. */
+let serverOpts: { address: string; token: string; autostart: false };
 
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'heapcode-home-'));
   project = await mkdtemp(join(tmpdir(), 'heapcode-project-'));
   vi.stubEnv('HEAPCODE_HOME', home);
+  core = new HeapcodeServer({ home, address: join(home, 'test.sock'), idleShutdownMs: 0 });
+  await core.listen();
+  serverOpts = { address: core.address, token: core.token, autostart: false };
 });
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  await core?.close();
   await server?.close();
   await rm(home, { recursive: true, force: true });
   await rm(project, { recursive: true, force: true });
@@ -50,7 +72,7 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     await configureProfile(sse('Hello!'));
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project });
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, server: serverOpts });
 
     expect(code).toBe(0);
     const events = parseNdjson(write);
@@ -66,7 +88,7 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     await configureProfile(sse('Hello!'));
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    await runHeadless({ prompt: 'hi', json: false, cwd: project });
+    await runHeadless({ prompt: 'hi', json: false, cwd: project, server: serverOpts });
 
     expect(write.mock.calls.map((c) => c[0]).join('')).toBe('Hello!\n');
     write.mockRestore();
@@ -75,7 +97,7 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
   it('exits non-zero with a structured error when no profile is configured', async () => {
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project });
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, server: serverOpts });
 
     expect(code).toBe(1);
     expect(JSON.parse(write.mock.calls[0]![0] as string)).toMatchObject({ error: expect.stringContaining('No provider profile') });
@@ -90,7 +112,7 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     await configureProfile({ kind: 'json', status: 401, body: { error: 'unauthorized' } });
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project });
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, server: serverOpts });
     expect(code).toBe(1);
     const result = parseNdjson(write).find((e) => e.type === 'result');
     expect(result).toMatchObject({ outcome: 'error' });
@@ -100,8 +122,8 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     await configureProfile(sse('ok'));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    await runHeadless({ prompt: 'first', json: true, cwd: project });
-    await runHeadless({ prompt: 'second', json: true, cwd: project });
+    await runHeadless({ prompt: 'first', json: true, cwd: project, server: serverOpts });
+    await runHeadless({ prompt: 'second', json: true, cwd: project, server: serverOpts });
 
     const saved = JSON.parse(await readFile(conversationsFile(project), 'utf8'));
     expect(saved).toHaveLength(1);
@@ -112,8 +134,8 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     await configureProfile(sse('ok'));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    await runHeadless({ prompt: 'first', json: true, cwd: project, newConversation: true });
-    await runHeadless({ prompt: 'second', json: true, cwd: project, newConversation: true });
+    await runHeadless({ prompt: 'first', json: true, cwd: project, newConversation: true, server: serverOpts });
+    await runHeadless({ prompt: 'second', json: true, cwd: project, newConversation: true, server: serverOpts });
 
     const saved = JSON.parse(await readFile(conversationsFile(project), 'utf8'));
     expect(saved).toHaveLength(2);
@@ -123,8 +145,8 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     await configureProfile(sse('ok'));
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    await runHeadless({ prompt: 'about the older one', json: true, cwd: project, newConversation: true });
-    await runHeadless({ prompt: 'about the newer one', json: true, cwd: project, newConversation: true }); // becomes "most recent"
+    await runHeadless({ prompt: 'about the older one', json: true, cwd: project, newConversation: true, server: serverOpts });
+    await runHeadless({ prompt: 'about the newer one', json: true, cwd: project, newConversation: true, server: serverOpts }); // becomes "most recent"
 
     const saved: Array<{ id: string; updatedAt: number; messages: Array<{ content: string }> }> = JSON.parse(
       await readFile(conversationsFile(project), 'utf8'),
@@ -132,7 +154,7 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     const older = saved.find((c) => c.messages.some((m) => m.content === 'about the older one'))!;
 
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    await runHeadless({ prompt: 'follow-up', json: true, cwd: project, resumeId: older.id.slice(0, 8) });
+    await runHeadless({ prompt: 'follow-up', json: true, cwd: project, resumeId: older.id.slice(0, 8), server: serverOpts });
 
     const events = parseNdjson(write);
     expect(events.find((e) => e.type === 'result')).toMatchObject({ sessionId: older.id });
@@ -146,7 +168,7 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, resumeId: 'no-such-session' });
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, resumeId: 'no-such-session', server: serverOpts });
 
     expect(code).toBe(1);
     expect(JSON.parse(write.mock.calls[0]![0] as string).error).toContain('No saved conversation matching');
@@ -161,7 +183,7 @@ describe('runHeadless — full agent loop (tools)', () => {
     });
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'write a file', json: true, cwd: project, permissionMode: 'full-auto' });
+    const code = await runHeadless({ prompt: 'write a file', json: true, cwd: project, permissionMode: 'full-auto', server: serverOpts });
 
     expect(code).toBe(0);
     const events = parseNdjson(write);
@@ -179,7 +201,7 @@ describe('runHeadless — full agent loop (tools)', () => {
     });
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'write a file', json: true, cwd: project }); // default mode
+    const code = await runHeadless({ prompt: 'write a file', json: true, cwd: project, server: serverOpts }); // default mode
 
     expect(code).toBe(0); // the agent still finished cleanly, just without writing
     const events = parseNdjson(write);
@@ -190,7 +212,7 @@ describe('runHeadless — full agent loop (tools)', () => {
   it('"plan" mode never offers write tools at all — the fallback protocol\'s system prompt has no write_file definition', async () => {
     await configureProfile(sse(finishBlock('Here is my plan.')));
 
-    await runHeadless({ prompt: 'plan a refactor', json: true, cwd: project, permissionMode: 'plan' });
+    await runHeadless({ prompt: 'plan a refactor', json: true, cwd: project, permissionMode: 'plan', server: serverOpts });
 
     const sent = server.requests[0]!.body as { messages: Array<{ content: string }> };
     expect(sent.messages[0]!.content).not.toContain('### write_file');
@@ -206,7 +228,7 @@ describe('runHeadless — full agent loop (tools)', () => {
         sse(finishBlock('done')),
       ],
     });
-    await runHeadless({ prompt: 'write then run', json: true, cwd: project, permissionMode: 'auto-edit' });
+    await runHeadless({ prompt: 'write then run', json: true, cwd: project, permissionMode: 'auto-edit', server: serverOpts });
 
     expect(await readFile(join(project, 'out.txt'), 'utf8')).toBe('ok');
   });
@@ -218,7 +240,7 @@ describe('runHeadless — full agent loop (tools)', () => {
     });
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'pick an approach', json: true, cwd: project });
+    const code = await runHeadless({ prompt: 'pick an approach', json: true, cwd: project, server: serverOpts });
 
     expect(code).toBe(0);
     const events = parseNdjson(write);
@@ -230,7 +252,7 @@ describe('runHeadless — --persona', () => {
   it('restricts the offered tools the same way the interactive /persona command does', async () => {
     await configureProfile(sse(finishBlock('Reviewed.')));
 
-    await runHeadless({ prompt: 'review this', json: true, cwd: project, personaId: 'reviewer' });
+    await runHeadless({ prompt: 'review this', json: true, cwd: project, personaId: 'reviewer', server: serverOpts });
 
     const sent = server.requests[0]!.body as { messages: Array<{ content: string }> };
     expect(sent.messages[0]!.content).not.toContain('### write_file');
@@ -246,7 +268,7 @@ describe('runHeadless — --reindex', () => {
       responses: [sse(toolBlock('repo_map', {})), sse(finishBlock('done'))],
     });
 
-    await runHeadless({ prompt: 'map the repo', json: true, cwd: project });
+    await runHeadless({ prompt: 'map the repo', json: true, cwd: project, server: serverOpts });
 
     const secondTurn = (server.requests[1]!.body as { messages: Array<{ content: string }> }).messages;
     // The system prompt also contains the literal string "<tool_result>" (documenting the
@@ -262,7 +284,7 @@ describe('runHeadless — --reindex', () => {
       responses: [sse(toolBlock('repo_map', {})), sse(finishBlock('done'))],
     });
 
-    await runHeadless({ prompt: 'map the repo', json: true, cwd: project, reindex: true });
+    await runHeadless({ prompt: 'map the repo', json: true, cwd: project, reindex: true, server: serverOpts });
 
     const secondTurn = (server.requests[1]!.body as { messages: Array<{ content: string }> }).messages;
     const toolResultMsg = secondTurn.find((m) => m.content.includes('<tool_result name="repo_map"'))!.content;
@@ -284,7 +306,7 @@ describe('runHeadless — --sub-agents', () => {
     });
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    const code = await runHeadless({ prompt: 'delegate cleanup', json: true, cwd: project, permissionMode: 'full-auto', subAgents: true });
+    const code = await runHeadless({ prompt: 'delegate cleanup', json: true, cwd: project, permissionMode: 'full-auto', subAgents: true, server: serverOpts });
 
     expect(code).toBe(0);
     const events = parseNdjson(write);
@@ -308,7 +330,7 @@ describe('runHeadless — --sub-agents', () => {
     });
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    await runHeadless({ prompt: 'delegate something', json: true, cwd: project });
+    await runHeadless({ prompt: 'delegate something', json: true, cwd: project, server: serverOpts });
 
     const sent = server.requests[0]!.body as { messages: Array<{ content: string }> };
     expect(sent.messages[0]!.content).toContain('delegate_task');

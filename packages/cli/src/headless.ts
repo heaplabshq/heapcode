@@ -1,29 +1,40 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import {
+  METHODS,
   filterToolsForPersona,
   getPersona,
   intersectPersonas,
-  looksFilesystemMutating,
   resolveCapabilities,
-  runAgent,
+  resolveContextWindow,
+  type AgentEvent,
+  type AgentEventParams,
   type AgentOutcome,
+  type AgentRunParams,
+  type AgentRunResult,
   type Conversation,
+  type KeyRequestParams,
+  type KeyRequestResult,
   type PermissionClass,
+  type PermissionRequestParams,
+  type PermissionRequestResult,
+  type SnapshotBeforeParams,
   type StoredMessage,
   type ToolCall,
+  type ToolExecuteParams,
   type ToolResult,
 } from '@heapcode/core';
 import { ConfigStore } from './config/store.js';
 import { SecretsStore } from './config/secrets.js';
 import { JsonConversationStore } from './history/store.js';
 import { canonicalize, auditFile, conversationsFile } from './paths.js';
-import { resolveProvider } from './provider/resolve.js';
 import { buildAgentSession } from './agentSession.js';
 import { trimHistoryForAgent } from './agent/historyWindow.js';
 import { loadProjectInstructions } from './memory.js';
 import { AuditLog } from './audit.js';
-import { DELEGATE_TASK_TOOL, runSubAgent } from './agent/delegate.js';
+import { DELEGATE_TASK_TOOL } from './agent/delegate.js';
+import { connectToServer, type ConnectOptions } from './server/client.js';
+import { cliVersion } from './version.js';
 
 /**
  * A closed, small set of non-interactive permission policies — deliberately
@@ -73,23 +84,24 @@ export interface HeadlessOptions {
    * for the first run against a repo, or after files changed outside heapcode.
    */
   reindex?: boolean;
+  /** Test seam: point at an already-running server instead of autostarting one. */
+  server?: ConnectOptions;
 }
 
 /**
  * NDJSON event shape streamed to stdout in `--json` mode — one line per
  * event, so a CI script can tail progress instead of waiting for a single
- * final blob. Mirrors core's `AgentEvents` almost 1:1 on purpose (guardrail
- * #8: headless is a peer of the interactive UI, not a different protocol).
- * A sub-agent's own tool_call/tool_result events carry `parent`: the
- * delegate_task call's id, so they're distinguishable from the top-level
- * agent's own activity without a separate event type.
+ * final blob.
+ *
+ * The agent-progress members now come from @heapcode/core's `AgentEvent`
+ * (the protocol type — see docs/phase3-protocol-design.md §4, which called
+ * for exactly this move); `result` stays here because it is headless's own
+ * summary line, not something the agent loop produces. The emitted shapes
+ * are unchanged, so anything already consuming `heapcode -p --json` sees the
+ * same stream it always did.
  */
 export type HeadlessEvent =
-  | { type: 'text'; text: string }
-  | { type: 'text_delta'; text: string }
-  | { type: 'plan'; text: string }
-  | { type: 'tool_call'; id: string; name: string; args: Record<string, unknown>; parent?: string }
-  | { type: 'tool_result'; id: string; name: string; content: string; isError?: boolean; parent?: string }
+  | Extract<AgentEvent, { type: 'text' | 'text_delta' | 'plan' | 'tool_call' | 'tool_result' }>
   | { type: 'result'; outcome: AgentOutcome; response: string; model: string; profile: string; sessionId: string };
 
 /** outcome → process exit code: a clean finish is 0; anything that didn't actually complete the task is non-zero. */
@@ -108,12 +120,18 @@ function exitCodeFor(outcome: AgentOutcome): number {
 }
 
 /**
- * The `-p`/`--json` non-interactive path. Runs the FULL agent loop — tools,
- * checkpoints, RAG/repo-map, MCP — through the exact same `buildAgentSession`
- * construction and `runAgent` call the interactive Ink UI uses; this is not
- * a stripped-down copy of it (docs/CLI_PLAN.md guardrail #8). Never mounts
- * Ink — none of raw-mode stdin, a stable terminal width, or interactive
- * input can be assumed here (CI, a pipe, a redirected file).
+ * The `-p`/`--json` non-interactive path.
+ *
+ * Runs the FULL agent loop — tools, checkpoints, RAG/repo-map, MCP — but no
+ * longer in this process: the loop runs in the core server, and this is its
+ * first protocol client (docs/phase3-protocol-design.md §7). What stays here
+ * is everything genuinely host-shaped — the workspace executor, shadow-git,
+ * the indexes, MCP dispatch, the permission policy above, and the NDJSON
+ * output — reached by the server through `tool/execute`,
+ * `permission/request`, `snapshot/before` and `key/request`.
+ *
+ * External behavior is deliberately unchanged: same flags, same NDJSON
+ * events, same exit codes.
  */
 export async function runHeadless(opts: HeadlessOptions): Promise<number> {
   const config = new ConfigStore();
@@ -124,11 +142,12 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     return 1;
   }
 
+  let connection: Awaited<ReturnType<typeof connectToServer>> | undefined;
   try {
     const secrets = new SecretsStore();
-    const { provider, contextWindow } = await resolveProvider(profile, secrets);
     const root = canonicalize(opts.cwd ?? process.cwd());
     const capabilities = resolveCapabilities(profile);
+    const contextWindow = resolveContextWindow(profile);
 
     const historyStore = new JsonConversationStore(conversationsFile(root));
     let conversation: Conversation | undefined;
@@ -177,87 +196,121 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       if (opts.json) process.stdout.write(`${JSON.stringify(event)}\n`);
     };
 
-    const resolveProfileByName = async (name: string) => {
-      const target = await config.getProfile(name);
-      if (!target) return undefined;
-      const resolved = await resolveProvider(target, secrets);
-      return { provider: resolved.provider, profile: target };
-    };
+    // Key material for this session, pushed once at hello and held in the
+    // server's memory only (custody note, Option A2). Other profiles are
+    // resolved lazily through `key/request` below.
+    const apiKey = await secrets.getApiKey(profile.name);
+    connection = await connectToServer(
+      {
+        client: { name: 'heapcode-cli', version: cliVersion() },
+        root,
+        profiles: [profile],
+        activeProfile: profile.name,
+        keys: apiKey ? { [profile.name]: apiKey } : {},
+      },
+      opts.server,
+    );
+    const { peer } = connection;
 
-    const execute = async (call: ToolCall): Promise<ToolResult> => {
-      if (call.name === 'delegate_task') {
-        if (!opts.subAgents) {
-          return {
-            id: call.id,
-            name: call.name,
-            content:
-              'Sub-agent delegation is disabled for this run (the --sub-agents flag was not passed). ' +
-              'Handle the sub-task yourself in this conversation instead — do not claim it was delegated.',
-            isError: true,
-          };
-        }
-        return runSubAgent(call, {
-          executor,
-          provider,
-          profile,
-          nativeToolCalls: capabilities.nativeToolCalls,
-          contextWindow,
-          tools,
-          mcpManager,
-          persona,
-          // A sub-agent's own tool calls resolve through the same
-          // permission-mode policy as the top-level agent — no human to
-          // ask here either.
-          permissions: { request: (_subCall, tool) => Promise.resolve(autoApprove(tool.permission, mode)) },
-          shadowGit,
-          workspaceName: basename(root),
-          signal: undefined,
-          resolveProfile: resolveProfileByName,
-          events: {
-            onSubToolCall: (subCall) => emit({ type: 'tool_call', id: subCall.id, name: subCall.name, args: subCall.args, parent: call.id }),
-            onSubToolResult: (result) =>
-              emit({ type: 'tool_result', id: result.id, name: result.name, content: result.content, isError: result.isError, parent: call.id }),
-          },
-        });
+    // ---- server → host requests -------------------------------------------
+    // These are the same bodies that used to be inline in the runAgent
+    // options object; only their trigger changed.
+
+    peer.onRequest(METHODS.toolExecute, async (raw) => {
+      const { call } = raw as ToolExecuteParams;
+      return executeTool(call);
+    });
+
+    peer.onRequest(METHODS.permissionRequest, async (raw) => {
+      const { call, permission } = raw as PermissionRequestParams;
+      // delegate_task while sub-agents are disabled resolves to an
+      // informative error server-side — a generic permission denial here
+      // would hide from the model WHY delegation can't happen.
+      if (call.name === 'delegate_task' && !opts.subAgents) return { granted: true } satisfies PermissionRequestResult;
+      const decision = autoApprove(permission, mode);
+      if (permission !== 'read') {
+        void audit.track('permission.decision', { tool: call.name, permission, decision: decision ? 'auto-allow' : 'auto-deny' });
       }
+      return { granted: decision } satisfies PermissionRequestResult;
+    });
+
+    peer.onRequest(METHODS.snapshotBefore, async (raw) => {
+      const { call } = raw as SnapshotBeforeParams;
+      await shadowGit.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
+      return null;
+    });
+
+    peer.onRequest(METHODS.keyRequest, async (raw) => {
+      const { profileName } = raw as KeyRequestParams;
+      const target = await config.getProfile(profileName);
+      // No such profile, or no key stored → the server falls back to the
+      // parent's provider, matching the pre-server behavior exactly.
+      if (!target) return {} satisfies KeyRequestResult;
+      return { profile: target, apiKey: await secrets.getApiKey(profileName) } satisfies KeyRequestResult;
+    });
+
+    async function executeTool(call: ToolCall): Promise<ToolResult> {
       if (call.name === 'ask_user') {
         // No human to ask in headless mode — same "proceed with best
         // judgment" fallback the interactive UI uses for an unanswered question.
         return { id: call.id, name: call.name, content: 'The user did not answer. Proceed with your best judgment.' };
       }
       if (mcpManager.isMcpTool(call.name)) {
+        // MCP stays host-side for now: hosting MCP subprocesses in the server
+        // is deliberately out of scope here (docs/phase3-protocol-design.md
+        // §4 recommends it but flags it as needing its own look).
         try {
           return { id: call.id, name: call.name, content: await mcpManager.call(call.name, call.args) };
         } catch (err) {
           return { id: call.id, name: call.name, content: err instanceof Error ? err.message : String(err), isError: true };
         }
       }
-      if (
-        call.name === 'run_command' &&
-        persona.allowedPermissions &&
-        !persona.allowedPermissions.includes('write') &&
-        looksFilesystemMutating(String(call.args.command ?? ''))
-      ) {
-        return {
-          id: call.id,
-          name: call.name,
-          content: `Blocked: this command looks like it would create, modify, or delete files, which the ${persona.label} persona does not allow.`,
-          isError: true,
-        };
-      }
       const result = await executor.execute(call);
       if (!result.isError) await syncIndexesAfterTool(call.name, call.args, ragIndexer, repoMapIndexer);
       return result;
-    };
+    }
 
+    // ---- server → host events ---------------------------------------------
     // Multiple assistant messages can occur in one run (narration before a
     // tool call, then a final summary) — lastText tracks only the most
     // recently COMPLETED one, mirroring App.tsx's acc/onTextEnd reset so a
     // streamed turn's deltas don't get concatenated onto an earlier turn's.
     let lastText = '';
     let deltaAcc = '';
-    const outcome = await runAgent({
-      provider,
+    const runId = randomUUID();
+
+    peer.onNotification(METHODS.agentEvent, (raw) => {
+      const { runId: eventRun, event } = raw as AgentEventParams;
+      if (eventRun !== runId) return;
+      switch (event.type) {
+        case 'text':
+          lastText = event.text;
+          emit(event);
+          return;
+        case 'text_delta':
+          deltaAcc += event.text;
+          emit(event);
+          return;
+        case 'text_end':
+          if (deltaAcc.trim()) lastText = deltaAcc;
+          deltaAcc = '';
+          return; // never emitted — headless's NDJSON has no text_end line
+        case 'plan':
+        case 'tool_call':
+        case 'tool_result':
+          emit(event);
+          return;
+        default:
+          // reasoning/tool_stream/context_usage/compaction/memory_candidate:
+          // the loop produces them, headless has never emitted them, and
+          // starting now would change this command's output contract.
+          return;
+      }
+    });
+
+    const { outcome } = await peer.request<AgentRunResult>(METHODS.agentRun, {
+      runId,
+      profileName: profile.name,
       model: profile.agentModel || profile.model,
       task: fullTask,
       history,
@@ -265,39 +318,9 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       tools: offeredTools,
       nativeToolCalls: capabilities.nativeToolCalls,
       contextWindow,
-      execute,
-      requestPermission: (call, tool) => {
-        // delegate_task while sub-agents are disabled resolves to an
-        // informative error in execute() — a generic permission denial here
-        // would hide from the model WHY delegation can't happen.
-        if (call.name === 'delegate_task' && !opts.subAgents) return Promise.resolve(true);
-        const decision = autoApprove(tool.permission, mode);
-        if (tool.permission !== 'read') {
-          void audit.track('permission.decision', { tool: call.name, permission: tool.permission, decision: decision ? 'auto-allow' : 'auto-deny' });
-        }
-        return Promise.resolve(decision);
-      },
-      beforeToolCall: async (call) => {
-        await shadowGit.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
-      },
-      events: {
-        onText: (text) => {
-          lastText = text;
-          emit({ type: 'text', text });
-        },
-        onTextDelta: (text) => {
-          deltaAcc += text;
-          emit({ type: 'text_delta', text });
-        },
-        onTextEnd: () => {
-          if (deltaAcc.trim()) lastText = deltaAcc;
-          deltaAcc = '';
-        },
-        onPlan: (text) => emit({ type: 'plan', text }),
-        onToolCall: (call) => emit({ type: 'tool_call', id: call.id, name: call.name, args: call.args }),
-        onToolResult: (result) => emit({ type: 'tool_result', id: result.id, name: result.name, content: result.content, isError: result.isError }),
-      },
-    });
+      subAgents: opts.subAgents,
+      persona,
+    } satisfies AgentRunParams);
 
     conversation.messages.push(
       { role: 'user', content: opts.prompt } as StoredMessage,
@@ -318,6 +341,8 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
   } catch (err) {
     printError(opts.json, err instanceof Error ? err.message : String(err));
     return 1;
+  } finally {
+    connection?.close();
   }
 }
 

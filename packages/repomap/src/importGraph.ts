@@ -1,5 +1,4 @@
-import type { Node as TSNode } from 'web-tree-sitter';
-import { isAstSupported, parserForPath } from './astChunker.js';
+import type { ParserResolver, SyntaxNode } from './syntax.js';
 
 const MAX_CONTENT_LENGTH = 2_000_000;
 const JS_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
@@ -10,7 +9,7 @@ function dirname(p: string): string {
   return i === -1 ? '' : p.slice(0, i);
 }
 
-/** Minimal POSIX path join/normalize (no node:path — core stays runtime-agnostic) that collapses "." and "..". */
+/** Minimal POSIX path join/normalize (no node:path — this package stays runtime-agnostic) that collapses "." and "..". */
 function joinPosix(...parts: string[]): string {
   const out: string[] = [];
   for (const seg of parts.filter(Boolean).join('/').split('/')) {
@@ -62,7 +61,7 @@ function resolvePythonModule(fromPath: string, spec: string, knownPaths: Readonl
   return probeFile(spec.replace(/\./g, '/'), knownPaths, PY_EXTENSIONS);
 }
 
-function stringLiteralText(node: TSNode): string | undefined {
+function stringLiteralText(node: SyntaxNode): string | undefined {
   const text = node.text;
   const quote = text[0];
   if (text.length >= 2 && (quote === '"' || quote === "'" || quote === '`') && text.endsWith(quote)) {
@@ -82,7 +81,7 @@ function stringLiteralText(node: TSNode): string | undefined {
  * present rather than assuming a common one.
  */
 /** The dotted-name / aliased-import children of a Python import statement — the actual imported module names. */
-function collectDottedNames(node: TSNode, exclude: TSNode | null): string[] {
+function collectDottedNames(node: SyntaxNode, exclude: SyntaxNode | null): string[] {
   const out: string[] = [];
   for (const child of node.namedChildren) {
     if (!child || child === exclude) continue;
@@ -95,7 +94,7 @@ function collectDottedNames(node: TSNode, exclude: TSNode | null): string[] {
   return out;
 }
 
-function walk(node: TSNode, out: string[]): void {
+function walk(node: SyntaxNode, out: string[]): void {
   switch (node.type) {
     case 'import_statement': {
       // JS/TS: `import x from '...'` / side-effect `import '...'` — has a `source` field.
@@ -150,9 +149,9 @@ function walk(node: TSNode, out: string[]): void {
   }
 }
 
-async function extractRawImports(path: string, content: string): Promise<string[]> {
-  if (!isAstSupported(path) || !content.trim() || content.length > MAX_CONTENT_LENGTH) return [];
-  const parser = await parserForPath(path);
+async function extractRawImports(path: string, content: string, parserFor: ParserResolver): Promise<string[]> {
+  if (!content.trim() || content.length > MAX_CONTENT_LENGTH) return [];
+  const parser = await parserFor(path);
   if (!parser) return [];
   try {
     const tree = parser.parse(content);
@@ -169,14 +168,19 @@ async function extractRawImports(path: string, content: string): Promise<string[
  * This file's intra-repo import edges, resolved against `knownPaths` (every
  * indexed file's workspace-relative path). External packages/stdlib imports
  * that don't resolve to a known file are dropped — they're not part of the
- * dependency graph repo_map ranks by. Deduplicated; never throws.
+ * dependency graph repo_map ranks by. Deduplicated; never throws. Without a
+ * `parserFor` there is no import graph at all (the regex fallback used for
+ * symbols has no equivalent here), so ranking degrades to alphabetical —
+ * see rankByCentrality.
  */
 export async function extractImportTargets(
   path: string,
   content: string,
   knownPaths: ReadonlySet<string>,
+  parserFor?: ParserResolver,
 ): Promise<string[]> {
-  const raw = await extractRawImports(path, content);
+  if (!parserFor) return [];
+  const raw = await extractRawImports(path, content, parserFor);
   if (raw.length === 0) return [];
   const isPython = path.toLowerCase().endsWith('.py');
   const resolved = new Set<string>();

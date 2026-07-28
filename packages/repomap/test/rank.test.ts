@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { centralityStats, rankByCentrality } from '../src/rag/rank.js';
+import { centralityStats, rankByCentrality } from '../src/rank.js';
 
 describe('rankByCentrality', () => {
   it('ranks a widely-imported file above files nothing depends on', () => {

@@ -9,8 +9,8 @@ export interface RankBoost {
   recentFiles?: Iterable<string>;
 }
 
-const OPEN_FILE_BOOST = 50;
-const RECENT_FILE_BOOST = 20;
+export const OPEN_FILE_BOOST = 50;
+export const RECENT_FILE_BOOST = 20;
 
 export interface CentralityStats {
   inDegree: number;

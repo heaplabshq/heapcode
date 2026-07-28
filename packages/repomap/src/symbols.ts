@@ -1,6 +1,4 @@
-import type { Node as TSNode } from 'web-tree-sitter';
-import { isAstSupported, parserForPath } from './astChunker.js';
-import { BOUNDARY } from './chunker.js';
+import type { ParserResolver, SyntaxNode } from './syntax.js';
 
 export interface RepoSymbol {
   name: string;
@@ -19,16 +17,25 @@ const MAX_CONTENT_LENGTH = 2_000_000;
 const MAX_DEPTH = 5;
 const DECLARATION_TYPE = /(declaration|definition)$/;
 
-function isDeclarationLike(node: TSNode): boolean {
+/**
+ * Lines that look like a declaration. Deliberately a copy of the same
+ * heuristic the line-window chunker uses rather than a shared import — this
+ * package has no dependency on the chunker, and one regex is cheaper to
+ * duplicate than to couple over.
+ */
+const BOUNDARY =
+  /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|interface|type|enum|const|def |fn |func |impl |struct |trait |public|private|protected )/;
+
+function isDeclarationLike(node: SyntaxNode): boolean {
   return DECLARATION_TYPE.test(node.type) || node.type === 'method_definition';
 }
 
 /** Recurse into class-like containers to find methods, not into function bodies (which also have named locals). */
-function isContainerLike(node: TSNode): boolean {
+function isContainerLike(node: SyntaxNode): boolean {
   return /class/.test(node.type);
 }
 
-function walk(node: TSNode, depth: number, out: RepoSymbol[]): void {
+function walk(node: SyntaxNode, depth: number, out: RepoSymbol[]): void {
   if (depth > MAX_DEPTH) return;
   for (const child of node.namedChildren) {
     if (!child) continue;
@@ -47,15 +54,19 @@ function walk(node: TSNode, depth: number, out: RepoSymbol[]): void {
  * "declaration"/"definition", or "method_definition") that have
  * tree-sitter's standard `name` field — a convention that holds across the
  * TS/TSX/JS/JSX/Python grammars without a hand-maintained node-type list per
- * language. Returns undefined (never throws) when this file's language has
- * no configured grammar or parsing fails — the caller falls back to the
- * regex-based extractor, same contract as chunkFileAst/chunkFileByLines.
+ * language. Returns undefined (never throws) when the host has no parser for
+ * this file's language or parsing fails — the caller falls back to the
+ * regex-based extractor.
  */
-async function extractSymbolsAst(path: string, content: string): Promise<RepoSymbol[] | undefined> {
+async function extractSymbolsAst(
+  path: string,
+  content: string,
+  parserFor: ParserResolver,
+): Promise<RepoSymbol[] | undefined> {
   if (!content.trim()) return [];
   if (content.length > MAX_CONTENT_LENGTH) return undefined;
 
-  const parser = await parserForPath(path);
+  const parser = await parserFor(path);
   if (!parser) return undefined;
 
   try {
@@ -80,10 +91,19 @@ function extractSymbolsByLines(content: string): RepoSymbol[] {
   return symbols;
 }
 
-/** Extracts a file's top-level symbols for the repo map. Tries AST-based extraction first, falls back to regex. */
-export async function extractSymbols(path: string, content: string): Promise<RepoSymbol[]> {
-  if (isAstSupported(path)) {
-    const symbols = await extractSymbolsAst(path, content);
+/**
+ * Extracts a file's top-level symbols for the repo map. Tries AST-based
+ * extraction first when the host supplied a parser, falls back to regex —
+ * which is also the whole behaviour with no `parserFor` at all, so the repo
+ * map works with zero parser setup.
+ */
+export async function extractSymbols(
+  path: string,
+  content: string,
+  parserFor?: ParserResolver,
+): Promise<RepoSymbol[]> {
+  if (parserFor) {
+    const symbols = await extractSymbolsAst(path, content, parserFor);
     if (symbols) return symbols;
   }
   return extractSymbolsByLines(content);

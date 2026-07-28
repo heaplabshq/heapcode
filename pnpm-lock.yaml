@@ -83,6 +83,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@heapcode/repomap':
+        specifier: workspace:*
+        version: link:../repomap
       web-tree-sitter:
         specifier: ^0.25.6
         version: 0.25.10
@@ -93,6 +96,15 @@ importers:
       typescript:
         specifier: ^5.5.4
         version: 5.9.3
+
+  packages/repomap:
+    devDependencies:
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.5
+        version: 2.1.9(@types/node@20.19.43)
 
   packages/vscode:
     dependencies:

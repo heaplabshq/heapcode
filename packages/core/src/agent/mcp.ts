@@ -23,6 +23,19 @@ export interface McpServerConfig {
 
 const PREFIX = 'mcp__';
 
+/**
+ * Reported to every server as `clientInfo.name` in the initialize handshake.
+ *
+ * The two hosts used to disagree — 'heapcode' in the CLI, 'heap-code' in the
+ * extension — so unifying them had to pick one. This is the identifier the
+ * rest of the product already uses (the `heapcode` binary, the `heapcode.*`
+ * settings namespace, the marketplace publisher, the `~/.heapcode` config
+ * dir); 'heap-code' existed only as the extension's marketplace package
+ * slug, whose human-facing form is the displayName "Heap Code". clientInfo
+ * is an identifier, not a display name.
+ */
+const CLIENT_NAME = 'heapcode';
+
 interface ConnectedServer {
   client: Client;
   tools: ToolDefinition[];
@@ -51,13 +64,6 @@ export class McpManager {
       | Promise<Record<string, McpServerConfig>>
       | Record<string, McpServerConfig>,
     private readonly onLog?: (line: string) => void,
-    /**
-     * Reported to every server as `clientInfo.name` in the initialize
-     * handshake. Host-overridable only to preserve the extension's
-     * historical `heap-code`; see the identity decision in this file's
-     * commit history.
-     */
-    private readonly clientName: string = 'heapcode',
   ) {}
 
   dispose(): void {
@@ -84,7 +90,7 @@ export class McpManager {
     for (const [name, server] of Object.entries(config)) {
       if (this.servers.has(name)) continue;
       try {
-        const client = new Client({ name: this.clientName, version: '0.1.0' });
+        const client = new Client({ name: CLIENT_NAME, version: '0.1.0' });
         const transport = server.url
           ? server.transport === 'sse'
             ? new SSEClientTransport(new URL(server.url))

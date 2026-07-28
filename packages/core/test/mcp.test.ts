@@ -27,8 +27,7 @@ describe('McpManager', () => {
       await manager.ensureConnected();
       expect(manager.connectedServerNames()).toEqual(['fixture']);
       const tools = manager.getToolDefinitions();
-      expect(tools).toHaveLength(1);
-      expect(tools[0]!.name).toBe('mcp__fixture__echo');
+      expect(tools.map((t) => t.name)).toEqual(['mcp__fixture__echo', 'mcp__fixture__whoami']);
       expect(tools[0]!.permission).toBe('execute');
       expect(tools[0]!.untrustedOutput).toBe(true);
       expect(manager.isMcpTool('mcp__fixture__echo')).toBe(true);
@@ -46,6 +45,22 @@ describe('McpManager', () => {
       await manager.ensureConnected();
       const result = await manager.call('mcp__fixture__echo', { text: 'hello from the test' });
       expect(result).toBe('hello from the test');
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('identifies itself to servers as "heapcode" in the initialize handshake', async () => {
+    // Both hosts now send this. The extension used to send 'heap-code' and
+    // the CLI 'heapcode'; unifying them was a deliberate choice, and this is
+    // what third-party servers actually observe, so it is asserted against a
+    // real handshake rather than against the constant.
+    const manager = new McpManager(() =>
+      Promise.resolve({ fixture: { command: process.execPath, args: [FIXTURE_SERVER] } }),
+    );
+    try {
+      await manager.ensureConnected();
+      expect(await manager.call('mcp__fixture__whoami', {})).toBe('heapcode');
     } finally {
       manager.dispose();
     }

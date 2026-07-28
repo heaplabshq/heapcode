@@ -77,9 +77,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const mcp = new McpManager(
     () => vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
     (line) => log.appendLine(`[mcp] ${line}`),
-    // Historical client identity for the extension; see the identity
-    // decision commit that follows this extraction.
-    'heap-code',
   );
   chatProvider.rag = rag;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;

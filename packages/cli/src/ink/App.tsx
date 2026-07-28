@@ -6,10 +6,16 @@ import SelectInput from 'ink-select-input';
 import { useTerminalColumns } from './useTerminalColumns.js';
 import {
   builtinPrompts,
+  BUILTIN_PERSONAS,
+  filterToolsForPersona,
+  getPersona,
+  intersectPersonas,
+  looksFilesystemMutating,
   parseSlashCommand,
   renderTemplate,
   reviewCurrentPr,
   runAgent,
+  type AgentPersona,
   type Conversation,
   type PermissionChoice,
   type PrReviewHost,
@@ -26,14 +32,6 @@ import type { WorkspaceToolExecutor } from '../agent/workspaceTools.js';
 import type { SessionCheckpoint } from '../agent/checkpoint.js';
 import type { PermissionEngine } from '../agent/permissions.js';
 import type { ShadowGit } from '../agent/shadowGit.js';
-import {
-  BUILTIN_PERSONAS,
-  filterToolsForPersona,
-  getPersona,
-  intersectPersonas,
-  looksFilesystemMutating,
-  type AgentPersona,
-} from '../agent/personas.js';
 import { listSkillsFormatted } from '../agent/skills.js';
 import { trimHistoryForAgent } from '../agent/historyWindow.js';
 import { loadProjectInstructions } from '../memory.js';

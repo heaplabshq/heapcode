@@ -1,11 +1,13 @@
-import type { PermissionClass, ToolDefinition } from '@heapcode/core';
+import type { PermissionClass, ToolDefinition } from './tools.js';
 
 /**
- * Direct port of packages/vscode/src/agent/personas.ts (which has zero
- * `vscode` imports — verified). A persona scopes which tools the agent is
- * even offered — a stricter, cheaper-to-reason-about restriction than
- * relying on the permission-prompt system alone. The default ("agent")
- * persona applies no restriction.
+ * A persona scopes which tools the agent is even offered — a stricter,
+ * cheaper-to-reason-about restriction than relying on the permission-prompt
+ * system alone. The default ("agent") persona applies no restriction.
+ *
+ * Shared by both hosts: the CLI and the extension each maintained a copy of
+ * this file that was identical apart from comments. Nothing here touches a
+ * filesystem, an editor or a runtime, so it needs no injected seam.
  */
 export interface AgentPersona {
   id: string;
@@ -99,7 +101,6 @@ export function filterToolsForPersona(
  * Debug-persona agent (read+execute, no writes) could delegate_task without
  * naming a persona and the sub-agent would default to unrestricted "agent",
  * silently escaping the very restriction the user picked Debug for.
- * Groundwork for CLI-M4's delegate_task.
  */
 export function intersectPersonas(parent: AgentPersona, requested: AgentPersona): AgentPersona {
   if (!parent.allowedPermissions) return requested;

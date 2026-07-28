@@ -2,9 +2,14 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   createProvider,
+  filterToolsForPersona,
+  getPersona,
+  intersectPersonas,
   lineDiffStats,
+  looksFilesystemMutating,
   runAgent,
   resolveCapabilities,
+  type AgentPersona,
   type ExtensionToWebview,
   type FileEditInfo,
   type Provider,
@@ -16,13 +21,6 @@ import {
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
-import {
-  filterToolsForPersona,
-  getPersona,
-  intersectPersonas,
-  looksFilesystemMutating,
-  type AgentPersona,
-} from './personas.js';
 import { callLmTool, getLmToolDefinitions, getLmToolGroups, isLmTool } from './lmTools.js';
 import { getActiveEditor } from '../contextCollector.js';
 import { mergeWithApplyModel } from '../inlineEdit.js';

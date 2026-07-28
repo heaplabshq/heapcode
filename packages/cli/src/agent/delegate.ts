@@ -1,5 +1,10 @@
 import {
+  filterToolsForPersona,
+  getPersona,
+  intersectPersonas,
+  looksFilesystemMutating,
   runAgent,
+  type AgentPersona,
   type Provider,
   type ProviderProfileConfig,
   type ToolCall,
@@ -9,7 +14,6 @@ import {
 import type { WorkspaceToolExecutor } from './workspaceTools.js';
 import type { ShadowGit } from './shadowGit.js';
 import type { McpManager } from './mcp.js';
-import { filterToolsForPersona, getPersona, intersectPersonas, looksFilesystemMutating, type AgentPersona } from './personas.js';
 
 /**
  * Not baked into `agentToolDefinitions` — it needs cross-cutting context

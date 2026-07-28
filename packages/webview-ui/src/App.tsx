@@ -35,7 +35,7 @@ const STATUS_LABEL: Record<string, string> = {
   planned: 'Plan ready — review below',
 };
 
-/** Mirrors packages/vscode/src/agent/personas.ts — restricts which tools the agent is offered. */
+/** Mirrors packages/core/src/agent/personas.ts — restricts which tools the agent is offered. */
 const PERSONAS = [
   { id: 'agent', label: 'Agent', hint: 'Full access — reads, edits, runs commands' },
   { id: 'architect', label: 'Architect', hint: 'Plans and explores — read-only' },

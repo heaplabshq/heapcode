@@ -1,18 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import type { ToolDefinition } from '@heapcode/core';
 import {
   BUILTIN_PERSONAS,
   filterToolsForPersona,
   getPersona,
   intersectPersonas,
   looksFilesystemMutating,
-} from '../src/agent/personas.js';
+  type ToolDefinition,
+} from '../src/index.js';
 
+// The union of what packages/cli/test/personas.test.ts and
+// packages/vscode/test/personas.test.ts each asserted before personas moved
+// here — the two hosts tested the same (duplicated) module from slightly
+// different angles, and both sets of cases are kept.
 const TOOLS: ToolDefinition[] = [
-  { name: 'read_file', description: '', parameters: {}, permission: 'read' },
-  { name: 'write_file', description: '', parameters: {}, permission: 'write' },
-  { name: 'run_command', description: '', parameters: {}, permission: 'execute' },
-  { name: 'delete_file', description: '', parameters: {}, permission: 'destructive' },
+  { name: 'read_file', description: '', parameters: { type: 'object', properties: {} }, permission: 'read' },
+  { name: 'write_file', description: '', parameters: { type: 'object', properties: {} }, permission: 'write' },
+  { name: 'run_command', description: '', parameters: { type: 'object', properties: {} }, permission: 'execute' },
+  { name: 'delete_file', description: '', parameters: { type: 'object', properties: {} }, permission: 'destructive' },
 ];
 
 describe('getPersona', () => {
@@ -22,14 +26,14 @@ describe('getPersona', () => {
 
   it('falls back to the default (agent) persona for an unknown or missing id', () => {
     expect(getPersona('nonexistent').id).toBe('agent');
+    expect(getPersona('nope').id).toBe('agent');
     expect(getPersona(undefined).id).toBe('agent');
   });
 });
 
 describe('filterToolsForPersona', () => {
   it('the default agent persona applies no restriction', () => {
-    const filtered = filterToolsForPersona(TOOLS, getPersona('agent'));
-    expect(filtered.map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
+    expect(filterToolsForPersona(TOOLS, getPersona('agent'))).toEqual(TOOLS);
   });
 
   it('architect persona keeps only read tools', () => {
@@ -62,50 +66,68 @@ describe('intersectPersonas', () => {
     // unrestricted "agent". The sub-agent must still be capped at read+execute, not
     // silently gain write/destructive access the parent itself doesn't have.
     const effective = intersectPersonas(getPersona('debug'), getPersona('agent'));
-    const filtered = filterToolsForPersona(TOOLS, effective);
-    expect(filtered.map((t) => t.name)).toEqual(['read_file', 'run_command']);
+    expect(effective.allowedPermissions).toEqual(['read', 'execute']);
+    expect(filterToolsForPersona(TOOLS, effective).map((t) => t.name)).toEqual(['read_file', 'run_command']);
   });
 
   it('narrows further when the requested persona is stricter than the parent', () => {
     const effective = intersectPersonas(getPersona('debug'), getPersona('reviewer'));
-    const filtered = filterToolsForPersona(TOOLS, effective);
-    expect(filtered.map((t) => t.name)).toEqual(['read_file']);
+    expect(filterToolsForPersona(TOOLS, effective).map((t) => t.name)).toEqual(['read_file']);
   });
 
   it('an unrestricted parent (default agent) imposes no extra narrowing', () => {
     const effective = intersectPersonas(getPersona('agent'), getPersona('debug'));
-    const filtered = filterToolsForPersona(TOOLS, effective);
-    expect(filtered.map((t) => t.name)).toEqual(['read_file', 'run_command']);
+    expect(effective.allowedPermissions).toEqual(['read', 'execute']);
+    expect(filterToolsForPersona(TOOLS, effective).map((t) => t.name)).toEqual(['read_file', 'run_command']);
+  });
+
+  it('a stricter parent wins over a broader request', () => {
+    expect(intersectPersonas(getPersona('architect'), getPersona('debug')).allowedPermissions).toEqual(['read']);
   });
 
   it('both unrestricted stays unrestricted', () => {
     const effective = intersectPersonas(getPersona('agent'), getPersona('agent'));
-    expect(filterToolsForPersona(TOOLS, effective).map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
+    expect(filterToolsForPersona(TOOLS, effective)).toEqual(TOOLS);
   });
 });
 
 describe('looksFilesystemMutating', () => {
   it('flags directory/file mutation commands (the Debug-persona escape this exists to close)', () => {
-    expect(looksFilesystemMutating('mkdir new-folder')).toBe(true);
-    expect(looksFilesystemMutating('mkdir -p src/new-folder')).toBe(true);
-    expect(looksFilesystemMutating('rm -rf dist')).toBe(true);
-    expect(looksFilesystemMutating('touch notes.txt')).toBe(true);
-    expect(looksFilesystemMutating('cp a.txt b.txt')).toBe(true);
-    expect(looksFilesystemMutating('mv a.txt b.txt')).toBe(true);
-    expect(looksFilesystemMutating('sed -i "s/x/y/" file.ts')).toBe(true);
-    expect(looksFilesystemMutating('git commit -am "wip"')).toBe(true);
-    expect(looksFilesystemMutating('git checkout -- file.ts')).toBe(true);
-    expect(looksFilesystemMutating('echo hi > out.txt')).toBe(true);
-    expect(looksFilesystemMutating('ls -la && mkdir sub')).toBe(true);
+    for (const cmd of [
+      'mkdir new-folder',
+      'mkdir -p src/new-folder',
+      'rm -rf dist',
+      'rm -rf build',
+      'touch notes.txt',
+      'cp a.txt b.txt',
+      'mv a.txt b.txt',
+      'sed -i "s/x/y/" file.ts',
+      'sed -i s/a/b/ f.txt',
+      'git commit -am "wip"',
+      'git commit -m x',
+      'git checkout -- file.ts',
+      'echo hi > out.txt',
+      'echo x > out.txt',
+      'ls -la && mkdir sub',
+    ]) {
+      expect(looksFilesystemMutating(cmd), cmd).toBe(true);
+    }
   });
 
   it('does not flag ordinary read/execute commands', () => {
-    expect(looksFilesystemMutating('npm test')).toBe(false);
-    expect(looksFilesystemMutating('git status')).toBe(false);
-    expect(looksFilesystemMutating('git diff')).toBe(false);
-    expect(looksFilesystemMutating('ls -la')).toBe(false);
-    expect(looksFilesystemMutating('pytest -q')).toBe(false);
-    expect(looksFilesystemMutating('command > /dev/null 2>&1')).toBe(false);
-    expect(looksFilesystemMutating('node script.js 2>&1')).toBe(false);
+    for (const cmd of [
+      'npm test',
+      'pnpm test',
+      'git status',
+      'git diff',
+      'ls -la',
+      'cat foo.txt',
+      'pytest -q',
+      'command > /dev/null 2>&1',
+      'echo x > /dev/null',
+      'node script.js 2>&1',
+    ]) {
+      expect(looksFilesystemMutating(cmd), cmd).toBe(false);
+    }
   });
 });

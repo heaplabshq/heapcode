@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import {
+  filterToolsForPersona,
+  getPersona,
+  intersectPersonas,
+  looksFilesystemMutating,
   resolveCapabilities,
   runAgent,
   type AgentOutcome,
@@ -20,12 +24,6 @@ import { trimHistoryForAgent } from './agent/historyWindow.js';
 import { loadProjectInstructions } from './memory.js';
 import { AuditLog } from './audit.js';
 import { DELEGATE_TASK_TOOL, runSubAgent } from './agent/delegate.js';
-import {
-  filterToolsForPersona,
-  getPersona,
-  intersectPersonas,
-  looksFilesystemMutating,
-} from './agent/personas.js';
 
 /**
  * A closed, small set of non-interactive permission policies — deliberately

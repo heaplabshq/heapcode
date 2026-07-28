@@ -2,11 +2,17 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { ChatResponse, Provider, ProviderProfileConfig, ToolCall, ToolDefinition } from '@heapcode/core';
+import {
+  getPersona,
+  type ChatResponse,
+  type Provider,
+  type ProviderProfileConfig,
+  type ToolCall,
+  type ToolDefinition,
+} from '@heapcode/core';
 import { WorkspaceToolExecutor, agentToolDefinitions } from '../src/agent/workspaceTools.js';
 import { SessionCheckpoint } from '../src/agent/checkpoint.js';
 import { PermissionEngine } from '../src/agent/permissions.js';
-import { getPersona } from '../src/agent/personas.js';
 import { DELEGATE_TASK_TOOL, runSubAgent } from '../src/agent/delegate.js';
 
 /** Serves responses[i] for the i-th request (last one repeats) — same shape core's own agent.test.ts uses. */

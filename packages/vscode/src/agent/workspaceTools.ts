@@ -3,9 +3,11 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   applySearchReplace,
+  checkSyntax,
   DEFAULT_IGNORE_GLOB,
   findBestMatch,
   safeFetch,
+  unifiedDiff,
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
@@ -716,8 +718,11 @@ export class WorkspaceToolExecutor {
               'targeted change instead.',
           );
         }
+        const content = a.content ?? '';
+        const syntaxError = await checkSyntax(a.path ?? '', content);
+        if (syntaxError) return fail(`${syntaxError} The file was NOT written — fix the syntax and try again.`);
         await this.checkpoint.recordBeforeChange(uri);
-        await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(a.content ?? ''));
+        await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
         return ok(`Wrote ${a.path}.`);
       }
       case 'edit_file': {
@@ -725,6 +730,13 @@ export class WorkspaceToolExecutor {
         const current = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
         const search = String(a.search ?? '');
         const replace = String(a.replace ?? '');
+        const match = findBestMatch(current, search);
+        if (match?.ambiguous) {
+          return fail(
+            `The "search" text matches ${match.occurrences} different places in ${a.path} — refusing to guess ` +
+              'which one. Include more surrounding lines so the search text is unique to the intended location.',
+          );
+        }
         let next = applySearchReplace(current, search, replace);
         let viaApplyModel = false;
         // The exact/fuzzy matcher didn't find "search" — before failing outright (which
@@ -744,10 +756,19 @@ export class WorkspaceToolExecutor {
               'Provide the exact existing code (copy it from read_file output, without the line numbers).',
           );
         }
+        const beforeError = await checkSyntax(a.path ?? '', current);
+        const afterError = !beforeError ? await checkSyntax(a.path ?? '', next) : undefined;
+        if (afterError) {
+          return fail(
+            `${afterError} The edit was NOT applied — it would break previously-valid syntax. ` +
+              'Provide a corrected search/replace.',
+          );
+        }
         await this.checkpoint.recordBeforeChange(uri);
         await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(next));
+        const diff = unifiedDiff(current, next);
         return ok(
-          `Edited ${a.path}.${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}`,
+          `Edited ${a.path}.${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}${diff ? `\n\n${diff}` : ''}`,
         );
       }
       case 'rename_file': {
@@ -834,22 +855,41 @@ export class WorkspaceToolExecutor {
           ? (call.args.edits as Array<{ search?: unknown; replace?: unknown }>)
           : [];
         if (edits.length === 0) return fail('No edits given.');
-        let text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+        const original = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+        let text = original;
         // Apply all in memory first — nothing is written unless every edit lands.
         for (let i = 0; i < edits.length; i++) {
-          const next = applySearchReplace(text, String(edits[i]!.search ?? ''), String(edits[i]!.replace ?? ''));
+          const search = String(edits[i]!.search ?? '');
+          const match = findBestMatch(text, search);
+          if (match?.ambiguous) {
+            return fail(
+              `Edit ${i + 1}/${edits.length}: "search" matches ${match.occurrences} different places in ` +
+                `${a.path} (earlier edits were NOT applied) — refusing to guess which one. Include more ` +
+                'surrounding lines so the search text is unique to the intended location.',
+            );
+          }
+          const next = applySearchReplace(text, search, String(edits[i]!.replace ?? ''));
           if (next === undefined) {
             return fail(
               `Edit ${i + 1}/${edits.length}: "search" not found in ${a.path} (earlier edits were NOT applied). ` +
-                `${nearbyHint(text, String(edits[i]!.search ?? ''))}` +
+                `${nearbyHint(text, search)}` +
                 'Provide the exact existing code for each edit.',
             );
           }
           text = next;
         }
+        const beforeError = await checkSyntax(a.path ?? '', original);
+        const afterError = !beforeError ? await checkSyntax(a.path ?? '', text) : undefined;
+        if (afterError) {
+          return fail(
+            `${afterError} None of the edits were applied — the result would break previously-valid syntax. ` +
+              'Provide corrected search/replace edits.',
+          );
+        }
         await this.checkpoint.recordBeforeChange(uri);
         await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(text));
-        return ok(`Applied ${edits.length} edits to ${a.path}.`);
+        const diff = unifiedDiff(original, text);
+        return ok(`Applied ${edits.length} edits to ${a.path}.${diff ? `\n\n${diff}` : ''}`);
       }
       case 'create_directory': {
         await vscode.workspace.fs.createDirectory(this.resolve(a.path));

@@ -21,6 +21,8 @@ export * from './agent/skills.js';
 export * from './agent/projectInstructions.js';
 export * from './agent/checkpoint.js';
 export * from './agent/permissions.js';
+export * from './agent/workspaceTools.js';
+export * from './agent/toolDefinitions.js';
 export * from './agent/textProtocol.js';
 export * from './agent/prompts.js';
 export * from './agent/loop.js';

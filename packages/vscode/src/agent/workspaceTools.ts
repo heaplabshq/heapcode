@@ -3,10 +3,26 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   applySearchReplace,
+  buildEditSnippet,
+  checkPackageExists,
   checkSyntax,
+  CWD_MARKER,
   DEFAULT_IGNORE_GLOB,
+  detectPackageInstall,
+  fetchUrl,
   findBestMatch,
-  safeFetch,
+  getSymbolsTool,
+  killTree,
+  LARGE_FILE_LINES,
+  MAX_APPLY_MERGE_CHARS,
+  MAX_OUTPUT_CHARS,
+  MAX_READ_CHARS,
+  MAX_SEARCH_FILES,
+  MAX_SEARCH_RESULTS,
+  nearbyHint,
+  PROTECTED_MANIFEST_FILES,
+  sharedAgentTools as T,
+  truncate,
   unifiedDiff,
   type ToolCall,
   type ToolDefinition,
@@ -15,47 +31,6 @@ import {
 import type { SessionCheckpoint } from './checkpoint.js';
 import { filterIgnored } from '../ignoreFiles.js';
 import { listSkillsFormatted, loadSkill } from './skills.js';
-
-const MAX_READ_CHARS = 50_000;
-// Above this, an unranged read_file returns an outline instead of the full text —
-// SWE-agent's ACI work found this kind of windowed view (vs. dumping whole files)
-// meaningfully improves an agent's ability to navigate large codebases cheaply.
-const LARGE_FILE_LINES = 300;
-const MAX_OUTPUT_CHARS = 8_000;
-const MAX_SEARCH_RESULTS = 40;
-const MAX_SEARCH_FILES = 2_000;
-const MAX_FETCH_CHARS = 20_000;
-// A fast-apply model must re-emit the whole file — same ceiling inline-edit's own apply
-// action uses, past which the round-trip cost outweighs skipping the merge and just failing.
-const MAX_APPLY_MERGE_CHARS = 40_000;
-const CWD_MARKER = '__HEAPCODE_CWD__';
-
-// write_file does a blind full-file overwrite — fine for a new file, but a
-// real risk for a manifest/lockfile the model didn't fully re-derive: a live
-// incident (CLI side, same tool contract) had a sub-agent "fixing" an
-// unrelated file rewrite package.json via write_file and silently drop its
-// "name" field. edit_file's targeted search/replace can't lose content this
-// way, so overwriting one of these wholesale is refused in favor of that —
-// only when the file already exists; writing a brand new one is unaffected.
-const PROTECTED_MANIFEST_FILES = new Set([
-  'package.json',
-  'package-lock.json',
-  'pnpm-lock.yaml',
-  'yarn.lock',
-  'Cargo.toml',
-  'Cargo.lock',
-  'go.mod',
-  'go.sum',
-  'requirements.txt',
-  'Pipfile',
-  'Pipfile.lock',
-  'Gemfile',
-  'Gemfile.lock',
-  'composer.json',
-  'composer.lock',
-  'tsconfig.json',
-  'pyproject.toml',
-]);
 
 async function fileExists(uri: vscode.Uri): Promise<boolean> {
   try {
@@ -115,15 +90,13 @@ function stripAnsi(s: string): string {
     .replace(/\r/g, '');
 }
 
-function truncate(content: string): string {
-  if (content.length <= MAX_OUTPUT_CHARS) return content;
-  return (
-    content.slice(0, MAX_OUTPUT_CHARS / 2) +
-    '\n…[output truncated]…\n' +
-    content.slice(-MAX_OUTPUT_CHARS / 2)
-  );
-}
-
+/**
+ * Kept here rather than shared with the CLI: the extension runs commands in a
+ * real terminal when shell integration is available, which it cannot always
+ * interrupt — `gaveUp` says so, and the wording ("interrupted", "may still be
+ * running in the Heap Code terminal") is only true of that path. The CLI kills
+ * the process group outright and tells the model the command was killed.
+ */
 /** Builds the tool-facing result text/error flag for a finished (or interrupted) command, uniformly across both execution paths. */
 function buildCommandResult(opts: {
   content: string;
@@ -163,49 +136,13 @@ function buildCommandResult(opts: {
   };
 }
 
-export const agentToolDefinitions: ToolDefinition[] = [
-  {
-    name: 'read_file',
-    description:
-      'Read a file (or a line range of it). Returns content with line numbers. ' +
-      'For files over ~300 lines, calling this with no range first returns a symbol outline ' +
-      'instead of the full text — call again with start_line/end_line for the section you need, ' +
-      'or repeat the unranged call to force the full contents.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Workspace-relative path' },
-        start_line: { type: 'number', description: 'Optional 1-based first line' },
-        end_line: { type: 'number', description: 'Optional 1-based last line (inclusive)' },
-      },
-      required: ['path'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'list_dir',
-    description: 'List files and directories at a workspace-relative path (non-recursive).',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string', description: 'Workspace-relative path, "." for root' } },
-      required: ['path'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'search',
-    description: 'Search file contents with a regex. Returns file:line matches.',
-    parameters: {
-      type: 'object',
-      properties: {
-        pattern: { type: 'string', description: 'Regular expression' },
-        glob: { type: 'string', description: 'Optional file glob, e.g. "**/*.ts"' },
-      },
-      required: ['pattern'],
-    },
-    permission: 'read',
-  },
-  {
+/**
+ * Tools only this host can offer: three backed by VS Code's language-server
+ * command bus, with no portable CLI equivalent, plus delegate_task (the CLI
+ * offers its own from delegate.ts, where the cross-cutting context it needs
+ * to actually run lives).
+ */
+const GET_DIAGNOSTICS_TOOL: ToolDefinition = {
     name: 'get_diagnostics',
     description: 'Get current errors/warnings from the IDE (optionally for one file).',
     parameters: {
@@ -213,138 +150,9 @@ export const agentToolDefinitions: ToolDefinition[] = [
       properties: { path: { type: 'string', description: 'Optional workspace-relative path' } },
     },
     permission: 'read',
-  },
-  {
-    name: 'write_file',
-    description: 'Create or overwrite a file with the given content.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-        content: { type: 'string' },
-      },
-      required: ['path', 'content'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'edit_file',
-    description:
-      'Replace an exact section of a file. "search" must match existing content (whitespace-tolerant); provide enough surrounding lines to be unique.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-        search: { type: 'string', description: 'Existing code to replace' },
-        replace: { type: 'string', description: 'New code' },
-      },
-      required: ['path', 'search', 'replace'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'rename_file',
-    description: 'Rename or move a file.',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string' }, newPath: { type: 'string' } },
-      required: ['path', 'newPath'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'delete_file',
-    description: 'Delete a file.',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string' } },
-      required: ['path'],
-    },
-    permission: 'destructive',
-  },
-  {
-    name: 'semantic_search',
-    description:
-      'Search the codebase by meaning (embeddings), e.g. "where is authentication handled". Falls back to text search when no index exists.',
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'Natural-language query' } },
-      required: ['query'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'repo_map',
-    description:
-      'Get an outline of the workspace: every file and its top-level symbols (functions, classes, methods) with line numbers — no code bodies. Use it to orient before searching, e.g. to check whether something already exists before writing it.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description:
-            'Optional path prefix to scope the map to a directory or file (e.g. "packages/core/src/rag"). Omit for the whole workspace.',
-        },
-      },
-    },
-    permission: 'read',
-  },
-  {
-    name: 'run_command',
-    description:
-      'Run a shell command (npm/pnpm/git/etc). Returns stdout, stderr, and exit code. ' +
-      'The working directory persists between calls (cd carries over); it starts at the workspace root. ' +
-      'Prefer run_tests for the project\'s test suite. Package installs are checked against the ' +
-      'registry first and blocked if the package name looks hallucinated.',
-    parameters: {
-      type: 'object',
-      properties: {
-        command: { type: 'string' },
-      },
-      required: ['command'],
-    },
-    permission: 'execute',
-  },
-  {
-    name: 'run_tests',
-    description:
-      'Run the project\'s test command (e.g. "npm test", "pytest", "cargo test", "go test ./...") ' +
-      'and report pass/fail from the exit code. Use this — not run_command — to verify changes before finishing.',
-    parameters: {
-      type: 'object',
-      properties: { command: { type: 'string', description: 'The test command to run' } },
-      required: ['command'],
-    },
-    permission: 'execute',
-    verifies: true,
-  },
-  {
-    name: 'check_package_exists',
-    description:
-      'Check whether a package name actually exists on npm or PyPI before adding it as a dependency — ' +
-      'catches hallucinated package names before they\'re installed.',
-    parameters: {
-      type: 'object',
-      properties: {
-        registry: { type: 'string', enum: ['npm', 'pypi'] },
-        name: { type: 'string' },
-      },
-      required: ['registry', 'name'],
-    },
-    permission: 'execute',
-  },
-  {
-    name: 'get_symbols',
-    description:
-      'Outline of a file from the language server: functions, classes, methods with their line ranges. Much cheaper than reading the whole file.',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string', description: 'Workspace-relative path' } },
-      required: ['path'],
-    },
-    permission: 'read',
-  },
-  {
+};
+
+const FIND_REFERENCES_TOOL: ToolDefinition = {
     name: 'find_references',
     description:
       'Find all usages of a symbol across the workspace (language-server powered — exact, not text search).',
@@ -358,8 +166,9 @@ export const agentToolDefinitions: ToolDefinition[] = [
       required: ['path', 'symbol'],
     },
     permission: 'read',
-  },
-  {
+};
+
+const GO_TO_DEFINITION_TOOL: ToolDefinition = {
     name: 'go_to_definition',
     description: 'Find where a symbol used in a file is defined (language-server powered).',
     parameters: {
@@ -372,73 +181,9 @@ export const agentToolDefinitions: ToolDefinition[] = [
       required: ['path', 'symbol'],
     },
     permission: 'read',
-  },
-  {
-    name: 'fetch_url',
-    description:
-      'Fetch a web page or API over HTTP(S) — documentation, READMEs, API responses. HTML is reduced to readable text.',
-    parameters: {
-      type: 'object',
-      properties: { url: { type: 'string', description: 'http(s):// URL' } },
-      required: ['url'],
-    },
-    permission: 'execute',
-    // Arbitrary third-party content — same injection posture as MCP (PLAN.md M7).
-    untrustedOutput: true,
-  },
-  {
-    name: 'multi_edit',
-    description:
-      'Apply several search/replace edits to one file atomically (all succeed or none are written). Same matching rules as edit_file.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-        edits: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              search: { type: 'string', description: 'Existing code to replace' },
-              replace: { type: 'string', description: 'New code' },
-            },
-            required: ['search', 'replace'],
-          },
-        },
-      },
-      required: ['path', 'edits'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'create_directory',
-    description: 'Create a directory (and any missing parents).',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string' } },
-      required: ['path'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'ask_user',
-    description:
-      'Ask the user a clarifying question when blocked on a decision only they can make (ambiguous requirements, destructive trade-offs). Use sparingly — prefer sensible defaults.',
-    parameters: {
-      type: 'object',
-      properties: {
-        question: { type: 'string' },
-        options: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Optional short answer choices',
-        },
-      },
-      required: ['question'],
-    },
-    permission: 'read',
-  },
-  {
+};
+
+const DELEGATE_TASK_TOOL: ToolDefinition = {
     name: 'delegate_task',
     description:
       'Delegate a self-contained, well-scoped piece of this task to an isolated sub-agent with its own ' +
@@ -468,75 +213,41 @@ export const agentToolDefinitions: ToolDefinition[] = [
       required: ['task'],
     },
     permission: 'execute',
-  },
-  {
-    name: 'list_skills',
-    description:
-      'List available Skills (name + description) from .claude/skills/ (project) and ~/.claude/skills/ ' +
-      '(personal) — the same convention Claude Code itself uses. Skills are model-invoked: call this early, ' +
-      'and if one\'s description matches the current task, call load_skill on it before proceeding.',
-    parameters: { type: 'object', properties: {} },
-    permission: 'read',
-  },
-  {
-    name: 'load_skill',
-    description:
-      'Load a Skill\'s full instructions by name (from list_skills). If the instructions reference a bundled ' +
-      'file (e.g. "see FORMS.md"), call this again with that file as `resource` to read it.',
-    parameters: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Skill name, from list_skills' },
-        resource: {
-          type: 'string',
-          description: 'Optional: relative path to a file bundled in the skill\'s own folder',
-        },
-      },
-      required: ['name'],
-    },
-    permission: 'read',
-  },
+};
+
+/**
+ * The tools this host offers, composed from core's shared schemas with the
+ * editor-only ones interleaved in their established positions — the order
+ * tools are offered in is part of the prompt, so it is spelled out rather
+ * than derived.
+ */
+export const agentToolDefinitions: ToolDefinition[] = [
+  T.read_file,
+  T.list_dir,
+  T.search,
+  GET_DIAGNOSTICS_TOOL,
+  T.write_file,
+  T.edit_file,
+  T.rename_file,
+  T.delete_file,
+  T.semantic_search,
+  T.repo_map,
+  T.run_command,
+  T.run_tests,
+  T.check_package_exists,
+  getSymbolsTool(
+    'Outline of a file from the language server: functions, classes, methods with their line ranges. Much cheaper than reading the whole file.',
+  ),
+  FIND_REFERENCES_TOOL,
+  GO_TO_DEFINITION_TOOL,
+  T.fetch_url,
+  T.multi_edit,
+  T.create_directory,
+  T.ask_user,
+  DELEGATE_TASK_TOOL,
+  T.list_skills,
+  T.load_skill,
 ];
-
-/**
- * When an edit_file search misses, locate the closest matching line and show
- * the model what that region of the file actually looks like — most misses
- * are stale/hallucinated context, and this lets the model self-correct in
- * one turn instead of blindly re-reading.
- */
-function nearbyHint(content: string, search: string): string {
-  const anchor = search.split('\n').find((l) => l.trim().length > 8);
-  if (!anchor) return '';
-  const match = findBestMatch(content, anchor.trim());
-  if (!match) return '';
-  const lines = content.split('\n');
-  let offset = 0;
-  let matchLine = 0;
-  for (let i = 0; i < lines.length; i++) {
-    offset += lines[i]!.length + 1;
-    if (offset > match.start) {
-      matchLine = i;
-      break;
-    }
-  }
-  const start = Math.max(0, matchLine - 6);
-  const end = Math.min(lines.length, matchLine + 7);
-  const snippet = lines
-    .slice(start, end)
-    .map((l, i) => `${start + i + 1}\t${l}`)
-    .join('\n');
-  return `The closest matching region is:\n${snippet}\n`;
-}
-
-/**
- * The "update" fed to the fast-apply model when edit_file's exact match fails —
- * gives it both what should disappear and what should appear, since the search
- * text alone drifting slightly from the file is exactly why the deterministic
- * match missed in the first place.
- */
-function buildEditSnippet(search: string, replace: string): string {
-  return `Replace this code:\n${search}\n\nwith this code:\n${replace}`;
-}
 
 export class WorkspaceToolExecutor {
   /** run_command working directory — persists across calls within a session. */
@@ -1203,143 +914,3 @@ async function formatLocations(
   return out.join('\n');
 }
 
-/**
- * Kill a spawned command *and everything it started*.
- *
- * `child.kill()` alone only signals the wrapper shell. Because run_command
- * wraps the user's command in a multi-statement script (the CWD_MARKER echo),
- * the shell can't exec-optimize it away and instead forks the real program as
- * a grandchild — which survives the shell's death, reparented to init. That
- * made both the timeout and the user's Stop a lie: the message said "killed"
- * while a dev server kept holding its port. Worse, the orphan inherits the
- * stdout pipe, so 'close' doesn't fire until it exits on its own — a timed-out
- * long-running process blocked the agent for its entire lifetime, not for the
- * timeout.
- *
- * POSIX: spawning detached puts the shell in its own process group whose id
- * equals its pid, so a negative pid signals the whole group. Windows has no
- * process groups to signal this way — taskkill /T walks the child tree
- * instead, with child.kill() as the last resort if it isn't available.
- */
-function killTree(child: ReturnType<typeof spawn>): void {
-  const pid = child.pid;
-  if (pid === undefined) return;
-  if (process.platform === 'win32') {
-    try {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F']).on('error', () => child.kill('SIGKILL'));
-    } catch {
-      child.kill('SIGKILL');
-    }
-    return;
-  }
-  try {
-    // Negative pid = "every process in this group". ESRCH here just means the
-    // group already exited between the timer firing and this call.
-    process.kill(-pid, 'SIGKILL');
-  } catch {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already gone */
-    }
-  }
-}
-
-/** Fetch a URL; HTML is reduced to readable text. Throws with a useful message. */
-async function fetchUrl(url: string): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
-  try {
-    // safeFetch (not fetch) — blocks private/loopback/link-local targets on the
-    // initial URL and on every redirect hop. See core's safeFetch for why.
-    const res = await safeFetch(url, {
-      signal: controller.signal,
-      headers: { 'user-agent': 'HeapCode-Agent', accept: 'text/html, text/plain, application/json, */*' },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
-    const type = res.headers.get('content-type') ?? '';
-    let body = await res.text();
-    if (type.includes('html')) body = htmlToText(body);
-    if (body.length > MAX_FETCH_CHARS) body = body.slice(0, MAX_FETCH_CHARS) + '\n…[truncated]';
-    return body.trim() || '(empty response)';
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error(`Timed out fetching ${url}`);
-    }
-    throw err instanceof Error ? err : new Error(String(err));
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/** Install-command shapes we recognize per package registry (order doesn't matter — first match wins). */
-const INSTALL_PATTERNS: Array<{ re: RegExp; registry: 'npm' | 'pypi' }> = [
-  { re: /^(?:npm|pnpm)\s+(?:install|i|add)\b/, registry: 'npm' },
-  { re: /^yarn\s+add\b/, registry: 'npm' },
-  { re: /^(?:pip3?|python3?\s+-m\s+pip)\s+install\b/, registry: 'pypi' },
-  { re: /^poetry\s+add\b/, registry: 'pypi' },
-];
-
-/**
- * Extract package names from an install-shaped command, for the
- * hallucinated-package guard (PLAN.md M7.2). Returns undefined when the
- * command isn't an install, installs from a file/lockfile (no new name being
- * introduced), or only references local paths/VCS URLs.
- */
-function detectPackageInstall(command: string): { registry: 'npm' | 'pypi'; names: string[] } | undefined {
-  const trimmed = command.trim();
-  const matched = INSTALL_PATTERNS.find((p) => p.re.test(trimmed));
-  if (!matched) return undefined;
-  const rest = trimmed.replace(matched.re, '').trim();
-  const tokens = rest.split(/\s+/).filter(Boolean);
-  const names: string[] = [];
-  for (const t of tokens) {
-    if (t.startsWith('-')) {
-      // Installing from a requirements file/editable local path — not a named package to verify.
-      if (['-r', '--requirement', '-e', '--editable'].includes(t)) return undefined;
-      continue;
-    }
-    if (t === '.' || t.startsWith('./') || t.startsWith('../') || t.startsWith('/') || t.includes('://')) {
-      continue; // local path or VCS/tarball URL — not a registry lookup
-    }
-    const name = matched.registry === 'npm' ? t.replace(/^(@?[^@]+).*$/, '$1') : t.split(/[=<>!~[]/)[0]!;
-    if (name) names.push(name);
-  }
-  return names.length > 0 ? { registry: matched.registry, names } : undefined;
-}
-
-/** Best-effort registry lookup; network failures resolve to "exists" (fail open, never block on our own flakiness). */
-async function checkPackageExists(registry: 'npm' | 'pypi', name: string): Promise<boolean> {
-  if (!name) return true;
-  const url =
-    registry === 'pypi'
-      ? `https://pypi.org/pypi/${encodeURIComponent(name)}/json`
-      : `https://registry.npmjs.org/${name.startsWith('@') ? name.replace('/', '%2f') : encodeURIComponent(name)}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    return res.ok;
-  } catch {
-    return true;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/** Crude but dependency-free HTML → text: drop script/style, strip tags, decode entities. */
-function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr)[^>]*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n\s*\n+/g, '\n\n');
-}

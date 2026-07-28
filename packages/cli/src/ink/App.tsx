@@ -10,21 +10,32 @@ import {
   filterToolsForPersona,
   getPersona,
   intersectPersonas,
-  looksFilesystemMutating,
+  METHODS,
   parseSlashCommand,
   renderTemplate,
   reviewCurrentPr,
-  runAgent,
+  type AgentEvent,
+  type AgentEventParams,
   type AgentPersona,
+  type AgentRunParams,
+  type AgentRunResult,
   type Conversation,
+  type KeyRequestParams,
+  type KeyRequestResult,
   type McpManager,
   type PermissionChoice,
+  type PermissionRequestParams,
+  type PermissionRequestResult,
   type PrReviewHost,
   type Provider,
   type ProviderProfileConfig,
   type ReviewClient,
+  type SnapshotBeforeParams,
   type StoredMessage,
+  type ToolCall,
   type ToolDefinition,
+  type ToolExecuteParams,
+  type ToolResult,
 } from '@heapcode/core';
 import type { ConfigStore } from '../config/store.js';
 import type { SecretsStore } from '../config/secrets.js';
@@ -39,7 +50,8 @@ import { loadProjectInstructions } from '../memory.js';
 import { configFile, secretsFile } from '../paths.js';
 import type { RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
-import { DELEGATE_TASK_TOOL, runSubAgent } from '../agent/delegate.js';
+import { DELEGATE_TASK_TOOL } from '../agent/delegate.js';
+import { connectToServer, type ConnectOptions, type ServerConnection } from '../server/client.js';
 import { Composer, type SlashCommand } from './Composer.js';
 import { Header } from './Header.js';
 import { Setup } from './Setup.js';
@@ -146,6 +158,8 @@ export interface AppProps {
   onSessionChange?(id: string): void;
   /** Best-effort registry check for a newer published version — omitted (no-op) when disabled via --no-update-check or config, or in tests/headless. */
   checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
+  /** Test seam: point at an already-running core server instead of autostarting one. */
+  server?: ConnectOptions;
 }
 
 export function App({
@@ -175,6 +189,7 @@ export function App({
   onTrack,
   onSessionChange,
   checkUpdate,
+  server,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
 
@@ -349,11 +364,151 @@ export function App({
   /** highlight.js language per in-flight call, inferred from a `path` arg — read_file's numbered content is the case this exists for. */
   const toolLanguages = useRef(new Map<string, string | undefined>());
 
+  /**
+   * The connection to the core server, opened lazily on the first task and
+   * kept for the session (docs/phase3-protocol-design.md §2: a session IS a
+   * connection). Reopened when the active profile changes, since profiles
+   * and key material are pushed at hello and the server never reads either
+   * host's config for itself.
+   */
+  const connectionRef = useRef<ServerConnection>();
+  const connectedProfile = useRef<string>();
+  /** The run currently streaming, so one notification handler can serve every task. */
+  const activeRun = useRef<{ runId: string; onEvent(event: AgentEvent): void }>();
+  /** Read inside handlers registered once — a ref, not the state value, or they'd close over a stale one. */
+  const subAgentsRef = useRef(false);
+  /**
+   * Tool definitions by name for the current run. `permission/request`
+   * carries the call and its permission class, but PermissionEngine wants
+   * the ToolDefinition — which the host already has, since it is the host
+   * that offered the tools in the first place.
+   */
+  const toolByName = useRef(new Map<string, ToolDefinition>());
+
   useEffect(() => {
     permissions.attachRequester(
       (req) => new Promise<PermissionChoice>((resolve) => setPendingPermission({ req, resolve })),
     );
   }, [permissions]);
+
+  useEffect(() => {
+    subAgentsRef.current = subAgentsEnabled;
+  }, [subAgentsEnabled]);
+
+  // The socket outlives individual tasks but not the app.
+  useEffect(
+    () => () => {
+      connectionRef.current?.close();
+      connectionRef.current = undefined;
+    },
+    [],
+  );
+
+  /**
+   * Connect (starting the server if needed) and register the four
+   * server→host request handlers. The bodies are the same code that used to
+   * sit inline in the runAgent options object; only their trigger changed —
+   * the split docs/phase3-protocol-design.md §7 describes, and the same
+   * shape headless.ts already uses.
+   */
+  async function ensureConnection(): Promise<ServerConnection> {
+    const existing = connectionRef.current;
+    if (existing && connectedProfile.current === active.profile.name) return existing;
+    existing?.close();
+
+    const apiKey = await secretsStore?.getApiKey(active.profile.name);
+    const connection = await connectToServer(
+      {
+        client: { name: 'heapcode-cli', version },
+        root: cwd ?? process.cwd(),
+        profiles: [active.profile],
+        activeProfile: active.profile.name,
+        keys: apiKey ? { [active.profile.name]: apiKey } : {},
+      },
+      server,
+    );
+    connectionRef.current = connection;
+    connectedProfile.current = active.profile.name;
+    const { peer } = connection;
+
+    peer.onRequest(METHODS.toolExecute, async (raw, signal) => {
+      const { call } = raw as ToolExecuteParams;
+      return executeTool(call, signal);
+    });
+
+    peer.onRequest(METHODS.permissionRequest, async (raw) => {
+      const { call } = raw as PermissionRequestParams;
+      // delegate_task while sub-agents are off resolves to an informative
+      // error server-side — prompting the user to approve something that
+      // cannot run would be noise.
+      if (call.name === 'delegate_task' && !subAgentsRef.current) return { granted: true } satisfies PermissionRequestResult;
+      const tool = toolByName.current.get(call.name);
+      const granted = tool ? await permissions.request(call, tool, executor.describe(call)) : false;
+      return { granted } satisfies PermissionRequestResult;
+    });
+
+    peer.onRequest(METHODS.snapshotBefore, async (raw) => {
+      const { call } = raw as SnapshotBeforeParams;
+      await shadowGit?.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
+      return null;
+    });
+
+    peer.onRequest(METHODS.keyRequest, async (raw) => {
+      const { profileName } = raw as KeyRequestParams;
+      const target = await configStore?.getProfile(profileName);
+      // Unknown profile or no stored key → the server falls back to the
+      // parent's provider, which is what /subagents did before this moved.
+      if (!target) return {} satisfies KeyRequestResult;
+      return { profile: target, apiKey: await secretsStore?.getApiKey(profileName) } satisfies KeyRequestResult;
+    });
+
+    peer.onNotification(METHODS.agentEvent, (raw) => {
+      const { runId, event } = raw as AgentEventParams;
+      const run = activeRun.current;
+      if (run && run.runId === runId) run.onEvent(event);
+    });
+
+    return connection;
+  }
+
+  /**
+   * The host half of a tool call. MCP dispatch stays here rather than moving
+   * server-side: hosting MCP subprocesses in the server is deliberately out
+   * of scope (docs/phase3-protocol-design.md §4 recommends it but flags it
+   * as needing its own look), and this is the same resolution headless.ts
+   * arrived at.
+   */
+  async function executeTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
+    if (call.name === 'ask_user') {
+      const options = Array.isArray(call.args.options) ? call.args.options.map(String) : undefined;
+      // No timeout, deliberately: a human may take minutes to answer, and
+      // this is the first client where that is real. See the report — the
+      // general question of how a slow human is told apart from a wedged
+      // host is still open (§7's open question 2), not settled by this.
+      const answer = await new Promise<string | undefined>((resolve) => {
+        setPendingQuestion({ req: { question: String(call.args.question ?? ''), options }, resolve });
+        // If the run is cancelled while the question is up, stop waiting and
+        // take the prompt down rather than leaving it on screen forever.
+        signal.addEventListener('abort', () => resolve(undefined), { once: true });
+      });
+      setPendingQuestion(undefined);
+      return {
+        id: call.id,
+        name: call.name,
+        content: answer?.trim() ? `User answered: ${answer}` : 'The user did not answer. Proceed with your best judgment.',
+      };
+    }
+    if (mcpManager?.isMcpTool(call.name)) {
+      try {
+        return { id: call.id, name: call.name, content: await mcpManager.call(call.name, call.args) };
+      } catch (err) {
+        return { id: call.id, name: call.name, content: err instanceof Error ? err.message : String(err), isError: true };
+      }
+    }
+    const result = await executor.execute(call, signal);
+    if (!result.isError) await syncIndexesAfterTool(call.name, call.args);
+    return result;
+  }
 
   useEffect(() => () => clearTimeout(exitTimer.current), []);
 
@@ -962,155 +1117,92 @@ export function App({
     // answered "delegate investigating X" by fabricating a completed
     // delegation out of the repo map already in its context.)
     const offeredTools = [...tools, DELEGATE_TASK_TOOL];
+    const offered = filterToolsForPersona([...offeredTools, ...mcpTools], effectivePersona);
+    toolByName.current = new Map(offered.map((t) => [t.name, t]));
 
     try {
-      const outcome = await runAgent({
-        provider: active.provider,
+      const { peer } = await ensureConnection();
+      const runId = randomUUID();
+      // Cancellation stays on the existing Esc / Ctrl+C wiring above: the
+      // controller is still what the UI aborts, but aborting now sends one
+      // `agent/cancel` notification to the server holding the real
+      // AbortSignal (docs/phase3-protocol-design.md §5). The server also
+      // cancels any in-flight tool/execute, so a running command stops too —
+      // not just the model call.
+      abort.signal.addEventListener('abort', () => peer.notify(METHODS.agentCancel, { runId }), { once: true });
+
+      activeRun.current = {
+        runId,
+        onEvent: (event) => {
+          switch (event.type) {
+            case 'text':
+              pushItem({ kind: 'message', message: { role: 'assistant', content: event.text } });
+              return;
+            case 'text_delta':
+              acc += event.text;
+              setLiveText(acc);
+              return;
+            case 'text_end':
+              if (acc.trim()) pushItem({ kind: 'message', message: { role: 'assistant', content: acc } });
+              acc = '';
+              setLiveText('');
+              return;
+            case 'plan':
+              pushItem({ kind: 'plan', text: event.text });
+              return;
+            case 'tool_call': {
+              const description =
+                event.name === 'ask_user'
+                  ? `Ask: ${String(event.args.question ?? '').slice(0, 80)}`
+                  : executor.describe({ id: event.id, name: event.name, args: event.args });
+              toolDescriptions.current.set(event.id, description);
+              if (event.name === 'read_file') toolLanguages.current.set(event.id, languageForPath(String(event.args.path ?? '')));
+              // A sub-agent's calls carry the delegate_task call id as
+              // `parent` — that is the whole of what the delegate_task
+              // branch's rendering used to do, exactly as the protocol
+              // design predicted.
+              const chip = { kind: 'tool' as const, id: event.id, name: event.name, description, status: 'running' as const };
+              if (event.parent) setLiveSubTool({ ...chip, indent: true });
+              else setLiveTool(chip);
+              return;
+            }
+            case 'tool_result': {
+              if (event.parent) setLiveSubTool(undefined);
+              else setLiveTool(undefined);
+              pushItem({
+                kind: 'tool',
+                id: event.id,
+                name: event.name,
+                description: toolDescriptions.current.get(event.id) ?? event.name,
+                status: event.isError ? 'error' : 'ok',
+                summary: event.content.slice(0, TOOL_SUMMARY_CHARS),
+                language: toolLanguages.current.get(event.id),
+                ...(event.parent ? { indent: true } : {}),
+              });
+              return;
+            }
+            default:
+              // reasoning/tool_stream/context_usage/compaction/memory_candidate
+              // are produced by the loop but have no rendering here yet — the
+              // same set headless.ts deliberately ignores.
+              return;
+          }
+        },
+      };
+
+      const { outcome } = await peer.request<AgentRunResult>(METHODS.agentRun, {
+        runId,
+        profileName: active.profile.name,
         model,
         task: fullTask,
         history,
         workspaceName,
-        tools: filterToolsForPersona([...offeredTools, ...mcpTools], effectivePersona),
+        tools: offered,
         nativeToolCalls,
         contextWindow: active.contextWindow,
-        signal: abort.signal,
-        execute: async (call) => {
-          if (call.name === 'ask_user') {
-            const options = Array.isArray(call.args.options) ? call.args.options.map(String) : undefined;
-            const answer = await new Promise<string>((resolve) =>
-              setPendingQuestion({ req: { question: String(call.args.question ?? ''), options }, resolve }),
-            );
-            setPendingQuestion(undefined);
-            return {
-              id: call.id,
-              name: call.name,
-              content: answer.trim() ? `User answered: ${answer}` : 'The user did not answer. Proceed with your best judgment.',
-            };
-          }
-          if (call.name === 'delegate_task') {
-            if (!subAgentsEnabled) {
-              return {
-                id: call.id,
-                name: call.name,
-                content:
-                  'Sub-agent delegation is disabled in this session. Tell the user they can enable it with ' +
-                  '/subagents on, and handle the sub-task yourself in this conversation — do not claim it was delegated.',
-                isError: true,
-              };
-            }
-            return runSubAgent(call, {
-              executor,
-              provider: active.provider,
-              profile: active.profile,
-              nativeToolCalls,
-              contextWindow: active.contextWindow,
-              tools,
-              mcpManager,
-              persona: effectivePersona,
-              permissions,
-              shadowGit,
-              workspaceName,
-              signal: abort.signal,
-              resolveProfile: async (name) => {
-                if (!configStore || !switchProvider) return undefined;
-                const target = await configStore.getProfile(name);
-                if (!target) return undefined;
-                const next = await switchProvider(target);
-                return { provider: next.provider, profile: target };
-              },
-              events: {
-                onSubToolCall: (subCall) => {
-                  const description = executor.describe(subCall);
-                  toolDescriptions.current.set(subCall.id, description);
-                  if (subCall.name === 'read_file') toolLanguages.current.set(subCall.id, languageForPath(String(subCall.args.path ?? '')));
-                  setLiveSubTool({ kind: 'tool', id: subCall.id, name: subCall.name, description, status: 'running', indent: true });
-                },
-                onSubToolResult: (result) => {
-                  setLiveSubTool(undefined);
-                  pushItem({
-                    kind: 'tool',
-                    id: result.id,
-                    name: result.name,
-                    description: toolDescriptions.current.get(result.id) ?? result.name,
-                    status: result.isError ? 'error' : 'ok',
-                    summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-                    language: toolLanguages.current.get(result.id),
-                    indent: true,
-                  });
-                },
-              },
-            });
-          }
-          if (mcpManager?.isMcpTool(call.name)) {
-            try {
-              return { id: call.id, name: call.name, content: await mcpManager.call(call.name, call.args) };
-            } catch (err) {
-              return { id: call.id, name: call.name, content: err instanceof Error ? err.message : String(err), isError: true };
-            }
-          }
-          // A shell command can mutate files as easily as write_file — block
-          // it for write-restricted personas (same guard as the extension).
-          if (
-            call.name === 'run_command' &&
-            effectivePersona.allowedPermissions &&
-            !effectivePersona.allowedPermissions.includes('write') &&
-            looksFilesystemMutating(String(call.args.command ?? ''))
-          ) {
-            return {
-              id: call.id,
-              name: call.name,
-              content:
-                `Blocked: this command looks like it would create, modify, or delete files, which the ` +
-                `${effectivePersona.label} persona does not allow. Use a persona with file-editing tools instead.`,
-              isError: true,
-            };
-          }
-          const result = await executor.execute(call, abort.signal);
-          if (!result.isError) await syncIndexesAfterTool(call.name, call.args);
-          return result;
-        },
-        requestPermission: (call, tool) => {
-          // delegate_task while sub-agents are off resolves to an informative
-          // error in execute() — prompting the user to approve something that
-          // cannot run would be noise.
-          if (call.name === 'delegate_task' && !subAgentsEnabled) return Promise.resolve(true);
-          return permissions.request(call, tool, executor.describe(call));
-        },
-        beforeToolCall: async (call) => {
-          await shadowGit?.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
-        },
-        events: {
-          onText: (text) => pushItem({ kind: 'message', message: { role: 'assistant', content: text } }),
-          onTextDelta: (chunk) => {
-            acc += chunk;
-            setLiveText(acc);
-          },
-          onTextEnd: () => {
-            if (acc.trim()) pushItem({ kind: 'message', message: { role: 'assistant', content: acc } });
-            acc = '';
-            setLiveText('');
-          },
-          onPlan: (planText) => pushItem({ kind: 'plan', text: planText }),
-          onToolCall: (call) => {
-            const description = call.name === 'ask_user' ? `Ask: ${String(call.args.question ?? '').slice(0, 80)}` : executor.describe(call);
-            toolDescriptions.current.set(call.id, description);
-            if (call.name === 'read_file') toolLanguages.current.set(call.id, languageForPath(String(call.args.path ?? '')));
-            setLiveTool({ kind: 'tool', id: call.id, name: call.name, description, status: 'running' });
-          },
-          onToolResult: (result) => {
-            setLiveTool(undefined);
-            pushItem({
-              kind: 'tool',
-              id: result.id,
-              name: result.name,
-              description: toolDescriptions.current.get(result.id) ?? result.name,
-              status: result.isError ? 'error' : 'ok',
-              summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-              language: toolLanguages.current.get(result.id),
-            });
-          },
-        },
-      });
+        subAgents: subAgentsEnabled,
+        persona: effectivePersona,
+      } satisfies AgentRunParams);
       if (outcome === 'stopped') pushSystem('Interrupted — send a new message to continue.');
       else if (outcome === 'incomplete')
         pushSystem(
@@ -1121,8 +1213,10 @@ export function App({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      activeRun.current = undefined;
       setLiveText('');
       setLiveTool(undefined);
+      setLiveSubTool(undefined);
       setBusy(false);
       abortRef.current = undefined;
     }

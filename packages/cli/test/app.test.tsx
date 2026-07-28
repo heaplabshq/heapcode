@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import type { ChatResponse, Conversation, McpManager, Provider, ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
+import { HeapcodeServer } from '@heapcode/core';
+import { SecretsStore } from '../src/config/secrets.js';
 import { ConfigStore } from '../src/config/store.js';
 import { JsonConversationStore } from '../src/history/store.js';
 import { WorkspaceToolExecutor } from '../src/agent/workspaceTools.js';
@@ -43,39 +47,90 @@ function stubMcp(overrides: Record<string, unknown> = {}): McpManager {
   } as unknown as McpManager;
 }
 
-function fakeProvider(reply: string): Provider {
+/**
+ * A mutable OpenAI-compatible fake. core/test/mockServer.ts takes its
+ * behavior at construction; these tests set the reply per test, after the
+ * server is already up, so this is the same idea with a settable script.
+ */
+interface ModelServer {
+  baseUrl: string;
+  /** Message arrays from each chat request, in order — the shape recordingProvider.requests used to expose. */
+  requests: Array<Array<{ role: string; content: string }>>;
+  reply(text: string): void;
+  script(texts: string[]): void;
+  close(): Promise<void>;
+}
+
+async function startModelServer(): Promise<ModelServer> {
+  let script: string[] = [''];
+  let call = 0;
+  const requests: ModelServer['requests'] = [];
+  const server: Server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      const body = raw ? (JSON.parse(raw) as { messages?: Array<{ role: string; content: string }> }) : {};
+      requests.push((body.messages ?? []).map((m) => ({ role: m.role, content: m.content })));
+      const text = script[Math.min(call++, script.length - 1)] ?? '';
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
   return {
-    chat: () => Promise.resolve({ content: reply }),
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    requests,
+    reply: (text) => {
+      script = [text];
+      call = 0;
+    },
+    script: (texts) => {
+      script = texts;
+      call = 0;
+    },
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+/**
+ * The agent loop runs in the core server now, so it reaches the model over
+ * HTTP rather than through an injected Provider object. These three keep
+ * their old names and call signatures — they script `model` instead of
+ * returning a working client — so every existing test body is unchanged.
+ *
+ * The returned stub is still passed as App's `provider` prop, which is now
+ * used only by /model's listModels and /pr-review; neither is part of the
+ * agent path this migration moved.
+ */
+function providerStub(): Provider {
+  return {
+    chat: () => Promise.reject(new Error('the agent loop runs server-side')),
     streamChat: async function* () {
-      yield { content: reply };
+      yield { content: '' };
     },
-    chatStreamed: async (_req, onDelta) => {
-      onDelta?.(reply);
-      return { content: reply };
-    },
+    chatStreamed: () => Promise.reject(new Error('the agent loop runs server-side')),
     completion: () => Promise.reject(new Error('not used')),
     embeddings: () => Promise.reject(new Error('not used')),
     listModels: () => Promise.resolve([]),
   };
 }
 
-/** Returns responses[0], then responses[1], etc — same scripted-provider shape core's own agent.test.ts uses. */
+function fakeProvider(reply: string): Provider {
+  model.reply(reply);
+  return providerStub();
+}
+
+/** Returns responses[0], then responses[1], etc — same scripted shape as before, now driven over HTTP. */
 function scriptedProvider(responses: ChatResponse[]): Provider {
-  let call = 0;
-  return {
-    chat: () => Promise.resolve(responses[Math.min(call++, responses.length - 1)]!),
-    streamChat: async function* () {
-      yield { content: responses[0]!.content };
-    },
-    chatStreamed: async (_req, onDelta) => {
-      const res = responses[Math.min(call++, responses.length - 1)]!;
-      onDelta?.(res.content);
-      return res;
-    },
-    completion: () => Promise.reject(new Error('not used')),
-    embeddings: () => Promise.reject(new Error('not used')),
-    listModels: () => Promise.resolve([]),
-  };
+  model.script(responses.map((r) => r.content));
+  return providerStub();
 }
 
 const WRITE_FILE_TOOL: ToolDefinition = {
@@ -92,14 +147,44 @@ const READ_FILE_TOOL: ToolDefinition = {
   permission: 'read',
 };
 
-const profile: ProviderProfileConfig = { name: 'test', preset: 'custom', baseUrl: 'http://x', model: 'mock' };
-
+/**
+ * App is a client of the core server now, so the agent loop no longer runs in
+ * this process. The harness starts a real HeapcodeServer and a real HTTP
+ * model endpoint, and App reaches both the same way it does in production —
+ * over a unix socket for the protocol, over HTTP for the model.
+ *
+ * The server runs in *this* process rather than being spawned, exactly as the
+ * headless.ts migration's harness does: every message still crosses a real
+ * socket with real NDJSON framing and real bidirectional RPC, but the tests
+ * don't depend on `pnpm build` having produced dist/daemon.js. Autostart's
+ * spawning path is covered separately.
+ *
+ * No assertion in this file changed — only how the model reply is scripted
+ * (`model`, above) and how App is pointed at a server.
+ */
 let root: string;
+let home: string;
+let model: ModelServer;
+let core: HeapcodeServer;
+let profile: ProviderProfileConfig;
+let serverOpts: { address: string; token: string; autostart: false };
+
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'heapcode-app-'));
+  home = await mkdtemp(join(tmpdir(), 'hc-app-home-'));
+  vi.stubEnv('HEAPCODE_HOME', home);
+  model = await startModelServer();
+  profile = { name: 'test', preset: 'custom', baseUrl: model.baseUrl, model: 'mock' };
+  core = new HeapcodeServer({ home, address: join(home, 't.sock'), idleShutdownMs: 0 });
+  await core.listen();
+  serverOpts = { address: core.address, token: core.token, autostart: false };
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  await core?.close();
+  await model?.close();
   await rm(root, { recursive: true, force: true });
+  await rm(home, { recursive: true, force: true });
 });
 
 /**
@@ -108,17 +193,11 @@ afterEach(async () => {
  * tool blocks to parse, no finish-reminder dance. That determinism is why
  * these tests all run with nativeToolCalls: false rather than true.
  */
-/** Records every chatStreamed request's messages while replying with a fixed text. */
+/** Replies with a fixed text; `requests` reads what the model server actually received. */
 function recordingProvider(reply: string): Provider & { requests: Array<Array<{ role: string; content: string }>> } {
-  const requests: Array<Array<{ role: string; content: string }>> = [];
-  return {
-    ...fakeProvider(reply),
-    requests,
-    chatStreamed: async (req, onDelta) => {
-      requests.push(req.messages.map((m) => ({ role: m.role, content: m.content })));
-      onDelta?.(reply);
-      return { content: reply };
-    },
+  model.reply(reply);
+  return { ...providerStub(), get requests() { return model.requests; } } as Provider & {
+    requests: Array<Array<{ role: string; content: string }>>;
   };
 }
 
@@ -137,10 +216,13 @@ function renderApp(overrides: {
   shadowGit?: ShadowGit;
   onSessionChange?(id: string): void;
   checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
+  /** Overrides the harness's in-process server — used by the autostart test. */
+  server?: React.ComponentProps<typeof App>['server'];
 }) {
   const checkpoint = new SessionCheckpoint(root);
   const executor = new WorkspaceToolExecutor(root, checkpoint, 5_000);
   const permissions = new PermissionEngine(join(root, 'permissions.json'));
+  const secretsStore = new SecretsStore(join(home, 'secrets.json'));
   return render(
     <App
       provider={overrides.provider}
@@ -164,6 +246,8 @@ function renderApp(overrides: {
       repoMapIndexer={overrides.repoMapIndexer}
       mcpManager={overrides.mcpManager}
       checkUpdate={overrides.checkUpdate}
+      secretsStore={secretsStore}
+      server={overrides.server ?? serverOpts}
     />,
   );
 }
@@ -409,7 +493,8 @@ describe('App', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(lastFrame()).toContain('Profile     test (custom)');
-    expect(lastFrame()).toContain('Endpoint    http://x');
+    // The profile's endpoint is the harness's model server now, not a dummy.
+    expect(lastFrame()).toContain('Endpoint    ' + model.baseUrl);
     expect(lastFrame()).toContain('Model       mock');
   });
 
@@ -582,24 +667,18 @@ describe('App', () => {
       ],
     };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
-    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = [];
-    const provider: Provider = {
-      ...fakeProvider('On it.'),
-      chatStreamed: async (req, onDelta) => {
-        requests.push({ messages: req.messages.map((m) => ({ role: m.role, content: m.content })) });
-        onDelta?.('On it.');
-        return { content: 'On it.' };
-      },
-    };
+    // Was a hand-rolled recording provider; the loop is server-side now, so
+    // what the model received is read off the model server instead.
+    const provider = recordingProvider('On it.');
 
     const { stdin } = renderApp({ provider, conversation, historyStore });
 
     await new Promise((r) => setTimeout(r, 20));
     stdin.write('ok do the second option');
     stdin.write('\r');
-    await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0), { timeout: 2_000 });
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
 
-    const sent = requests[0]!.messages;
+    const sent = provider.requests[0]!;
     expect(sent.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
     expect(sent[1]!.content).toBe('what are my options?');
     expect(sent[3]!.content).toBe('ok do the second option');
@@ -1103,4 +1182,126 @@ describe('App', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(lastFrame()).not.toContain('Update available');
   });
+});
+
+/**
+ * Behaviors that only exist because App is a protocol client now. The rest of
+ * this file exercises the same socket path incidentally; these assert it.
+ */
+describe('App — core server integration', () => {
+  const RUN_COMMAND_TOOL: ToolDefinition = {
+    name: 'run_command',
+    description: 'Run a shell command',
+    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+    permission: 'execute',
+  };
+
+  it('opens exactly one session for the app, and reuses it across turns', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const { stdin, lastFrame } = renderApp({ provider: fakeProvider('one'), conversation, historyStore });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('first');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('one'), { timeout: 2_000 });
+    expect(core.sessionCount).toBe(1);
+
+    stdin.write('second');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(model.requests.length).toBeGreaterThan(1), { timeout: 2_000 });
+    // A second turn must not open a second session — the connection is the
+    // session (docs/phase3-protocol-design.md §2).
+    expect(core.sessionCount).toBe(1);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'Esc cancels the run AND the shell command the host is still running, not just the model call',
+    async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const provider = scriptedProvider([{ content: '<tool name="run_command">\n{"command": "sleep 5"}\n</tool>' }]);
+
+      const { stdin, lastFrame } = renderApp({
+        provider,
+        conversation,
+        historyStore,
+        tools: [RUN_COMMAND_TOOL],
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('run the slow thing');
+      stdin.write('\r');
+
+      await vi.waitFor(() => expect(lastFrame()).toContain('wants to run a command'), { timeout: 2_000 });
+      stdin.write('\r'); // Allow once — the command starts
+      // executor.describe renders run_command as "Run: <command>".
+      await vi.waitFor(() => expect(lastFrame()).toContain('Run: sleep 5'), { timeout: 2_000 });
+
+      const started = Date.now();
+      stdin.write('\u001B'); // Esc → agent/cancel
+
+      await vi.waitFor(() => expect(lastFrame()).toContain('Interrupted'), { timeout: 4_000 });
+      // Comfortably under the 5s sleep: if only the model call were cancelled
+      // the command would still be running and this would wait it out. Same
+      // standard the headless migration's cancellation test held itself to.
+      expect(Date.now() - started).toBeLessThan(3_000);
+    },
+    20_000,
+  );
+
+  it('autostarts the server when nothing is listening, then runs the turn', async () => {
+    // Exercises the full §6 sequence through App's own path: the first
+    // connect fails, the host starts a server, and poll-connect picks it up.
+    // Here "spawn" starts a real HeapcodeServer rather than a detached
+    // process, so the test needs no build — the sequence is the same one
+    // headless.ts uses, whose detached spawn was verified end to end
+    // separately.
+    const address = join(home, 'late.sock');
+    await core.close(); // nothing at `address`, and nothing at core's either
+
+    let spawned = 0;
+    let late: HeapcodeServer | undefined;
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const { stdin, lastFrame } = renderApp({
+      provider: fakeProvider('started on demand'),
+      conversation,
+      historyStore,
+      server: {
+        address,
+        token: 'shared-token',
+        autostart: true,
+        startupTimeoutMs: 5_000,
+        spawnServer: () => {
+          spawned++;
+          late = new HeapcodeServer({ home, address, token: 'shared-token', idleShutdownMs: 0 });
+          void late.listen();
+        },
+      },
+    });
+
+    try {
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('hello');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('started on demand'), { timeout: 6_000 });
+      expect(spawned).toBe(1);
+    } finally {
+      await late?.close();
+    }
+  }, 20_000);
+
+  it('reports a clear error when the server cannot be reached, rather than hanging', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    await core.close(); // nothing listening, and autostart is off in tests
+
+    const { stdin, lastFrame } = renderApp({ provider: fakeProvider('never'), conversation, historyStore });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('hello');
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toMatch(/Could not reach the Heap Code server/), { timeout: 4_000 });
+  }, 15_000);
 });

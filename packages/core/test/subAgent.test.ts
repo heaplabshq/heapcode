@@ -1,19 +1,28 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  PermissionEngine,
   getPersona,
+  runSubAgent,
+  sharedAgentTools,
   type ChatResponse,
+  type PermissionGrantStore,
   type Provider,
   type ProviderProfileConfig,
   type ToolCall,
   type ToolDefinition,
-} from '@heapcode/core';
-import { WorkspaceToolExecutor, agentToolDefinitions } from '../src/agent/workspaceTools.js';
-import { SessionCheckpoint } from '../src/agent/checkpoint.js';
-import { PermissionEngine } from '../src/agent/permissions.js';
-import { DELEGATE_TASK_TOOL, runSubAgent } from '../src/agent/delegate.js';
+  type ToolResult,
+} from '../src/index.js';
+
+/**
+ * These moved here from packages/cli/test/delegate.test.ts when the sub-agent
+ * runner moved into core and delegation became server-side. The cases are
+ * unchanged; only the context shape is, because core's runSubAgent takes
+ * injected functions where the CLI's adapter took an executor, an MCP manager
+ * and a shadow-git.
+ */
 
 /** Serves responses[i] for the i-th request (last one repeats) — same shape core's own agent.test.ts uses. */
 function scriptedProvider(responses: ChatResponse[]): Provider & { requests: unknown[] } {
@@ -36,14 +45,27 @@ function scriptedProvider(responses: ChatResponse[]): Provider & { requests: unk
 const profile: ProviderProfileConfig = { name: 'test', preset: 'custom', baseUrl: 'http://x', model: 'mock' };
 
 let root: string;
-let executor: WorkspaceToolExecutor;
 let permissions: PermissionEngine;
+/** Every tool call the sub-agent asked the host to run. */
+let executed: ToolCall[];
+
+function memoryGrants(): PermissionGrantStore {
+  const keys = new Set<string>();
+  return {
+    has: (k) => Promise.resolve(keys.has(k)),
+    add: async (k) => void keys.add(k),
+    clear: async () => {
+      const n = keys.size;
+      keys.clear();
+      return n;
+    },
+  };
+}
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'heapcode-delegate-'));
-  const checkpoint = new SessionCheckpoint(root);
-  executor = new WorkspaceToolExecutor(root, checkpoint, 5_000);
-  permissions = new PermissionEngine(join(root, 'permissions.json'));
+  root = await mkdtemp(join(tmpdir(), 'heapcode-subagent-'));
+  executed = [];
+  permissions = new PermissionEngine({ grants: memoryGrants() });
   permissions.attachRequester(() => Promise.resolve('allow'));
 });
 afterEach(async () => {
@@ -52,26 +74,23 @@ afterEach(async () => {
 
 function baseCtx(overrides: Partial<Parameters<typeof runSubAgent>[1]> = {}) {
   return {
-    executor,
     provider: scriptedProvider([{ content: 'nothing to do here' }]),
     profile,
     nativeToolCalls: false,
     contextWindow: 32_768,
-    tools: agentToolDefinitions,
+    tools: Object.values(sharedAgentTools) as ToolDefinition[],
     persona: getPersona(undefined),
-    permissions,
     workspaceName: 'test',
+    // Stands in for the host answering tool/execute over the protocol.
+    execute: (call: ToolCall): Promise<ToolResult> => {
+      executed.push(call);
+      return Promise.resolve({ id: call.id, name: call.name, content: 'ok' });
+    },
+    requestPermission: (call: ToolCall, tool: ToolDefinition) => permissions.request(call, tool, tool.name),
+    describe: (call: ToolCall) => call.name,
     ...overrides,
   };
 }
-
-describe('DELEGATE_TASK_TOOL', () => {
-  it('is declared execute-permission, not offered by default (App.tsx gates it behind subAgentsEnabled)', () => {
-    expect(DELEGATE_TASK_TOOL.name).toBe('delegate_task');
-    expect(DELEGATE_TASK_TOOL.permission).toBe('execute');
-    expect(agentToolDefinitions.some((t) => t.name === 'delegate_task')).toBe(false);
-  });
-});
 
 describe('runSubAgent', () => {
   it('rejects a call with no task argument', async () => {
@@ -92,12 +111,15 @@ describe('runSubAgent', () => {
     expect(result.content).toContain('outcome: done');
     expect(result.content).toContain('1 tool call(s)');
     expect(result.content).toContain('Wrote the notes file.');
-    expect(await readFile(join(root, 'notes.txt'), 'utf8')).toBe('sub-agent was here');
+    // The write itself is the host's job now — core's contract is that the
+    // call was handed over intact.
+    expect(executed.map((c) => c.name)).toEqual(['write_file']);
+    expect(executed[0]!.args).toMatchObject({ path: 'notes.txt', content: 'sub-agent was here' });
   });
 
   it("never offers delegate_task to its own sub-agent — one level of nesting only", async () => {
-    // ctx.tools is agentToolDefinitions, which never includes delegate_task
-    // (see the sibling describe block) — so the sub-agent's own system
+    // ctx.tools never includes delegate_task (the server strips it before
+    // recursing) — so the sub-agent's own system
     // prompt can't declare a tool it was never given.
     const provider = scriptedProvider([{ content: '<tool name="finish">\n{"summary": "done"}\n</tool>' }]);
     await runSubAgent({ id: 'c1', name: 'delegate_task', args: { task: 'x' } }, baseCtx({ provider }));

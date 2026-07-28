@@ -15,9 +15,7 @@ import { uriFileTree } from './workspaceFs.js';
 export async function loadProjectInstructions(activeFilePath?: string): Promise<string> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (!root) return '';
-  // Historical filesystem order for the extension; see the ordering decision
-  // commit that follows this extraction.
-  return loadProjectInstructionsIn(uriFileTree(root), activeFilePath, { sortInstructionFiles: false });
+  return loadProjectInstructionsIn(uriFileTree(root), activeFilePath);
 }
 
 export async function appendMemoryNote(note: string): Promise<void> {

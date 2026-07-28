@@ -59,6 +59,22 @@ describe('loadProjectInstructions', () => {
     expect(tsActive).toContain('TypeScript-only rules.');
   });
 
+  it('emits scoped instruction files in filename order, whatever order the filesystem lists them in', async () => {
+    // The two hosts disagreed here before this merged: the CLI sorted, the
+    // extension used raw readDirectory order. These blocks are concatenated
+    // into the prompt, so unsorted meant the model could see the same
+    // instructions in a different order on a different machine. Sorted also
+    // gives users a way to control precedence by naming (10-, 20-, …).
+    await mkdir(join(root, '.heapcode', 'instructions'), { recursive: true });
+    for (const name of ['30-third.md', '10-first.md', '20-second.md']) {
+      await writeFile(join(root, '.heapcode', 'instructions', name), `Body of ${name}.`);
+    }
+
+    const out = await loadProjectInstructions(nodeFileTree(root));
+    expect(out.indexOf('10-first.md')).toBeLessThan(out.indexOf('20-second.md'));
+    expect(out.indexOf('20-second.md')).toBeLessThan(out.indexOf('30-third.md'));
+  });
+
   it('ignores non-markdown files and directories under instructions/', async () => {
     await mkdir(join(root, '.heapcode', 'instructions', 'nested.md'), { recursive: true });
     await writeFile(join(root, '.heapcode', 'instructions', 'notes.txt'), 'Not markdown.');

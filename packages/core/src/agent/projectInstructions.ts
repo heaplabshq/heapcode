@@ -6,16 +6,6 @@ const CONFIG_DIR = '.heapcode';
 const INSTRUCTIONS_DIR = `${CONFIG_DIR}/instructions`;
 const MEMORY_FILE = `${CONFIG_DIR}/memory.md`;
 
-export interface LoadInstructionsOptions {
-  /**
-   * Order the .heapcode/instructions/*.md files by filename before
-   * concatenating them. Host-overridable only to preserve the extension's
-   * historical filesystem order; see the ordering decision in this file's
-   * commit history.
-   */
-  sortInstructionFiles?: boolean;
-}
-
 export const MEMORY_TEMPLATE = `# Heap Code Memory
 
 Notes Heap Code should remember about this project. Loaded into every chat and
@@ -46,11 +36,7 @@ agent session. Keep it short — it costs context tokens.
  * match their `applyTo` globs against. The CLI has no such concept and
  * passes nothing, in which case only globally-scoped (`**`) files apply.
  */
-export async function loadProjectInstructions(
-  tree: FileTree,
-  activeFilePath?: string,
-  opts?: LoadInstructionsOptions,
-): Promise<string> {
+export async function loadProjectInstructions(tree: FileTree, activeFilePath?: string): Promise<string> {
   const parts: string[] = [];
 
   const read = async (rel: string): Promise<string> => (await tree.readFile(rel))?.slice(0, MAX_CHARS).trim() ?? '';
@@ -63,18 +49,24 @@ export async function loadProjectInstructions(
   const memory = await read(MEMORY_FILE);
   if (memory) parts.push(`Project memory (${MEMORY_FILE}):\n${memory}`);
 
-  const scoped = await loadScopedInstructions(tree, activeFilePath, opts?.sortInstructionFiles ?? true);
+  const scoped = await loadScopedInstructions(tree, activeFilePath);
   if (scoped) parts.push(scoped);
 
   return parts.join('\n\n');
 }
 
 /** Reads .heapcode/instructions/*.md and returns the ones applicable to `activeFilePath`, formatted. */
-async function loadScopedInstructions(tree: FileTree, activeFilePath: string | undefined, sort: boolean): Promise<string> {
+async function loadScopedInstructions(tree: FileTree, activeFilePath?: string): Promise<string> {
+  // Sorted by filename. The two hosts disagreed here — the CLI sorted, the
+  // extension took whatever order the filesystem returned — and these blocks
+  // are concatenated into the prompt, so the unsorted side could feed the
+  // model the same instructions in a different order on a different machine.
+  // Sorting is the deterministic choice, and it lets users control precedence
+  // by naming (10-*.md before 20-*.md).
   const names = (await tree.readDirectory(INSTRUCTIONS_DIR))
     .filter((e) => !e.isDirectory && e.name.endsWith('.md'))
-    .map((e) => e.name);
-  if (sort) names.sort();
+    .map((e) => e.name)
+    .sort();
 
   const blocks: string[] = [];
   for (const name of names) {

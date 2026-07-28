@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
-import { configureAstChunker, formatAuditDashboard } from '@heapcode/core';
+import { configureAstChunker, formatAuditDashboard, McpManager, type McpServerConfig } from '@heapcode/core';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
-import { McpManager } from './agent/mcp.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { exportBundle, importBundle } from './bundle.js';
 import { openMemoryFile } from './memory.js';
@@ -72,7 +71,16 @@ export function activate(context: vscode.ExtensionContext): void {
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   const rag = new RagIndexer(profiles, storageDir, log, track);
   const repoMap = new RepoMapIndexer(storageDir, log);
-  const mcp = new McpManager(log);
+  // Settings are the extension's config source (the CLI injects a file
+  // loader instead); `[mcp]` prefixing stays here so the log channel reads
+  // the same as it always has.
+  const mcp = new McpManager(
+    () => vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
+    (line) => log.appendLine(`[mcp] ${line}`),
+    // Historical client identity for the extension; see the identity
+    // decision commit that follows this extraction.
+    'heap-code',
+  );
   chatProvider.rag = rag;
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (workspaceRoot?.scheme === 'file') {

@@ -1,15 +1,12 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { ProviderProfileConfig } from '@heapcode/core';
+import type { McpServerConfig, ProviderProfileConfig } from '@heapcode/core';
 import { configFile } from '../paths.js';
 
-export interface McpServerConfig {
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  url?: string;
-  transport?: 'http' | 'sse';
-}
+// The shape of an `mcpServers` entry belongs to the MCP manager (core), not
+// to this file's config schema; re-exported so existing importers of it from
+// here keep working.
+export type { McpServerConfig };
 
 export interface CliConfig {
   profiles: ProviderProfileConfig[];

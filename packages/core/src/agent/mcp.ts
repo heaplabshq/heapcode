@@ -2,8 +2,24 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { ToolDefinition } from '@heapcode/core';
-import type { McpServerConfig } from '../config/store.js';
+import type { ToolDefinition } from './tools.js';
+
+/**
+ * One MCP server as the user configures it. Both hosts read the same shape
+ * from different places — the extension from `heapcode.mcpServers` in
+ * workspace settings, the CLI from `~/.heapcode/config.json` merged with a
+ * project's `.heapcode/mcp.json` — which is why the config *source* is
+ * injected and only the shape lives here.
+ */
+export interface McpServerConfig {
+  /** stdio transport */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** http/sse transport */
+  url?: string;
+  transport?: 'http' | 'sse';
+}
 
 const PREFIX = 'mcp__';
 
@@ -13,24 +29,35 @@ interface ConnectedServer {
 }
 
 /**
- * Node-native port of packages/vscode/src/agent/mcp.ts: the vscode-specific
- * surface was just its `Disposable` interface and its `OutputChannel`
- * logger — swapped for a plain `dispose()` method and a callback. Config
- * source becomes an injected loader (`loadMcpServers`, see mcpConfig.ts)
- * instead of `vscode.workspace.getConfiguration`, since the CLI reads two
- * plain JSON files instead of one workspace-settings object. MCP tools go
- * through the exact same permission system as workspace tools — the
- * `permission: 'execute'` + `untrustedOutput: true` markers on each
- * generated ToolDefinition are what wire that up, unchanged from the
- * extension.
+ * Connects the configured MCP servers and exposes their tools to the agent.
+ *
+ * The CLI and the extension each maintained a copy of this that differed
+ * only in how it reached the outside world, so both of those are now
+ * injected: `loadConfig` (a promise or a plain value — the extension's
+ * settings read is synchronous, the CLI's file read isn't) and `onLog`.
+ * `dispose()` is a plain method, which structurally satisfies
+ * `vscode.Disposable` without this file knowing that vscode exists.
+ *
+ * MCP tools go through the exact same permission system as workspace tools —
+ * the `permission: 'execute'` + `untrustedOutput: true` markers on each
+ * generated ToolDefinition are what wire that up.
  */
 export class McpManager {
   private servers = new Map<string, ConnectedServer>();
   private connecting?: Promise<void>;
 
   constructor(
-    private readonly loadConfig: () => Promise<Record<string, McpServerConfig>>,
+    private readonly loadConfig: () =>
+      | Promise<Record<string, McpServerConfig>>
+      | Record<string, McpServerConfig>,
     private readonly onLog?: (line: string) => void,
+    /**
+     * Reported to every server as `clientInfo.name` in the initialize
+     * handshake. Host-overridable only to preserve the extension's
+     * historical `heap-code`; see the identity decision in this file's
+     * commit history.
+     */
+    private readonly clientName: string = 'heapcode',
   ) {}
 
   dispose(): void {
@@ -57,7 +84,7 @@ export class McpManager {
     for (const [name, server] of Object.entries(config)) {
       if (this.servers.has(name)) continue;
       try {
-        const client = new Client({ name: 'heapcode', version: '0.1.0' });
+        const client = new Client({ name: this.clientName, version: '0.1.0' });
         const transport = server.url
           ? server.transport === 'sse'
             ? new SSEClientTransport(new URL(server.url))

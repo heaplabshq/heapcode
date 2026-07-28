@@ -1,8 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { McpManager } from '../src/agent/mcp.js';
-import type { McpServerConfig } from '../src/config/store.js';
+import { McpManager, type McpServerConfig } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SERVER = join(__dirname, 'fixtures', 'mcpFixtureServer.mjs');
@@ -11,9 +10,13 @@ const FIXTURE_SERVER = join(__dirname, 'fixtures', 'mcpFixtureServer.mjs');
  * Spawns the real fixture server (test/fixtures/mcpFixtureServer.mjs) as a
  * child process over stdio — a genuine two-process integration test, not a
  * mock, proving the stdio transport, tool listing, and tool calling all
- * work end to end. packages/vscode's own mcp.ts has zero tests today (hard
- * to mock vscode.workspace.getConfiguration for it); this Node-native port
- * gets real coverage the extension never had.
+ * work end to end.
+ *
+ * Written against the CLI's copy of McpManager, and inherited by the
+ * extension when the two copies merged into core — the extension's own
+ * mcp.ts had zero tests, since mocking vscode.workspace.getConfiguration for
+ * it was the hard part. Injecting the config source is what removed that
+ * obstacle: both hosts now run on the code these tests cover.
  */
 describe('McpManager', () => {
   it('connects to a configured stdio server and lists its tools with the mcp__<server>__<tool> naming', async () => {

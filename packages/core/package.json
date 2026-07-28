@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@heapcode/repomap": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "web-tree-sitter": "^0.25.6"
   },
   "devDependencies": {

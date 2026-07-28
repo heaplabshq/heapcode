@@ -5,6 +5,7 @@ import {
   looksFilesystemMutating,
   runAgent,
   type AgentPersona,
+  type McpManager,
   type Provider,
   type ProviderProfileConfig,
   type ToolCall,
@@ -13,7 +14,6 @@ import {
 } from '@heapcode/core';
 import type { WorkspaceToolExecutor } from './workspaceTools.js';
 import type { ShadowGit } from './shadowGit.js';
-import type { McpManager } from './mcp.js';
 
 /**
  * Not baked into `agentToolDefinitions` — it needs cross-cutting context

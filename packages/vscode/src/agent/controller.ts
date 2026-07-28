@@ -11,6 +11,7 @@ import {
   resolveCapabilities,
   type AgentPersona,
   type ExtensionToWebview,
+  type McpManager,
   type FileEditInfo,
   type Provider,
   type ProviderProfileConfig,
@@ -27,7 +28,6 @@ import { mergeWithApplyModel } from '../inlineEdit.js';
 import type { ProfileManager } from '../profileManager.js';
 import type { RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
-import type { McpManager } from './mcp.js';
 import type { ShadowGit } from './shadowGit.js';
 import { appendMemoryNote, loadProjectInstructions } from '../memory.js';
 

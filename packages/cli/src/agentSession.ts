@@ -1,10 +1,9 @@
-import type { ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
+import { McpManager, type ProviderProfileConfig, type ToolDefinition } from '@heapcode/core';
 import type { ConfigStore } from './config/store.js';
 import type { SecretsStore } from './config/secrets.js';
 import { WorkspaceToolExecutor, agentToolDefinitions } from './agent/workspaceTools.js';
 import { SessionCheckpoint } from './agent/checkpoint.js';
 import { ShadowGit } from './agent/shadowGit.js';
-import { McpManager } from './agent/mcp.js';
 import { loadMcpServers } from './agent/mcpConfig.js';
 import { RoleResolver } from './provider/roles.js';
 import { RagIndexer } from './rag/indexer.js';

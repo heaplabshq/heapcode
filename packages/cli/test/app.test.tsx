@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import React from 'react';
 import { render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ChatResponse, Conversation, Provider, ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
+import type { ChatResponse, Conversation, McpManager, Provider, ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
 import { ConfigStore } from '../src/config/store.js';
 import { JsonConversationStore } from '../src/history/store.js';
 import { WorkspaceToolExecutor } from '../src/agent/workspaceTools.js';
@@ -14,7 +14,6 @@ import type { ShadowGit } from '../src/agent/shadowGit.js';
 import { App } from '../src/ink/App.js';
 import type { RagIndexer } from '../src/rag/indexer.js';
 import type { RepoMapIndexer } from '../src/rag/repoMapIndexer.js';
-import type { McpManager } from '../src/agent/mcp.js';
 
 /** App mounts an effect that always calls init()/buildIndex() on both indexers — every duck-typed mock needs them, even when a test only cares about one other method. */
 function stubRag(overrides: Record<string, unknown> = {}): RagIndexer {

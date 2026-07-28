@@ -16,6 +16,7 @@ export * from './rag/contextualize.js';
 export * from './rag/repoMap.js';
 export * from './agent/tools.js';
 export * from './agent/personas.js';
+export * from './agent/mcp.js';
 export * from './agent/textProtocol.js';
 export * from './agent/prompts.js';
 export * from './agent/loop.js';

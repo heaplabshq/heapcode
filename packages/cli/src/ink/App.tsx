@@ -17,6 +17,7 @@ import {
   runAgent,
   type AgentPersona,
   type Conversation,
+  type McpManager,
   type PermissionChoice,
   type PrReviewHost,
   type Provider,
@@ -38,7 +39,6 @@ import { loadProjectInstructions } from '../memory.js';
 import { configFile, secretsFile } from '../paths.js';
 import type { RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
-import type { McpManager } from '../agent/mcp.js';
 import { DELEGATE_TASK_TOOL, runSubAgent } from '../agent/delegate.js';
 import { Composer, type SlashCommand } from './Composer.js';
 import { Header } from './Header.js';

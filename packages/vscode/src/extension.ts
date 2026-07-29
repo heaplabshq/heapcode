@@ -111,7 +111,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const ragStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
   ragStatus.command = 'heapcode.buildIndex';
-  const updateRagStatus = () => {
+  const updateRagStatus = (): void => {
     const s = rag.status();
     switch (s.state) {
       case 'no-embedder':

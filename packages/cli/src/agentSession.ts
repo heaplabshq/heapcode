@@ -6,7 +6,7 @@ import { SessionCheckpoint } from './agent/checkpoint.js';
 import { ShadowGit } from './agent/shadowGit.js';
 import { loadMcpServers } from './agent/mcpConfig.js';
 import { RoleResolver } from './provider/roles.js';
-import { RagIndexer } from './rag/indexer.js';
+import { createRagIndexer, type RagIndexer } from './rag/indexer.js';
 import { createRepoMapIndexer, type RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { projectStateDir, shadowGitDir } from './paths.js';
 import { cliVersion } from './version.js';
@@ -36,7 +36,7 @@ export function buildAgentSession(root: string, profile: ProviderProfileConfig, 
   // Caches, not project config — live in the global per-project state dir
   // alongside conversations/checkpoints, not inside the project itself.
   const stateDir = projectStateDir(root);
-  const ragIndexer = new RagIndexer(root, stateDir, roles);
+  const ragIndexer = createRagIndexer(root, stateDir, roles);
   const repoMapIndexer = createRepoMapIndexer(root, stateDir);
   const executor = new WorkspaceToolExecutor(
     root,

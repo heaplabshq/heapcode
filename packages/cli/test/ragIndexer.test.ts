@@ -6,7 +6,7 @@ import { startMockServer, type MockServer } from '../../core/test/mockServer.js'
 import { ConfigStore } from '../src/config/store.js';
 import { SecretsStore } from '../src/config/secrets.js';
 import { RoleResolver } from '../src/provider/roles.js';
-import { RagIndexer } from '../src/rag/indexer.js';
+import { createRagIndexer } from '../src/rag/indexer.js';
 
 /** A fixed embeddings response big enough to cover any batch this suite sends. */
 const EMBED_BODY = {
@@ -33,12 +33,21 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-describe('RagIndexer', () => {
+/**
+ * These are the CLI's regression tests for the semantic index, kept pointed at
+ * the CLI's own construction path after the index itself moved into
+ * packages/core (docs/phase3-rag-design.md §5.3, prerequisite 4). Their
+ * assertions are unchanged: the point of an extraction commit is that they
+ * still pass as written. What they now cover is the *adapter* — that the CLI
+ * still enumerates with fast-glob, honours .gitignore, and persists to
+ * rag-index.json in the state dir.
+ */
+describe('RagIndexer — CLI wiring', () => {
   it('reports no-embedder when the active profile has no embeddingsModel configured', async () => {
     const configStore = new ConfigStore(join(root, 'config2.json'));
     const secrets = new SecretsStore(join(root, 'secrets2.json'));
     const noEmbedRoles = new RoleResolver(configStore, secrets, { name: 'x', preset: 'custom', baseUrl: server.baseUrl, model: 'chat' });
-    const indexer = new RagIndexer(root, storageDir, noEmbedRoles);
+    const indexer = createRagIndexer(root, storageDir, noEmbedRoles);
     await indexer.init();
     expect((await indexer.status()).state).toBe('no-embedder');
     await indexer.buildIndex();
@@ -48,7 +57,7 @@ describe('RagIndexer', () => {
   it('builds an index from workspace files and reports ready/chunk counts', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
     await writeFile(join(root, 'b.ts'), 'export function subtract(a: number, b: number) {\n  return a - b;\n}\n');
-    const indexer = new RagIndexer(root, storageDir, roles);
+    const indexer = createRagIndexer(root, storageDir, roles);
     await indexer.init();
     await indexer.buildIndex();
 
@@ -61,12 +70,12 @@ describe('RagIndexer', () => {
 
   it('persists the index to rag-index.json and reloads it on a fresh instance', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
-    const first = new RagIndexer(root, storageDir, roles);
+    const first = createRagIndexer(root, storageDir, roles);
     await first.init();
     await first.buildIndex();
     // buildIndex persists synchronously (not via the debounced persistSoon path).
 
-    const second = new RagIndexer(root, storageDir, roles);
+    const second = createRagIndexer(root, storageDir, roles);
     await second.init();
     expect(second.ready).toBe(true);
     expect((await second.status()).files).toBe(1);
@@ -74,7 +83,7 @@ describe('RagIndexer', () => {
 
   it('indexOne re-indexes a single file; unchanged content is a no-op (embedding cache)', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-    const indexer = new RagIndexer(root, storageDir, roles);
+    const indexer = createRagIndexer(root, storageDir, roles);
     await indexer.init();
 
     expect(await indexer.indexOne('a.ts')).toBe(true); // needed embedding
@@ -86,7 +95,7 @@ describe('RagIndexer', () => {
 
   it('removeFile drops a file from the index; renameFile moves it', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-    const indexer = new RagIndexer(root, storageDir, roles);
+    const indexer = createRagIndexer(root, storageDir, roles);
     await indexer.init();
     await indexer.indexOne('a.ts');
     expect((await indexer.status()).files).toBe(1);
@@ -104,7 +113,7 @@ describe('RagIndexer', () => {
 
   it('query returns hits once the index is built; queryFormatted renders file:line blocks', async () => {
     await writeFile(join(root, 'auth.ts'), 'export function authenticate(user: string) {\n  return checkCredentials(user);\n}\n');
-    const indexer = new RagIndexer(root, storageDir, roles);
+    const indexer = createRagIndexer(root, storageDir, roles);
     await indexer.init();
     await indexer.buildIndex();
 
@@ -120,7 +129,7 @@ describe('RagIndexer', () => {
     await writeFile(join(root, '.gitignore'), 'ignored.ts\n');
     await writeFile(join(root, 'kept.ts'), 'export function kept() { return 1; }\n');
     await writeFile(join(root, 'ignored.ts'), 'export function ignored() { return 2; }\n');
-    const indexer = new RagIndexer(root, storageDir, roles);
+    const indexer = createRagIndexer(root, storageDir, roles);
     await indexer.init();
     await indexer.buildIndex();
     expect((await indexer.status()).files).toBe(1);
@@ -128,7 +137,7 @@ describe('RagIndexer', () => {
 
   it('clear() empties the store and persists the empty state', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-    const indexer = new RagIndexer(root, storageDir, roles);
+    const indexer = createRagIndexer(root, storageDir, roles);
     await indexer.init();
     await indexer.buildIndex();
     expect(indexer.ready).toBe(true);
@@ -136,7 +145,7 @@ describe('RagIndexer', () => {
     await indexer.clear();
     expect(indexer.ready).toBe(false);
 
-    const reloaded = new RagIndexer(root, storageDir, roles);
+    const reloaded = createRagIndexer(root, storageDir, roles);
     await reloaded.init();
     expect(reloaded.ready).toBe(false);
   });

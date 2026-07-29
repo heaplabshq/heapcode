@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import fg from 'fast-glob';
 import { REPO_MAP_FILE, type FileSource, type RepoMapStore } from './indexer.js';
 
@@ -34,9 +34,13 @@ export function nodeFileSource(root: string, opts: NodeFileSourceOptions = {}): 
   };
 }
 
-/** RepoMapStore backed by `<storageDir>/repo-map.json`, creating the directory on first write. */
-export function nodeRepoMapStore(storageDir: string): RepoMapStore {
-  const file = join(storageDir, REPO_MAP_FILE);
+/**
+ * A text file at an explicit path, creating its directory on first write.
+ * Read/write of one string is all a persisted index needs, whether it holds
+ * a repo map or a vector store — hence the store interface being reusable
+ * rather than repo-map-specific.
+ */
+export function nodeTextStore(file: string): RepoMapStore {
   return {
     async read() {
       try {
@@ -46,8 +50,13 @@ export function nodeRepoMapStore(storageDir: string): RepoMapStore {
       }
     },
     async write(text) {
-      await mkdir(storageDir, { recursive: true });
+      await mkdir(dirname(file), { recursive: true });
       await writeFile(file, text, 'utf8');
     },
   };
+}
+
+/** RepoMapStore backed by `<storageDir>/repo-map.json`. */
+export function nodeRepoMapStore(storageDir: string): RepoMapStore {
+  return nodeTextStore(join(storageDir, REPO_MAP_FILE));
 }

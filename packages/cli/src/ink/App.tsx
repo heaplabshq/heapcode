@@ -50,7 +50,7 @@ import { listSkillsFormatted } from '../agent/skills.js';
 import { trimHistoryForAgent } from '../agent/historyWindow.js';
 import { loadProjectInstructions } from '../memory.js';
 import { configFile, secretsFile } from '../paths.js';
-import type { RagIndexer } from '../rag/indexer.js';
+import { CLI_INDEX_OPTIONS, type RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import { DELEGATE_TASK_TOOL } from '../agent/delegate.js';
 import { connectToServer, type ConnectOptions, type ServerConnection } from '../server/client.js';
@@ -313,8 +313,11 @@ export function App({
       if (cancelled) return;
       void repoMapIndexer?.buildIndex();
       void ragIndexer
-        ?.buildIndex((embedded, total) => {
-          if (!cancelled) setIndexProgress({ embedded, total });
+        ?.buildIndex({
+          ...CLI_INDEX_OPTIONS,
+          onProgress: (embedded, total) => {
+            if (!cancelled) setIndexProgress({ embedded, total });
+          },
         })
         .then(() => {
           if (!cancelled) setIndexProgress(undefined);
@@ -337,12 +340,12 @@ export function App({
       case 'multi_edit':
         if (!path) return;
         repoMapIndexer?.noteRecent(path);
-        await Promise.all([ragIndexer?.indexOne(path), repoMapIndexer?.indexOne(path)]);
+        await Promise.all([ragIndexer?.indexOne(path, CLI_INDEX_OPTIONS), repoMapIndexer?.indexOne(path)]);
         return;
       case 'rename_file':
         if (!path || !newPath) return;
         repoMapIndexer?.noteRecent(newPath);
-        await Promise.all([ragIndexer?.renameFile(path, newPath), repoMapIndexer?.renameFile(path, newPath)]);
+        await Promise.all([ragIndexer?.renameFile(path, newPath, CLI_INDEX_OPTIONS), repoMapIndexer?.renameFile(path, newPath)]);
         return;
       case 'delete_file':
         if (!path) return;
@@ -999,7 +1002,7 @@ export function App({
       }
       case '/index': {
         pushSystem('Rebuilding indexes…');
-        await Promise.all([ragIndexer?.buildIndex(), repoMapIndexer?.buildIndex()]);
+        await Promise.all([ragIndexer?.buildIndex(CLI_INDEX_OPTIONS), repoMapIndexer?.buildIndex()]);
         const status = await ragIndexer?.status();
         const rmReady = repoMapIndexer?.ready;
         pushSystem(

@@ -352,7 +352,12 @@ describe('App', () => {
     stdin.write('\r'); // Allow once
 
     await vi.waitFor(() => expect(lastFrame()).toContain('Wrote greeting.txt'), { timeout: 2_000 });
-    expect(ragIndexer.indexOne).toHaveBeenCalledWith('greeting.txt');
+    // The second argument is new: contextual retrieval is a per-call option
+    // now that the index lives in core, rather than something the CLI's own
+    // indexer decided internally. The CLI passes `true`, which is exactly what
+    // it always did unconditionally (packages/cli/src/rag/indexer.ts:187-194
+    // before the move).
+    expect(ragIndexer.indexOne).toHaveBeenCalledWith('greeting.txt', { contextualRetrieval: true });
     expect(repoMapIndexer.indexOne).toHaveBeenCalledWith('greeting.txt');
     expect(repoMapIndexer.noteRecent).toHaveBeenCalledWith('greeting.txt');
   });

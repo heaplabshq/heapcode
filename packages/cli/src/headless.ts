@@ -29,6 +29,7 @@ import { SecretsStore } from './config/secrets.js';
 import { JsonConversationStore } from './history/store.js';
 import { canonicalize, auditFile, conversationsFile } from './paths.js';
 import { buildAgentSession } from './agentSession.js';
+import { CLI_INDEX_OPTIONS } from './rag/indexer.js';
 import { trimHistoryForAgent } from './agent/historyWindow.js';
 import { loadProjectInstructions } from './memory.js';
 import { AuditLog } from './audit.js';
@@ -167,7 +168,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
     await Promise.all([ragIndexer.init(), repoMapIndexer.init(), mcpManager.ensureConnected()]);
-    if (opts.reindex) await Promise.all([ragIndexer.buildIndex(), repoMapIndexer.buildIndex()]);
+    if (opts.reindex) await Promise.all([ragIndexer.buildIndex(CLI_INDEX_OPTIONS), repoMapIndexer.buildIndex()]);
 
     const mode: PermissionMode = opts.permissionMode ?? 'default';
     // "plan" forces read-only regardless of the chosen persona — the same
@@ -361,12 +362,12 @@ async function syncIndexesAfterTool(
     case 'multi_edit':
       if (!path) return;
       repoMapIndexer.noteRecent(path);
-      await Promise.all([ragIndexer.indexOne(path), repoMapIndexer.indexOne(path)]);
+      await Promise.all([ragIndexer.indexOne(path, CLI_INDEX_OPTIONS), repoMapIndexer.indexOne(path)]);
       return;
     case 'rename_file':
       if (!path || !newPath) return;
       repoMapIndexer.noteRecent(newPath);
-      await Promise.all([ragIndexer.renameFile(path, newPath), repoMapIndexer.renameFile(path, newPath)]);
+      await Promise.all([ragIndexer.renameFile(path, newPath, CLI_INDEX_OPTIONS), repoMapIndexer.renameFile(path, newPath)]);
       return;
     case 'delete_file':
       if (!path) return;

@@ -7,9 +7,16 @@ import type { ParserResolver } from './syntax.js';
 /** Conventional filename for a persisted map — hosts pick where it lives, see RepoMapStore. */
 export const REPO_MAP_FILE = 'repo-map.json';
 
-const CODE_EXTENSIONS =
+/**
+ * Which files are worth indexing at all. Exported alongside MAX_FILE_BYTES
+ * and MAX_INDEXED_FILES because the semantic index applies exactly the same
+ * three limits to exactly the same walk — they were duplicated verbatim in
+ * both hosts' RAG indexers before that moved into core.
+ */
+export const CODE_EXTENSIONS =
   /\.(ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|swift|scala|sh|sql|vue|svelte|md|yaml|yml|json|toml|html|htm|css|scss|sass|less|xml|astro|graphql|gql|proto|prisma|lua|dart|ex|exs|zig|tf|ini|conf)$/i;
-const MAX_FILE_BYTES = 200_000;
+/** Files larger than this are skipped: too big to chunk usefully, and usually generated. */
+export const MAX_FILE_BYTES = 200_000;
 /** Ceiling on indexed files. Exported so a FileSource whose walk takes its own limit can stop at the same number instead of over-collecting. */
 export const MAX_INDEXED_FILES = 3_000;
 const MAX_RECENT_FILES = 20;

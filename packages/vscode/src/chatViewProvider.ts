@@ -13,14 +13,19 @@ import {
   providerPresets,
   renderTemplate,
   resolveCapabilities,
+  runChatTurn,
+  stripToolCallArtifacts,
   type ChatMessage,
   type Conversation,
   type ConversationStore,
   type DisplayMessage,
   type ExtensionToWebview,
   type PermissionChoice,
-  type Provider,
   type PromptTemplate,
+  type ProviderProfileConfig,
+  type ToolCall,
+  type ToolDefinition,
+  type ToolResult,
   type StoredMessage,
   type WebviewToExtension,
 } from '@heapcode/core';
@@ -53,19 +58,6 @@ const INIT_TASK =
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 10_000_000;
-/** Ask-mode read-only tool loop: a few search/read rounds, then a forced final answer. */
-const MAX_ASK_TOOL_ITERATIONS = 4;
-
-/**
- * Defensive net for runAskWithTools: strips fake "[Tool call: ...]" text a
- * model can still free-associate into its final answer despite the nudge
- * telling it tools are gone. Best-effort — the response already streamed
- * live before this runs, so this only guarantees the stored/reloaded copy
- * is clean.
- */
-function stripToolCallArtifacts(text: string): string {
-  return text.replace(/\s*\[Tool call:[^\]]*\]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
-}
 
 const SYSTEM_PROMPT =
   'You are Heap Code, an expert AI programming assistant inside the user\'s IDE. ' +
@@ -1145,32 +1137,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'chunk', text: delta });
       };
 
-      const toolOutcome = resolveCapabilities(profile).nativeToolCalls
-        ? await this.runAskWithTools(
-            provider,
-            profile.model,
-            conversationMessages,
-            profile.temperature,
-            maxTokens,
-            this.abortController.signal,
-            onDelta,
-          )
-        : undefined;
-
-      let finishReason: string | undefined = toolOutcome?.finishReason;
-      if (!toolOutcome) {
-        const stream = provider.streamChat({
-          model: profile.model,
-          messages: conversationMessages,
-          temperature: profile.temperature,
-          maxTokens,
-          signal: this.abortController.signal,
-        });
-        for await (const chunk of stream) {
-          if (chunk.content) onDelta(chunk.content);
-          if (chunk.finishReason) finishReason = chunk.finishReason;
-        }
-      }
+      const ask = this.askToolSupport(profile);
+      const { finishReason } = await runChatTurn({
+        provider,
+        model: profile.model,
+        messages: conversationMessages,
+        temperature: profile.temperature,
+        maxTokens,
+        signal: this.abortController.signal,
+        tools: ask?.tools,
+        execute: ask?.execute,
+        events: {
+          onDelta,
+          onToolCall: (call) => {
+            const description = ask?.describe(call) ?? call.name;
+            this.log.appendLine(`[ask] tool: ${description}`);
+            this.postToWebview({ type: 'agentToolCall', id: call.id, name: call.name, description });
+          },
+          onToolResult: (result) =>
+            this.postToWebview({
+              type: 'agentToolResult',
+              id: result.id,
+              ok: !result.isError,
+              summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
+              label: resultLabel(result.name, result.content, result.isError),
+            }),
+        },
+      });
       this.finishTurn(stripToolCallArtifacts(assistant));
       this.post({ type: 'done' });
       if (finishReason === 'length') {
@@ -1201,25 +1194,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Ask-mode read-only tool loop (mirrors how Copilot's Ask mode autonomously searches the
-   * codebase): lets the model call read/search tools — never write/execute/destructive ones,
-   * so this never needs a permission prompt — to ground its answer in real code instead of
-   * guessing. Bounded iterations; the last attempt always omits tools so the turn is
-   * guaranteed to end in a normal answer rather than looping forever.
-   * Returns undefined when there's no workspace, no read tools, or the model doesn't support
-   * native tool calling — the caller falls back to a plain streamed reply.
+   * Host-side half of the ask-mode tool loop: which tools chat may offer, how
+   * to run one, and how to label it. The loop itself is core's
+   * `runChatTurn` — only the parts that need the workspace live here.
+   *
+   * Undefined (→ a plain streamed reply) in exactly the three cases the
+   * extracted method returned undefined for: the model can't do native tool
+   * calls, there's no workspace, or no read tools survive the filter.
    */
-  private async runAskWithTools(
-    provider: Provider,
-    model: string,
-    messages: ChatMessage[],
-    temperature: number | undefined,
-    maxTokens: number,
-    signal: AbortSignal,
-    onDelta: (text: string) => void,
-  ): Promise<{ finishReason?: string } | undefined> {
+  private askToolSupport(profile: ProviderProfileConfig):
+    | {
+        tools: ToolDefinition[];
+        execute(call: ToolCall): Promise<ToolResult>;
+        describe(call: ToolCall): string;
+      }
+    | undefined {
+    if (!resolveCapabilities(profile).nativeToolCalls) return undefined;
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (!root) return undefined;
+    // Read-only, so core's loop never needs a permission prompt: runAgent's
+    // gate only fires for non-read tools (agent/loop.ts:335, :339). ask_user
+    // is excluded by NAME, not by permission — it is `permission: 'read'`
+    // (toolDefinitions.ts:200), so filtering on permission alone would
+    // silently hand chat a tool that blocks on the user.
     const readOnlyTools = agentToolDefinitions.filter(
       (t) => t.permission === 'read' && t.name !== 'ask_user',
     );
@@ -1231,96 +1228,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       60_000,
       this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
     );
-    const convo = [...messages];
-
-    for (let i = 0; i < MAX_ASK_TOOL_ITERATIONS; i++) {
-      const offerTools = i < MAX_ASK_TOOL_ITERATIONS - 1;
-      // Withdrawing tools silently invites a model mid-tool-use habit to
-      // free-associate fake "[Tool call: ...]" text instead of wrapping up —
-      // tell it plainly instead.
-      if (!offerTools) {
-        convo.push({
-          role: 'user',
-          content:
-            'Tool access has ended for this turn. Give your final, complete answer now in ' +
-            'plain text based on what you already found — do not mention, reference, or ' +
-            'write out any further tool calls.',
-        });
-      }
-
-      if (!offerTools && provider.chatStreamed) {
-        const res = await provider.chatStreamed(
-          { model, messages: convo, temperature, maxTokens, signal },
-          (text, kind) => {
-            if (!kind || kind === 'text') onDelta(text);
-          },
-        );
-        return { finishReason: res.finishReason };
-      }
-
-      const res = await provider.chat({
-        model,
-        messages: convo,
-        tools: offerTools ? readOnlyTools : undefined,
-        temperature,
-        maxTokens,
-        signal,
-      });
-
-      if (offerTools && res.toolCalls && res.toolCalls.length > 0) {
-        convo.push({
-          role: 'assistant',
-          content: res.content,
-          toolCalls: res.toolCalls.map((c) => ({ id: c.id, name: c.name, args: c.args })),
-        });
-        for (const call of res.toolCalls) {
-          const toolCall = { id: call.id, name: call.name, args: call.args };
-          const description = executor.describe(toolCall);
-          this.log.appendLine(`[ask] tool: ${description}`);
-          this.postToWebview({
-            type: 'agentToolCall',
-            id: call.id,
-            name: call.name,
-            description,
-          });
-          // Same guard as the core agent loop: a failed tool call (e.g. the
-          // model guessing a nonexistent path) becomes an error result the
-          // model can self-correct from, never an exception that kills the
-          // whole ask turn.
-          let result: { id: string; name: string; content: string; isError?: boolean };
-          try {
-            result = call.argsParseError
-              ? {
-                  id: call.id,
-                  name: call.name,
-                  content: `Invalid JSON arguments: ${call.argsParseError}`,
-                  isError: true,
-                }
-              : await executor.execute(toolCall);
-          } catch (err) {
-            result = {
-              id: call.id,
-              name: call.name,
-              content: `Tool failed: ${err instanceof Error ? err.message : String(err)}`,
-              isError: true,
-            };
-          }
-          this.postToWebview({
-            type: 'agentToolResult',
-            id: call.id,
-            ok: !result.isError,
-            summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-            label: resultLabel(result.name, result.content, result.isError),
-          });
-          convo.push({ role: 'tool', content: result.content, toolCallId: call.id });
-        }
-        continue;
-      }
-
-      if (res.content) onDelta(res.content);
-      return { finishReason: res.finishReason };
-    }
-    return undefined;
+    return {
+      tools: readOnlyTools,
+      execute: (call) => executor.execute(call),
+      describe: (call) => executor.describe(call),
+    };
   }
 
   private finishTurn(assistant: string): void {

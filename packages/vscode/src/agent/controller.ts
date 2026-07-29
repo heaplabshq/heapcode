@@ -64,6 +64,13 @@ export class AgentController {
   private profilesStale = false;
   /** The run currently streaming, so one notification handler serves every run. */
   private activeRun?: { runId: string; onEvent(event: AgentEvent): void };
+  /**
+   * Whether the current run may actually execute delegate_task. Read by the
+   * permission handler, which must not prompt for a call the server is about
+   * to refuse. Set per run from `heapcode.agent.subAgents`, the same value sent
+   * as `agent/run`'s `subAgents`.
+   */
+  private subAgentsEnabled = false;
 
   /**
    * Per-run state the server→host handlers read. These were locals inside
@@ -214,6 +221,12 @@ export class AgentController {
 
     peer.onRequest(METHODS.permissionRequest, async (raw) => {
       const { call } = raw as PermissionRequestParams;
+      // delegate_task while sub-agents are off resolves to an informative error
+      // server-side — prompting the user to approve something that cannot run
+      // would be noise. Same short-circuit as packages/cli/src/ink/App.tsx:500-503.
+      if (call.name === 'delegate_task' && !this.subAgentsEnabled) {
+        return { granted: true } satisfies PermissionRequestResult;
+      }
       const tool = this.toolByName.get(call.name);
       const granted = tool ? await this.permissions.request(call, tool, this.describe(call)) : false;
       return { granted } satisfies PermissionRequestResult;
@@ -395,11 +408,23 @@ export class AgentController {
     let capturedPlanText: string | undefined;
 
     const subAgents = cfg.get<boolean>('subAgents', false);
-    const offered = filterToolsForPersona([...agentToolDefinitions, ...mcpTools, ...lmTools], persona)
-      .filter((t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name))
-      // Sub-agent orchestration (M12) is opt-in — a new, autonomy-increasing
-      // capability, same posture as planGate/requireTestsBeforeFinish.
-      .filter((t) => t.name !== 'delegate_task' || subAgents);
+    this.subAgentsEnabled = subAgents;
+    // delegate_task is always OFFERED; only its EXECUTION is gated by the
+    // subAgents setting, which the server enforces by returning an informative
+    // error (agentRun.ts:57-67).
+    //
+    // It used to be filtered out here when the setting was off. The CLI made
+    // the same mistake and fixed it after a real incident: a model told to
+    // delegate, with no delegate_task in its toolset, fabricated a delegation
+    // rather than saying it could not delegate. Hiding the capability is what
+    // produces the lie — being told "off, do it yourself" produces honest work.
+    // See packages/cli/src/agent/delegate.ts:6-11.
+    //
+    // `disabledTools` still removes it: that is a deliberate per-tool opt-out,
+    // not a capability the model should reason about.
+    const offered = filterToolsForPersona([...agentToolDefinitions, ...mcpTools, ...lmTools], persona).filter(
+      (t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name),
+    );
     // permission/request carries the call and its permission class; the
     // PermissionEngine wants the ToolDefinition, which this host has because
     // it is the host that offered the tools in the first place.

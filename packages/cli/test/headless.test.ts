@@ -336,7 +336,18 @@ describe('runHeadless — --sub-agents', () => {
     expect(sent.messages[0]!.content).toContain('delegate_task');
     const events = parseNdjson(write);
     const result = events.find((e) => e.type === 'tool_result' && e.name === 'delegate_task');
-    expect(result).toMatchObject({ isError: true, content: expect.stringContaining('--sub-agents') });
+    // Was `stringContaining('--sub-agents')`. The message stopped naming a
+    // CLI flag when the extension started receiving it too: the extension's
+    // control is a setting, and the model is this string's only reader, so a
+    // flag name it might repeat back to a VS Code user was a wrong
+    // instruction. `heapcode --help` (cli.tsx:275) is where the flag is
+    // documented. The substance the incident cared about is unchanged and is
+    // what the next assertion pins.
+    expect(result).toMatchObject({
+      isError: true,
+      content: expect.stringContaining('Sub-agent delegation is turned off for this run.'),
+    });
+    expect((result as { content: string }).content).toContain('do not claim it was delegated');
     write.mockRestore();
   });
 });

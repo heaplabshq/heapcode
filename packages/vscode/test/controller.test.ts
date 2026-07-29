@@ -26,7 +26,11 @@ import { __setConfig, __resetConfig, __setWorkspaceRoot, __shownMessages } from 
 
 interface ModelServer {
   baseUrl: string;
-  requests: Array<Array<{ role: string; content: string }>>;
+  /** Each chat request's messages and offered tools — the latter is how "was this tool offered at all" is asserted. */
+  requests: Array<{
+    messages: Array<{ role: string; content: string }>;
+    tools?: Array<{ function?: { name?: string } }>;
+  }>;
   script(texts: string[]): void;
   close(): Promise<void>;
 }
@@ -39,8 +43,16 @@ async function startModelServer(): Promise<ModelServer> {
     let raw = '';
     req.on('data', (d) => (raw += d));
     req.on('end', () => {
-      const body = raw ? (JSON.parse(raw) as { messages?: Array<{ role: string; content: string }> }) : {};
-      requests.push((body.messages ?? []).map((m) => ({ role: m.role, content: m.content })));
+      const body = raw
+        ? (JSON.parse(raw) as {
+            messages?: Array<{ role: string; content: string }>;
+            tools?: Array<{ function?: { name?: string } }>;
+          })
+        : {};
+      requests.push({
+        messages: (body.messages ?? []).map((m) => ({ role: m.role, content: m.content })),
+        tools: body.tools,
+      });
       const text = script[Math.min(call++, script.length - 1)] ?? '';
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
@@ -123,6 +135,16 @@ function makeController(opts: ControllerOpts): AgentController {
     undefined,
     (opts.server ?? serverOpts) as never,
   );
+}
+
+/**
+ * Which tools a request actually put in front of the model. With native tool
+ * calls on that is the `tools` array; with them off (what these tests use, for
+ * determinism) the loop lists them in the system prompt instead.
+ */
+function offeredToModel(request: ModelServer['requests'][number]): string {
+  const fromTools = (request.tools ?? []).map((t) => t.function?.name ?? '').join(' ');
+  return `${fromTools}\n${request.messages.map((m) => m.content).join('\n')}`;
 }
 
 /** A tool call in the text-fallback protocol the loop parses (same helper the CLI tests use). */
@@ -305,6 +327,77 @@ describe('AgentController — running against the core server', () => {
     // Recursion is server-side; all the host does is indent what carries a
     // parent — the rendering change the protocol design predicted (§2).
     expect(nested?.parent).toBe(delegate?.id);
+    agent.dispose();
+  }, 15_000);
+
+  it('offers delegate_task even when sub-agents are off, and refuses it with an explanation', async () => {
+    // The default config (no `subAgents` key) leaves it off. Hiding the tool is
+    // what the CLI stopped doing after a model, asked to delegate with no
+    // delegate_task in its toolset, fabricated a delegation instead of saying
+    // it could not delegate — see packages/cli/src/agent/delegate.ts:6-11.
+    model.script([toolBlock('delegate_task', { task: 'do a chunk of work' }), finishBlock('Handled it myself.')]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+
+    await agent.start('delegate something');
+
+    // Offered: the model could name it at all, which is the whole point. These
+    // tests run with nativeToolCalls off, so the toolset reaches the model in
+    // the system prompt rather than the request's `tools` array — `offeredToModel`
+    // reads whichever one carried it.
+    expect(offeredToModel(model.requests[0]!)).toContain('delegate_task');
+
+    // Refused with a reason, not silently absent. agentToolResult carries no
+    // tool name, so it is correlated by the call's id.
+    const call = posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'agentToolCall' }> =>
+        p.type === 'agentToolCall' && p.name === 'delegate_task',
+    );
+    expect(call).toBeDefined();
+    const result = posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'agentToolResult' }> =>
+        p.type === 'agentToolResult' && p.id === call!.id,
+    );
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain('Sub-agent delegation is turned off');
+    // The model is told the sub-task is still its own job — the half that stops
+    // it claiming a delegation happened.
+    const shown = model.requests[1]!.messages.map((m) => m.content).join('\n');
+    expect(shown).toContain('Sub-agent delegation is turned off for this run.');
+    expect(shown).toContain('Handle the sub-task yourself in this conversation instead');
+    expect(shown).not.toContain('--sub-agents');
+    agent.dispose();
+  }, 15_000);
+
+  it('does not prompt for permission on a delegate_task it is about to refuse', async () => {
+    // delegate_task is permission: 'execute', so without this it would ask the
+    // user to approve something that cannot run. Same short-circuit as
+    // packages/cli/src/ink/App.tsx:500-503.
+    model.script([toolBlock('delegate_task', { task: 'do a chunk of work' }), finishBlock('Handled it myself.')]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+
+    await agent.start('delegate something');
+
+    expect(posts.some((p) => p.type === 'agentPermissionRequest')).toBe(false);
+    agent.dispose();
+  }, 15_000);
+
+  it('still omits delegate_task when the user disabled it explicitly', async () => {
+    // disabledTools is a deliberate per-tool opt-out, not a capability the
+    // model should be reasoning about — unlike the subAgents gate.
+    __setConfig('heapcode.agent', {
+      enable: true,
+      planFirst: false,
+      commandTimeout: 30,
+      disabledTools: ['delegate_task'],
+    });
+    model.script([finishBlock('Nothing to do.')]);
+    const agent = makeController({ posts: [] });
+
+    await agent.start('anything');
+
+    expect(offeredToModel(model.requests[0]!)).not.toContain('delegate_task');
     agent.dispose();
   }, 15_000);
 

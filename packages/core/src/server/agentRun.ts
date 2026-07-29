@@ -60,7 +60,7 @@ export async function runAgentForSession(
           id: call.id,
           name: call.name,
           content:
-            'Sub-agent delegation is disabled for this run (the --sub-agents flag was not passed). ' +
+            'Sub-agent delegation is turned off for this run. ' +
             'Handle the sub-task yourself in this conversation instead — do not claim it was delegated.',
           isError: true,
         };

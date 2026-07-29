@@ -194,7 +194,16 @@ export const sharedAgentTools = {
       'Ask the user a clarifying question when blocked on a decision only they can make (ambiguous requirements, destructive trade-offs). Use sparingly — prefer sensible defaults.',
     parameters: {
       type: 'object',
-      properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'string' }, description: 'Optional short answer choices' } },
+      properties: {
+        question: { type: 'string' },
+        options: { type: 'array', items: { type: 'string' }, description: 'Optional short answer choices' },
+        blocksAction: {
+          type: 'boolean',
+          description:
+            'Set true when this question gates an action you are about to take ("should I delete X?", "may I force-push?") rather than asking which option to use or what was meant. ' +
+            'A gating question is never auto-resolved if the user steps away — it waits for a real answer. Omit or set false for a choice or a clarification.',
+        },
+      },
       required: ['question'],
     },
     permission: 'read',

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import {
+  ASK_USER_NO_ANSWER,
   METHODS,
   filterToolsForPersona,
   getPersona,
@@ -265,9 +266,12 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
 
     async function executeTool(call: ToolCall): Promise<ToolResult> {
       if (call.name === 'ask_user') {
-        // No human to ask in headless mode — same "proceed with best
-        // judgment" fallback the interactive UI uses for an unanswered question.
-        return { id: call.id, name: call.name, content: 'The user did not answer. Proceed with your best judgment.' };
+        // No human to ask in headless mode — same "proceed with best judgment"
+        // fallback the interactive UI uses for an unanswered question. It
+        // answers synchronously, so the idle timeout the other two hosts honor
+        // can never apply here, whatever the setting says: there is no wait to
+        // bound. blocksAction is irrelevant for the same reason.
+        return { id: call.id, name: call.name, content: ASK_USER_NO_ANSWER };
       }
       if (mcpManager.isMcpTool(call.name)) {
         // MCP stays host-side for now: hosting MCP subprocesses in the server

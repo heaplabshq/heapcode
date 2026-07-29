@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { configureAstChunker, formatAuditDashboard, McpManager, type McpServerConfig } from '@heapcode/core';
+import { AST_GRAMMAR_FILES, configureAstChunker, formatAuditDashboard, McpManager, type McpServerConfig } from '@heapcode/core';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { exportBundle, importBundle } from './bundle.js';
@@ -19,14 +19,6 @@ import { RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { RetentionTracker } from './retentionTracker.js';
 import { ShadowGit } from './agent/shadowGit.js';
 import { Telemetry } from './telemetry.js';
-
-const AST_GRAMMAR_FILES = [
-  'tree-sitter.wasm',
-  'tree-sitter-typescript.wasm',
-  'tree-sitter-tsx.wasm',
-  'tree-sitter-javascript.wasm',
-  'tree-sitter-python.wasm',
-];
 
 /**
  * Wires up AST-aware chunking (packages/core/src/rag/astChunker.ts) — core

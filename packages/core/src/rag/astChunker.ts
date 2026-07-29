@@ -15,6 +15,18 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   '.py': 'python',
 };
 
+/**
+ * Every wasm asset a fully-working AST chunker needs, derived from
+ * LANGUAGE_BY_EXT so the two cannot drift. Hosts copy these next to their
+ * bundle at build time and check for them before calling
+ * configureAstChunker — see packages/vscode/src/extension.ts and
+ * packages/core/src/server/daemon.ts.
+ */
+export const AST_GRAMMAR_FILES = [
+  'tree-sitter.wasm',
+  ...[...new Set(Object.values(LANGUAGE_BY_EXT))].map((id) => `tree-sitter-${id}.wasm`),
+];
+
 /** Defensive only — real callers filter by MAX_FILE_BYTES well before this. */
 const MAX_CONTENT_LENGTH = 2_000_000;
 

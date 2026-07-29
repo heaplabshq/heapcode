@@ -7,4 +7,4 @@ export * from './agentRun.js';
 export * from './chatSend.js';
 export * from './server.js';
 export * from './client.js';
-export { main as runDaemon } from './daemon.js';
+export { main as runDaemon, enableAstChunking, type DaemonOptions } from './daemon.js';

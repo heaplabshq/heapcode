@@ -21,6 +21,12 @@ import {
   type RagQueryParams,
   type RagQueryResult,
   type RagStatusResult,
+  type ReviewConfirmParams,
+  type ReviewConfirmResult,
+  type ReviewEvent,
+  type ReviewEventParams,
+  type ReviewRunParams,
+  type ReviewRunResult,
   type ServerConnection,
   type ToolCall,
   type ToolExecuteParams,
@@ -39,6 +45,15 @@ export interface ChatTurnHandlers {
   onEvent(event: AgentEvent): void;
   /** Runs an ask-mode tool. Absent when the turn offers no tools. */
   execute?(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
+}
+
+/** What a PR review needs from its caller while it runs. */
+export interface ReviewHandlers {
+  onEvent(event: ReviewEvent): void;
+  /** Runs one of the review's read-only tools. */
+  execute(call: ToolCall, signal: AbortSignal): Promise<ToolResult>;
+  /** Show the preview and ask whether to post. False cancels; nothing is posted. */
+  confirm(confirmation: ReviewConfirmParams['confirmation']): Promise<boolean>;
 }
 
 /**
@@ -61,6 +76,8 @@ export class ServerLink {
   private stale = false;
   /** The turn currently streaming, so one set of handlers serves every turn. */
   private activeTurn?: { runId: string } & ChatTurnHandlers;
+  /** The review currently running, for the same reason. */
+  private activeReview?: { runId: string } & ReviewHandlers;
   /** Indexing progress/state listeners — the status bar is the only one. */
   private readonly ragListeners = new Set<(event: RagEvent) => void>();
 
@@ -118,6 +135,11 @@ export class ServerLink {
 
     peer.onRequest(METHODS.toolExecute, async (raw, signal) => {
       const { runId, call } = raw as ToolExecuteParams;
+      // One handler, two kinds of run on this connection — the review's
+      // read-only tools and chat's ask-mode tools. Demultiplexed by runId
+      // because both are the same channel by design.
+      const review = this.activeReview;
+      if (review && review.runId === runId) return review.execute(call, signal);
       const turn = this.activeTurn;
       if (!turn || turn.runId !== runId || !turn.execute) {
         return {
@@ -128,6 +150,19 @@ export class ServerLink {
         } satisfies ToolResult;
       }
       return turn.execute(call, signal);
+    });
+
+    peer.onRequest(METHODS.reviewConfirm, async (raw) => {
+      const { runId, confirmation } = raw as ReviewConfirmParams;
+      const review = this.activeReview;
+      if (!review || review.runId !== runId) return { ok: false } satisfies ReviewConfirmResult;
+      return { ok: await review.confirm(confirmation) } satisfies ReviewConfirmResult;
+    });
+
+    peer.onNotification(METHODS.reviewEvent, (raw) => {
+      const { runId, event } = raw as ReviewEventParams;
+      const review = this.activeReview;
+      if (review && review.runId === runId) review.onEvent(event);
     });
 
     peer.onRequest(METHODS.keyRequest, async (raw) => {
@@ -207,6 +242,33 @@ export class ServerLink {
     } catch (err) {
       this.log.appendLine(`[rag] index failed: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
+    }
+  }
+
+  /**
+   * One PR review, server-side. Its own method rather than agent/run because it
+   * has its own loop and its own termination policy — see ReviewRunParams.
+   *
+   * Cancellation is agent/cancel, exactly as on the agent and chat paths, and
+   * because the server wires the run's signal into every outbound request,
+   * aborting also stops whatever read-only tool call is in flight.
+   */
+  async reviewRun(
+    params: Omit<ReviewRunParams, 'runId' | 'profileName'>,
+    handlers: ReviewHandlers,
+    signal: AbortSignal,
+  ): Promise<ReviewRunResult> {
+    const profileName = this.activeProfileName();
+    const { peer } = await this.ensureConnection(profileName);
+    const runId = `review-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    this.activeReview = { runId, ...handlers };
+    const onAbort = (): void => void peer.notify(METHODS.agentCancel, { runId });
+    signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      return await peer.request<ReviewRunResult>(METHODS.reviewRun, { ...params, runId } satisfies ReviewRunParams);
+    } finally {
+      signal.removeEventListener('abort', onAbort);
+      if (this.activeReview?.runId === runId) this.activeReview = undefined;
     }
   }
 

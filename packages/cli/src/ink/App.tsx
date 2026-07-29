@@ -13,7 +13,6 @@ import {
   METHODS,
   parseSlashCommand,
   renderTemplate,
-  reviewCurrentPr,
   type AgentEvent,
   type AgentEventParams,
   type AgentPersona,
@@ -28,8 +27,6 @@ import {
   type PermissionChoice,
   type PermissionRequestParams,
   type PermissionRequestResult,
-  type PrReviewHost,
-  type Provider,
   type ProviderProfileConfig,
   type RagEventParams,
   type RagIndexParams,
@@ -38,6 +35,12 @@ import {
   type RagQueryResult,
   type RagStatusResult,
   type ReviewClient,
+  type ReviewConfirmParams,
+  type ReviewConfirmResult,
+  type ReviewEvent,
+  type ReviewEventParams,
+  type ReviewRunParams,
+  type ReviewRunResult,
   type SnapshotBeforeParams,
   type StoredMessage,
   type ToolCall,
@@ -128,7 +131,6 @@ function cancelPicker(picker: Picker | undefined, clear: () => void): void {
 }
 
 export interface AppProps {
-  provider: Provider;
   profile: ProviderProfileConfig;
   conversation: Conversation;
   historyStore: JsonConversationStore;
@@ -144,8 +146,8 @@ export interface AppProps {
   configStore?: ConfigStore;
   /** Needed by "/profile add" (stores the API key) and "/profile remove" (deletes it). */
   secretsStore?: SecretsStore;
-  /** Re-resolves a provider (API key lookup + client construction) for /profile switches. */
-  switchProvider?(profile: ProviderProfileConfig): Promise<{ provider: Provider; contextWindow: number }>;
+  /** Re-resolves the context window for a /profile switch. No Provider: nothing host-side calls one. */
+  switchProvider?(profile: ProviderProfileConfig): Promise<{ contextWindow: number }>;
   version?: string;
   cwd?: string;
   safeMode?: boolean;
@@ -168,7 +170,6 @@ export interface AppProps {
 }
 
 export function App({
-  provider,
   profile,
   conversation,
   historyStore,
@@ -199,7 +200,7 @@ export function App({
 
   // Session state that /model and /profile can change mid-session. The props
   // are just the initial values resolved by cli.tsx.
-  const [active, setActive] = useState({ provider, profile, contextWindow });
+  const [active, setActive] = useState({ profile, contextWindow });
   const [model, setModel] = useState(profile.agentModel || profile.model);
 
   const headerItem = (messageCount: number): TranscriptItem => ({
@@ -301,6 +302,17 @@ export function App({
         // Autocomplete is best-effort — mentions still work as typed text.
       });
   };
+
+  /**
+   * The review currently running, so the connection's own handlers can route
+   * review/event and review/confirm to it — the same shape activeRun has for
+   * agent runs.
+   */
+  const reviewRun = useRef<{
+    runId: string;
+    onEvent(event: ReviewEvent): void;
+    confirm(confirmation: ReviewConfirmParams['confirmation']): Promise<boolean>;
+  }>();
 
   const [indexProgress, setIndexProgress] = useState<{ embedded: number; total: number }>();
 
@@ -507,6 +519,19 @@ export function App({
       // parent's provider, which is what /subagents did before this moved.
       if (!target) return {} satisfies KeyRequestResult;
       return { profile: target, apiKey: await secretsStore?.getApiKey(profileName) } satisfies KeyRequestResult;
+    });
+
+    peer.onRequest(METHODS.reviewConfirm, async (raw) => {
+      const { runId, confirmation } = raw as ReviewConfirmParams;
+      const review = reviewRun.current;
+      if (!review || review.runId !== runId) return { ok: false } satisfies ReviewConfirmResult;
+      return { ok: await review.confirm(confirmation) } satisfies ReviewConfirmResult;
+    });
+
+    peer.onNotification(METHODS.reviewEvent, (raw) => {
+      const { runId, event } = raw as ReviewEventParams;
+      const review = reviewRun.current;
+      if (review && review.runId === runId) review.onEvent(event);
     });
 
     // Indexing progress. The status surface stays host-side and becomes a
@@ -805,7 +830,7 @@ export function App({
       try {
         const next = await switchProvider(target);
         await configStore.setActiveProfile(target.name);
-        setActive({ provider: next.provider, profile: target, contextWindow: next.contextWindow });
+        setActive({ profile: target, contextWindow: next.contextWindow });
         setModel(target.agentModel || target.model);
         pushSystem(`Switched to profile "${target.name}" (${target.preset}, ${target.agentModel || target.model}).`);
       } catch (err) {
@@ -877,11 +902,13 @@ export function App({
   }
 
   /**
-   * /pr-review — the same review the VS Code extension runs (core's
-   * reviewCurrentPr); this only adapts it to the transcript: progress and
-   * warnings as system lines, the preview rendered as markdown, and the
-   * post/cancel decision as a picker. Nothing is posted to GitHub without
-   * that explicit pick.
+   * /pr-review — the same review the VS Code extension runs, now in the same
+   * *process* as well: core's reviewCurrentPr runs server-side behind
+   * `review/run`. This is only the transcript adapter — progress and warnings
+   * as system lines, the preview rendered as markdown, and the post/cancel
+   * decision as a picker. Nothing is posted to GitHub without that explicit
+   * pick, and the review's read-only tool calls come back over the same
+   * `tool/execute` channel an agent run uses.
    */
   async function handlePrReview(arg?: string): Promise<void> {
     const mode = arg?.toLowerCase();
@@ -899,63 +926,73 @@ export function App({
     setBusy(true);
     setError(undefined);
     try {
-      const host: PrReviewHost = {
-        warn: (message) => pushSystem(`PR review: ${message}`),
-        error: (message) => setError(message),
-        // The extension writes these to an output channel; here they'd bury
-        // the transcript under per-tool-call noise, so they're dropped —
-        // tool activity is already visible in the progress lines.
-        log: () => {},
-        progress: (message) => pushSystem(`PR review: ${message}`),
-        confirm: ({ pr, preview, findingCount, inlineCount, plainText }) =>
-          new Promise<boolean>((resolve) => {
-            pushItem({ kind: 'markdown', text: preview });
-            let settled = false;
-            const finish = (value: boolean): void => {
-              if (settled) return;
-              settled = true;
-              abort.signal.removeEventListener('abort', onAbort);
-              resolve(value);
-            };
-            // Esc/ctrl+c during the confirm aborts the run — the picker's own
-            // cancel path and the abort signal both have to settle this
-            // promise, or the command hangs with the composer locked.
-            function onAbort(): void {
-              setPicker(undefined);
-              finish(false);
-            }
-            abort.signal.addEventListener('abort', onAbort, { once: true });
-            setPicker({
-              title: plainText
-                ? `Post this review as a comment on PR #${pr.number}? (posts publicly on GitHub)`
-                : `Post this review on PR #${pr.number}? ${findingCount} finding(s), ${inlineCount} as inline comments — posts publicly on GitHub`,
-              items: [
-                { label: plainText ? 'Post comment' : 'Post review', value: 'post' },
-                { label: "Don't post", value: 'cancel' },
-              ],
-              onPick: (value) => {
-                setPicker(undefined);
-                finish(value === 'post');
-              },
-              onCancel: () => finish(false),
-            });
-          }),
+      const onEvent = (event: ReviewEvent): void => {
+        // The extension writes `log` to an output channel; here it would bury
+        // the transcript under per-tool-call noise, so it's dropped — tool
+        // activity is already visible in the progress lines.
+        if (event.kind === 'warn' || event.kind === 'progress') pushSystem(`PR review: ${event.message}`);
+        else if (event.kind === 'error') setError(event.message);
       };
 
-      const result = await reviewCurrentPr({
-        cwd: cwd ?? process.cwd(),
-        provider: active.provider,
-        model,
-        temperature: active.profile.temperature,
-        maxTokens: active.profile.maxTokens,
-        contextWindow: active.contextWindow,
-        tools,
-        executor,
-        host,
-        client: CLI_REVIEW_CLIENT,
-        signal: abort.signal,
-        deep: mode === 'deep',
-      });
+      const confirm = ({
+        pr,
+        preview,
+        findingCount,
+        inlineCount,
+        plainText,
+      }: ReviewConfirmParams['confirmation']): Promise<boolean> =>
+        new Promise<boolean>((resolve) => {
+          pushItem({ kind: 'markdown', text: preview });
+          let settled = false;
+          const finish = (value: boolean): void => {
+            if (settled) return;
+            settled = true;
+            abort.signal.removeEventListener('abort', onAbort);
+            resolve(value);
+          };
+          // Esc/ctrl+c during the confirm aborts the run — the picker's own
+          // cancel path and the abort signal both have to settle this promise,
+          // or the command hangs with the composer locked.
+          function onAbort(): void {
+            setPicker(undefined);
+            finish(false);
+          }
+          abort.signal.addEventListener('abort', onAbort, { once: true });
+          setPicker({
+            title: plainText
+              ? `Post this review as a comment on PR #${pr.number}? (posts publicly on GitHub)`
+              : `Post this review on PR #${pr.number}? ${findingCount} finding(s), ${inlineCount} as inline comments — posts publicly on GitHub`,
+            items: [
+              { label: plainText ? 'Post comment' : 'Post review', value: 'post' },
+              { label: "Don't post", value: 'cancel' },
+            ],
+            onPick: (value) => {
+              setPicker(undefined);
+              finish(value === 'post');
+            },
+            onCancel: () => finish(false),
+          });
+        });
+
+      const connection = await ensureConnection();
+      const runId = `review-${randomUUID()}`;
+      abort.signal.addEventListener('abort', () => connection.peer.notify(METHODS.agentCancel, { runId }), { once: true });
+      reviewRun.current = { runId, onEvent, confirm };
+      let result: ReviewRunResult;
+      try {
+        result = await connection.peer.request<ReviewRunResult>(METHODS.reviewRun, {
+          model,
+          temperature: active.profile.temperature,
+          maxTokens: active.profile.maxTokens,
+          contextWindow: active.contextWindow,
+          tools,
+          client: CLI_REVIEW_CLIENT,
+          deep: mode === 'deep',
+          runId,
+        } satisfies ReviewRunParams);
+      } finally {
+        if (reviewRun.current?.runId === runId) reviewRun.current = undefined;
+      }
       onTrack?.(mode === 'deep' ? 'command.reviewPrDeep' : 'command.reviewPr', { status: result.status });
       if (result.status === 'posted') pushSystem(`PR review: posted on PR #${result.pr.number} — ${result.pr.url}`);
       else if (result.status === 'cancelled') pushSystem('PR review: nothing was posted.');
@@ -1287,7 +1324,7 @@ export function App({
       try {
         const next = await switchProvider!(added);
         await configStore!.setActiveProfile(added.name);
-        setActive({ provider: next.provider, profile: added, contextWindow: next.contextWindow });
+        setActive({ profile: added, contextWindow: next.contextWindow });
         setModel(added.agentModel || added.model);
         pushSystem(`Profile "${added.name}" added and active (${added.preset}, ${added.model}).`);
       } catch (err) {

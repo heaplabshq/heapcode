@@ -5,6 +5,8 @@ import type { ChatMessage, ModelInfo } from '../providers/types.js';
 import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
 import type { AgentPersona } from '../agent/personas.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
+import type { PrReviewConfirmation, PrReviewResult } from '../review/prReview.js';
+import type { ReviewClient } from '../review/prReviewFormat.js';
 
 /**
  * The wire protocol between a host (cli, vscode) and the core server.
@@ -239,6 +241,79 @@ export interface ListModelsResult {
 }
 
 /**
+ * `review/run` — one PR review, run server-side.
+ *
+ * Its own method rather than `agent/run`, for the same reason `chat/send` is:
+ * it has its own **termination policy** and its own loop. `reviewCurrentPr`
+ * runs up to MAX_BATCHES batch passes plus an optional verification pass
+ * (`review/prReview.ts:463`, `:551`), each a self-contained read-only
+ * tool loop that terminates structurally by calling a report tool and
+ * validates the result with an `accept()` that can reject and continue
+ * (`:181-257`). Routing that through `runAgent` would replace all of it.
+ *
+ * The loop itself was already host-agnostic in core before this — both hosts
+ * were thin adapters over it — so nothing needed extracting. What moved is
+ * only the Provider and the five host callbacks.
+ *
+ * Everything else is reused: read-only tools execute over `tool/execute`,
+ * cancellation is `agent/cancel`, and a redirect profile's key comes from
+ * `key/request`.
+ */
+export interface ReviewRunParams {
+  profileName?: string;
+  /** The agent model, resolved host-side (`agentModel || model`), as `agent/run` does. */
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  /** Sizes the per-batch diff budget. Host-resolved, like `agent/run`'s. */
+  contextWindow: number;
+  /** The host's full tool list; the review offers only the read-only ones. */
+  tools: ToolDefinition[];
+  /** Attribution and the deep-mode hint, which name the host by definition. */
+  client: ReviewClient;
+  /** The verification pass — roughly double the wall time and model cost. */
+  deep?: boolean;
+  /** Correlates `review/event` and `review/confirm`, and lets `agent/cancel` stop the run. */
+  runId: string;
+}
+
+export type ReviewRunResult = PrReviewResult;
+
+/**
+ * `review/event` — the review's non-blocking host callbacks, as notifications.
+ * `warn`/`error` are user-facing, `progress` drives a spinner, and `log` is a
+ * diagnostic line one host writes to an output channel and the other drops.
+ */
+export type ReviewEvent =
+  | { kind: 'warn'; message: string }
+  | { kind: 'error'; message: string }
+  | { kind: 'log'; message: string }
+  | { kind: 'progress'; message: string };
+
+export interface ReviewEventParams {
+  runId: string;
+  event: ReviewEvent;
+}
+
+/**
+ * `review/confirm` — a server→host **request**, and the one gate before
+ * anything is posted publicly to GitHub.
+ *
+ * Deliberately has no server-side timeout, for the same reason `tool/execute`
+ * has none: the user is reading a full review preview and may take minutes.
+ * The failure direction is the safe one — if this rejects for any reason
+ * (cancellation, a dropped socket), the review is not posted.
+ */
+export interface ReviewConfirmParams {
+  runId: string;
+  confirmation: PrReviewConfirmation;
+}
+
+export interface ReviewConfirmResult {
+  ok: boolean;
+}
+
+/**
  * `git/commitMessage` — one commit message from one diff.
  *
  * Request/response with no callbacks and no streaming, the shape
@@ -447,6 +522,9 @@ export const METHODS = {
   chatSend: 'chat/send',
   listModels: 'provider/listModels',
   commitMessage: 'git/commitMessage',
+  reviewRun: 'review/run',
+  reviewEvent: 'review/event',
+  reviewConfirm: 'review/confirm',
   ragQuery: 'rag/query',
   ragIndex: 'rag/index',
   ragStatus: 'rag/status',

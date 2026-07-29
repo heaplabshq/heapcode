@@ -5,6 +5,7 @@ import { connect } from 'node:net';
 import { buildCommitMessages, normalizeCommitMessage } from '../prompts/edit.js';
 import { runAgentForSession, type RunHost } from './agentRun.js';
 import { runChatForSession, type ChatHost } from './chatSend.js';
+import { runReviewForSession, type ReviewHost } from './review.js';
 import { RpcPeer } from './rpc.js';
 import { SessionRag } from './rag.js';
 import { Session } from './session.js';
@@ -30,6 +31,11 @@ import {
   type RagEventParams,
   type RagIndexParams,
   type RagQueryParams,
+  type ReviewConfirmParams,
+  type ReviewConfirmResult,
+  type ReviewEvent,
+  type ReviewEventParams,
+  type ReviewRunParams,
   type SnapshotBeforeParams,
   type ToolExecuteParams,
   type ToolExecuteResult,
@@ -295,6 +301,56 @@ export class HeapcodeServer {
         signal,
       });
       return { message: normalizeCommitMessage(res.content) } satisfies CommitMessageResult;
+    });
+
+    /**
+     * Its own method rather than agent/run: the review has its own loop and its
+     * own termination policy (see ReviewRunParams). It registers as a run so
+     * agent/cancel reaches it — and because RpcPeer wires the signal into every
+     * outbound request, cancelling also fires $/cancelRequest for whatever
+     * tool/execute or review/confirm is outstanding.
+     */
+    peer.onRequest(METHODS.reviewRun, async (raw, signal) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      const params = raw as ReviewRunParams;
+      const active = session;
+      const controller = active.beginRun(params.runId);
+      signal.addEventListener('abort', () => controller.abort(), { once: true });
+      const host: ReviewHost = {
+        emit: (event: ReviewEvent) =>
+          void peer.notifyWithBackpressure(METHODS.reviewEvent, { runId: params.runId, event } satisfies ReviewEventParams),
+        executeTool: (call) =>
+          peer.request<ToolExecuteResult>(
+            METHODS.toolExecute,
+            { runId: params.runId, call } satisfies ToolExecuteParams,
+            controller.signal,
+          ),
+        // No timeout, deliberately — the user is reading a full review preview
+        // and may take minutes.
+        //
+        // Every failure resolves to "don't post": a cancellation mid-confirm, a
+        // dropped socket, a host that threw. That is both the safe direction for
+        // the one action in this product that cannot be un-sent, and what
+        // happened before this moved — both hosts already turned an abort during
+        // the prompt into `false`, which reviewCurrentPr reports as 'cancelled'
+        // rather than letting it escape as an error.
+        confirm: async (confirmation) => {
+          const res = await peer
+            .request<ReviewConfirmResult>(
+              METHODS.reviewConfirm,
+              { runId: params.runId, confirmation } satisfies ReviewConfirmParams,
+              controller.signal,
+            )
+            .catch(() => ({ ok: false }) as ReviewConfirmResult);
+          return res.ok;
+        },
+        requestKey,
+      };
+      try {
+        return await runReviewForSession(active, params, host, controller.signal);
+      } finally {
+        active.endRun(params.runId);
+      }
     });
 
     peer.onRequest(METHODS.ragStatus, async () => {

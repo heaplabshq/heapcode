@@ -48,8 +48,14 @@ interface ModelServer {
   requests: Array<Array<{ role: string; content: string }>>;
   /** Input batches from each /embeddings request — proof the server indexed something. */
   embeddingCalls: string[][];
-  /** Non-streaming chat bodies: contextual retrieval and rerank both land here. */
+  /** Non-streaming chat bodies: contextual retrieval, rerank and PR review all land here. */
   nonStreamedChats: Array<Array<{ role: string; content: string }>>;
+  /**
+   * Script the tool calls the next non-streamed replies carry. PR review's loop
+   * terminates by calling a report tool, and it uses `chat` (non-streamed),
+   * unlike an agent turn.
+   */
+  toolReply(calls: Array<{ name: string; args: unknown }>): void;
   reply(text: string): void;
   script(texts: string[]): void;
   close(): Promise<void>;
@@ -61,6 +67,7 @@ async function startModelServer(): Promise<ModelServer> {
   const requests: ModelServer['requests'] = [];
   const embeddingCalls: string[][] = [];
   const nonStreamedChats: ModelServer['nonStreamedChats'] = [];
+  let nonStreamedToolCalls: Array<{ name: string; args: unknown }> = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
     req.on('data', (d) => (raw += d));
@@ -82,7 +89,25 @@ async function startModelServer(): Promise<ModelServer> {
       if (body.stream !== true) {
         nonStreamedChats.push((body.messages ?? []).map((m) => ({ role: m.role, content: m.content })));
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ choices: [{ message: { content: '' } }] }));
+        res.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: '',
+                  tool_calls:
+                    nonStreamedToolCalls.length > 0
+                      ? nonStreamedToolCalls.map((c, i) => ({
+                          id: `nsc-${i}`,
+                          type: 'function',
+                          function: { name: c.name, arguments: JSON.stringify(c.args) },
+                        }))
+                      : undefined,
+                },
+              },
+            ],
+          }),
+        );
         return;
       }
 
@@ -101,6 +126,9 @@ async function startModelServer(): Promise<ModelServer> {
     requests,
     embeddingCalls,
     nonStreamedChats,
+    toolReply: (calls) => {
+      nonStreamedToolCalls = calls;
+    },
     reply: (text) => {
       script = [text];
       call = 0;
@@ -237,12 +265,17 @@ function withEmbeddings(): void {
  */
 
 function renderApp(overrides: {
+  /**
+   * Kept in this signature, deliberately not forwarded: App has no `provider`
+   * prop any more. Every call site still passes one because passing it is how
+   * the model gets scripted (see the helpers above).
+   */
   provider: Provider;
   conversation: Conversation;
   historyStore: JsonConversationStore;
   tools?: ToolDefinition[];
   configStore?: ConfigStore;
-  switchProvider?(p: ProviderProfileConfig): Promise<{ provider: Provider; contextWindow: number }>;
+  switchProvider?(p: ProviderProfileConfig): Promise<{ contextWindow: number }>;
   cwd?: string;
   listWorkspaceFiles?(): Promise<string[]>;
   repoMapIndexer?: RepoMapIndexer;
@@ -259,7 +292,6 @@ function renderApp(overrides: {
   const secretsStore = new SecretsStore(join(home, 'secrets.json'));
   return render(
     <App
-      provider={overrides.provider}
       profile={profile}
       conversation={overrides.conversation}
       historyStore={overrides.historyStore}
@@ -502,6 +534,82 @@ describe('App', () => {
     expect(lastFrame()).toContain('/rewind');
   });
 
+  it('/pr-review drives the review in the server and shows its progress and preview', async () => {
+    // The review is a tool loop, so it crossed as its own method (review/run)
+    // rather than as agent/run. What matters host-side is that the transcript
+    // adapter still works: progress lines land, the preview renders, the
+    // read-only tool loop reaches this process, and "Don't post" posts nothing.
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const { mkdtemp: mkTmp, writeFile, chmod, access } = await import('node:fs/promises');
+    const bin = await mkTmp(join(tmpdir(), 'hc-app-gh-'));
+    const postLog = join(bin, 'posts.log');
+    await writeFile(
+      join(bin, 'gh'),
+      `#!/bin/sh
+case "$1 $2" in
+  "--version ") echo "gh version 2.0.0"; exit 0 ;;
+esac
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  echo '{"number":7,"title":"Tiny change","url":"https://github.com/o/r/pull/7","headRefOid":"deadbee"}'
+  exit 0
+fi
+if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
+  printf 'diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -1,2 +1,3 @@\n const a = 1;\n+const b = 2;\n'
+  exit 0
+fi
+echo "posted" >> "${postLog}"
+exit 0
+`,
+      'utf8',
+    );
+    await chmod(join(bin, 'gh'), 0o755);
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    model.toolReply([
+      {
+        name: 'report_findings',
+        args: {
+          summary: 'Adds a constant.',
+          findings: [
+            {
+              file: 'x.ts',
+              line: 2,
+              severity: 'low',
+              category: 'maintainability',
+              summary: 'b is unused',
+              failure_scenario: 'Nothing reads b, so the constant is dead weight.',
+            },
+          ],
+        },
+      },
+    ]);
+
+    const { stdin, lastFrame } = renderApp({
+      provider: fakeProvider('unused'),
+      conversation,
+      historyStore,
+      cwd: root,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/pr-review');
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('PR review: reviewing the diff'), { timeout: 8_000 });
+    await vi.waitFor(() => expect(lastFrame()).toContain("Don't post"), { timeout: 8_000 });
+    expect(lastFrame()).toContain('PR #7');
+    expect(lastFrame()).toContain('b is unused');
+
+    stdin.write('\u001B[B'); // move to "Don't post"
+    stdin.write('\r');
+    // The transcript is long by now, so the invariant to assert is the one that
+    // matters: declining posts nothing. The gh stub only writes postLog when a
+    // posting verb runs.
+    await vi.waitFor(() => expect(lastFrame()).not.toContain("Don't post"), { timeout: 8_000 });
+    await expect(access(postLog)).rejects.toThrow();
+
+    await rm(bin, { recursive: true, force: true });
+  }, 25_000);
+
   it('/pr-review is offered as a command and rejects an unknown mode with usage instead of running a review', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
@@ -598,7 +706,7 @@ describe('App', () => {
       conversation,
       historyStore,
       configStore,
-      switchProvider: () => Promise.resolve({ provider: fakeProvider('unused'), contextWindow: 32_768 }),
+      switchProvider: () => Promise.resolve({ contextWindow: 32_768 }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -626,7 +734,7 @@ describe('App', () => {
       conversation,
       historyStore,
       configStore,
-      switchProvider: () => Promise.resolve({ provider: fakeProvider('unused'), contextWindow: 32_768 }),
+      switchProvider: () => Promise.resolve({ contextWindow: 32_768 }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -649,7 +757,7 @@ describe('App', () => {
       conversation,
       historyStore,
       configStore,
-      switchProvider: () => Promise.resolve({ provider: fakeProvider('unused'), contextWindow: 32_768 }),
+      switchProvider: () => Promise.resolve({ contextWindow: 32_768 }),
     });
 
     await new Promise((r) => setTimeout(r, 20));

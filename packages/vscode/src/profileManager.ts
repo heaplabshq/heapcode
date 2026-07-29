@@ -149,12 +149,6 @@ export class ProfileManager {
     );
   }
 
-  async createActiveProvider(): Promise<{ provider: Provider; profile: ProviderProfileConfig }> {
-    const profile = this.getActiveProfile();
-    const apiKey = await this.getApiKey(profile);
-    return { provider: createProvider(profile, apiKey), profile };
-  }
-
   /**
    * Which profile actually serves a given role: the active profile, unless it names a
    * different one via its `<role>Profile` field (e.g. `embeddingsProfile`), in which case

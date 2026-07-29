@@ -83,9 +83,9 @@ async function startModelServer(): Promise<ModelServer> {
 }
 
 /**
- * Only what the chat path still calls. `createActiveProvider` is deliberately
- * absent: chat stopped building a host-side Provider, and a missing member
- * failing loudly is how this file proves it.
+ * Only what the chat path still calls. There is no `createActiveProvider` to
+ * omit any more — PR review was its last caller, and with that on the server
+ * the method is gone from ProfileManager entirely.
  */
 function stubProfiles(profiles: ProviderProfileConfig[], keys: Record<string, string> = {}): ProfileManager {
   return {

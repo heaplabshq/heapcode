@@ -281,11 +281,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('heapcode.reviewPr', () => {
       track('command.reviewPr');
-      return reviewCurrentPr(profiles, log);
+      return reviewCurrentPr(profiles, link, log);
     }),
     vscode.commands.registerCommand('heapcode.reviewPrDeep', () => {
       track('command.reviewPrDeep');
-      return reviewCurrentPr(profiles, log, { deep: true });
+      return reviewCurrentPr(profiles, link, log, { deep: true });
     }),
     vscode.commands.registerCommand('heapcode.resetPermissions', async () => {
       const cleared = await permissions.reset();

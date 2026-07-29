@@ -10,7 +10,7 @@ import { SecretsStore } from './config/secrets.js';
 import { JsonConversationStore } from './history/store.js';
 import { canonicalize, auditFile, conversationsFile, permissionsFile } from './paths.js';
 import { profileAdd, profileList, profileRemove, profileUse } from './profileCli.js';
-import { resolveProvider } from './provider/resolve.js';
+import { profileContextWindow } from './provider/resolve.js';
 import { runHeadless } from './headless.js';
 import { loadIgnoreMatcher } from './agent/ignoreFiles.js';
 import { PermissionEngine } from './agent/permissions.js';
@@ -146,7 +146,7 @@ async function main(): Promise<void> {
   }
 
   const secrets = new SecretsStore();
-  const { provider, contextWindow } = await resolveProvider(profile, secrets);
+  const contextWindow = profileContextWindow(profile);
   // Canonicalized once here and threaded through every root-taking class below —
   // see paths.ts's canonicalize() for why they'd otherwise silently disagree.
   const root = canonicalize(process.cwd());
@@ -200,7 +200,6 @@ async function main(): Promise<void> {
   // typed input, Ctrl+C twice exits.
   const instance = render(
     <App
-      provider={provider}
       profile={profile}
       conversation={conversation}
       historyStore={historyStore}
@@ -214,10 +213,7 @@ async function main(): Promise<void> {
       contextWindow={contextWindow}
       configStore={config}
       secretsStore={secrets}
-      switchProvider={async (p) => {
-        const resolved = await resolveProvider(p, secrets);
-        return { provider: resolved.provider, contextWindow: resolved.contextWindow };
-      }}
+      switchProvider={(p) => Promise.resolve({ contextWindow: profileContextWindow(p) })}
       version={cliVersion()}
       checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heaplabs/heapcode-cli', cliVersion() ?? '0.0.0') : undefined}
       cwd={root}

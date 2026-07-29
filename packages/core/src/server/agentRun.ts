@@ -1,5 +1,5 @@
 import { runAgent } from '../agent/loop.js';
-import { getPersona, looksFilesystemMutating } from '../agent/personas.js';
+import { filesystemMutatingBlockedMessage, getPersona, looksFilesystemMutating } from '../agent/personas.js';
 import { runSubAgent } from '../agent/subAgent.js';
 import type { ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
 import type { Session } from './session.js';
@@ -121,7 +121,7 @@ export async function runAgentForSession(
       return {
         id: call.id,
         name: call.name,
-        content: `Blocked: this command looks like it would create, modify, or delete files, which the ${persona.label} persona does not allow.`,
+        content: filesystemMutatingBlockedMessage(persona),
         isError: true,
       };
     }

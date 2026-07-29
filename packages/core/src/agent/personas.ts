@@ -81,6 +81,28 @@ export function looksFilesystemMutating(command: string): boolean {
   return FS_MUTATING_COMMAND_RE.some((re) => re.test(command));
 }
 
+/**
+ * What the model is told when a write-restricted persona blocks a shell command
+ * that looks like it would mutate files.
+ *
+ * Lives here, beside the check that triggers it, because it has already drifted
+ * once: both hosts sent the full two-sentence text before Phase 2
+ * (packages/vscode/src/agent/controller.ts:280-281 and
+ * packages/cli/src/ink/App.tsx:1063-1064 at 6a8d443), and the second sentence
+ * was dropped when the guard moved server-side. Two call sites re-derived it
+ * independently after that, which is exactly how it went missing — so there is
+ * one source now.
+ *
+ * The second sentence is the actionable half: without it the model knows only
+ * that it was blocked, not that a different persona is the way through.
+ */
+export function filesystemMutatingBlockedMessage(persona: AgentPersona): string {
+  return (
+    'Blocked: this command looks like it would create, modify, or delete files, which the ' +
+    `${persona.label} persona does not allow. Use a persona with file-editing tools instead.`
+  );
+}
+
 export function getPersona(id: string | undefined): AgentPersona {
   return BUILTIN_PERSONAS.find((p) => p.id === id) ?? BUILTIN_PERSONAS[0]!;
 }

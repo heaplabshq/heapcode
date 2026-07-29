@@ -7,6 +7,7 @@ import { startMockServer, type MockServer } from './mockServer.js';
 import {
   HeapcodeServer,
   METHODS,
+  getPersona,
   PROTOCOL_VERSION,
   RpcPeer,
   Session,
@@ -346,6 +347,61 @@ describe('HeapcodeServer — end-to-end agent run', () => {
     const result = await run;
     expect(result.outcome).toBe('stopped');
     expect(toolCancelled).toBe(true);
+    peer.close();
+  }, 15_000);
+
+  it('tells the model the full persona guard message, including how to proceed', async () => {
+    // The guard blocks a write-looking shell command for a write-restricted
+    // persona. Its second sentence ("Use a persona with file-editing tools
+    // instead") was dropped when this moved server-side in Phase 2; without it
+    // the model knows only that it was blocked.
+    mock = await startMockServer({
+      kind: 'sequence',
+      responses: [
+        { kind: 'sse', chunks: ['<tool name="run_command">\n{"command":"rm -rf build"}\n</tool>'] },
+        { kind: 'sse', chunks: ['<tool name="finish">\n{"summary":"blocked"}\n</tool>'] },
+      ],
+    });
+    await startServer();
+    const profiles = [{ name: 'p', preset: 'custom' as const, baseUrl: mock.baseUrl, model: 'mock-model' }];
+    const peer = await connectClient({ root: home, profiles, activeProfile: 'p', keys: { p: 'k' } });
+
+    const executed: string[] = [];
+    const results: string[] = [];
+    peer.onRequest(METHODS.toolExecute, async (raw) => {
+      const { call } = raw as ToolExecuteParams;
+      executed.push(call.name);
+      return { id: call.id, name: call.name, content: 'should never run' } satisfies ToolResult;
+    });
+    peer.onRequest(METHODS.permissionRequest, async () => ({ granted: true }) satisfies PermissionRequestResult);
+    peer.onRequest(METHODS.snapshotBefore, async () => null);
+    peer.onNotification(METHODS.agentEvent, (raw) => {
+      const { event } = raw as AgentEventParams;
+      if (event.type === 'tool_result') results.push(event.content);
+    });
+
+    const runCommandTool: ToolDefinition = {
+      name: 'run_command',
+      description: 'Run a shell command',
+      parameters: { type: 'object', properties: { command: { type: 'string' } } },
+      permission: 'execute',
+    };
+    await peer.request<AgentRunResult>(METHODS.agentRun, {
+      runId: 'r-guard',
+      model: 'mock-model',
+      task: 'clean the build directory',
+      workspaceName: 'proj',
+      tools: [runCommandTool],
+      nativeToolCalls: false,
+      persona: getPersona('architect'),
+    } satisfies AgentRunParams);
+
+    // Blocked before reaching the host at all.
+    expect(executed).not.toContain('run_command');
+    expect(results[0]).toBe(
+      'Blocked: this command looks like it would create, modify, or delete files, which the ' +
+        'Architect persona does not allow. Use a persona with file-editing tools instead.',
+    );
     peer.close();
   }, 15_000);
 });

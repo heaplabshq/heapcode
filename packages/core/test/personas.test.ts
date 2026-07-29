@@ -4,6 +4,7 @@ import {
   filterToolsForPersona,
   getPersona,
   intersectPersonas,
+  filesystemMutatingBlockedMessage,
   looksFilesystemMutating,
   type ToolDefinition,
 } from '../src/index.js';
@@ -129,5 +130,28 @@ describe('looksFilesystemMutating', () => {
     ]) {
       expect(looksFilesystemMutating(cmd), cmd).toBe(false);
     }
+  });
+});
+
+describe('filesystemMutatingBlockedMessage', () => {
+  /**
+   * The exact text both hosts sent before the guard moved server-side in
+   * Phase 2 (packages/vscode/src/agent/controller.ts:280-281 and
+   * packages/cli/src/ink/App.tsx:1063-1064 at commit 6a8d443). The second
+   * sentence went missing in the move and is the actionable half — without it
+   * the model learns it was blocked but not what to do about it.
+   */
+  it('is the full two-sentence message, including the way forward', () => {
+    const message = filesystemMutatingBlockedMessage(getPersona('architect'));
+
+    expect(message).toBe(
+      'Blocked: this command looks like it would create, modify, or delete files, which the ' +
+        'Architect persona does not allow. Use a persona with file-editing tools instead.',
+    );
+  });
+
+  it('names the persona that did the blocking', () => {
+    expect(filesystemMutatingBlockedMessage(getPersona('debug'))).toContain('Debug persona does not allow');
+    expect(filesystemMutatingBlockedMessage(getPersona('reviewer'))).toContain('Reviewer persona does not allow');
   });
 });

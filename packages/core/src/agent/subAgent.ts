@@ -1,5 +1,12 @@
 import { runAgent } from './loop.js';
-import { filterToolsForPersona, getPersona, intersectPersonas, looksFilesystemMutating, type AgentPersona } from './personas.js';
+import {
+  filesystemMutatingBlockedMessage,
+  filterToolsForPersona,
+  getPersona,
+  intersectPersonas,
+  looksFilesystemMutating,
+  type AgentPersona,
+} from './personas.js';
 import type { ToolCall, ToolDefinition, ToolResult } from './tools.js';
 import type { Provider } from '../providers/types.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
@@ -100,7 +107,7 @@ export async function runSubAgent(call: ToolCall, ctx: SubAgentContext): Promise
       return {
         id: subCall.id,
         name: subCall.name,
-        content: `Blocked: this command looks like it would create, modify, or delete files, which the ${persona.label} persona does not allow.`,
+        content: filesystemMutatingBlockedMessage(persona),
         isError: true,
       };
     }

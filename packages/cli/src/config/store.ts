@@ -15,6 +15,13 @@ export interface CliConfig {
   telemetryEnabled?: boolean;
   /** Opt out of the startup check against npm's registry for a newer published version (see updateCheck.ts). Defaults to on. */
   updateCheckEnabled?: boolean;
+  /**
+   * How long an `ask_user` question waits with no activity before the agent is
+   * told the user may be away and carries on — e.g. "60s", "5m", "10m".
+   * Unset (the default) means it waits indefinitely. A question the model
+   * marked `blocksAction` never times out regardless. See core's askUser.ts.
+   */
+  askUserQuestionTimeout?: string;
 }
 
 /** A fresh empty config each call — never share one mutable object across

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { render } from 'ink';
 import fg from 'fast-glob';
-import { configureAstChunker, formatAuditDashboard, resolveCapabilities, type Conversation } from '@heapcode/core';
+import { configureAstChunker, formatAuditDashboard, parseIdleTimeout, resolveCapabilities, type Conversation } from '@heapcode/core';
 import { ConfigStore } from './config/store.js';
 import { SecretsStore } from './config/secrets.js';
 import { JsonConversationStore } from './history/store.js';
@@ -171,6 +171,8 @@ async function main(): Promise<void> {
   // npm's own registry, never blocks, renders as one dim line under the banner.
   const updateCheckEnabled = !argv.includes('--no-update-check') && (await config.load()).updateCheckEnabled !== false;
   const telemetryEnabled = telemetryFlag ?? (await config.load()).telemetryEnabled ?? true;
+  // Unset by default, which means an ask_user question waits indefinitely.
+  const askUserIdleMs = parseIdleTimeout((await config.load()).askUserQuestionTimeout);
   const audit = new AuditLog(auditFile(), () => telemetryEnabled);
   const permissions = new PermissionEngine(
     permissionsFile(root),
@@ -214,6 +216,7 @@ async function main(): Promise<void> {
       configStore={config}
       secretsStore={secrets}
       switchProvider={(p) => Promise.resolve({ contextWindow: profileContextWindow(p) })}
+      askUserIdleMs={askUserIdleMs}
       version={cliVersion()}
       checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heaplabs/heapcode-cli', cliVersion() ?? '0.0.0') : undefined}
       cwd={root}

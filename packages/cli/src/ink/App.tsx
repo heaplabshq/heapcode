@@ -10,7 +10,13 @@ import {
   filterToolsForPersona,
   getPersona,
   intersectPersonas,
+  ASK_USER_COUNTDOWN_MS,
+  ASK_USER_NO_ANSWER,
+  IdleDeadline,
   METHODS,
+  askUserAnswerMessage,
+  askUserBlocksAction,
+  askUserIdleMessage,
   parseSlashCommand,
   renderTemplate,
   type AgentEvent,
@@ -165,6 +171,12 @@ export interface AppProps {
   onSessionChange?(id: string): void;
   /** Best-effort registry check for a newer published version — omitted (no-op) when disabled via --no-update-check or config, or in tests/headless. */
   checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
+  /**
+   * Opt-in idle bound on an ask_user question, in ms — from
+   * `askUserQuestionTimeout` in ~/.heapcode/config.json. Undefined (the
+   * default) means the question waits indefinitely, exactly as before.
+   */
+  askUserIdleMs?: number;
   /** Test seam: point at an already-running core server instead of autostarting one. */
   server?: ConnectOptions;
 }
@@ -194,6 +206,7 @@ export function App({
   onTrack,
   onSessionChange,
   checkUpdate,
+  askUserIdleMs,
   server,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
@@ -282,6 +295,17 @@ export function App({
   const [error, setError] = useState<string>();
   const [pendingPermission, setPendingPermission] = useState<{ req: PermissionRequest; resolve: (c: PermissionChoice) => void }>();
   const [pendingQuestion, setPendingQuestion] = useState<{ req: AskUserRequest; resolve: (a: string) => void }>();
+  /**
+   * Seconds left on a pending question's idle bound, once inside the countdown
+   * window. Undefined whenever there is nothing to count down — no timeout
+   * configured, a blocksAction question, or still more than
+   * ASK_USER_COUNTDOWN_MS away.
+   */
+  const [questionCountdown, setQuestionCountdown] = useState<number>();
+  /** Whatever the user has typed or highlighted so far, for an expiring question to hand over. */
+  const questionPartial = useRef('');
+  /** Activity resets the pending question's deadline — see the useInput handler. */
+  const questionDeadline = useRef<IdleDeadline>();
   const [picker, setPicker] = useState<Picker>();
   const [setupActive, setSetupActive] = useState(false);
   const [persona, setPersona] = useState<AgentPersona>(getPersona(undefined));
@@ -313,6 +337,22 @@ export function App({
     onEvent(event: ReviewEvent): void;
     confirm(confirmation: ReviewConfirmParams['confirmation']): Promise<boolean>;
   }>();
+
+  // Drives the pending question's countdown. One interval for the whole app
+  // rather than a timer per prompt, and it only exists while a bounded question
+  // is actually up.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    const tick = (): void => {
+      const remaining = questionDeadline.current?.remainingMs() ?? Number.POSITIVE_INFINITY;
+      setQuestionCountdown(
+        Number.isFinite(remaining) && remaining <= ASK_USER_COUNTDOWN_MS ? Math.ceil(remaining / 1_000) : undefined,
+      );
+    };
+    tick();
+    const handle = setInterval(tick, 500);
+    return () => clearInterval(handle);
+  }, [pendingQuestion]);
 
   const [indexProgress, setIndexProgress] = useState<{ embedded: number; total: number }>();
 
@@ -561,21 +601,40 @@ export function App({
   async function executeTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
     if (call.name === 'ask_user') {
       const options = Array.isArray(call.args.options) ? call.args.options.map(String) : undefined;
-      // No timeout, deliberately: a human may take minutes to answer, and
-      // this is the first client where that is real. See the report — the
-      // general question of how a slow human is told apart from a wedged
-      // host is still open (§7's open question 2), not settled by this.
+      // The wait is unbounded by default and stays that way unless the user
+      // opted into askUserQuestionTimeout — and never bounded at all for a
+      // question the model marked as gating an action, however it is
+      // configured. Three things can end it: an answer, cancellation (which
+      // behaves exactly as it did before this), or the idle bound expiring.
+      const bounded = askUserIdleMs !== undefined && !askUserBlocksAction(call.args);
+      questionPartial.current = '';
+      let idle = false;
       const answer = await new Promise<string | undefined>((resolve) => {
-        setPendingQuestion({ req: { question: String(call.args.question ?? ''), options }, resolve });
+        const settle = (value: string | undefined): void => {
+          questionDeadline.current?.stop();
+          questionDeadline.current = undefined;
+          setQuestionCountdown(undefined);
+          resolve(value);
+        };
+        const deadline = new IdleDeadline(bounded ? askUserIdleMs : undefined, () => {
+          idle = true;
+          settle(undefined);
+        });
+        questionDeadline.current = deadline;
+        deadline.start();
+        setPendingQuestion({ req: { question: String(call.args.question ?? ''), options }, resolve: settle });
         // If the run is cancelled while the question is up, stop waiting and
         // take the prompt down rather than leaving it on screen forever.
-        signal.addEventListener('abort', () => resolve(undefined), { once: true });
+        // Cancellation wins over the idle bound: `idle` stays false, so this
+        // resolves the way it always has.
+        signal.addEventListener('abort', () => settle(undefined), { once: true });
       });
       setPendingQuestion(undefined);
+      if (answer?.trim()) return { id: call.id, name: call.name, content: askUserAnswerMessage(answer) };
       return {
         id: call.id,
         name: call.name,
-        content: answer?.trim() ? `User answered: ${answer}` : 'The user did not answer. Proceed with your best judgment.',
+        content: idle ? askUserIdleMessage(questionPartial.current) : ASK_USER_NO_ANSWER,
       };
     }
     if (mcpManager?.isMcpTool(call.name)) {
@@ -597,6 +656,10 @@ export function App({
   }
 
   useInput((input, key) => {
+    // Any keypress means the user is still here — push a pending question's
+    // idle deadline back rather than cutting them off mid-thought. Runs before
+    // the Esc/Ctrl+C handling below because it applies to those too.
+    questionDeadline.current?.touch();
     if (key.escape) {
       if (setupActive) {
         setSetupActive(false);
@@ -1436,6 +1499,11 @@ export function App({
       )}
       {pendingQuestion && (
         <AskUserPrompt
+          countdownSeconds={questionCountdown}
+          onPartial={(partial) => {
+            questionPartial.current = partial;
+            questionDeadline.current?.touch();
+          }}
           request={pendingQuestion.req}
           onAnswer={(answer) => {
             pendingQuestion.resolve(answer);

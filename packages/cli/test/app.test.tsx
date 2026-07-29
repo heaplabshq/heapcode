@@ -186,6 +186,17 @@ const WRITE_FILE_TOOL: ToolDefinition = {
   permission: 'write',
 };
 
+const ASK_USER_TOOL: ToolDefinition = {
+  name: 'ask_user',
+  description: 'Ask the user a clarifying question',
+  parameters: {
+    type: 'object',
+    properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'string' } }, blocksAction: { type: 'boolean' } },
+    required: ['question'],
+  },
+  permission: 'read',
+};
+
 const READ_FILE_TOOL: ToolDefinition = {
   name: 'read_file',
   description: 'Read a file',
@@ -283,6 +294,7 @@ function renderApp(overrides: {
   shadowGit?: ShadowGit;
   onSessionChange?(id: string): void;
   checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
+  askUserIdleMs?: number;
   /** Overrides the harness's in-process server — used by the autostart test. */
   server?: React.ComponentProps<typeof App>['server'];
 }) {
@@ -312,6 +324,7 @@ function renderApp(overrides: {
       mcpManager={overrides.mcpManager}
       checkUpdate={overrides.checkUpdate}
       secretsStore={secretsStore}
+      askUserIdleMs={overrides.askUserIdleMs}
       server={overrides.server ?? serverOpts}
     />,
   );
@@ -532,6 +545,234 @@ describe('App', () => {
     expect(lastFrame()).toContain('Commands:');
     expect(lastFrame()).toContain('/profile');
     expect(lastFrame()).toContain('/rewind');
+  });
+
+  describe("ask_user's optional idle timeout", () => {
+    /**
+     * The wait is host-side (see core's askUser.ts) so these drive it through
+     * the real UI: the model asks, the prompt appears, and the wait ends one of
+     * three ways — an answer, cancellation, or the opt-in idle bound.
+     */
+    function askThenFinish(args: Record<string, unknown> = { question: 'Which database?' }) {
+      return scriptedProvider([
+        { content: `<tool name="ask_user">\n${JSON.stringify(args)}\n</tool>` },
+        { content: '<tool name="finish">\n{"summary": "Went with my judgment."}\n</tool>' },
+      ]);
+    }
+
+    /** What the model was told about the question, from the tool message it received next. */
+    function toolReplyText(): string {
+      return model.requests
+        .flat()
+        .map((m) => m.content)
+        .join('\n');
+    }
+
+    it('waits indefinitely when no timeout is configured — the default', async () => {
+      // Its own explicit test rather than an absence of failures: unbounded is
+      // what almost everyone gets, and it is the behavior that existed before.
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: askThenFinish(),
+        conversation,
+        historyStore,
+        tools: [ASK_USER_TOOL],
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('pick one');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Agent has a question'), { timeout: 3_000 });
+
+      await new Promise((r) => setTimeout(r, 600));
+
+      // Still up, still no countdown, and the agent has not been told anything.
+      expect(lastFrame()).toContain('Agent has a question');
+      expect(lastFrame()).not.toContain('the agent will carry on');
+      expect(toolReplyText()).not.toContain('may be away');
+    }, 15_000);
+
+    it('resolves with the proceed-on-your-own-judgment result once the configured window passes', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: askThenFinish(),
+        conversation,
+        historyStore,
+        tools: [ASK_USER_TOOL],
+        askUserIdleMs: 250,
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('pick one');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Agent has a question'), { timeout: 3_000 });
+
+      // The prompt comes down on its own and the run finishes normally — not
+      // aborted, not an error.
+      await vi.waitFor(() => expect(lastFrame()).not.toContain('Agent has a question'), { timeout: 3_000 });
+      await vi.waitFor(() => expect(toolReplyText()).toContain('may be away'), { timeout: 3_000 });
+      expect(toolReplyText()).toContain('Proceed on your own judgment');
+      // The belt-and-braces sentence travels with it.
+      expect(toolReplyText()).toContain('NOT approval');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Went with my judgment'), { timeout: 3_000 });
+    }, 15_000);
+
+    it('shows a visible countdown for the last stretch of the wait', async () => {
+      // ASK_USER_COUNTDOWN_MS is 20s, so any bound at or under that counts down
+      // from the moment the question appears.
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: askThenFinish(),
+        conversation,
+        historyStore,
+        tools: [ASK_USER_TOOL],
+        askUserIdleMs: 5_000,
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('pick one');
+      stdin.write('\r');
+
+      await vi.waitFor(() => expect(lastFrame()).toContain('the agent will carry on'), { timeout: 3_000 });
+      expect(lastFrame()).toMatch(/no reply in \ds and the agent will carry on/);
+    }, 15_000);
+
+    it('carries the partial answer the user had typed', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: askThenFinish(),
+        conversation,
+        historyStore,
+        tools: [ASK_USER_TOOL],
+        askUserIdleMs: 400,
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('pick one');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Agent has a question'), { timeout: 3_000 });
+      stdin.write('postg'); // typed, never submitted
+
+      await vi.waitFor(() => expect(toolReplyText()).toContain('may be away'), { timeout: 3_000 });
+      expect(toolReplyText()).toContain('partial answer so far was: "postg"');
+    }, 15_000);
+
+    it('a keypress resets the countdown instead of letting it expire on schedule', async () => {
+      // The property that protects a present-but-slow person. Typing every
+      // ~150ms against a 400ms bound must outlast several windows.
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: askThenFinish(),
+        conversation,
+        historyStore,
+        tools: [ASK_USER_TOOL],
+        askUserIdleMs: 400,
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('pick one');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Agent has a question'), { timeout: 3_000 });
+
+      for (let i = 0; i < 8; i++) {
+        stdin.write('x');
+        await new Promise((r) => setTimeout(r, 150));
+      }
+
+      // 1.2s elapsed against a 400ms bound: without the reset this would have
+      // expired twice over.
+      expect(lastFrame()).toContain('Agent has a question');
+      expect(toolReplyText()).not.toContain('may be away');
+    }, 15_000);
+
+    it('never times out a question the model marked as gating an action', async () => {
+      // blocksAction is the permission-shaped case, which must wait for a real
+      // answer however the timeout is configured.
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: askThenFinish({ question: 'Delete the old migrations?', blocksAction: true }),
+        conversation,
+        historyStore,
+        tools: [ASK_USER_TOOL],
+        askUserIdleMs: 200,
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('clean up');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Agent has a question'), { timeout: 3_000 });
+
+      await new Promise((r) => setTimeout(r, 900));
+
+      expect(lastFrame()).toContain('Agent has a question');
+      expect(lastFrame()).not.toContain('the agent will carry on');
+      expect(toolReplyText()).not.toContain('may be away');
+    }, 15_000);
+
+    it('cancellation during a pending question still resolves the way it always did', async () => {
+      // Unchanged path: Esc takes the prompt down and the agent gets the plain
+      // no-answer result, not the idle one.
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: askThenFinish(),
+        conversation,
+        historyStore,
+        tools: [ASK_USER_TOOL],
+        askUserIdleMs: 60_000,
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('pick one');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Agent has a question'), { timeout: 3_000 });
+
+      stdin.write('\u001B'); // Esc
+      await vi.waitFor(() => expect(lastFrame()).not.toContain('Agent has a question'), { timeout: 3_000 });
+      expect(toolReplyText()).not.toContain('may be away');
+    }, 15_000);
+
+    it('leaves other tool calls unbounded, with or without the setting', async () => {
+      // Nothing about this is a general tool/execute timeout: a command that
+      // takes longer than the configured ask_user window still runs to
+      // completion.
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const runTool: ToolDefinition = {
+        name: 'run_command',
+        description: 'Run a shell command',
+        parameters: { type: 'object', properties: { command: { type: 'string' } } },
+        permission: 'execute',
+      };
+      const provider = scriptedProvider([
+        { content: '<tool name="run_command">\n{"command": "sleep 1 && echo late"}\n</tool>' },
+        { content: '<tool name="finish">\n{"summary": "Command finished."}\n</tool>' },
+      ]);
+
+      const { stdin, lastFrame } = renderApp({
+        provider,
+        conversation,
+        historyStore,
+        tools: [runTool],
+        askUserIdleMs: 100,
+        cwd: root,
+      });
+
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('run something slow');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('wants to run'), { timeout: 3_000 });
+      stdin.write('\r'); // allow once
+
+      await vi.waitFor(() => expect(lastFrame()).toContain('Command finished'), { timeout: 8_000 });
+      expect(toolReplyText()).toContain('late');
+    }, 20_000);
   });
 
   it('/pr-review drives the review in the server and shows its progress and preview', async () => {

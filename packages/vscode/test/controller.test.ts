@@ -26,6 +26,8 @@ import { __setConfig, __resetConfig, __setWorkspaceRoot, __shownMessages } from 
 
 interface ModelServer {
   baseUrl: string;
+  /** Input batches from each /embeddings request — how "did the server re-index" is asserted. */
+  embeddingCalls: string[][];
   /** Each chat request's messages and offered tools — the latter is how "was this tool offered at all" is asserted. */
   requests: Array<{
     messages: Array<{ role: string; content: string }>;
@@ -39,10 +41,19 @@ async function startModelServer(): Promise<ModelServer> {
   let script: string[] = [''];
   let call = 0;
   const requests: ModelServer['requests'] = [];
+  const embeddingCalls: string[][] = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
     req.on('data', (d) => (raw += d));
     req.on('end', () => {
+      // The semantic index runs in the server and reaches this same endpoint.
+      if (req.url?.includes('/embeddings')) {
+        const input = (raw ? (JSON.parse(raw) as { input?: string[] }) : {}).input ?? [];
+        embeddingCalls.push(input);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: input.map((_, i) => ({ embedding: [1, 0, 0], index: i })) }));
+        return;
+      }
       const body = raw
         ? (JSON.parse(raw) as {
             messages?: Array<{ role: string; content: string }>;
@@ -65,6 +76,7 @@ async function startModelServer(): Promise<ModelServer> {
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     requests,
+    embeddingCalls,
     script: (texts) => {
       script = texts;
       call = 0;
@@ -400,6 +412,96 @@ describe('AgentController — running against the core server', () => {
     expect(offeredToModel(model.requests[0]!)).not.toContain('delegate_task');
     agent.dispose();
   }, 15_000);
+
+  describe('re-indexing after the agent\'s own writes', () => {
+    /**
+     * onDidSaveTextDocument — the only trigger either index had — does not fire
+     * for `vscode.workspace.fs.writeFile`, which is how the agent writes. So
+     * everything the agent touched stayed indexed as its pre-edit content until
+     * a user opened and saved it, or ran a full rebuild. The CLI has always
+     * closed this explicitly (App.tsx:389-412, headless.ts:350-384).
+     *
+     * "The index reflects the change" is asserted through the embeddings the
+     * server had to request to re-chunk the file — there is no other way to see
+     * a server-side index from here, and it is the strongest evidence anyway:
+     * an embedding for that path means the content really was re-read.
+     */
+    function embeddedPaths(): string {
+      return model.embeddingCalls.flat().join('\n');
+    }
+
+    it('re-indexes a file the agent wrote, with no save and no rebuild', async () => {
+      profile.embeddingsModel = 'embed';
+      model.script([toolBlock('write_file', { path: 'fresh.ts', content: 'export const a = 1;\n' }), finishBlock('Wrote it.')]);
+      const agent = makeController({ posts: [] });
+
+      await agent.start('create a file');
+
+      await vi.waitFor(() => expect(embeddedPaths()).toContain('fresh.ts'), { timeout: 5_000 });
+      agent.dispose();
+    }, 15_000);
+
+    it('re-indexes a file the agent edited', async () => {
+      await writeFile(join(root, 'existing.ts'), 'export const before = 1;\n');
+      profile.embeddingsModel = 'embed';
+      model.script([
+        toolBlock('edit_file', { path: 'existing.ts', search: 'before = 1', replace: 'after = 2' }),
+        finishBlock('Edited it.'),
+      ]);
+      const agent = makeController({ posts: [] });
+
+      await agent.start('edit the file');
+
+      await vi.waitFor(() => expect(embeddedPaths()).toContain('after = 2'), { timeout: 5_000 });
+      agent.dispose();
+    }, 15_000);
+
+    it('re-indexes both paths of a rename, so the old one drops out', async () => {
+      await writeFile(join(root, 'old.ts'), 'export const moved = 1;\n');
+      profile.embeddingsModel = 'embed';
+      model.script([toolBlock('rename_file', { path: 'old.ts', newPath: 'new.ts' }), finishBlock('Renamed it.')]);
+      const agent = makeController({ posts: [] });
+
+      await agent.start('rename the file');
+
+      // Indexing a path the server can no longer read is what drops it, which is
+      // why a rename sends both and needs no shape of its own.
+      await vi.waitFor(() => expect(embeddedPaths()).toContain('new.ts'), { timeout: 5_000 });
+      agent.dispose();
+    }, 15_000);
+
+    it('does not re-index when the tool call failed', async () => {
+      profile.embeddingsModel = 'embed';
+      // A search string that is not in the file — edit_file refuses.
+      await writeFile(join(root, 'untouched.ts'), 'export const a = 1;\n');
+      model.script([
+        toolBlock('edit_file', { path: 'untouched.ts', search: 'nowhere to be found', replace: 'x' }),
+        finishBlock('Could not edit.'),
+      ]);
+      const posts: ExtensionToWebview[] = [];
+      const agent = makeController({ posts });
+
+      await agent.start('edit the file');
+
+      expect(posts.some((p) => p.type === 'agentToolResult' && p.ok === false)).toBe(true);
+      expect(embeddedPaths()).not.toContain('untouched.ts');
+      agent.dispose();
+    }, 15_000);
+
+    it('leaves a successful tool call successful when re-indexing fails', async () => {
+      // No embeddings model: the server has nothing to index with. The write
+      // must still be reported as done.
+      model.script([toolBlock('write_file', { path: 'ok.ts', content: 'export const a = 1;\n' }), finishBlock('Wrote it.')]);
+      const posts: ExtensionToWebview[] = [];
+      const agent = makeController({ posts });
+
+      await agent.start('create a file');
+
+      expect(await readFile(join(root, 'ok.ts'), 'utf8')).toBe('export const a = 1;\n');
+      expect(posts.find((p) => p.type === 'agentToolResult')).toMatchObject({ ok: true });
+      agent.dispose();
+    }, 15_000);
+  });
 
   it('autostarts the server when nothing is listening, then runs the turn', async () => {
     // The full §6 sequence through the extension's own path: the first

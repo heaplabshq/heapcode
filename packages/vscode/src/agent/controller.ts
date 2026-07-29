@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   METHODS,
+  type RagIndexParams,
+  type RagIndexResult,
   connectToServer,
   filterToolsForPersona,
   getPersona,
@@ -315,7 +317,71 @@ export class AgentController {
       const info = await this.computeFileEdit(String(call.args.path ?? ''));
       if (info) this.fileEdits.set(call.id, info);
     }
+    if (!result.isError) await this.syncIndexesAfterTool(call.name, call.args);
     return result;
+  }
+
+  /**
+   * Keeps the workspace indexes in step with the agent's own writes.
+   *
+   * The editor's `onDidSaveTextDocument` — the only trigger either index had —
+   * does not fire for `vscode.workspace.fs.writeFile`, which is how the agent
+   * writes. So every file the agent touched stayed indexed as its pre-edit
+   * content until the user happened to open and save it, or ran a full rebuild.
+   * The CLI has always closed this gap explicitly at the same point in the same
+   * flow (packages/cli/src/ink/App.tsx:389-412, headless.ts:350-384); this is
+   * that, ported.
+   *
+   * `rag/index` goes out on **this** connection rather than through ServerLink.
+   * The semantic index is per-session, and this is the session that just wrote
+   * the file and the session whose index answers this run's own
+   * `semantic_search` calls. It persists to the shared project state dir, so
+   * other sessions pick the change up when they next load.
+   *
+   * Best-effort throughout: a failed re-index must never turn a successful tool
+   * call into a failed one.
+   */
+  private async syncIndexesAfterTool(name: string, args: Record<string, unknown>): Promise<void> {
+    const path = typeof args.path === 'string' ? args.path : undefined;
+    const newPath = typeof args.newPath === 'string' ? args.newPath : undefined;
+    const paths: string[] = [];
+    switch (name) {
+      case 'write_file':
+      case 'edit_file':
+      case 'multi_edit':
+        if (!path) return;
+        paths.push(path);
+        this.repoMapIndexer?.noteRecent(path);
+        void this.repoMapIndexer?.indexOne(path);
+        break;
+      case 'rename_file':
+        if (!path || !newPath) return;
+        // Both paths: indexing one the server can no longer read drops it,
+        // which is how a rename needs no shape of its own.
+        paths.push(path, newPath);
+        this.repoMapIndexer?.noteRecent(newPath);
+        void this.repoMapIndexer?.renameFile(path, newPath);
+        break;
+      case 'delete_file':
+        if (!path) return;
+        paths.push(path);
+        this.repoMapIndexer?.removeFile(path);
+        break;
+      default:
+        return;
+    }
+    const peer = this.connection?.peer;
+    if (!peer) return;
+    await peer
+      .request<RagIndexResult>(METHODS.ragIndex, {
+        paths,
+        contextualRetrieval: vscode.workspace
+          .getConfiguration('heapcode')
+          .get<boolean>('rag.contextualRetrieval', false),
+      } satisfies RagIndexParams)
+      .catch((err: unknown) => {
+        this.log.appendLine(`[rag] re-index after ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
   }
 
   async start(

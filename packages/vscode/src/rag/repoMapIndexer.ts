@@ -66,6 +66,31 @@ export class RepoMapIndexer implements vscode.Disposable {
     return this.index.buildIndex();
   }
 
+  /**
+   * Incremental updates for changes the editor never announces. Until now the
+   * only trigger was onDidSaveTextDocument, which does not fire for
+   * `vscode.workspace.fs.writeFile` — so the agent's own writes left the map
+   * stale. The package has always had these; the wrapper simply never forwarded
+   * them, unlike the CLI's adapter (packages/cli/src/rag/repoMapIndexer.ts's
+   * caller in App.tsx:389-412).
+   */
+  indexOne(rel: string): Promise<void> {
+    return this.index.indexOne(rel);
+  }
+
+  renameFile(oldRel: string, newRel: string): Promise<void> {
+    return this.index.renameFile(oldRel, newRel);
+  }
+
+  removeFile(rel: string): void {
+    this.index.removeFile(rel);
+  }
+
+  /** Feeds the "recently edited" ranking boost — the agent's writes count too. */
+  noteRecent(rel: string): void {
+    this.index.noteRecent(rel);
+  }
+
   clear(): Promise<void> {
     return this.index.clear();
   }

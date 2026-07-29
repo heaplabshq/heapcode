@@ -3,6 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { chmod, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { runAgentForSession, type RunHost } from './agentRun.js';
+import { runChatForSession, type ChatHost } from './chatSend.js';
 import { RpcPeer } from './rpc.js';
 import { Session } from './session.js';
 import { addressIsFile, daemonAddress, daemonTokenFile, heapcodeHome, socketAddressProblem } from './address.js';
@@ -13,10 +14,13 @@ import {
   type AgentCancelParams,
   type AgentEvent,
   type AgentRunParams,
+  type ChatSendParams,
   type HelloParams,
   type HelloResult,
   type KeyRequestParams,
   type KeyRequestResult,
+  type ListModelsParams,
+  type ListModelsResult,
   type PermissionRequestParams,
   type PermissionRequestResult,
   type SnapshotBeforeParams,
@@ -187,6 +191,39 @@ export class HeapcodeServer {
       } finally {
         active.endRun(params.runId);
       }
+    });
+
+    peer.onRequest(METHODS.chatSend, async (raw) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      const params = raw as ChatSendParams;
+      const controller = session.beginRun(params.runId);
+      const active = session;
+      const host: ChatHost = {
+        emit: (event: AgentEvent) => void peer.notifyWithBackpressure(METHODS.agentEvent, { runId: params.runId, event }),
+        executeTool: (call) =>
+          peer.request<ToolExecuteResult>(
+            METHODS.toolExecute,
+            { runId: params.runId, call } satisfies ToolExecuteParams,
+            controller.signal,
+          ),
+      };
+      try {
+        return await runChatForSession(session, params, host, controller.signal);
+      } finally {
+        active.endRun(params.runId);
+      }
+    });
+
+    // Request/response, no callbacks — the shape session/hello has. The
+    // session is what makes it safe: the key comes from this connection's map
+    // and nowhere else.
+    peer.onRequest(METHODS.listModels, async (raw) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      const { profileName } = (raw ?? {}) as ListModelsParams;
+      const name = profileName ?? session.activeProfile;
+      const resolved = session.providerFor(name);
+      if (!resolved) throw new Error(`Unknown profile "${name}" for this session.`);
+      return { models: await resolved.provider.listModels() } satisfies ListModelsResult;
     });
 
     peer.onNotification(METHODS.agentCancel, (raw) => {

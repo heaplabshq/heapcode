@@ -13,7 +13,6 @@ import {
   providerPresets,
   renderTemplate,
   resolveCapabilities,
-  runChatTurn,
   stripToolCallArtifacts,
   type ChatMessage,
   type Conversation,
@@ -47,6 +46,7 @@ import { resultLabel, TOOL_SUMMARY_CHARS, type AgentController } from './agent/c
 import type { ShadowGit } from './agent/shadowGit.js';
 import type { ProfileManager } from './profileManager.js';
 import type { RagIndexer } from './rag/indexer.js';
+import type { ServerLink } from './serverLink.js';
 
 const INIT_TASK =
   'Initialize this project for Heap Code. Explore the workspace (key files, tech stack, structure, ' +
@@ -90,6 +90,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly profiles: ProfileManager,
     private readonly store: ConversationStore,
     private readonly log: vscode.OutputChannel,
+    /** Chat turns and model listing both run server-side now. */
+    private readonly link: ServerLink,
     private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
   ) {}
 
@@ -498,8 +500,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const active = this.profiles.getActiveProfile();
         let models: string[] = [];
         try {
-          const { provider } = await this.profiles.createActiveProvider();
-          models = (await provider.listModels()).map((m) => m.id);
+          models = (await this.link.listModels(active.name)).map((m) => m.id);
         } catch (err) {
           this.log.appendLine(`[models] list failed: ${String(err)}`);
         }
@@ -1050,7 +1051,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleSend(text: string, files?: string[], images?: string[]): Promise<void> {
-    const { provider, profile } = await this.profiles.createActiveProvider();
+    const profile = this.profiles.getActiveProfile();
     if (!profile.model) {
       this.post({
         type: 'error',
@@ -1137,33 +1138,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'chunk', text: delta });
       };
 
+      // The turn runs server-side; what stays here is the half that needs the
+      // workspace (running a read tool, labelling its chip) and the half that
+      // needs the webview (rendering). Same split as the agent path.
       const ask = this.askToolSupport(profile);
-      const { finishReason } = await runChatTurn({
-        provider,
-        model: profile.model,
-        messages: conversationMessages,
-        temperature: profile.temperature,
-        maxTokens,
-        signal: this.abortController.signal,
-        tools: ask?.tools,
-        execute: ask?.execute,
-        events: {
-          onDelta,
-          onToolCall: (call) => {
-            const description = ask?.describe(call) ?? call.name;
-            this.log.appendLine(`[ask] tool: ${description}`);
-            this.postToWebview({ type: 'agentToolCall', id: call.id, name: call.name, description });
-          },
-          onToolResult: (result) =>
-            this.postToWebview({
-              type: 'agentToolResult',
-              id: result.id,
-              ok: !result.isError,
-              summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-              label: resultLabel(result.name, result.content, result.isError),
-            }),
+      const { finishReason } = await this.link.chatSend(
+        {
+          profileName: profile.name,
+          model: profile.model,
+          messages: conversationMessages,
+          temperature: profile.temperature,
+          maxTokens,
+          tools: ask?.tools,
         },
-      });
+        {
+          execute: ask ? (call) => ask.execute(call) : undefined,
+          onEvent: (event) => {
+            switch (event.type) {
+              case 'text_delta':
+                onDelta(event.text);
+                break;
+              case 'tool_call': {
+                const call = { id: event.id, name: event.name, args: event.args };
+                const description = ask?.describe(call) ?? event.name;
+                this.log.appendLine(`[ask] tool: ${description}`);
+                this.postToWebview({ type: 'agentToolCall', id: event.id, name: event.name, description });
+                break;
+              }
+              case 'tool_result':
+                this.postToWebview({
+                  type: 'agentToolResult',
+                  id: event.id,
+                  ok: !event.isError,
+                  summary: event.content.slice(0, TOOL_SUMMARY_CHARS),
+                  label: resultLabel(event.name, event.content, event.isError),
+                });
+                break;
+              default:
+                break; // chat turns emit no other events
+            }
+          },
+        },
+        this.abortController.signal,
+      );
       this.finishTurn(stripToolCallArtifacts(assistant));
       this.post({ type: 'done' });
       if (finishReason === 'length') {

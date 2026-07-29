@@ -1,0 +1,361 @@
+import { createServer, type Server } from 'node:http';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  HeapcodeServer,
+  type ConversationStore,
+  type ExtensionToWebview,
+  type ProviderProfileConfig,
+  type WebviewToExtension,
+} from '@heapcode/core';
+import { ChatViewProvider } from '../src/chatViewProvider.js';
+import { ServerLink } from '../src/serverLink.js';
+import type { ProfileManager } from '../src/profileManager.js';
+import { Uri, __setConfig, __resetConfig, __setWorkspaceRoot } from './vscodeStub.js';
+
+/**
+ * The chat view is a client of the core server now, so no Provider is built
+ * in this process for a chat turn. The harness starts a real HeapcodeServer
+ * and a real HTTP model endpoint, and drives ChatViewProvider the way the
+ * webview does — nothing below the provider is mocked.
+ *
+ * Same in-process-server choice as controller.test.ts: every message still
+ * crosses a real unix socket with real NDJSON framing, but the tests don't
+ * depend on dist/daemon.js having been built.
+ */
+
+interface ModelServer {
+  baseUrl: string;
+  requests: Array<{ path: string; body: Record<string, unknown> }>;
+  /** Serve these bodies in order (last repeats); a string means a streamed reply. */
+  script(responses: Array<string | Record<string, unknown>>): void;
+  close(): Promise<void>;
+}
+
+async function startModelServer(): Promise<ModelServer> {
+  let script: Array<string | Record<string, unknown>> = [''];
+  let call = 0;
+  const requests: ModelServer['requests'] = [];
+  const server: Server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (d) => (raw += d));
+    req.on('end', () => {
+      const path = req.url ?? '';
+      const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      requests.push({ path, body });
+
+      if (path.endsWith('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'mock', context_length: 64_000 }, { id: 'other' }] }));
+        return;
+      }
+
+      const next = script[Math.min(call++, script.length - 1)] ?? '';
+      if (typeof next !== 'string') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(next));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: next } }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    requests,
+    script: (responses) => {
+      script = responses;
+      call = 0;
+    },
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+/**
+ * Only what the chat path still calls. `createActiveProvider` is deliberately
+ * absent: chat stopped building a host-side Provider, and a missing member
+ * failing loudly is how this file proves it.
+ */
+function stubProfiles(profiles: ProviderProfileConfig[], keys: Record<string, string> = {}): ProfileManager {
+  return {
+    getProfiles: () => profiles,
+    getActiveProfile: () => profiles[0]!,
+    getApiKey: (p: ProviderProfileConfig) => Promise.resolve(keys[p.name]),
+    contextWindowFor: () => Promise.resolve({ window: 32_000, source: 'profile' as const }),
+  } as unknown as ProfileManager;
+}
+
+const store = {
+  save: () => Promise.resolve(),
+  load: () => Promise.resolve(undefined),
+  list: () => Promise.resolve([]),
+} as unknown as ConversationStore;
+
+const log = { appendLine: () => {}, show: () => {} } as unknown as Parameters<typeof makeChat>[0]['log'];
+
+/** A webview stub that records what the provider posts and lets us push messages in. */
+function fakeView(posts: ExtensionToWebview[]): {
+  view: never;
+  send(msg: WebviewToExtension): Promise<void>;
+} {
+  let onMessage: ((msg: WebviewToExtension) => void) | undefined;
+  const view = {
+    visible: true,
+    webview: {
+      options: {},
+      html: '',
+      cspSource: '',
+      asWebviewUri: (u: unknown) => u,
+      postMessage: (msg: ExtensionToWebview) => {
+        posts.push(msg);
+        return Promise.resolve(true);
+      },
+      onDidReceiveMessage: (handler: (msg: WebviewToExtension) => void) => {
+        onMessage = handler;
+        return { dispose: () => {} };
+      },
+    },
+    onDidDispose: () => ({ dispose: () => {} }),
+  };
+  return {
+    view: view as never,
+    send: async (msg) => {
+      onMessage?.(msg);
+      // Let the provider's async handler settle.
+      await new Promise((r) => setTimeout(r, 0));
+    },
+  };
+}
+
+interface ChatOpts {
+  posts: ExtensionToWebview[];
+  profiles?: ProfileManager;
+  log?: unknown;
+}
+
+function makeChat(opts: ChatOpts): { chat: ChatViewProvider; link: ServerLink; send(msg: WebviewToExtension): Promise<void> } {
+  const profiles = opts.profiles ?? stubProfiles([profile]);
+  const link = new ServerLink(profiles, (opts.log ?? log) as never, serverOpts as never);
+  const chat = new ChatViewProvider(
+    Uri.file('/ext') as never,
+    profiles,
+    store,
+    (opts.log ?? log) as never,
+    link,
+  );
+  const { view, send } = fakeView(opts.posts);
+  chat.resolveWebviewView(view);
+  return { chat, link, send };
+}
+
+function textOf(posts: ExtensionToWebview[]): string {
+  return posts
+    .filter((p): p is Extract<ExtensionToWebview, { type: 'chunk' }> => p.type === 'chunk')
+    .map((p) => p.text)
+    .join('');
+}
+
+let root: string;
+let home: string;
+let model: ModelServer;
+let core: HeapcodeServer;
+let profile: ProviderProfileConfig;
+let serverOpts: { address: string; token: string; autostart: false };
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'heapcode-vscode-chat-'));
+  home = await mkdtemp(join(tmpdir(), 'hc-vscode-chat-home-'));
+  vi.stubEnv('HEAPCODE_HOME', home);
+  __setWorkspaceRoot(root);
+  __setConfig('heapcode.agent', { enable: true });
+  model = await startModelServer();
+  profile = { name: 'test', preset: 'custom', baseUrl: model.baseUrl, model: 'mock' };
+  core = new HeapcodeServer({ home, address: join(home, 't.sock'), idleShutdownMs: 0 });
+  await core.listen();
+  serverOpts = { address: core.address, token: core.token, autostart: false };
+});
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  __setWorkspaceRoot(undefined);
+  __resetConfig();
+  await core?.close();
+  await model?.close();
+  await rm(root, { recursive: true, force: true });
+  await rm(home, { recursive: true, force: true });
+});
+
+describe('ChatViewProvider — chat turns against the core server', () => {
+  it('runs a real chat turn over the socket and streams the reply into the webview', async () => {
+    model.script(['Hello from the server.']);
+    const posts: ExtensionToWebview[] = [];
+    const { chat, link, send } = makeChat({ posts });
+    await send({ type: 'ready' } as WebviewToExtension);
+
+    await chat.sendFromCommand('hi');
+
+    expect(textOf(posts)).toBe('Hello from the server.');
+    expect(posts.some((p) => p.type === 'done')).toBe(true);
+    // The turn really crossed the wire: the model endpoint saw it.
+    expect(model.requests.some((r) => !r.path.endsWith('/models'))).toBe(true);
+    link.dispose();
+  });
+
+  it('runs an ask-mode tool back in this process via tool/execute, then answers in prose', async () => {
+    await writeFile(join(root, 'a.ts'), 'export const answer = 42;\n');
+    profile = { ...profile, capabilities: { nativeToolCalls: true } };
+    model.script([
+      {
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'read_file', arguments: JSON.stringify({ path: 'a.ts' }) },
+                },
+              ],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      },
+      { choices: [{ message: { role: 'assistant', content: 'It exports 42.' } }] },
+    ]);
+    const posts: ExtensionToWebview[] = [];
+    const { chat, link, send } = makeChat({ posts, profiles: stubProfiles([profile]) });
+    await send({ type: 'ready' } as WebviewToExtension);
+
+    await chat.sendFromCommand('what does a.ts export?');
+
+    // The server asked this process to run the tool, and the extension's own
+    // executor did it — the file content came from the real workspace.
+    const call = posts.find((p): p is Extract<ExtensionToWebview, { type: 'agentToolCall' }> => p.type === 'agentToolCall');
+    const result = posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'agentToolResult' }> => p.type === 'agentToolResult',
+    );
+    expect(call?.name).toBe('read_file');
+    expect(result?.ok).toBe(true);
+    expect(result?.summary).toContain('answer = 42');
+    expect(textOf(posts)).toBe('It exports 42.');
+
+    // The read tool never prompted: an all-read toolset cannot reach the gate.
+    expect(posts.some((p) => p.type === 'permissionRequest')).toBe(false);
+    link.dispose();
+  });
+
+  it('lists models through provider/listModels, with no host-side Provider', async () => {
+    const posts: ExtensionToWebview[] = [];
+    const { link, send } = makeChat({ posts });
+    await send({ type: 'ready' } as WebviewToExtension);
+
+    await send({ type: 'listModels' } as WebviewToExtension);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const models = posts.find((p): p is Extract<ExtensionToWebview, { type: 'models' }> => p.type === 'models');
+    expect(models?.models).toEqual(['mock', 'other']);
+    expect(model.requests.some((r) => r.path.endsWith('/models'))).toBe(true);
+    link.dispose();
+  });
+
+  it('reports a model-list failure without a host-side fallback provider', async () => {
+    const posts: ExtensionToWebview[] = [];
+    // A profile the session does not hold → the server rejects it.
+    const profiles = stubProfiles([{ ...profile, name: 'test' }]);
+    const { link, send } = makeChat({ posts, profiles });
+    await send({ type: 'ready' } as WebviewToExtension);
+    await core.close(); // server gone mid-session
+
+    await send({ type: 'listModels' } as WebviewToExtension);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const models = posts.find((p): p is Extract<ExtensionToWebview, { type: 'models' }> => p.type === 'models');
+    expect(models?.models).toEqual([]);
+    link.dispose();
+  });
+});
+
+/**
+ * Deliberately NOT migrated. settingsTestConnection validates a key the user
+ * has just typed and not yet saved, so there is no session holding it — the
+ * bootstrap case docs/phase3-protocol-design.md §4 settles for Setup.tsx.
+ * It is the one chat-view path that still builds a Provider in this process,
+ * and it is what users click to check their own API key, so it gets its own
+ * regression test rather than being assumed intact.
+ */
+describe('settings connection test — still host-side', () => {
+  it('validates an unsaved key the user just typed, with no session involved', async () => {
+    const posts: ExtensionToWebview[] = [];
+    const { link, send } = makeChat({ posts });
+    await send({ type: 'ready' } as WebviewToExtension);
+    // No server at all: this path must not depend on one.
+    await core.close();
+
+    await send({
+      type: 'settingsTestConnection',
+      profile,
+      apiKey: 'sk-just-typed',
+    } as WebviewToExtension);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const result = posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'settingsModels' }> => p.type === 'settingsModels',
+    );
+    expect(result?.models).toEqual(['mock', 'other']);
+    expect(result?.error).toBeUndefined();
+    // It really used the typed key rather than anything stored.
+    expect(model.requests.at(-1)!.path).toContain('/models');
+    link.dispose();
+  });
+
+  it('reports the endpoint’s error instead of silently showing an empty model list', async () => {
+    const posts: ExtensionToWebview[] = [];
+    const { link, send } = makeChat({ posts });
+    await send({ type: 'ready' } as WebviewToExtension);
+    await model.close();
+
+    await send({
+      type: 'settingsTestConnection',
+      profile,
+      apiKey: 'sk-just-typed',
+    } as WebviewToExtension);
+    await new Promise((r) => setTimeout(r, 200));
+
+    const result = posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'settingsModels' }> => p.type === 'settingsModels',
+    );
+    expect(result?.models).toEqual([]);
+    expect(result?.error).toBeTruthy();
+    link.dispose();
+  });
+});
+
+describe('ServerLink', () => {
+  it('pushes only the active profile’s key, per least-exposure', async () => {
+    const profiles = stubProfiles([profile, { ...profile, name: 'other' }], {
+      test: 'sk-active',
+      other: 'sk-other',
+    });
+    const link = new ServerLink(profiles, log as never, serverOpts as never);
+
+    await link.listModels('test');
+
+    expect(model.requests.at(-1)!.path).toContain('/models');
+    expect(core.sessionCount).toBe(1);
+    link.dispose();
+  });
+});

@@ -1,5 +1,5 @@
 import type { AgentOutcome } from '../agent/loop.js';
-import type { ChatMessage } from '../providers/types.js';
+import type { ChatMessage, ModelInfo } from '../providers/types.js';
 import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
 import type { AgentPersona } from '../agent/personas.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
@@ -164,6 +164,68 @@ export interface AgentCancelParams {
   runId: string;
 }
 
+/**
+ * `chat/send` — one chat-view turn, run server-side.
+ *
+ * A separate method from `agent/run` rather than `agent/run` with a
+ * restricted toolset, because the two differ in **termination policy**, not
+ * just in tools. `runAgent` requires structural termination through
+ * `finish(summary)` and nudges a tool-free reply up to `MAX_NUDGES` times
+ * before accepting it (`agent/loop.ts:253`, `:595-609`); a chat turn ends
+ * with prose by design. Reusing `agent/run` would cost up to six model calls
+ * per message and would relocate the answer into `finish`'s summary
+ * argument, which streams as `kind: 'tool'` deltas rather than text.
+ *
+ * Everything else *is* reused: tools execute over the same `tool/execute`
+ * channel, deltas and chips ride `agent/event`, cancellation is
+ * `agent/cancel`, and lazily-resolved keys come from `key/request`. The new
+ * surface is this one method.
+ */
+export interface ChatSendParams {
+  profileName?: string;
+  model: string;
+  messages: ChatMessage[];
+  temperature?: number;
+  maxTokens: number;
+  /**
+   * Read-only tools for the ask loop; empty → a plain streamed reply. The
+   * host decides the set because the answer depends on things the server
+   * can't see (native-tool-call capability, whether a workspace is open).
+   */
+  tools?: ToolDefinition[];
+  maxToolIterations?: number;
+  /** Correlates `agent/event` notifications and `agent/cancel` to this turn. */
+  runId: string;
+}
+
+export interface ChatSendResult {
+  /** 'length' means the model hit its output cap — the host warns the user. */
+  finishReason?: string;
+}
+
+/**
+ * `provider/listModels` — the model list for a profile, and with it the
+ * context length the endpoint reports.
+ *
+ * Request/response, no streaming and no host callbacks — the same shape as
+ * `session/hello`. It exists because the server already holds keys and builds
+ * Providers, so a host asking "what models does this profile have" should not
+ * need a Provider of its own.
+ *
+ * Deliberately does NOT accept an inline key. A profile whose key the user has
+ * just typed and not yet saved has no session behind it; that bootstrap probe
+ * stays host-side (design note §4's setup caveat), which is what keeps this
+ * method from becoming a way to push arbitrary key material.
+ */
+export interface ListModelsParams {
+  /** Defaults to the session's active profile. */
+  profileName?: string;
+}
+
+export interface ListModelsResult {
+  models: ModelInfo[];
+}
+
 // ---------------------------------------------------------------------------
 // server → host
 // ---------------------------------------------------------------------------
@@ -253,6 +315,8 @@ export const METHODS = {
   agentRun: 'agent/run',
   agentCancel: 'agent/cancel',
   agentEvent: 'agent/event',
+  chatSend: 'chat/send',
+  listModels: 'provider/listModels',
   toolExecute: 'tool/execute',
   permissionRequest: 'permission/request',
   snapshotBefore: 'snapshot/before',

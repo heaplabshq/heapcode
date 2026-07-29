@@ -22,6 +22,8 @@ import {
   type Conversation,
   type KeyRequestParams,
   type KeyRequestResult,
+  type ListModelsParams,
+  type ListModelsResult,
   type McpManager,
   type PermissionChoice,
   type PermissionRequestParams,
@@ -675,7 +677,12 @@ export function App({
   async function handleModel(arg?: string): Promise<void> {
     if (arg) return applyModel(arg);
     try {
-      const models = await active.provider.listModels();
+      // Server-side: it already holds this profile's key and Provider, so the
+      // CLI has no reason to build a second one just to read a model list.
+      const { peer } = await ensureConnection();
+      const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
+        profileName: active.profile.name,
+      } satisfies ListModelsParams);
       if (models.length === 0) {
         pushSystem('This endpoint does not list models. Set one directly with "/model <id>".');
         return;

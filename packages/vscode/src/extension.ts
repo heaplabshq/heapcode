@@ -6,6 +6,7 @@ import { exportBundle, importBundle } from './bundle.js';
 import { openMemoryFile } from './memory.js';
 import { reviewCurrentPr } from './prReview.js';
 import { ChatViewProvider } from './chatViewProvider.js';
+import { ServerLink } from './serverLink.js';
 import { HeapCodeActionProvider } from './codeActions.js';
 import { HeapCodeCompletionProvider } from './completionProvider.js';
 import { generateCommitMessage } from './gitCommit.js';
@@ -65,7 +66,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const profiles = new ProfileManager(context.secrets, log);
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);
-  const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, track);
+  // Chat turns and model listing run on the core server too; this is their
+  // connection, kept separate from the agent's (see ServerLink's note).
+  const serverOptions = {
+    clientVersion: String(context.extension.packageJSON.version ?? ''),
+    daemonEntry: vscode.Uri.joinPath(context.extensionUri, 'dist', 'daemon.js').fsPath,
+  };
+  const link = new ServerLink(profiles, log, serverOptions);
+  profiles.setModelLister((profileName) => link.listModels(profileName));
+  const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, link, track);
   activeChatProvider = chatProvider;
   const permissions = new PermissionEngine(context.workspaceState, log, track);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
@@ -102,10 +111,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // so the extension's job on that path is to answer tool/execute,
     // permission/request, snapshot/before and key/request — see
     // docs/phase3-protocol-design.md §7.
-    {
-      clientVersion: String(context.extension.packageJSON.version ?? ''),
-      daemonEntry: vscode.Uri.joinPath(context.extensionUri, 'dist', 'daemon.js').fsPath,
-    },
+    serverOptions,
   );
   chatProvider.agent = agent;
   chatProvider.agent.askUser = (question, options) =>
@@ -165,6 +171,8 @@ export function activate(context: vscode.ExtensionContext): void {
     // never reads workspace settings for itself (§2), so a settings edit has
     // to reach it as a fresh session — applied on the next run, not mid-run.
     profiles.onDidChange(() => agent.markProfilesChanged()),
+    profiles.onDidChange(() => link.markProfilesChanged()),
+    { dispose: () => link.dispose() },
     statusBar,
     completionStatus,
     rag,

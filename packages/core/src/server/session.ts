@@ -41,6 +41,8 @@ export class Session {
   readonly id: string;
   readonly root: string;
   readonly activeProfile: string;
+  /** False when `root` is not a real local directory — see HelloParams.localRoot. */
+  readonly localRoot: boolean;
 
   private readonly keys = new Map<string, string>();
   private readonly profiles = new Map<string, ProviderProfileConfig>();
@@ -61,6 +63,7 @@ export class Session {
     this.id = id;
     this.root = hello.root;
     this.activeProfile = hello.activeProfile;
+    this.localRoot = hello.localRoot ?? true;
     for (const profile of hello.profiles) this.profiles.set(profile.name, profile);
     for (const [name, key] of Object.entries(hello.keys ?? {})) this.keys.set(name, key);
   }

@@ -13,6 +13,12 @@ import type { AgentEvent, ChatSendParams, ChatSendResult } from './protocol.js';
 export interface ChatHost {
   emit(event: AgentEvent): void;
   executeTool(call: ToolCall): Promise<ToolResult>;
+  /**
+   * The semantic index's answer for a `semantic_search` call, or undefined
+   * when it has nothing. Chat offers the tool too (its read-only set includes
+   * it), so it needs the same server-side dispatch the agent path has.
+   */
+  semanticSearch(query: string): Promise<string | undefined>;
 }
 
 /**
@@ -44,7 +50,19 @@ export async function runChatForSession(
     maxToolIterations: params.maxToolIterations,
     // Only wired when tools are actually offered, so a plain reply never
     // leaves a live tool channel dangling.
-    execute: params.tools && params.tools.length > 0 ? (call) => host.executeTool(call) : undefined,
+    execute:
+      params.tools && params.tools.length > 0
+        ? async (call) => {
+            // Same split as the agent path: answered here when the index has
+            // something, handed to the host's executor otherwise so its
+            // text-search fallback still applies.
+            if (call.name === 'semantic_search') {
+              const formatted = await host.semanticSearch(String(call.args.query ?? ''));
+              if (formatted) return { id: call.id, name: call.name, content: formatted };
+            }
+            return host.executeTool(call);
+          }
+        : undefined,
     events: {
       onDelta: (text) => host.emit({ type: 'text_delta', text }),
       onToolCall: (call) => host.emit({ type: 'tool_call', id: call.id, name: call.name, args: call.args }),

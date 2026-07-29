@@ -68,6 +68,12 @@ export interface IndexOptions {
    * the host that has a setting for it.
    */
   contextualRetrieval?: boolean;
+  /**
+   * Aborts the run. A full build is minutes of network calls, so Stop has to
+   * reach it — over the protocol this is the session's run controller, the
+   * same one `agent/cancel` aborts.
+   */
+  signal?: AbortSignal;
 }
 
 export interface BuildIndexOptions extends IndexOptions {
@@ -189,6 +195,12 @@ export class RagIndexer {
    * Returns undefined when no embeddings model is configured — the caller
    * decides how loudly to say so, since one host logs and the other shows a
    * warning.
+   *
+   * Cancellation is not failure. An aborted build keeps whatever it managed to
+   * embed, reports that count honestly, and ends `idle` rather than `error` —
+   * the same distinction the agent loop draws between 'stopped' and 'error'.
+   * Reporting it as an error would put "index error" in the status bar for a
+   * build the user themselves stopped.
    */
   async buildIndex(opts: BuildIndexOptions = {}): Promise<IndexResult | undefined> {
     if (this.indexing) return undefined;
@@ -197,32 +209,44 @@ export class RagIndexer {
     this.indexing = true;
     this.state = 'indexing';
     const started = Date.now();
+    // Outside the try so a cancelled or failed run still reports what it did.
+    let embedded = 0;
     try {
       const found = await this.opts.files.list();
       const files = found.filter((f) => CODE_EXTENSIONS.test(f)).slice(0, MAX_INDEXED_FILES);
 
       const existing = new Set<string>();
-      let embedded = 0;
       for (const rel of files) {
+        if (opts.signal?.aborted) break;
         existing.add(rel);
         if (await this.indexOne(rel, opts)) embedded++;
         opts.onProgress?.(embedded, files.length);
       }
-      this.store.retainFiles(existing);
+      // Only prune when the walk actually completed: a cancelled build has
+      // seen a prefix of the workspace, and retaining against that would
+      // delete everything it had not reached yet.
+      if (!opts.signal?.aborted) this.store.retainFiles(existing);
       await this.persist();
       this.state = 'idle';
       this.opts.onLog?.(
         `indexed ${this.store.fileCount} files / ${this.store.chunkCount} chunks ` +
           `(${embedded} re-embedded) in ${Math.round((Date.now() - started) / 1000)}s`,
       );
-      return { files: this.store.fileCount, chunks: this.store.chunkCount, embedded };
     } catch (err) {
-      this.state = 'error';
-      this.opts.onLog?.(`index failed: ${err instanceof Error ? err.message : String(err)}`);
-      return { files: this.store.fileCount, chunks: this.store.chunkCount, embedded: 0 };
+      if (opts.signal?.aborted) {
+        // Keep the partial index: every file already embedded is still valid,
+        // and the next build re-checks hashes anyway.
+        await this.persist().catch(() => {});
+        this.state = 'idle';
+        this.opts.onLog?.(`indexing cancelled after ${embedded} file(s)`);
+      } else {
+        this.state = 'error';
+        this.opts.onLog?.(`index failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } finally {
       this.indexing = false;
     }
+    return { files: this.store.fileCount, chunks: this.store.chunkCount, embedded };
   }
 
   /** Index (or re-index) one file by workspace-relative path; true when it needed re-embedding. */
@@ -268,12 +292,13 @@ export class RagIndexer {
     // Contextual retrieval: a short blurb per chunk, prepended before
     // embedding — only for chunks that need (re-)embedding anyway, so cost
     // scales with what changed rather than the whole repo every run.
-    const contexts = opts.contextualRetrieval ? await this.contextsFor(rel, content, toEmbed) : [];
+    const contexts = opts.contextualRetrieval ? await this.contextsFor(rel, content, toEmbed, opts.signal) : [];
 
     for (let i = 0; i < toEmbed.length; i += EMBED_BATCH) {
       const batch = toEmbed.slice(i, i + EMBED_BATCH);
       const res = await embeddings.provider.embeddings({
         model,
+        signal: opts.signal,
         input: batch.map((c, j) => {
           const context = contexts[i + j];
           return context ? `${context}\n${c.path}\n${c.text}` : `${c.path}\n${c.text}`;
@@ -294,14 +319,14 @@ export class RagIndexer {
   }
 
   /** Best-effort — contextual retrieval is a quality boost, never a reason to fail indexing. */
-  private async contextsFor(rel: string, content: string, toEmbed: Chunk[]): Promise<string[]> {
+  private async contextsFor(rel: string, content: string, toEmbed: Chunk[], signal?: AbortSignal): Promise<string[]> {
     if (toEmbed.length === 0) return [];
     try {
       const ctx = await this.opts.roles('contextModel');
       if (!ctx) return [];
       const model = ctx.profile.contextModel || ctx.profile.rerankModel || ctx.profile.editModel || ctx.profile.model;
       if (!model) return [];
-      return await contextualizeChunks(ctx.provider, model, rel, content, toEmbed);
+      return await contextualizeChunks(ctx.provider, model, rel, content, toEmbed, signal);
     } catch {
       return [];
     }

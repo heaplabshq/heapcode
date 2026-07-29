@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from './protocol.js';
@@ -34,6 +35,32 @@ export function daemonAddress(home: string = heapcodeHome()): string {
     return `\\\\.\\pipe\\heapcode-${PROTOCOL_VERSION}-${tag}`;
   }
   return join(home, `daemon-${PROTOCOL_VERSION}.sock`);
+}
+
+/**
+ * Personal, machine-local session state for a project — the semantic index
+ * now among it. Mirrors packages/cli/src/paths.ts:65-67 exactly, down to the
+ * key derivation, for the same reason `heapcodeHome` mirrors `globalDir`:
+ * core cannot depend on cli, and the two must resolve to the same directory
+ * or the CLI's existing index would be orphaned along with the extension's.
+ *
+ * Canonicalizes internally (idempotent), so a host that sends a raw path and
+ * one that sends a realpath'd one land in the same place — which matters here
+ * because the CLI canonicalizes its root and the extension sends `fsPath`.
+ */
+export function projectStateDir(root: string, home: string = heapcodeHome()): string {
+  const abs = canonicalize(root);
+  const readable = abs.replace(/[\\/]+/g, '-').replace(/^-+/, '').slice(0, 80);
+  const hash = createHash('sha256').update(abs).digest('hex').slice(0, 8);
+  return join(home, 'projects', `${readable}-${hash}`);
+}
+
+function canonicalize(root: string): string {
+  try {
+    return realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 export function daemonTokenFile(home: string = heapcodeHome()): string {

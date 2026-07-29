@@ -12,7 +12,7 @@ import {
 } from '@heapcode/core';
 import { getActiveEditor } from './contextCollector.js';
 import type { ProfileManager } from './profileManager.js';
-import type { RagIndexer } from './rag/indexer.js';
+import type { ServerLink } from './serverLink.js';
 import type { RetentionTracker } from './retentionTracker.js';
 
 const SCHEME = 'heapcode-proposal';
@@ -47,7 +47,7 @@ export function registerInlineEdit(
   context: vscode.ExtensionContext,
   profiles: ProfileManager,
   log: vscode.OutputChannel,
-  rag: RagIndexer,
+  link: ServerLink,
   track?: (name: string, meta?: Record<string, unknown>) => void,
   retention?: RetentionTracker,
 ): void {
@@ -57,7 +57,7 @@ export function registerInlineEdit(
     vscode.languages.registerCodeLensProvider({ scheme: SCHEME }, new ProposalCodeLensProvider()),
     vscode.commands.registerCommand('heapcode.inlineEdit', () => {
       track?.('inlineEdit.invoked');
-      void inlineEdit(profiles, log, rag);
+      void inlineEdit(profiles, log, link);
     }),
     vscode.commands.registerCommand('heapcode.acceptEdit', () => {
       track?.('inlineEdit.accepted');
@@ -73,7 +73,7 @@ export function registerInlineEdit(
 async function inlineEdit(
   profiles: ProfileManager,
   log: vscode.OutputChannel,
-  rag: RagIndexer,
+  link: ServerLink,
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -114,16 +114,13 @@ async function inlineEdit(
     async (_progress, token) => {
       const abort = new AbortController();
       token.onCancellationRequested(() => abort.abort());
-      let relatedCode = '';
-      if (rag.ready) {
-        try {
-          relatedCode = await rag.queryFormatted(`${instruction}\n${selectedCode}`, RELATED_CODE_MATCHES);
-        } catch (err) {
-          log.appendLine(
-            `[inline-edit] semantic search failed, continuing without it: ${err instanceof Error ? err.message : err}`,
-          );
-        }
-      }
+      // Retrieval crosses the socket now; ragQuery never throws and returns an
+      // empty block when there is no index, so the old ready-check and
+      // try/catch collapse into one call that degrades on its own.
+      const { formatted: relatedCode } = await link.ragQuery(
+        `${instruction}\n${selectedCode}`,
+        RELATED_CODE_MATCHES,
+      );
       try {
         const { provider, profile } = await profiles.resolveRole('editModel');
         const result = await provider.chat({

@@ -1,4 +1,6 @@
 import type { AgentOutcome } from '../agent/loop.js';
+import type { IndexState } from '../rag/indexer.js';
+import type { HitMeta } from '../rag/keywordIndex.js';
 import type { ChatMessage, ModelInfo } from '../providers/types.js';
 import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
 import type { AgentPersona } from '../agent/personas.js';
@@ -110,6 +112,16 @@ export interface HelloParams {
    * Profiles absent here are resolved lazily via `key/request` (§2).
    */
   keys?: Record<string, string>;
+  /**
+   * Whether `root` is a real local directory the server may read for itself.
+   * The server reads the workspace directly for indexing (design note §3.2
+   * option (a), decision 3) rather than pulling 3,000 files back over
+   * `tool/execute`, and that is only sound when the root is a real path. A VS
+   * Code virtual or remote-scheme workspace sets this false and gets no RAG,
+   * the same way ShadowGit already declines a non-file workspace
+   * (packages/vscode/src/extension.ts:85). Defaults to true.
+   */
+  localRoot?: boolean;
 }
 
 export interface HelloResult {
@@ -226,6 +238,83 @@ export interface ListModelsResult {
   models: ModelInfo[];
 }
 
+/**
+ * `rag/query` — semantic retrieval, run server-side.
+ *
+ * Request/response with no callbacks, the shape `provider/listModels` has.
+ * Nothing binary crosses here and nothing needed to: the vectors are produced
+ * and consumed inside the server, and no consumer of RAG ever read one
+ * (docs/phase3-rag-design.md §1.2). That is what made the "Float32Array is
+ * JSON-hostile" problem dissolve rather than need a clever encoding — see
+ * §2.3. `hits` carries HitMeta, which has no `vector` field at all.
+ *
+ * The two toggles are host policy, passed per request rather than read from
+ * config the server has no business reading (§5.4, decision 6).
+ */
+export interface RagQueryParams {
+  text: string;
+  k?: number;
+  hybridSearch?: boolean;
+  rerank?: boolean;
+}
+
+export interface RagQueryResult {
+  /** Exactly the block every consumer renders — the tool, @workspace, @mentions, inline edit. */
+  formatted: string;
+  hits: HitMeta[];
+}
+
+/**
+ * `rag/index` — a full rebuild (`full: true`) or an incremental update
+ * (`paths`), which is every trigger the hosts have.
+ *
+ * A delete and a rename need no shape of their own: indexOne drops a path it
+ * cannot read, so a delete is `paths: ['gone.ts']` and a rename is
+ * `paths: ['old.ts', 'new.ts']`.
+ */
+export interface RagIndexParams {
+  full?: boolean;
+  /**
+   * Empty the index instead of building it — the "Clear Index" command. A flag
+   * on this method rather than a fourth one, because it is the same thing:
+   * mutate the index and report what is left.
+   */
+  clear?: boolean;
+  /** Workspace-relative paths to (re)index; ones that no longer exist are dropped. */
+  paths?: string[];
+  contextualRetrieval?: boolean;
+  /** Correlates `rag/event` progress and lets `agent/cancel` stop a long build. */
+  runId?: string;
+}
+
+export interface RagIndexResult {
+  files: number;
+  chunks: number;
+  /** Files that actually re-embedded. 0 on an incremental no-op. */
+  embedded: number;
+  /**
+   * True when this build started from nothing. The extension's index used to
+   * live in its own workspace storage and now lives under the shared project
+   * state dir, so the first build after upgrading is a full rebuild — worth
+   * saying out loud rather than leaving as a mysteriously slow index
+   * (§5.4, decision 5).
+   */
+  fresh?: boolean;
+}
+
+export interface RagStatusResult {
+  state: IndexState;
+  files: number;
+  chunks: number;
+  /**
+   * False when the server cannot read this workspace for itself — a VS Code
+   * virtual or remote-scheme root, where only the host can resolve paths.
+   * RAG is then unavailable rather than silently indexing whatever `fsPath`
+   * produced (decision 3).
+   */
+  available: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // server → host
 // ---------------------------------------------------------------------------
@@ -289,6 +378,22 @@ export interface PermissionRequestResult {
   granted: boolean;
 }
 
+/**
+ * `rag/event` — indexing progress and state, as notifications.
+ *
+ * The status surface stays host-side and becomes a renderer: the CLI's
+ * progress line and the extension's status bar both read this rather than
+ * polling `rag/status` (§4).
+ */
+export type RagEvent =
+  | { kind: 'progress'; embedded: number; total: number }
+  | { kind: 'state'; state: IndexState; files: number; chunks: number };
+
+export interface RagEventParams {
+  runId?: string;
+  event: RagEvent;
+}
+
 /** `snapshot/before` — a server→host request fired before non-read tools (AgentOptions.beforeToolCall). */
 export interface SnapshotBeforeParams {
   runId: string;
@@ -317,6 +422,10 @@ export const METHODS = {
   agentEvent: 'agent/event',
   chatSend: 'chat/send',
   listModels: 'provider/listModels',
+  ragQuery: 'rag/query',
+  ragIndex: 'rag/index',
+  ragStatus: 'rag/status',
+  ragEvent: 'rag/event',
   toolExecute: 'tool/execute',
   permissionRequest: 'permission/request',
   snapshotBefore: 'snapshot/before',

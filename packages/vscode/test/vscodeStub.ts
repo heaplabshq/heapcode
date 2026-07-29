@@ -16,26 +16,30 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/p
 import * as nodePath from 'node:path';
 
 export class Uri {
-  private constructor(readonly fsPath: string) {}
+  private constructor(
+    readonly fsPath: string,
+    readonly scheme: string = 'file',
+  ) {}
 
   get path(): string {
     return this.fsPath;
   }
 
-  get scheme(): string {
-    return 'file';
-  }
-
   toString(): string {
-    return `file://${this.fsPath}`;
+    return `${this.scheme}://${this.fsPath}`;
   }
 
   static file(p: string): Uri {
     return new Uri(p);
   }
 
+  /** Test hook: a non-`file` root, the case RAG and ShadowGit both decline. */
+  static withScheme(p: string, scheme: string): Uri {
+    return new Uri(p, scheme);
+  }
+
   static joinPath(base: Uri, ...segments: string[]): Uri {
-    return new Uri(nodePath.join(base.fsPath, ...segments));
+    return new Uri(nodePath.join(base.fsPath, ...segments), base.scheme);
   }
 }
 
@@ -60,10 +64,12 @@ export enum DiagnosticSeverity {
 }
 
 let workspaceRoot: string | undefined;
+let workspaceScheme = 'file';
 
 /** Test hook: point `asRelativePath`/`workspaceFolders` at a temp directory. */
-export function __setWorkspaceRoot(root: string | undefined): void {
+export function __setWorkspaceRoot(root: string | undefined, scheme = 'file'): void {
   workspaceRoot = root;
+  workspaceScheme = scheme;
 }
 
 const configs = new Map<string, Record<string, unknown>>();
@@ -117,7 +123,7 @@ async function walk(dir: string, root: string, out: Uri[]): Promise<void> {
 
 export const workspace = {
   get workspaceFolders(): Array<{ uri: Uri }> | undefined {
-    return workspaceRoot ? [{ uri: Uri.file(workspaceRoot) }] : undefined;
+    return workspaceRoot ? [{ uri: Uri.withScheme(workspaceRoot, workspaceScheme) }] : undefined;
   },
 
   fs: {

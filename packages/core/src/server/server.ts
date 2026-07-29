@@ -5,6 +5,7 @@ import { connect } from 'node:net';
 import { runAgentForSession, type RunHost } from './agentRun.js';
 import { runChatForSession, type ChatHost } from './chatSend.js';
 import { RpcPeer } from './rpc.js';
+import { SessionRag } from './rag.js';
 import { Session } from './session.js';
 import { addressIsFile, daemonAddress, daemonTokenFile, heapcodeHome, socketAddressProblem } from './address.js';
 import {
@@ -23,6 +24,9 @@ import {
   type ListModelsResult,
   type PermissionRequestParams,
   type PermissionRequestResult,
+  type RagEventParams,
+  type RagIndexParams,
+  type RagQueryParams,
   type SnapshotBeforeParams,
   type ToolExecuteParams,
   type ToolExecuteResult,
@@ -132,6 +136,26 @@ export class HeapcodeServer {
 
     const peer = new RpcPeer(socket, 's', (err) => this.onLog(`[rpc] ${err.message}`));
     let session: Session | undefined;
+    let rag: SessionRag | undefined;
+
+    /** Resolve a profile's key through the host — shared by every path that may need one. */
+    const requestKey = async (profileName: string): Promise<void> => {
+      const active = session;
+      if (!active) return;
+      const res = await peer
+        .request<KeyRequestResult>(METHODS.keyRequest, { profileName } satisfies KeyRequestParams)
+        .catch(() => ({}) as KeyRequestResult);
+      active.adoptResolvedKey(profileName, res);
+    };
+
+    /** The session's semantic index, built on first use so a session that never asks pays nothing. */
+    const ragFor = (active: Session): SessionRag => {
+      rag ??= new SessionRag(active, {
+        emit: (event, runId) => void peer.notifyWithBackpressure(METHODS.ragEvent, { runId, event } satisfies RagEventParams),
+        requestKey,
+      });
+      return rag;
+    };
 
     peer.onRequest(METHODS.hello, async (raw) => {
       const params = raw as HelloParams;
@@ -179,12 +203,8 @@ export class HeapcodeServer {
             .request(METHODS.snapshotBefore, { runId: params.runId, call } satisfies SnapshotBeforeParams, controller.signal)
             .catch(() => {}); // best-effort, never fails a tool call
         },
-        requestKey: async (profileName) => {
-          const res = await peer
-            .request<KeyRequestResult>(METHODS.keyRequest, { profileName } satisfies KeyRequestParams, controller.signal)
-            .catch(() => ({}) as KeyRequestResult);
-          active.adoptResolvedKey(profileName, res);
-        },
+        requestKey,
+        semanticSearch: (query) => ragFor(active).searchForTool(query),
       };
       try {
         return await runAgentForSession(session, params, host, controller.signal);
@@ -206,6 +226,7 @@ export class HeapcodeServer {
             { runId: params.runId, call } satisfies ToolExecuteParams,
             controller.signal,
           ),
+        semanticSearch: (query) => ragFor(active).searchForTool(query),
       };
       try {
         return await runChatForSession(session, params, host, controller.signal);
@@ -224,6 +245,36 @@ export class HeapcodeServer {
       const resolved = session.providerFor(name);
       if (!resolved) throw new Error(`Unknown profile "${name}" for this session.`);
       return { models: await resolved.provider.listModels() } satisfies ListModelsResult;
+    });
+
+    // Request/response like provider/listModels. Nothing binary crosses here:
+    // vectors are produced and consumed server-side and `hits` carries HitMeta,
+    // which has no vector field (docs/phase3-rag-design.md §1.2, §2.3).
+    peer.onRequest(METHODS.ragQuery, async (raw) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      return ragFor(session).query(raw as RagQueryParams);
+    });
+
+    // A long build has to be stoppable, so it registers as a run when the host
+    // gives it a runId — `agent/cancel` then aborts it like any other.
+    peer.onRequest(METHODS.ragIndex, async (raw, signal) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      const params = (raw ?? {}) as RagIndexParams;
+      const active = session;
+      const controller = params.runId ? active.beginRun(params.runId) : undefined;
+      // $/cancelRequest on this call aborts it too, so a host that drops the
+      // request rather than sending agent/cancel still stops the work.
+      signal.addEventListener('abort', () => controller?.abort(), { once: true });
+      try {
+        return await ragFor(active).runIndex(params, controller?.signal ?? signal);
+      } finally {
+        if (params.runId) active.endRun(params.runId);
+      }
+    });
+
+    peer.onRequest(METHODS.ragStatus, async () => {
+      if (!session) throw new Error('session/hello must be sent first');
+      return ragFor(session).status();
     });
 
     peer.onNotification(METHODS.agentCancel, (raw) => {

@@ -12,6 +12,13 @@ import {
   type ListModelsParams,
   type ListModelsResult,
   type ModelInfo,
+  type RagEvent,
+  type RagEventParams,
+  type RagIndexParams,
+  type RagIndexResult,
+  type RagQueryParams,
+  type RagQueryResult,
+  type RagStatusResult,
   type ServerConnection,
   type ToolCall,
   type ToolExecuteParams,
@@ -34,7 +41,7 @@ export interface ChatTurnHandlers {
 
 /**
  * The extension's connection for everything that is not an agent run: chat
- * turns and model listing.
+ * turns, model listing, and the semantic index.
  *
  * Separate from AgentController's connection on purpose. `tool/execute` is one
  * handler per peer, and chat's executor is deliberately unlike the agent's —
@@ -52,6 +59,8 @@ export class ServerLink {
   private stale = false;
   /** The turn currently streaming, so one set of handlers serves every turn. */
   private activeTurn?: { runId: string } & ChatTurnHandlers;
+  /** Indexing progress/state listeners — the status bar is the only one. */
+  private readonly ragListeners = new Set<(event: RagEvent) => void>();
 
   constructor(
     private readonly profiles: ProfileManager,
@@ -81,11 +90,18 @@ export class ServerLink {
 
     const profile = this.profiles.getProfiles().find((p) => p.name === profileName);
     const apiKey = profile ? await this.profiles.getApiKey(profile) : undefined;
-    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const root = folder?.fsPath ?? process.cwd();
     const connection = await connectToServer(
       {
         client: { name: 'heapcode-vscode-chat', version: this.options.clientVersion },
         root,
+        // The server indexes the workspace for itself, which only works when
+        // the root is a real directory. A virtual or remote-scheme workspace
+        // says so and gets no semantic index, rather than having the server
+        // index whatever `fsPath` happened to produce — the same posture
+        // ShadowGit already takes (extension.ts:85).
+        localRoot: !folder || folder.scheme === 'file',
         // Only the profile in use, per §2's least-exposure argument; anything
         // else is resolved on demand through key/request.
         profiles: profile ? [profile] : [],
@@ -127,7 +143,83 @@ export class ServerLink {
       if (turn && turn.runId === runId) turn.onEvent(event);
     });
 
+    peer.onNotification(METHODS.ragEvent, (raw) => {
+      const { event } = raw as RagEventParams;
+      for (const listener of [...this.ragListeners]) listener(event);
+    });
+
     return connection;
+  }
+
+  /** Whichever profile is active — RAG has no notion of a per-call profile. */
+  private activeProfileName(): string {
+    return this.profiles.getActiveProfile().name;
+  }
+
+  /** Indexing progress and state, for the status bar. */
+  onRagEvent(listener: (event: RagEvent) => void): vscode.Disposable {
+    this.ragListeners.add(listener);
+    return { dispose: () => this.ragListeners.delete(listener) };
+  }
+
+  /**
+   * Semantic retrieval. The two toggles are read here rather than server-side:
+   * they are host policy, and the server has no business reading this host's
+   * settings (docs/phase3-rag-design.md §5.4, decision 6).
+   *
+   * Never throws — every caller treats "no results" and "no server" the same
+   * way, by falling back to whatever context it can get without RAG.
+   */
+  async ragQuery(text: string, k?: number): Promise<RagQueryResult> {
+    const config = vscode.workspace.getConfiguration('heapcode');
+    try {
+      const { peer } = await this.ensureConnection(this.activeProfileName());
+      return await peer.request<RagQueryResult>(METHODS.ragQuery, {
+        text,
+        k,
+        hybridSearch: config.get<boolean>('rag.hybridSearch', true),
+        rerank: config.get<boolean>('rag.rerank', true),
+      } satisfies RagQueryParams);
+    } catch (err) {
+      this.log.appendLine(`[rag] query failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { formatted: '', hits: [] };
+    }
+  }
+
+  /**
+   * A full rebuild or an incremental update.
+   *
+   * contextualRetrieval comes from this host's setting, which ships **off** —
+   * unlike the CLI, which has no setting and always runs it. Decision 6 keeps
+   * that difference by passing it per request.
+   */
+  async ragIndex(params: Omit<RagIndexParams, 'contextualRetrieval'>): Promise<RagIndexResult | undefined> {
+    try {
+      const { peer } = await this.ensureConnection(this.activeProfileName());
+      return await peer.request<RagIndexResult>(METHODS.ragIndex, {
+        ...params,
+        contextualRetrieval: vscode.workspace
+          .getConfiguration('heapcode')
+          .get<boolean>('rag.contextualRetrieval', false),
+      } satisfies RagIndexParams);
+    } catch (err) {
+      this.log.appendLine(`[rag] index failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /** Empties the index — the "Clear Index" command. */
+  async ragClear(): Promise<void> {
+    await this.ragIndex({ clear: true });
+  }
+
+  async ragStatus(): Promise<RagStatusResult | undefined> {
+    try {
+      const { peer } = await this.ensureConnection(this.activeProfileName());
+      return await peer.request<RagStatusResult>(METHODS.ragStatus);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Model list for a profile, resolved with the server's copy of the key. */

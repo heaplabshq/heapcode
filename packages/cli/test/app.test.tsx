@@ -16,18 +16,8 @@ import { SessionCheckpoint } from '../src/agent/checkpoint.js';
 import { PermissionEngine } from '../src/agent/permissions.js';
 import type { ShadowGit } from '../src/agent/shadowGit.js';
 import { App } from '../src/ink/App.js';
-import type { RagIndexer } from '../src/rag/indexer.js';
 import type { RepoMapIndexer } from '../src/rag/repoMapIndexer.js';
 
-/** App mounts an effect that always calls init()/buildIndex() on both indexers — every duck-typed mock needs them, even when a test only cares about one other method. */
-function stubRag(overrides: Record<string, unknown> = {}): RagIndexer {
-  return {
-    ready: false,
-    init: vi.fn().mockResolvedValue(undefined),
-    buildIndex: vi.fn().mockResolvedValue(undefined),
-    ...overrides,
-  } as unknown as RagIndexer;
-}
 function stubRepoMap(overrides: Record<string, unknown> = {}): RepoMapIndexer {
   return {
     ready: false,
@@ -56,6 +46,10 @@ interface ModelServer {
   baseUrl: string;
   /** Message arrays from each chat request, in order — the shape recordingProvider.requests used to expose. */
   requests: Array<Array<{ role: string; content: string }>>;
+  /** Input batches from each /embeddings request — proof the server indexed something. */
+  embeddingCalls: string[][];
+  /** Non-streaming chat bodies: contextual retrieval and rerank both land here. */
+  nonStreamedChats: Array<Array<{ role: string; content: string }>>;
   reply(text: string): void;
   script(texts: string[]): void;
   close(): Promise<void>;
@@ -65,11 +59,33 @@ async function startModelServer(): Promise<ModelServer> {
   let script: string[] = [''];
   let call = 0;
   const requests: ModelServer['requests'] = [];
+  const embeddingCalls: string[][] = [];
+  const nonStreamedChats: ModelServer['nonStreamedChats'] = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
     req.on('data', (d) => (raw += d));
     req.on('end', () => {
-      const body = raw ? (JSON.parse(raw) as { messages?: Array<{ role: string; content: string }> }) : {};
+      const body = raw
+        ? (JSON.parse(raw) as { messages?: Array<{ role: string; content: string }>; input?: string[]; stream?: boolean })
+        : {};
+
+      // Embeddings, contextual retrieval and rerank all reach this same
+      // endpoint now that RAG runs in the server. Only *streamed* chat is an
+      // agent turn, so only that advances the script and is recorded — the
+      // rest would otherwise desync every scripted test.
+      if (req.url?.includes('/embeddings')) {
+        embeddingCalls.push(body.input ?? []);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: (body.input ?? []).map((_, i) => ({ embedding: [1, 0, 0], index: i })) }));
+        return;
+      }
+      if (body.stream !== true) {
+        nonStreamedChats.push((body.messages ?? []).map((m) => ({ role: m.role, content: m.content })));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: '' } }] }));
+        return;
+      }
+
       requests.push((body.messages ?? []).map((m) => ({ role: m.role, content: m.content })));
       const text = script[Math.min(call++, script.length - 1)] ?? '';
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -83,6 +99,8 @@ async function startModelServer(): Promise<ModelServer> {
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     requests,
+    embeddingCalls,
+    nonStreamedChats,
     reply: (text) => {
       script = [text];
       call = 0;
@@ -201,6 +219,23 @@ function recordingProvider(reply: string): Provider & { requests: Array<Array<{ 
   };
 }
 
+/**
+ * Turns on semantic indexing for one test. RAG runs in the server now, so
+ * there is nothing to stub: the server indexes `root` for real and answers
+ * over the socket. `embeddingsModel` is off by default so the rest of the
+ * suite sees no embeddings traffic at all.
+ */
+function withEmbeddings(): void {
+  profile.embeddingsModel = 'embed';
+}
+
+/**
+ * NOTE for the tests below: renderApp defaults `cwd` to undefined, which makes
+ * App send process.cwd() as the session root — this repo. Any test that
+ * exercises real indexing passes `cwd: root` so the server indexes its own
+ * temp workspace instead.
+ */
+
 function renderApp(overrides: {
   provider: Provider;
   conversation: Conversation;
@@ -210,7 +245,6 @@ function renderApp(overrides: {
   switchProvider?(p: ProviderProfileConfig): Promise<{ provider: Provider; contextWindow: number }>;
   cwd?: string;
   listWorkspaceFiles?(): Promise<string[]>;
-  ragIndexer?: RagIndexer;
   repoMapIndexer?: RepoMapIndexer;
   mcpManager?: McpManager;
   shadowGit?: ShadowGit;
@@ -242,7 +276,6 @@ function renderApp(overrides: {
       switchProvider={overrides.switchProvider}
       cwd={overrides.cwd}
       listWorkspaceFiles={overrides.listWorkspaceFiles}
-      ragIndexer={overrides.ragIndexer}
       repoMapIndexer={overrides.repoMapIndexer}
       mcpManager={overrides.mcpManager}
       checkUpdate={overrides.checkUpdate}
@@ -330,10 +363,10 @@ describe('App', () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
     const provider = scriptedProvider([
-      { content: '<tool name="write_file">\n{"path": "greeting.txt", "content": "hello from agent"}\n</tool>' },
-      { content: '<tool name="finish">\n{"summary": "Wrote greeting.txt as requested."}\n</tool>' },
+      { content: '<tool name="write_file">\n{"path": "greeting.md", "content": "hello from agent"}\n</tool>' },
+      { content: '<tool name="finish">\n{"summary": "Wrote greeting.md as requested."}\n</tool>' },
     ]);
-    const ragIndexer = stubRag({ indexOne: vi.fn().mockResolvedValue(true) });
+    withEmbeddings();
     const repoMapIndexer = stubRepoMap({ noteRecent: vi.fn(), indexOne: vi.fn().mockResolvedValue(undefined) });
 
     const { stdin, lastFrame } = renderApp({
@@ -341,8 +374,8 @@ describe('App', () => {
       conversation,
       historyStore,
       tools: [WRITE_FILE_TOOL],
-      ragIndexer,
       repoMapIndexer,
+      cwd: root,
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -351,15 +384,21 @@ describe('App', () => {
     await vi.waitFor(() => expect(lastFrame()).toContain('wants to modify files'), { timeout: 2_000 });
     stdin.write('\r'); // Allow once
 
-    await vi.waitFor(() => expect(lastFrame()).toContain('Wrote greeting.txt'), { timeout: 2_000 });
-    // The second argument is new: contextual retrieval is a per-call option
-    // now that the index lives in core, rather than something the CLI's own
-    // indexer decided internally. The CLI passes `true`, which is exactly what
-    // it always did unconditionally (packages/cli/src/rag/indexer.ts:187-194
-    // before the move).
-    expect(ragIndexer.indexOne).toHaveBeenCalledWith('greeting.txt', { contextualRetrieval: true });
-    expect(repoMapIndexer.indexOne).toHaveBeenCalledWith('greeting.txt');
-    expect(repoMapIndexer.noteRecent).toHaveBeenCalledWith('greeting.txt');
+    await vi.waitFor(() => expect(lastFrame()).toContain('Wrote greeting.md'), { timeout: 2_000 });
+    // greeting.md rather than .txt: `.txt` is not in CODE_EXTENSIONS, so the
+    // semantic index would correctly skip it and this test would prove nothing
+    // about the RAG half.
+    //
+    // The RAG half of this assertion is end-to-end now rather than a spy on a
+    // local indexer: App sends `rag/index { paths: ['greeting.md'] }`, the
+    // server chunks the file and embeds it, and the embeddings request lands
+    // on this test's model endpoint. Proving the *embedding* happened is
+    // strictly stronger than proving a method was called.
+    await vi.waitFor(() =>
+      expect(model.embeddingCalls.some((batch) => batch.some((input) => input.includes('greeting.md')))).toBe(true),
+    );
+    expect(repoMapIndexer.indexOne).toHaveBeenCalledWith('greeting.md');
+    expect(repoMapIndexer.noteRecent).toHaveBeenCalledWith('greeting.md');
   });
 
   it('denying a permission prompt ("Deny") does not run the tool and reports the denial to the model', async () => {
@@ -965,7 +1004,9 @@ describe('App', () => {
     const { writeFile } = await import('node:fs/promises');
     await writeFile(join(root, 'auth.ts'), 'function authenticate() { return true; }\n');
 
-    // No ragIndexer at all → falls all the way back to the search tool.
+    // No embeddings model → rag/query comes back empty, which is the same
+    // condition the old `ragIndexer.ready` gate stood for, and /search falls
+    // all the way back to the text-search tool.
     const noIndex = renderApp({ provider: fakeProvider('unused'), conversation, historyStore });
     await new Promise((r) => setTimeout(r, 20));
     noIndex.stdin.write('/search authenticate');
@@ -974,17 +1015,14 @@ describe('App', () => {
     expect(noIndex.lastFrame()).toContain('auth.ts');
     noIndex.unmount();
 
-    // ragIndexer.ready → uses its query() results instead of the text-search tool.
-    const ragIndexer = stubRag({
-      ready: true,
-      query: vi.fn().mockResolvedValue([{ record: { path: 'auth.ts', startLine: 1, endLine: 3 }, score: 0.9 }]),
-    });
-    const withIndex = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, ragIndexer });
-    await new Promise((r) => setTimeout(r, 20));
+    // With one configured, the hits come back over rag/query from an index the
+    // server built itself — no stub anywhere in the path.
+    withEmbeddings();
+    const withIndex = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, cwd: root });
+    await vi.waitFor(() => expect(model.embeddingCalls.length).toBeGreaterThan(0), { timeout: 3_000 });
     withIndex.stdin.write('/search authenticate');
     withIndex.stdin.write('\r');
-    await vi.waitFor(() => expect(withIndex.lastFrame()).toContain('auth.ts:1-3'));
-    expect(ragIndexer.query).toHaveBeenCalledWith('authenticate');
+    await vi.waitFor(() => expect(withIndex.lastFrame()).toMatch(/auth\.ts:\d+-\d+/), { timeout: 3_000 });
   });
 
   it('/search with no query shows usage', async () => {
@@ -1002,39 +1040,64 @@ describe('App', () => {
   it('/index rebuilds both indexes and reports their status', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
-    const ragIndexer = stubRag({
-      ready: true,
-      status: vi.fn().mockResolvedValue({ state: 'idle', files: 3, chunks: 12 }),
-    });
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    withEmbeddings();
     const repoMapIndexer = stubRepoMap({ ready: true });
 
-    const { stdin, lastFrame } = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, ragIndexer, repoMapIndexer });
+    const { stdin, lastFrame } = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, repoMapIndexer, cwd: root });
     await new Promise((r) => setTimeout(r, 20));
     stdin.write('/index');
     stdin.write('\r');
-    await vi.waitFor(() => expect(lastFrame()).toContain('idle — 3 files, 12 chunks'));
+    // Real counts from a real index — the file above plus whatever else the
+    // harness left in the workspace, so the assertion is on shape not size.
+    await vi.waitFor(() => expect(lastFrame()).toMatch(/Semantic search: idle — \d+ files, \d+ chunks/), { timeout: 3_000 });
     expect(lastFrame()).toContain('Repo map: ready');
+  });
+
+  it('always runs contextual retrieval, which is the CLI default and has no setting', async () => {
+    // Decision 6 of the RAG migration: the toggles became per-request
+    // parameters so each host keeps its own default. The CLI has never had a
+    // setting for contextual retrieval and has always run it; the extension
+    // ships it off. This pins the CLI half — packages/vscode/test/serverLinkRag.test.ts
+    // pins the other.
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    profile.embeddingsModel = 'embed';
+    profile.contextModel = 'ctx';
+
+    renderApp({ provider: fakeProvider('unused'), conversation, historyStore, cwd: root });
+
+    // A contextual-retrieval call is a non-streamed chat carrying the file and
+    // its numbered snippets — that listing is what distinguishes it from a
+    // rerank call.
+    await vi.waitFor(
+      () => expect(model.nonStreamedChats.some((m) => m.at(-1)!.content.includes('Snippets:'))).toBe(true),
+      { timeout: 3_000 },
+    );
   });
 
   it('@workspace pulls semantic search results into the agent task as context', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(root, 'auth.ts'), 'export function authenticate(user: string) {\n  return checkCredentials(user);\n}\n');
+    withEmbeddings();
     const provider = recordingProvider('Done.');
-    const ragIndexer = stubRag({
-      ready: true,
-      queryFormatted: vi.fn().mockResolvedValue('--- auth.ts:1-3 (score 0.90) ---\nfunction authenticate() {}'),
-    });
 
-    const { stdin } = renderApp({ provider, conversation, historyStore, ragIndexer });
-    await new Promise((r) => setTimeout(r, 20));
+    const { stdin } = renderApp({ provider, conversation, historyStore, cwd: root });
+    await vi.waitFor(() => expect(model.embeddingCalls.length).toBeGreaterThan(0), { timeout: 3_000 });
     stdin.write('@workspace how does auth work');
     stdin.write('\r');
-    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 3_000 });
 
-    expect(ragIndexer.queryFormatted).toHaveBeenCalled();
+    // The block comes back over rag/query as `formatted` — the one string every
+    // consumer of RAG wants (docs/phase3-rag-design.md §1.2).
     const task = provider.requests[0]!.at(-1)!.content;
     expect(task).toContain('Relevant workspace context');
-    expect(task).toContain('auth.ts:1-3');
+    expect(task).toMatch(/auth\.ts:\d+-\d+/);
   });
 
   it('@workspace falls back to the repo-map structural outline when no semantic index is ready', async () => {

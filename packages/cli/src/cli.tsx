@@ -184,12 +184,7 @@ async function main(): Promise<void> {
   // indexers, MCP) is built by the same shared path headless.ts uses — see
   // agentSession.ts's own comment on why (guardrail #8: headless is a
   // first-class peer of the interactive UI, not a bolted-on shortcut).
-  const { checkpoint, executor, shadowGit, ragIndexer, repoMapIndexer, mcpManager, tools } = buildAgentSession(
-    root,
-    profile,
-    config,
-    secrets,
-  );
+  const { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config);
 
   // Tracks the active conversation id across /new and /resume so it can be
   // printed on exit — App owns the actual conversation object (including
@@ -228,7 +223,6 @@ async function main(): Promise<void> {
       cwd={root}
       safeMode={safeMode}
       canResume={priorConversations > 0}
-      ragIndexer={ragIndexer}
       repoMapIndexer={repoMapIndexer}
       mcpManager={mcpManager}
       onTrack={(name, meta) => void audit.track(name, meta)}

@@ -35,7 +35,6 @@ import { callLmTool, getLmToolDefinitions, getLmToolGroups, isLmTool } from './l
 import { getActiveEditor } from '../contextCollector.js';
 import { mergeWithApplyModel } from '../inlineEdit.js';
 import type { ProfileManager } from '../profileManager.js';
-import type { RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import type { ShadowGit } from './shadowGit.js';
 import { appendMemoryNote, loadProjectInstructions } from '../memory.js';
@@ -144,7 +143,6 @@ export class AgentController {
     private readonly permissions: PermissionEngine,
     private readonly log: vscode.OutputChannel,
     private readonly post: (msg: ExtensionToWebview) => void,
-    private readonly rag?: RagIndexer,
     private readonly mcp?: McpManager,
     private readonly repoMapIndexer?: RepoMapIndexer,
     private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
@@ -195,6 +193,8 @@ export class AgentController {
       {
         client: { name: 'heapcode-vscode', version: this.server.clientVersion },
         root: root.fsPath,
+        // See ServerLink's note: the server only indexes a root it can read.
+        localRoot: root.scheme === 'file',
         // Only the profile this run uses, per §2's least-exposure argument;
         // a sub-agent naming another one resolves it through key/request.
         profiles: profile ? [profile] : [],
@@ -354,7 +354,11 @@ export class AgentController {
       root,
       this.checkpoint,
       cfg.get<number>('commandTimeout', 60) * 1000,
-      this.rag ? (query) => this.rag!.queryFormatted(query) : undefined,
+      // No semanticSearch injection: the server dispatches semantic_search
+      // from its own index and only hands the call back here when it has
+      // nothing, at which point this executor's word-based text search is
+      // exactly the fallback it always was (docs/phase3-rag-design.md §5.2).
+      undefined,
       this.repoMapIndexer ? (pathPrefix) => this.repoMapIndexer!.format(pathPrefix) : undefined,
       // edit_file's fast-apply fallback (M10) — no-ops (returns undefined) when no
       // applyModel is configured for the profile, same as inline-edit's own Apply action.

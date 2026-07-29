@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KEYWORD_INDEX_FILE } from '@heapcode/core';
 import { WorkspaceKeywordIndex } from '../src/rag/keywordIndex.js';
 import { collectRepoContext } from '../src/completionProvider.js';
-import type { RagIndexer } from '../src/rag/indexer.js';
 import {
   Uri,
   __fireDidSave,
@@ -124,13 +123,14 @@ describe('ghost text retrieval', () => {
     return { uri: Uri.file(join(root, name)), languageId: 'typescript' } as never;
   }
 
-  function fakeRag() {
+  /** Stands in for ServerLink — the only thing collectRepoContext asks of it. */
+  function fakeLink() {
     return {
-      ready: true,
-      queryHits: vi.fn().mockResolvedValue([
-        { path: 'auth.ts', startLine: 1, endLine: 3, text: 'export function authenticateUser() {}', score: 1 },
-      ]),
-    } as unknown as RagIndexer;
+      ragQuery: vi.fn().mockResolvedValue({
+        formatted: '',
+        hits: [{ path: 'auth.ts', startLine: 1, endLine: 3, text: 'export function authenticateUser() {}', score: 1 }],
+      }),
+    };
   }
 
   it('serves a typing-triggered completion from the keyword index, never the semantic one', async () => {
@@ -141,17 +141,17 @@ describe('ghost text retrieval', () => {
     const index = makeIndex();
     await index.init();
     await index.buildIndex();
-    const rag = fakeRag();
+    const link = fakeLink();
 
     const context = await collectRepoContext(
-      rag,
+      link,
       index.inner,
       doc('new.ts'),
       'chargeCard(',
       InlineCompletionTriggerKind.Automatic,
     );
 
-    expect(rag.queryHits).not.toHaveBeenCalled();
+    expect(link.ragQuery).not.toHaveBeenCalled();
     expect(context).toContain('billing.ts');
   });
 
@@ -161,31 +161,31 @@ describe('ghost text retrieval', () => {
     const index = makeIndex();
     await index.init();
     await index.buildIndex();
-    const rag = fakeRag();
+    const link = fakeLink();
 
     const context = await collectRepoContext(
-      rag,
+      link,
       index.inner,
       doc('new.ts'),
       'chargeCard(',
       InlineCompletionTriggerKind.Invoke,
     );
 
-    expect(rag.queryHits).toHaveBeenCalledWith('chargeCard(', 4);
+    expect(link.ragQuery).toHaveBeenCalledWith('chargeCard(', 4);
     expect(context).toContain('auth.ts');
   });
 
-  it('serves typing triggers even when the semantic index is not ready at all', async () => {
+  it('serves typing triggers even when the semantic index has nothing', async () => {
     // No embeddings model configured is an ordinary state, and it used to
     // disable ghost text's repo context entirely (the old `ready` gate).
     await writeCorpus();
     const index = makeIndex();
     await index.init();
     await index.buildIndex();
-    const rag = { ready: false, queryHits: vi.fn() } as unknown as RagIndexer;
+    const link = { ragQuery: vi.fn().mockResolvedValue({ formatted: '', hits: [] }) };
 
     const context = await collectRepoContext(
-      rag,
+      link,
       index.inner,
       doc('new.ts'),
       'chargeCard(',
@@ -202,7 +202,7 @@ describe('ghost text retrieval', () => {
     await index.buildIndex();
 
     const context = await collectRepoContext(
-      fakeRag(),
+      fakeLink(),
       index.inner,
       doc('billing.ts'),
       'chargeCard(',

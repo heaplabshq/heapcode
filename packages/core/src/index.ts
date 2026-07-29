@@ -13,6 +13,7 @@ export * from './rag/store.js';
 export * from './rag/rerank.js';
 export * from './rag/bm25.js';
 export * from './rag/contextualize.js';
+export * from './rag/ignoreFiles.js';
 export * from './rag/indexer.js';
 export * from './rag/keywordIndex.js';
 export * from './rag/repoMap.js';

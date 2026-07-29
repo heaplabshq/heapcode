@@ -11,7 +11,7 @@ import {
   type KeywordIndex,
 } from '@heapcode/core';
 import type { ProfileManager } from './profileManager.js';
-import type { RagIndexer } from './rag/indexer.js';
+import type { ServerLink } from './serverLink.js';
 
 const PREFIX_CHARS = 6000;
 const SUFFIX_CHARS = 2000;
@@ -30,7 +30,12 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
   constructor(
     private readonly profiles: ProfileManager,
     private readonly log: vscode.OutputChannel,
-    private readonly rag: RagIndexer,
+    /**
+     * The semantic index, over the socket. Only a *manual* trigger reaches it:
+     * the user is explicitly waiting, so a round-trip plus an embedding call
+     * is affordable there and nowhere else on this path.
+     */
+    private readonly link: ServerLink,
     /**
      * Vector-free BM25 over the same chunks, held in this process. Typing
      * triggers retrieve from here rather than from the semantic index, which
@@ -101,7 +106,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     const nativeFim = profile.preset === 'ollama' && templateSetting === 'auto' && template;
 
     const repoContext = cfg.get<boolean>('repoContext', true)
-      ? await collectRepoContext(this.rag, this.keywords, document, prefix, context.triggerKind)
+      ? await collectRepoContext(this.link, this.keywords, document, prefix, context.triggerKind)
       : '';
     const crossFile = collectCrossFileContext(document);
     const started = Date.now();
@@ -208,19 +213,19 @@ function acceptTrackedItem(
  * through provideInlineCompletionItems without standing up the model call too.
  */
 export async function collectRepoContext(
-  rag: RagIndexer,
+  link: Pick<ServerLink, 'ragQuery'>,
   keywords: KeywordIndex,
   current: vscode.TextDocument,
   prefix: string,
   triggerKind: vscode.InlineCompletionTriggerKind,
 ): Promise<string> {
   const invoked = triggerKind === vscode.InlineCompletionTriggerKind.Invoke;
-  if (!(invoked ? rag.ready : keywords.ready)) return '';
+  if (!invoked && !keywords.ready) return '';
   const queryText = prefix.split('\n').slice(-REPO_QUERY_LINES).join('\n').slice(-REPO_QUERY_CHARS);
   if (!queryText.trim()) return '';
 
   const currentPath = vscode.workspace.asRelativePath(current.uri, false);
-  const hits: HitMeta[] = invoked ? await rag.queryHits(queryText, 4) : keywords.search(queryText, 4);
+  const hits: HitMeta[] = invoked ? (await link.ragQuery(queryText, 4)).hits : keywords.search(queryText, 4);
 
   const parts: string[] = [];
   let used = 0;

@@ -45,7 +45,6 @@ import { SessionCheckpoint } from './agent/checkpoint.js';
 import { resultLabel, TOOL_SUMMARY_CHARS, type AgentController } from './agent/controller.js';
 import type { ShadowGit } from './agent/shadowGit.js';
 import type { ProfileManager } from './profileManager.js';
-import type { RagIndexer } from './rag/indexer.js';
 import type { ServerLink } from './serverLink.js';
 
 const INIT_TASK =
@@ -78,7 +77,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Set right after construction (controller needs this.post, we need controller). */
   agent?: AgentController;
-  rag?: RagIndexer;
   /** Workspace checkpoints for prompt editing; unset when git is unavailable. */
   shadowGit?: ShadowGit;
 
@@ -978,7 +976,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let body: string;
     const { blocks, unresolved } = await resolveMentions(
       text,
-      this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
+      (q) => this.link.ragQuery(q).then((r) => r.formatted),
     );
 
     // Explicitly attached files (📎/drag-and-drop) — highest-priority context after selection.
@@ -1239,12 +1237,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     );
     if (readOnlyTools.length === 0) return undefined;
 
-    const executor = new WorkspaceToolExecutor(
-      root,
-      new SessionCheckpoint(),
-      60_000,
-      this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
-    );
+    // No semanticSearch injection, same as the agent path: chat/send dispatches
+    // semantic_search from the server's own index and only hands the call back
+    // here when it has nothing. Passing one would make the server ask this host
+    // to run a tool whose answer this host would fetch back from the server —
+    // the out-and-back docs/phase3-rag-design.md §5.2 exists to avoid.
+    const executor = new WorkspaceToolExecutor(root, new SessionCheckpoint(), 60_000);
     return {
       tools: readOnlyTools,
       execute: (call) => executor.execute(call),

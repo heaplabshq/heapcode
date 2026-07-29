@@ -53,7 +53,7 @@ export class WorkspaceKeywordIndex implements vscode.Disposable {
     return this.index.init();
   }
 
-  buildIndex(): Promise<unknown> {
+  buildIndex(): Promise<{ files: number; chunks: number } | undefined> {
     return this.index.buildIndex();
   }
 

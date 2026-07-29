@@ -17,6 +17,13 @@ export interface RunHost {
   snapshotBefore(call: ToolCall): Promise<void>;
   /** Resolve a profile the session doesn't already hold a key for (§2, option b). */
   requestKey(profileName: string): Promise<void>;
+  /**
+   * The semantic index's answer for a `semantic_search` call, or undefined
+   * when it has nothing. Server-side because the index is: routing this back
+   * over tool/execute so the host could call rag/query would be a needless
+   * out-and-back (docs/phase3-rag-design.md §5.2).
+   */
+  semanticSearch(query: string): Promise<string | undefined>;
 }
 
 /**
@@ -92,6 +99,15 @@ export async function runAgentForSession(
             }),
         },
       });
+    }
+
+    // Answered from the server's own index. Falling through to the host when
+    // it has nothing is deliberate, not a gap: the host's executor degrades to
+    // a word-based text search, which needs the filesystem and so stays there
+    // (packages/cli/src/agent/workspaceTools.ts:236-246).
+    if (call.name === 'semantic_search') {
+      const formatted = await host.semanticSearch(String(call.args.query ?? ''));
+      if (formatted) return { id: call.id, name: call.name, content: formatted };
     }
 
     // A shell command can mutate files as easily as write_file — block it for

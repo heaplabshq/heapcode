@@ -115,7 +115,8 @@ function makeController(opts: ControllerOpts): AgentController {
     permissions,
     (opts.log ?? log) as never,
     (msg) => opts.posts.push(msg),
-    undefined,
+    // No `rag` parameter any more: semantic_search is dispatched server-side
+    // from the session's own index, so the controller holds no indexer.
     opts.mcp ?? stubMcp(),
     undefined,
     undefined,

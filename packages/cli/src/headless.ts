@@ -18,6 +18,8 @@ import {
   type PermissionClass,
   type PermissionRequestParams,
   type PermissionRequestResult,
+  type RagIndexParams,
+  type RagIndexResult,
   type SnapshotBeforeParams,
   type StoredMessage,
   type ToolCall,
@@ -29,7 +31,6 @@ import { SecretsStore } from './config/secrets.js';
 import { JsonConversationStore } from './history/store.js';
 import { canonicalize, auditFile, conversationsFile } from './paths.js';
 import { buildAgentSession } from './agentSession.js';
-import { CLI_INDEX_OPTIONS } from './rag/indexer.js';
 import { trimHistoryForAgent } from './agent/historyWindow.js';
 import { loadProjectInstructions } from './memory.js';
 import { AuditLog } from './audit.js';
@@ -164,11 +165,10 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     conversation ??= { id: randomUUID(), title: opts.prompt.slice(0, 60), updatedAt: Date.now(), messages: [] };
     const history = trimHistoryForAgent(conversation.messages);
 
-    const { executor, shadowGit, ragIndexer, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, profile, config, secrets);
+    const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config);
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
-    await Promise.all([ragIndexer.init(), repoMapIndexer.init(), mcpManager.ensureConnected()]);
-    if (opts.reindex) await Promise.all([ragIndexer.buildIndex(CLI_INDEX_OPTIONS), repoMapIndexer.buildIndex()]);
+    await Promise.all([repoMapIndexer.init(), mcpManager.ensureConnected()]);
 
     const mode: PermissionMode = opts.permissionMode ?? 'default';
     // "plan" forces read-only regardless of the chosen persona — the same
@@ -212,6 +212,19 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       opts.server,
     );
     const { peer } = connection;
+
+    /**
+     * Ask the server to index. contextualRetrieval is always on for the CLI,
+     * passed explicitly rather than read server-side, so the extension's
+     * "off by default" and this stay different on purpose (decision 6).
+     */
+    const requestIndex = (params: Omit<RagIndexParams, 'contextualRetrieval'>): Promise<RagIndexResult> =>
+      peer.request<RagIndexResult>(METHODS.ragIndex, { ...params, contextualRetrieval: true } satisfies RagIndexParams);
+
+    // --reindex now happens server-side, after hello, because that is where
+    // the index and the embeddings key live. The repo map still builds here:
+    // it needs no key and no model.
+    if (opts.reindex) await Promise.all([requestIndex({ full: true }), repoMapIndexer.buildIndex()]);
 
     // ---- server → host requests -------------------------------------------
     // These are the same bodies that used to be inline in the runAgent
@@ -267,7 +280,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         }
       }
       const result = await executor.execute(call);
-      if (!result.isError) await syncIndexesAfterTool(call.name, call.args, ragIndexer, repoMapIndexer);
+      if (!result.isError) await syncIndexesAfterTool(call.name, call.args, requestIndex, repoMapIndexer);
       return result;
     }
 
@@ -347,11 +360,16 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
   }
 }
 
-/** Mirrors App.tsx's syncIndexesAfterTool — keeps both indexes in sync with the agent's own file edits, no filesystem watcher needed. */
+/**
+ * Mirrors App.tsx's syncIndexesAfterTool. The host is still what knows a file
+ * changed — the trigger stays here, the work moved to the server (§4). One
+ * `rag/index` call covers writes, renames and deletes alike: indexing a path
+ * the server cannot read drops it.
+ */
 async function syncIndexesAfterTool(
   name: string,
   args: Record<string, unknown>,
-  ragIndexer: Awaited<ReturnType<typeof buildAgentSession>>['ragIndexer'],
+  requestIndex: (params: { paths: string[] }) => Promise<unknown>,
   repoMapIndexer: Awaited<ReturnType<typeof buildAgentSession>>['repoMapIndexer'],
 ): Promise<void> {
   const path = typeof args.path === 'string' ? args.path : undefined;
@@ -362,17 +380,16 @@ async function syncIndexesAfterTool(
     case 'multi_edit':
       if (!path) return;
       repoMapIndexer.noteRecent(path);
-      await Promise.all([ragIndexer.indexOne(path, CLI_INDEX_OPTIONS), repoMapIndexer.indexOne(path)]);
+      await Promise.all([requestIndex({ paths: [path] }), repoMapIndexer.indexOne(path)]);
       return;
     case 'rename_file':
       if (!path || !newPath) return;
       repoMapIndexer.noteRecent(newPath);
-      await Promise.all([ragIndexer.renameFile(path, newPath, CLI_INDEX_OPTIONS), repoMapIndexer.renameFile(path, newPath)]);
+      await Promise.all([requestIndex({ paths: [path, newPath] }), repoMapIndexer.renameFile(path, newPath)]);
       return;
     case 'delete_file':
       if (!path) return;
-      ragIndexer.removeFile(path);
-      repoMapIndexer.removeFile(path);
+      await Promise.all([requestIndex({ paths: [path] }), repoMapIndexer.removeFile(path)]);
       return;
     default:
       return;

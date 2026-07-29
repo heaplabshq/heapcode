@@ -31,6 +31,12 @@ import {
   type PrReviewHost,
   type Provider,
   type ProviderProfileConfig,
+  type RagEventParams,
+  type RagIndexParams,
+  type RagIndexResult,
+  type RagQueryParams,
+  type RagQueryResult,
+  type RagStatusResult,
   type ReviewClient,
   type SnapshotBeforeParams,
   type StoredMessage,
@@ -50,7 +56,6 @@ import { listSkillsFormatted } from '../agent/skills.js';
 import { trimHistoryForAgent } from '../agent/historyWindow.js';
 import { loadProjectInstructions } from '../memory.js';
 import { configFile, secretsFile } from '../paths.js';
-import { CLI_INDEX_OPTIONS, type RagIndexer } from '../rag/indexer.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import { DELEGATE_TASK_TOOL } from '../agent/delegate.js';
 import { connectToServer, type ConnectOptions, type ServerConnection } from '../server/client.js';
@@ -148,9 +153,7 @@ export interface AppProps {
   canResume?: boolean;
   /** Lazy source for `@` mention autocomplete (ignore-aware workspace paths, folders end with `/`). */
   listWorkspaceFiles?(): Promise<string[]>;
-  /** Semantic search — omitted in tests/headless; /search and @workspace no-op gracefully without one. */
-  ragIndexer?: RagIndexer;
-  /** Structural repo outline — same tool/@workspace fallback path as ragIndexer when no embeddings model is configured. */
+  /** Structural repo outline — the @workspace fallback when the semantic index has nothing. */
   repoMapIndexer?: RepoMapIndexer;
   /** MCP servers — reconnected at the start of every task; their tools go through the same permission system as workspace tools. */
   mcpManager?: McpManager;
@@ -185,7 +188,6 @@ export function App({
   safeMode,
   canResume,
   listWorkspaceFiles,
-  ragIndexer,
   repoMapIndexer,
   mcpManager,
   onTrack,
@@ -303,55 +305,95 @@ export function App({
   const [indexProgress, setIndexProgress] = useState<{ embedded: number; total: number }>();
 
   // Build both indexes once at mount, in the background — never blocks the
-  // composer. RepoMapIndexer needs no embeddings model, so it's always
-  // useful; RagIndexer.buildIndex no-ops (logged, not shown) without one.
+  // composer. The repo map stays in-process (pure parsing, no key needed); the
+  // semantic index lives in the server, so building it means connecting. That
+  // is why this is best-effort: an unreachable server must not turn launching
+  // the CLI into an error, it just means no semantic search until a task
+  // connects for real.
   useEffect(() => {
-    if (!ragIndexer && !repoMapIndexer) return;
     let cancelled = false;
     void (async () => {
-      await Promise.all([ragIndexer?.init(), repoMapIndexer?.init()]);
+      await repoMapIndexer?.init();
       if (cancelled) return;
       void repoMapIndexer?.buildIndex();
-      void ragIndexer
-        ?.buildIndex({
-          ...CLI_INDEX_OPTIONS,
-          onProgress: (embedded, total) => {
-            if (!cancelled) setIndexProgress({ embedded, total });
-          },
-        })
-        .then(() => {
-          if (!cancelled) setIndexProgress(undefined);
-        });
+      await requestIndex({ full: true }).catch(() => {});
+      if (!cancelled) setIndexProgress(undefined);
     })();
     return () => {
       cancelled = true;
     };
-    // Indexers are stable instances for the process lifetime (constructed once in cli.tsx) — run once on mount only.
+    // The repo-map indexer is a stable instance for the process lifetime
+    // (constructed once in cli.tsx) — run once on mount only.
   }, []);
 
-  /** Keeps both indexes in sync with the agent's own file edits — see rag/indexer.ts's comment on why no filesystem watcher is used instead. */
+  /**
+   * Ask the server to index. Progress arrives as `rag/event` notifications
+   * rather than a callback, since the work is in another process now.
+   *
+   * contextualRetrieval is passed explicitly and always on: the CLI has no
+   * setting for it and never did, unlike the extension where it ships off.
+   * Decision 6 of the RAG migration keeps that per-host difference by making
+   * it a request parameter instead of something the index reads for itself.
+   */
+  async function requestIndex(params: Omit<RagIndexParams, 'contextualRetrieval'>): Promise<RagIndexResult | undefined> {
+    const connection = await ensureConnection();
+    return connection.peer.request<RagIndexResult>(METHODS.ragIndex, {
+      ...params,
+      contextualRetrieval: true,
+    } satisfies RagIndexParams);
+  }
+
+  /** Index state from the server; undefined when it cannot be reached at all. */
+  async function requestStatus(): Promise<RagStatusResult | undefined> {
+    try {
+      const connection = await ensureConnection();
+      return await connection.peer.request<RagStatusResult>(METHODS.ragStatus);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Semantic retrieval from the server. Empty (never throwing) when there is nothing to retrieve. */
+  async function requestQuery(text: string, k?: number): Promise<RagQueryResult> {
+    try {
+      const connection = await ensureConnection();
+      return await connection.peer.request<RagQueryResult>(METHODS.ragQuery, { text, k } satisfies RagQueryParams);
+    } catch {
+      return { formatted: '', hits: [] };
+    }
+  }
+
+  /**
+   * Keeps both indexes in sync with the agent's own file edits. The host is
+   * what knows a file changed, so the trigger stays here even though the work
+   * moved — see docs/phase3-rag-design.md §4. There is still no filesystem
+   * watcher: a terminal session has no open editor, and the agent's own write
+   * tools are the only mutations that matter in practice.
+   *
+   * One `rag/index` call covers every case. A delete needs no shape of its
+   * own because indexing a path the server cannot read drops it, and a rename
+   * is the two paths together for the same reason.
+   */
   async function syncIndexesAfterTool(name: string, args: Record<string, unknown>): Promise<void> {
-    if (!ragIndexer && !repoMapIndexer) return;
     const path = typeof args.path === 'string' ? args.path : undefined;
     const newPath = typeof args.newPath === 'string' ? args.newPath : undefined;
+    const sync = async (paths: string[], repoMap: () => Promise<void> | void): Promise<void> => {
+      await Promise.all([requestIndex({ paths }).catch(() => undefined), repoMap()]);
+    };
     switch (name) {
       case 'write_file':
       case 'edit_file':
       case 'multi_edit':
         if (!path) return;
         repoMapIndexer?.noteRecent(path);
-        await Promise.all([ragIndexer?.indexOne(path, CLI_INDEX_OPTIONS), repoMapIndexer?.indexOne(path)]);
-        return;
+        return sync([path], () => repoMapIndexer?.indexOne(path));
       case 'rename_file':
         if (!path || !newPath) return;
         repoMapIndexer?.noteRecent(newPath);
-        await Promise.all([ragIndexer?.renameFile(path, newPath, CLI_INDEX_OPTIONS), repoMapIndexer?.renameFile(path, newPath)]);
-        return;
+        return sync([path, newPath], () => repoMapIndexer?.renameFile(path, newPath));
       case 'delete_file':
         if (!path) return;
-        ragIndexer?.removeFile(path);
-        repoMapIndexer?.removeFile(path);
-        return;
+        return sync([path], () => repoMapIndexer?.removeFile(path));
       default:
         return;
     }
@@ -465,6 +507,14 @@ export function App({
       // parent's provider, which is what /subagents did before this moved.
       if (!target) return {} satisfies KeyRequestResult;
       return { profile: target, apiKey: await secretsStore?.getApiKey(profileName) } satisfies KeyRequestResult;
+    });
+
+    // Indexing progress. The status surface stays host-side and becomes a
+    // renderer (docs/phase3-rag-design.md §4) — this is the whole of it.
+    peer.onNotification(METHODS.ragEvent, (raw) => {
+      const { event } = raw as RagEventParams;
+      if (event.kind === 'progress') setIndexProgress({ embedded: event.embedded, total: event.total });
+      else if (event.state !== 'indexing') setIndexProgress(undefined);
     });
 
     peer.onNotification(METHODS.agentEvent, (raw) => {
@@ -813,13 +863,11 @@ export function App({
       pushSystem('Usage: /search <query>');
       return;
     }
-    if (ragIndexer?.ready) {
-      const hits = await ragIndexer.query(query);
-      pushSystem(
-        hits.length === 0
-          ? `No semantic matches for "${query}".`
-          : hits.map((h) => `${h.record.path}:${h.record.startLine}-${h.record.endLine}  (score ${h.score.toFixed(2)})`).join('\n'),
-      );
+    // Ask the server first; an empty result means no index (or no embeddings
+    // model), which is the same condition the old `ready` gate stood for.
+    const { hits } = await requestQuery(query);
+    if (hits.length > 0) {
+      pushSystem(hits.map((h) => `${h.path}:${h.startLine}-${h.endLine}  (score ${h.score.toFixed(2)})`).join('\n'));
       return;
     }
     const words = query.split(/\W+/).filter((w) => w.length > 2).map(escapeRegExp);
@@ -921,7 +969,7 @@ export function App({
 
   async function showSettings(): Promise<void> {
     const p = active.profile;
-    const ragStatus = await ragIndexer?.status();
+    const ragStatus = await requestStatus();
     pushSystem(
       [
         `Session     ${conversationRef.current.id.slice(0, 8)}  (heapcode --resume ${conversationRef.current.id.slice(0, 8)} to continue this later)`,
@@ -931,7 +979,7 @@ export function App({
         `Persona     ${persona.label}`,
         `Sub-agents  ${subAgentsEnabled ? 'on' : 'off'} (/subagents to toggle)`,
         `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
-        `Search      ${ragStatus ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
+        `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
         `Secrets     ${secretsFile()}`,
@@ -1002,12 +1050,12 @@ export function App({
       }
       case '/index': {
         pushSystem('Rebuilding indexes…');
-        await Promise.all([ragIndexer?.buildIndex(CLI_INDEX_OPTIONS), repoMapIndexer?.buildIndex()]);
-        const status = await ragIndexer?.status();
+        await Promise.all([requestIndex({ full: true }), repoMapIndexer?.buildIndex()]);
+        const status = await requestStatus();
         const rmReady = repoMapIndexer?.ready;
         pushSystem(
           [
-            status
+            status?.available
               ? `Semantic search: ${status.state} — ${status.files} files, ${status.chunks} chunks.`
               : 'Semantic search: unavailable.',
             `Repo map: ${rmReady ? 'ready' : 'empty'}.`,
@@ -1105,8 +1153,8 @@ export function App({
     let workspaceContext = '';
     if (/(^|\s)@workspace\b/.test(display)) {
       const query = display.replace(/(^|\s)@workspace\b/g, ' ').trim() || display;
-      const semantic = ragIndexer?.ready ? await ragIndexer.queryFormatted(query).catch(() => '') : '';
-      if (semantic) workspaceContext = `Relevant workspace context (semantic search):\n${semantic}`;
+      const { formatted } = await requestQuery(query);
+      if (formatted) workspaceContext = `Relevant workspace context (semantic search):\n${formatted}`;
       else if (repoMapIndexer?.ready) workspaceContext = `Workspace structure overview (no semantic index configured):\n${repoMapIndexer.format()}`;
     }
     const mentionNote = /(^|\s)@[^\s@]+/.test(display)

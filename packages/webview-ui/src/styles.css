@@ -434,6 +434,18 @@ button.ghost:not(:disabled):hover {
   opacity: 0.7;
 }
 
+/*
+ * A sub-agent's tool calls, indented under the delegate_task chip that
+ * spawned them. Sub-agent recursion runs server-side now, so the calls
+ * arrive as ordinary tool events carrying `parent` — indenting them is the
+ * whole of what sub-agent rendering is (docs/phase3-protocol-design.md §2).
+ */
+.tool-row.sub .tool-chip {
+  /* .tool-chip is width:100%, so indent with padding rather than margin. */
+  padding-left: 44px;
+  box-shadow: inset 22px 0 0 -21px var(--vscode-panel-border, rgba(128, 128, 128, 0.5));
+}
+
 .tool-row.ok .tool-icon {
   color: var(--vscode-testing-iconPassed, #73c991);
 }

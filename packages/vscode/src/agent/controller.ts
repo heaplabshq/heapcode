@@ -1,22 +1,31 @@
+import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
-  createProvider,
+  METHODS,
+  connectToServer,
   filterToolsForPersona,
   getPersona,
-  intersectPersonas,
   lineDiffStats,
-  looksFilesystemMutating,
-  runAgent,
   resolveCapabilities,
-  type AgentPersona,
+  type AgentEvent,
+  type AgentEventParams,
+  type AgentRunParams,
+  type AgentRunResult,
+  type ConnectOptions,
+  type ContextWindowSource,
   type ExtensionToWebview,
+  type KeyRequestParams,
+  type KeyRequestResult,
   type McpManager,
   type FileEditInfo,
-  type Provider,
-  type ProviderProfileConfig,
+  type PermissionRequestParams,
+  type PermissionRequestResult,
+  type ServerConnection,
+  type SnapshotBeforeParams,
   type ToolCall,
   type ToolDefinition,
+  type ToolExecuteParams,
   type ToolResult,
 } from '@heapcode/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
@@ -31,24 +40,44 @@ import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import type { ShadowGit } from './shadowGit.js';
 import { appendMemoryNote, loadProjectInstructions } from '../memory.js';
 
-// Sub-agents get the same tools as the parent (minus delegate_task itself)
-// with no path/file scoping — a live incident (CLI side, same delegation
-// contract) had one, tasked only with checking a specific file for bugs,
-// wander off and rewrite an unrelated package.json once it ran out of real
-// bugs to find. This is a soft guardrail (a task-level instruction, not an
-// enforced restriction) — same class of protection personas already rely on
-// via taskAddendum.
-const SCOPE_ADDENDUM =
-  'You are a sub-agent delegated a specific task. Stay strictly within its scope: only create, modify, or ' +
-  "delete files that are explicitly named in the task or unambiguously required to do exactly what it asks. " +
-  "If you notice something else worth changing (missing test infra, an unrelated bug, etc.), mention it in " +
-  'your final summary instead of changing it yourself.';
+/** How this host reaches the core server; `daemonEntry` is set by extension.ts, the rest by tests. */
+export interface AgentServerOptions extends ConnectOptions {
+  /** Reported to the server's log only, never used for authorization. */
+  clientVersion?: string;
+}
 
 export class AgentController {
   private abort?: AbortController;
   private checkpoint?: SessionCheckpoint;
   /** A plan awaiting explicit approval (heapcode.agent.planGate) — see approvePlan(). */
   private pendingPlan?: { task: string; images?: string[]; personaId?: string; planText: string };
+
+  /**
+   * The connection to the core server, opened lazily on the first agent run
+   * and kept afterwards (docs/phase3-protocol-design.md §2: a session IS a
+   * connection). Lazily rather than at activation because most windows
+   * activate this extension and never run an agent — the same reason
+   * extension.ts keeps indexing off the activation path.
+   */
+  private connection?: ServerConnection;
+  private connectedProfile?: string;
+  /** Set when profile config changes under us; the next run reconnects, since profiles are pushed at hello. */
+  private profilesStale = false;
+  /** The run currently streaming, so one notification handler serves every run. */
+  private activeRun?: { runId: string; onEvent(event: AgentEvent): void };
+
+  /**
+   * Per-run state the server→host handlers read. These were locals inside
+   * `start()` when the loop ran in this process; they became fields when the
+   * loop moved, because the handlers are registered once per connection and
+   * outlive any single run.
+   */
+  private executor?: WorkspaceToolExecutor;
+  private toolByName = new Map<string, ToolDefinition>();
+  private fileEdits = new Map<string, FileEditInfo>();
+  /** Per-tool-call shadow-git checkpoints (PLAN.md M8), keyed by call id. */
+  private toolCheckpoints = new Map<string, string>();
+  private contextWindowSource?: ContextWindowSource;
 
   /** ask_user tool: forwards the agent's question to the chat UI; set by extension.ts. */
   askUser?: (question: string, options?: string[]) => Promise<string | undefined>;
@@ -120,10 +149,160 @@ export class AgentController {
     private readonly repoMapIndexer?: RepoMapIndexer,
     private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
     private readonly shadowGit?: ShadowGit,
+    private readonly server: AgentServerOptions = {},
   ) {}
 
   get running(): boolean {
     return this.abort !== undefined;
+  }
+
+  /**
+   * Profiles and key material are pushed at `session/hello` and the server
+   * never reads this host's settings for itself (§2), so a settings edit has
+   * to reach it as a new session. Deferred rather than applied immediately:
+   * closing a live connection would abort whatever run is on it, and a user
+   * toggling an unrelated `heapcode.*` setting mid-run should not kill it.
+   */
+  markProfilesChanged(): void {
+    this.profilesStale = true;
+  }
+
+  /** Extension deactivation / disposal — the socket outlives runs, not the extension. */
+  dispose(): void {
+    this.connection?.close();
+    this.connection = undefined;
+  }
+
+  /**
+   * Connect (starting the server if nothing is listening) and register the
+   * four server→host request handlers.
+   *
+   * Their bodies are the same code that used to sit inline in the `runAgent`
+   * options object; only the trigger changed — the split
+   * docs/phase3-protocol-design.md §7 describes, and the same shape both CLI
+   * clients already use (packages/cli/src/headless.ts:219-249,
+   * packages/cli/src/ink/App.tsx:434-469).
+   */
+  private async ensureConnection(profileName: string, root: vscode.Uri): Promise<ServerConnection> {
+    const existing = this.connection;
+    if (existing && !this.profilesStale && this.connectedProfile === profileName) return existing;
+    existing?.close();
+    this.profilesStale = false;
+
+    const profile = this.profiles.getProfiles().find((p) => p.name === profileName);
+    const apiKey = profile ? await this.profiles.getApiKey(profile) : undefined;
+    const connection = await connectToServer(
+      {
+        client: { name: 'heapcode-vscode', version: this.server.clientVersion },
+        root: root.fsPath,
+        // Only the profile this run uses, per §2's least-exposure argument;
+        // a sub-agent naming another one resolves it through key/request.
+        profiles: profile ? [profile] : [],
+        activeProfile: profileName,
+        keys: apiKey ? { [profileName]: apiKey } : {},
+      },
+      this.server,
+    );
+    this.connection = connection;
+    this.connectedProfile = profileName;
+    const { peer } = connection;
+
+    peer.onRequest(METHODS.toolExecute, async (raw, signal) => {
+      const { call } = raw as ToolExecuteParams;
+      return this.executeTool(call, signal);
+    });
+
+    peer.onRequest(METHODS.permissionRequest, async (raw) => {
+      const { call } = raw as PermissionRequestParams;
+      const tool = this.toolByName.get(call.name);
+      const granted = tool ? await this.permissions.request(call, tool, this.describe(call)) : false;
+      return { granted } satisfies PermissionRequestResult;
+    });
+
+    peer.onRequest(METHODS.snapshotBefore, async (raw) => {
+      const { call } = raw as SnapshotBeforeParams;
+      const hash = await this.shadowGit?.snapshot(`${call.name}: ${this.describe(call).slice(0, 80)}`);
+      if (hash) this.toolCheckpoints.set(call.id, hash);
+      return null;
+    });
+
+    peer.onRequest(METHODS.keyRequest, async (raw) => {
+      const { profileName: wanted } = raw as KeyRequestParams;
+      const target = this.profiles.getProfiles().find((p) => p.name === wanted);
+      // Unknown profile or no stored key → the server falls back to the
+      // parent's provider, the same lenient behavior runSubAgent had
+      // (controller.ts:430-431 before this moved).
+      if (!target) return {} satisfies KeyRequestResult;
+      return { profile: target, apiKey: await this.profiles.getApiKey(target) } satisfies KeyRequestResult;
+    });
+
+    peer.onNotification(METHODS.agentEvent, (raw) => {
+      const { runId, event } = raw as AgentEventParams;
+      const run = this.activeRun;
+      if (run && run.runId === runId) run.onEvent(event);
+    });
+
+    return connection;
+  }
+
+  /**
+   * The host half of a tool call — the part that is irreducibly host-side.
+   *
+   * Everything here needs something only the extension host has: the chat UI
+   * (ask_user), MCP subprocesses, VS Code's own language-model tools, and the
+   * executor with its terminals, shell integration and LSP diagnostics
+   * (workspaceTools.ts:60, :685-688, :407-408).
+   *
+   * MCP dispatch stays here rather than moving server-side: hosting MCP
+   * subprocesses in the server is deliberately out of scope (§4 recommends it
+   * but flags it as needing its own look), and this is the resolution both
+   * CLI clients arrived at.
+   */
+  private async executeTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
+    if (call.name === 'ask_user') {
+      const options = Array.isArray(call.args.options) ? call.args.options.map(String) : undefined;
+      // No timeout, deliberately: a human reading a chat card may take
+      // minutes. How a slow human is told apart from a wedged host is still
+      // open (§7's open question 2) — neither CLI client settled it and this
+      // one doesn't either.
+      const answer = await this.askUser?.(String(call.args.question ?? ''), options);
+      return {
+        id: call.id,
+        name: call.name,
+        content: answer?.trim()
+          ? `User answered: ${answer}`
+          : 'The user did not answer. Proceed with your best judgment.',
+      };
+    }
+    if (this.mcp?.isMcpTool(call.name)) {
+      const content = await this.mcp.call(call.name, call.args);
+      return { id: call.id, name: call.name, content };
+    }
+    if (isLmTool(call.name)) {
+      try {
+        const content = await callLmTool(call.name, call.args);
+        return { id: call.id, name: call.name, content };
+      } catch (err) {
+        return {
+          id: call.id,
+          name: call.name,
+          content: err instanceof Error ? err.message : String(err),
+          isError: true,
+        };
+      }
+    }
+    const executor = this.executor;
+    if (!executor) {
+      return { id: call.id, name: call.name, content: 'No agent session is active.', isError: true };
+    }
+    // `signal` is the RPC request's own, so a cancelled run aborts the
+    // command that is running right now — not just the model call (§5).
+    const result = await executor.execute(call, signal);
+    if (!result.isError && (call.name === 'write_file' || call.name === 'edit_file')) {
+      const info = await this.computeFileEdit(String(call.args.path ?? ''));
+      if (info) this.fileEdits.set(call.id, info);
+    }
+    return result;
   }
 
   async start(
@@ -149,7 +328,10 @@ export class AgentController {
     if (!opts?.resumePlanText) this.pendingPlan = undefined;
     const persona = getPersona(opts?.personaId);
 
-    const { provider, profile } = await this.profiles.resolveRole('agentModel');
+    // resolveRoleProfile, not resolveRole: the agent path no longer builds a
+    // host-side Provider at all — the server resolves the profile to one
+    // itself from the key pushed at hello (custody note, Option A2).
+    const profile = this.profiles.resolveRoleProfile('agentModel');
     if (!profile.model) {
       this.post({ type: 'error', message: `Profile "${profile.name}" has no model configured.` });
       return;
@@ -168,7 +350,7 @@ export class AgentController {
     this.track?.('agent.task.started');
     this.checkpoint = new SessionCheckpoint();
     this.permissions.resetSession();
-    const executor = new WorkspaceToolExecutor(
+    this.executor = new WorkspaceToolExecutor(
       root,
       this.checkpoint,
       cfg.get<number>('commandTimeout', 60) * 1000,
@@ -188,10 +370,11 @@ export class AgentController {
       profile,
       profile.agentModel || profile.model,
     );
-    const fileEdits = new Map<string, FileEditInfo>();
+    this.contextWindowSource = contextWindow.source;
+    this.fileEdits = new Map();
     // Per-tool-call shadow-git checkpoints (PLAN.md M8) — keyed by call id so
-    // onToolResult can attach the hash taken just before that call ran.
-    const toolCheckpoints = new Map<string, string>();
+    // the tool_result event can attach the hash taken just before that call ran.
+    this.toolCheckpoints = new Map();
     let lastToolStreamPost = 0;
     await this.mcp?.ensureConnected();
     const mcpTools = this.mcp?.getToolDefinitions() ?? [];
@@ -207,153 +390,121 @@ export class AgentController {
     const planFirst = cfg.get<boolean>('planFirst', true);
     let capturedPlanText: string | undefined;
 
+    const subAgents = cfg.get<boolean>('subAgents', false);
+    const offered = filterToolsForPersona([...agentToolDefinitions, ...mcpTools, ...lmTools], persona)
+      .filter((t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name))
+      // Sub-agent orchestration (M12) is opt-in — a new, autonomy-increasing
+      // capability, same posture as planGate/requireTestsBeforeFinish.
+      .filter((t) => t.name !== 'delegate_task' || subAgents);
+    // permission/request carries the call and its permission class; the
+    // PermissionEngine wants the ToolDefinition, which this host has because
+    // it is the host that offered the tools in the first place.
+    this.toolByName = new Map(offered.map((t) => [t.name, t]));
+
     try {
-      const outcome = await runAgent({
-        provider,
+      const { peer } = await this.ensureConnection(profile.name, root);
+      const runId = randomUUID();
+      // Cancellation keeps the existing stop() wiring: the UI still aborts a
+      // controller, but aborting now sends one `agent/cancel` notification to
+      // the server holding the real AbortSignal (§5). The server cancels any
+      // in-flight tool/execute too, so a running command dies with the run.
+      this.abort.signal.addEventListener('abort', () => peer.notify(METHODS.agentCancel, { runId }), {
+        once: true,
+      });
+
+      // (4) in §7's split: the `events` object became a switch over the
+      // `agent/event` notification union, calling the same `post()` it did.
+      this.activeRun = {
+        runId,
+        onEvent: (event) => {
+          switch (event.type) {
+            case 'text':
+              return this.post({ type: 'agentText', text: event.text });
+            case 'text_delta':
+              return this.post({ type: 'agentTextDelta', text: event.text });
+            case 'text_end':
+              return this.post({ type: 'agentTextEnd' });
+            case 'reasoning_delta':
+              return this.post({ type: 'agentReasoningDelta', text: event.text });
+            case 'reasoning_end':
+              return this.post({ type: 'agentReasoningEnd' });
+            case 'tool_stream':
+              // Throttle: one progress post per ~512 chars is plenty.
+              if (event.chars - lastToolStreamPost >= 512 || event.chars < lastToolStreamPost) {
+                lastToolStreamPost = event.chars;
+                this.post({ type: 'agentToolStream', chars: event.chars });
+              }
+              return;
+            case 'plan':
+              capturedPlanText = event.text;
+              return this.post({ type: 'agentPlan', text: event.text });
+            case 'tool_call': {
+              const call: ToolCall = { id: event.id, name: event.name, args: event.args };
+              const description = this.describe(call);
+              this.log.appendLine(`[agent] tool: ${event.parent ? '↳ ' : ''}${description}`);
+              return this.post({
+                type: 'agentToolCall',
+                id: event.id,
+                name: event.name,
+                description,
+                terminalCommand:
+                  event.name === 'run_command' || event.name === 'run_tests'
+                    ? String(event.args.command ?? '')
+                    : undefined,
+                // A sub-agent's calls carry the delegate_task call id as
+                // `parent`. Rendering them indented is the whole of what
+                // sub-agent display is now that recursion is server-side —
+                // exactly as the protocol design predicted (§2).
+                parent: event.parent,
+              });
+            }
+            case 'tool_result':
+              return this.post({
+                type: 'agentToolResult',
+                id: event.id,
+                ok: !event.isError,
+                summary: event.content.slice(0, TOOL_SUMMARY_CHARS),
+                label: resultLabel(event.name, event.content, event.isError),
+                fileEdit: this.fileEdits.get(event.id),
+                checkpoint: this.toolCheckpoints.get(event.id),
+                parent: event.parent,
+              });
+            case 'context_usage':
+              return this.post({
+                type: 'contextUsage',
+                used: event.usedTokens,
+                window: event.windowTokens,
+                source: this.contextWindowSource,
+              });
+            case 'compaction':
+              this.log.appendLine(
+                `[agent] compacted context: ~${event.beforeTokens} → ~${event.afterTokens} tokens`,
+              );
+              return this.post({ type: 'compacted', before: event.beforeTokens, after: event.afterTokens });
+            case 'memory_candidate':
+              void (async () => {
+                const answer = await this.askUser?.(
+                  `Worth remembering for next time?\n\n"${event.note}"`,
+                  ['Save to memory', 'Skip'],
+                );
+                if (answer === 'Save to memory') await appendMemoryNote(event.note);
+              })();
+              return;
+          }
+        },
+      };
+
+      const { outcome } = await peer.request<AgentRunResult>(METHODS.agentRun, {
+        runId,
+        profileName: profile.name,
         model: profile.agentModel || profile.model,
         task: fullTask,
         images,
         workspaceName: path.basename(root.fsPath),
-        tools: filterToolsForPersona(
-          [...agentToolDefinitions, ...mcpTools, ...lmTools],
-          persona,
-        )
-          .filter((t) => !new Set(cfg.get<string[]>('disabledTools', [])).has(t.name))
-          // Sub-agent orchestration (M12) is opt-in — a new, autonomy-increasing
-          // capability, same posture as planGate/requireTestsBeforeFinish.
-          .filter((t) => t.name !== 'delegate_task' || cfg.get<boolean>('subAgents', false)),
+        tools: offered,
         nativeToolCalls: capabilities.nativeToolCalls,
-        execute: async (call) => {
-          if (call.name === 'delegate_task') {
-            return this.runSubAgent(call, {
-              executor,
-              provider,
-              profile,
-              capabilities,
-              mcpTools,
-              lmTools,
-              cfg,
-              root,
-              persona,
-            });
-          }
-          if (call.name === 'ask_user') {
-            const options = Array.isArray(call.args.options)
-              ? call.args.options.map(String)
-              : undefined;
-            const answer = await this.askUser?.(String(call.args.question ?? ''), options);
-            return {
-              id: call.id,
-              name: call.name,
-              content: answer?.trim()
-                ? `User answered: ${answer}`
-                : 'The user did not answer. Proceed with your best judgment.',
-            };
-          }
-          if (this.mcp?.isMcpTool(call.name)) {
-            const content = await this.mcp.call(call.name, call.args);
-            return { id: call.id, name: call.name, content };
-          }
-          if (isLmTool(call.name)) {
-            try {
-              const content = await callLmTool(call.name, call.args);
-              return { id: call.id, name: call.name, content };
-            } catch (err) {
-              return {
-                id: call.id,
-                name: call.name,
-                content: err instanceof Error ? err.message : String(err),
-                isError: true,
-              };
-            }
-          }
-          if (
-            call.name === 'run_command' &&
-            persona.allowedPermissions &&
-            !persona.allowedPermissions.includes('write') &&
-            looksFilesystemMutating(String(call.args.command ?? ''))
-          ) {
-            return {
-              id: call.id,
-              name: call.name,
-              content:
-                `Blocked: this command looks like it would create, modify, or delete files, which the ` +
-                `${persona.label} persona does not allow. Use a persona with file-editing tools instead.`,
-              isError: true,
-            };
-          }
-          const result = await executor.execute(call, this.abort?.signal);
-          if (!result.isError && (call.name === 'write_file' || call.name === 'edit_file')) {
-            const info = await this.computeFileEdit(String(call.args.path ?? ''));
-            if (info) fileEdits.set(call.id, info);
-          }
-          return result;
-        },
-        requestPermission: (call, tool) =>
-          this.permissions.request(call, tool, this.describe(call, executor)),
-        beforeToolCall: async (call) => {
-          const hash = await this.shadowGit?.snapshot(
-            `${call.name}: ${this.describe(call, executor).slice(0, 80)}`,
-          );
-          if (hash) toolCheckpoints.set(call.id, hash);
-        },
-        events: {
-          onText: (text) => this.post({ type: 'agentText', text }),
-          onTextDelta: (text) => this.post({ type: 'agentTextDelta', text }),
-          onTextEnd: () => this.post({ type: 'agentTextEnd' }),
-          onReasoningDelta: (text) => this.post({ type: 'agentReasoningDelta', text }),
-          onReasoningEnd: () => this.post({ type: 'agentReasoningEnd' }),
-          onToolStream: (chars) => {
-            // Throttle: one progress post per ~512 chars is plenty.
-            if (chars - lastToolStreamPost >= 512 || chars < lastToolStreamPost) {
-              lastToolStreamPost = chars;
-              this.post({ type: 'agentToolStream', chars });
-            }
-          },
-          onPlan: (text) => {
-            capturedPlanText = text;
-            this.post({ type: 'agentPlan', text });
-          },
-          onToolCall: (call) => {
-            const description = this.describe(call, executor);
-            this.log.appendLine(`[agent] tool: ${description}`);
-            this.post({
-              type: 'agentToolCall',
-              id: call.id,
-              name: call.name,
-              description,
-              terminalCommand:
-                call.name === 'run_command' || call.name === 'run_tests'
-                  ? String(call.args.command ?? '')
-                  : undefined,
-            });
-          },
-          onContextUsage: (used, window) =>
-            this.post({ type: 'contextUsage', used, window, source: contextWindow.source }),
-          onCompaction: (before, after) => {
-            this.log.appendLine(`[agent] compacted context: ~${before} → ~${after} tokens`);
-            this.post({ type: 'compacted', before, after });
-          },
-          onToolResult: (result) =>
-            this.post({
-              type: 'agentToolResult',
-              id: result.id,
-              ok: !result.isError,
-              summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-              label: resultLabel(result.name, result.content, result.isError),
-              fileEdit: fileEdits.get(result.id),
-              checkpoint: toolCheckpoints.get(result.id),
-            }),
-          onMemoryCandidate: (note) => {
-            void (async () => {
-              const answer = await this.askUser?.(
-                `Worth remembering for next time?\n\n"${note}"`,
-                ['Save to memory', 'Skip'],
-              );
-              if (answer === 'Save to memory') await appendMemoryNote(note);
-            })();
-          },
-        },
+        persona,
+        subAgents,
         plan: planFirst,
         planOnly: !opts?.resumePlanText && planFirst && planGate,
         resumePlan: opts?.resumePlanText,
@@ -365,8 +516,7 @@ export class AgentController {
         // quarter of the window so small local models don't reject the request.
         maxTokens: profile.maxTokens ?? Math.min(16_384, Math.floor(contextWindow.window / 4)),
         contextWindow: contextWindow.window,
-        signal: this.abort.signal,
-      });
+      } satisfies AgentRunParams);
       this.log.appendLine(`[agent] finished: ${outcome}`);
       this.track?.('agent.task.completed', { outcome });
       this.pendingPlan =
@@ -381,161 +531,24 @@ export class AgentController {
         status: outcome,
         changedFiles: this.checkpoint.changedFiles(),
       });
+    } catch (err) {
+      // The loop used to run in this process and swallowed its own failures
+      // into outcome 'error'. Reaching it over a socket adds one new failure
+      // mode — an unreachable server — which §6 says to surface once, loudly,
+      // rather than spinning forever on a dead daemon.
+      const message = err instanceof Error ? err.message : String(err);
+      this.log.appendLine(`[agent] failed: ${message}`);
+      this.post({ type: 'error', message });
+      this.post({ type: 'agentStatus', status: 'error', changedFiles: this.checkpoint.changedFiles() });
+      if (/Could not reach the Heap Code server/.test(message)) {
+        void vscode.window
+          .showErrorMessage(message, 'Show Log')
+          .then((choice) => (choice === 'Show Log' ? this.log.show() : undefined));
+      }
     } finally {
       this.abort = undefined;
+      this.activeRun = undefined;
     }
-  }
-
-  /**
-   * Runs a delegated sub-agent to completion (PLAN.md M12) — an isolated,
-   * fresh-context `runAgent()` call sharing the parent's workspace executor
-   * (so checkpoints and revert-all cover its edits too, M8) and abort signal
-   * (so Stop interrupts it), but not the parent's conversation history.
-   * Sequential by design: the parent's own tool-call slot blocks on this,
-   * same as any other tool — no concurrent sub-agents, see PLAN.md's M12
-   * decision log (local-model inference doesn't parallelize usefully anyway).
-   * Sub-agents never get delegate_task themselves — one level of nesting only.
-   */
-  private async runSubAgent(
-    call: ToolCall,
-    ctx: {
-      executor: WorkspaceToolExecutor;
-      provider: Provider;
-      profile: ProviderProfileConfig;
-      capabilities: ReturnType<typeof resolveCapabilities>;
-      mcpTools: ToolDefinition[];
-      lmTools: ToolDefinition[];
-      cfg: vscode.WorkspaceConfiguration;
-      root: vscode.Uri;
-      /** The parent's own persona — a sub-agent can never be more permissive than it, see intersectPersonas. */
-      persona: AgentPersona;
-    },
-  ): Promise<ToolResult> {
-    const task = String(call.args.task ?? '').trim();
-    if (!task) {
-      return { id: call.id, name: call.name, content: 'Missing "task" argument.', isError: true };
-    }
-
-    let provider = ctx.provider;
-    let profile = ctx.profile;
-    let capabilities = ctx.capabilities;
-    const profileName = call.args.profile ? String(call.args.profile) : undefined;
-    if (profileName && profileName !== ctx.profile.name) {
-      const named = this.profiles.getProfiles().find((p) => p.name === profileName);
-      if (named) {
-        provider = createProvider(named, await this.profiles.getApiKey(named));
-        profile = named;
-        capabilities = resolveCapabilities(named);
-      }
-      // Unknown profile name — falls back to the parent's own, same lenient
-      // pattern profileManager.ts already uses for role-profile redirects.
-    }
-    const model = profile.agentModel || profile.model;
-    if (!model) {
-      return { id: call.id, name: call.name, content: `Profile "${profile.name}" has no model configured.`, isError: true };
-    }
-
-    const requestedPersona = getPersona(call.args.persona ? String(call.args.persona) : undefined);
-    const persona = intersectPersonas(ctx.persona, requestedPersona);
-    const subTools = filterToolsForPersona(
-      [...agentToolDefinitions.filter((t) => t.name !== 'delegate_task'), ...ctx.mcpTools, ...ctx.lmTools],
-      persona,
-    );
-    const contextWindow = await this.profiles.contextWindowFor(profile, model);
-
-    const subExecute = async (subCall: ToolCall): Promise<ToolResult> => {
-      if (subCall.name === 'ask_user') {
-        const options = Array.isArray(subCall.args.options) ? subCall.args.options.map(String) : undefined;
-        const answer = await this.askUser?.(String(subCall.args.question ?? ''), options);
-        return {
-          id: subCall.id,
-          name: subCall.name,
-          content: answer?.trim()
-            ? `User answered: ${answer}`
-            : 'The user did not answer. Proceed with your best judgment.',
-        };
-      }
-      if (this.mcp?.isMcpTool(subCall.name)) {
-        return { id: subCall.id, name: subCall.name, content: await this.mcp.call(subCall.name, subCall.args) };
-      }
-      if (isLmTool(subCall.name)) {
-        try {
-          return { id: subCall.id, name: subCall.name, content: await callLmTool(subCall.name, subCall.args) };
-        } catch (err) {
-          return {
-            id: subCall.id,
-            name: subCall.name,
-            content: err instanceof Error ? err.message : String(err),
-            isError: true,
-          };
-        }
-      }
-      if (
-        subCall.name === 'run_command' &&
-        persona.allowedPermissions &&
-        !persona.allowedPermissions.includes('write') &&
-        looksFilesystemMutating(String(subCall.args.command ?? ''))
-      ) {
-        return {
-          id: subCall.id,
-          name: subCall.name,
-          content:
-            `Blocked: this command looks like it would create, modify, or delete files, which the ` +
-            `${persona.label} persona does not allow. Use a persona with file-editing tools instead.`,
-          isError: true,
-        };
-      }
-      return ctx.executor.execute(subCall, this.abort?.signal);
-    };
-
-    const toolLog: string[] = [];
-    let summaryText = '';
-    let deltaBuffer = '';
-
-    const outcome = await runAgent({
-      provider,
-      model,
-      task: [SCOPE_ADDENDUM, persona.taskAddendum, task].filter(Boolean).join('\n\n---\n\n'),
-      workspaceName: path.basename(ctx.root.fsPath),
-      tools: subTools,
-      nativeToolCalls: capabilities.nativeToolCalls,
-      execute: subExecute,
-      requestPermission: (subCall, tool) =>
-        this.permissions.request(subCall, tool, this.describe(subCall, ctx.executor)),
-      beforeToolCall: async (subCall) => {
-        await this.shadowGit?.snapshot(`${subCall.name}: ${this.describe(subCall, ctx.executor).slice(0, 80)}`);
-      },
-      events: {
-        onText: (text) => {
-          if (text.trim()) summaryText += (summaryText ? '\n\n' : '') + text;
-        },
-        onTextDelta: (text) => {
-          deltaBuffer += text;
-        },
-        onTextEnd: () => {
-          if (deltaBuffer.trim()) summaryText += (summaryText ? '\n\n' : '') + deltaBuffer;
-          deltaBuffer = '';
-        },
-        onToolCall: (subCall) => toolLog.push(this.describe(subCall, ctx.executor)),
-        onToolResult: () => {},
-      },
-      maxIterations: ctx.cfg.get<number>('maxIterations', 25),
-      maxTokens: profile.maxTokens ?? Math.min(16_384, Math.floor(contextWindow.window / 4)),
-      contextWindow: contextWindow.window,
-      signal: this.abort?.signal,
-    });
-
-    const content =
-      `outcome: ${outcome}\n` +
-      `${toolLog.length} tool call(s)${toolLog.length ? ':\n' + toolLog.map((d, i) => `  ${i + 1}. ${d}`).join('\n') : ''}\n\n` +
-      (summaryText.trim() || '(sub-agent produced no summary text)');
-
-    return {
-      id: call.id,
-      name: call.name,
-      content,
-      isError: outcome === 'error' || outcome === 'max-iterations' || outcome === 'incomplete',
-    };
   }
 
   /** Approve a pending plan (outcome 'planned') and let the agent execute it. */
@@ -563,14 +576,19 @@ export class AgentController {
     }
   }
 
-  private describe(call: ToolCall, executor: WorkspaceToolExecutor): string {
+  /**
+   * Reads `this.executor` rather than taking one: the executor is per-run and
+   * this is called from handlers registered once per connection. Falls back to
+   * the bare call shape if a description is somehow wanted with no run active.
+   */
+  private describe(call: ToolCall): string {
     if (this.mcp?.isMcpTool(call.name)) {
       return `MCP tool ${call.name.replace(/^mcp__/, '').replace('__', ': ')} ${JSON.stringify(call.args).slice(0, 120)}`;
     }
     if (isLmTool(call.name)) {
       return `VS Code tool ${call.name.replace(/^vslm__/, '')} ${JSON.stringify(call.args).slice(0, 120)}`;
     }
-    return executor.describe(call);
+    return this.executor?.describe(call) ?? `${call.name} ${JSON.stringify(call.args).slice(0, 120)}`;
   }
 
   stop(): void {

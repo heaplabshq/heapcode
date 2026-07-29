@@ -88,7 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
       log,
     );
   }
-  chatProvider.agent = new AgentController(
+  const agent = new AgentController(
     profiles,
     permissions,
     log,
@@ -98,7 +98,16 @@ export function activate(context: vscode.ExtensionContext): void {
     repoMap,
     track,
     chatProvider.shadowGit,
+    // How this host reaches the core server. The agent loop runs there now,
+    // so the extension's job on that path is to answer tool/execute,
+    // permission/request, snapshot/before and key/request — see
+    // docs/phase3-protocol-design.md §7.
+    {
+      clientVersion: String(context.extension.packageJSON.version ?? ''),
+      daemonEntry: vscode.Uri.joinPath(context.extensionUri, 'dist', 'daemon.js').fsPath,
+    },
   );
+  chatProvider.agent = agent;
   chatProvider.agent.askUser = (question, options) =>
     chatProvider.askAgentQuestion(question, options);
 
@@ -149,6 +158,13 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
     telemetry,
     profiles,
+    // Closes the socket to the core server; the daemon itself is shared with
+    // every other window and shuts down on its own idle timer (§6).
+    agent,
+    // Profiles and key material are pushed at session/hello and the server
+    // never reads workspace settings for itself (§2), so a settings edit has
+    // to reach it as a fresh session — applied on the next run, not mid-run.
+    profiles.onDidChange(() => agent.markProfilesChanged()),
     statusBar,
     completionStatus,
     rag,

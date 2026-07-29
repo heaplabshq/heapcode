@@ -24,6 +24,8 @@ interface ToolChip {
   expanded?: boolean;
   /** Shadow-git commit taken just before this call ran — lets the user rewind to this exact step. */
   checkpoint?: string;
+  /** A sub-agent's call: rendered indented under the delegate_task chip it belongs to. */
+  sub?: boolean;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -679,6 +681,7 @@ export function App() {
                 description: msg.description,
                 done: false,
                 terminalCommand: msg.terminalCommand,
+                sub: msg.parent !== undefined,
               },
             };
             // Ask mode streams the answer into an empty placeholder appended at send
@@ -1003,7 +1006,7 @@ export function App() {
                 );
               }
               return (
-                <div key={i} className={`tool-row${t.done ? (t.ok ? ' ok' : ' fail') : ''}`}>
+                <div key={i} className={`tool-row${t.done ? (t.ok ? ' ok' : ' fail') : ''}${t.sub ? ' sub' : ''}`}>
                   <button className="tool-chip" onClick={() => toggleTool(i)}>
                     <span className="tool-icon">{t.done ? (t.ok ? '✓' : '✗') : '⏳'}</span>
                     <span className="tool-desc">{t.description}</span>

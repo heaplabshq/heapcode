@@ -27,12 +27,16 @@ function copyWasmAssets() {
 copyWasmAssets();
 
 const ctx = await esbuild.context({
-  entryPoints: ['src/extension.ts'],
+  // dist/daemon.js is the core server's entry point — the extension
+  // autostarts it detached when nothing is listening on the socket
+  // (docs/phase3-protocol-design.md §6). Its own entry, not a mode of
+  // extension.js, because it runs outside any extension host.
+  entryPoints: ['src/extension.ts', 'src/daemon.ts'],
   bundle: true,
   platform: 'node',
   format: 'cjs',
   target: 'node18',
-  outfile: 'dist/extension.js',
+  outdir: 'dist',
   external: ['vscode'],
   sourcemap: true,
   logLevel: 'info',

@@ -213,6 +213,13 @@ export type ExtensionToWebview =
       description: string;
       /** For run_command: the shell command, so the UI can offer "run in terminal". */
       terminalCommand?: string;
+      /**
+       * Set when a sub-agent made this call: the id of the delegate_task call
+       * that spawned it. The chat indents these — which is the whole of what
+       * sub-agent rendering is, now that recursion happens server-side
+       * (docs/phase3-protocol-design.md §2).
+       */
+      parent?: string;
     }
   | {
       type: 'agentToolResult';
@@ -223,6 +230,8 @@ export type ExtensionToWebview =
       fileEdit?: FileEditInfo;
       /** Shadow-git commit taken just before this call ran, if it wasn't read-only (PLAN.md M8). */
       checkpoint?: string;
+      /** See agentToolCall.parent. */
+      parent?: string;
     }
   | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: ChangedFile[] }
   /** Estimated prompt tokens vs the model's context window (chat + agent). */

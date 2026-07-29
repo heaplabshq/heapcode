@@ -1,7 +1,16 @@
-import type { VectorRecord } from './store.js';
-
 const K1 = 1.5;
 const B = 0.75;
+
+/**
+ * Everything BM25 actually reads off a record. Deliberately narrower than
+ * VectorRecord: keyword ranking needs no embedding, which is what lets a host
+ * keep a vector-free index for retrieval on a keystroke deadline
+ * (docs/phase3-rag-design.md §2.3).
+ */
+export interface KeywordDocument {
+  text: string;
+  context?: string;
+}
 
 /**
  * Lowercases, splits on non-alphanumeric boundaries, and also splits
@@ -26,8 +35,8 @@ export function tokenize(text: string): string[] {
  * asymptotic cost, so it doesn't change the "comfortable to ~50k chunks"
  * ceiling that already applies to search().
  */
-export function bm25Scores(records: VectorRecord[], queryTerms: string[]): Map<VectorRecord, number> {
-  const scores = new Map<VectorRecord, number>();
+export function bm25Scores<T extends KeywordDocument>(records: readonly T[], queryTerms: string[]): Map<T, number> {
+  const scores = new Map<T, number>();
   const uniqueQueryTerms = [...new Set(queryTerms)];
   if (uniqueQueryTerms.length === 0 || records.length === 0) return scores;
 

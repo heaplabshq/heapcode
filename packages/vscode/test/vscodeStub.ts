@@ -46,6 +46,12 @@ export enum FileType {
   SymbolicLink = 64,
 }
 
+/** Mirrors the real enum's values — completionProvider branches on Invoke. */
+export enum InlineCompletionTriggerKind {
+  Invoke = 0,
+  Automatic = 1,
+}
+
 export enum DiagnosticSeverity {
   Error = 0,
   Warning = 1,
@@ -79,6 +85,35 @@ export function __resetConfig(): void {
 
 /** Recorded `showErrorMessage`/`showWarningMessage` calls, so tests can assert what the user was told. */
 export const __shownMessages: string[] = [];
+
+/**
+ * Test hook: when on, `findFiles` walks the workspace root for real instead
+ * of returning nothing. Off by default so existing suites keep the empty
+ * result they were written against — only the index adapters call it.
+ */
+let walkWorkspace = false;
+export function __setFindFilesWalk(enabled: boolean): void {
+  walkWorkspace = enabled;
+}
+
+const didSaveListeners: Array<(doc: { uri: Uri }) => void> = [];
+
+/** Test hook: fire `onDidSaveTextDocument`, the event both indexes update from. */
+export function __fireDidSave(uri: Uri): void {
+  for (const listener of [...didSaveListeners]) listener({ uri });
+}
+
+async function walk(dir: string, root: string, out: Uri[]): Promise<void> {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = nodePath.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      await walk(full, root, out);
+    } else {
+      out.push(Uri.file(full));
+    }
+  }
+}
 
 export const workspace = {
   get workspaceFolders(): Array<{ uri: Uri }> | undefined {
@@ -124,8 +159,21 @@ export const workspace = {
     return nodePath.relative(workspaceRoot, p).replace(/\\/g, '/');
   },
 
-  findFiles(): Promise<Uri[]> {
-    return Promise.resolve([]);
+  async findFiles(): Promise<Uri[]> {
+    if (!walkWorkspace || !workspaceRoot) return [];
+    const out: Uri[] = [];
+    await walk(workspaceRoot, workspaceRoot, out);
+    return out;
+  },
+
+  onDidSaveTextDocument(listener: (doc: { uri: Uri }) => void): { dispose(): void } {
+    didSaveListeners.push(listener);
+    return {
+      dispose() {
+        const i = didSaveListeners.indexOf(listener);
+        if (i >= 0) didSaveListeners.splice(i, 1);
+      },
+    };
   },
 
   getConfiguration(section = '') {

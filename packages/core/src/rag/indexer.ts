@@ -8,6 +8,7 @@ import type { ModelRole, ProviderProfileConfig } from '../config/profiles.js';
 import type { Provider } from '../providers/types.js';
 import { chunkFile, fnv1a, type Chunk } from './chunker.js';
 import { contextualizeChunks } from './contextualize.js';
+import { toHitMeta, type HitMeta } from './keywordIndex.js';
 import { RERANK_CANDIDATES, rerankHits } from './rerank.js';
 import { VectorStore, type SearchHit, type VectorRecord } from './store.js';
 
@@ -53,8 +54,7 @@ export interface RagIndexerOptions {
   /**
    * Whether `ready` requires an embeddings model to be configured, not just a
    * non-empty index. The two hosts disagreed here and this preserves both:
-   * the extension gated on it, the CLI did not. It matters because `ready`
-   * also gates `keywordSearch`, which needs no model at all.
+   * the extension gated on it, the CLI did not.
    */
   requireEmbedderForReady?: boolean;
   onLog?: (line: string) => void;
@@ -317,16 +317,6 @@ export class RagIndexer {
     await this.indexOne(newRel, opts);
   }
 
-  /**
-   * BM25-only keyword retrieval — no embedding call, no LLM call, pure
-   * in-memory computation. Cheap enough to run inside a typing debounce
-   * window, which is the property ghost text depends on.
-   */
-  keywordSearch(text: string, k = 6): SearchHit[] {
-    if (!this.ready) return [];
-    return this.store.keywordSearch(text, k);
-  }
-
   /** Semantic retrieval; empty when there's no embedder or no index. */
   async query(text: string, k = 6, opts: QueryOptions = {}): Promise<SearchHit[]> {
     if (this.store.chunkCount === 0) return [];
@@ -365,6 +355,11 @@ export class RagIndexer {
     } catch {
       return candidates.slice(0, k);
     }
+  }
+
+  /** The same hits without their embeddings — the shape that crosses the wire (§1.2). */
+  async queryHits(text: string, k = 6, opts: QueryOptions = {}): Promise<HitMeta[]> {
+    return (await this.query(text, k, opts)).map(toHitMeta);
   }
 
   /** Formatted retrieval block for prompts / the semantic_search tool. */

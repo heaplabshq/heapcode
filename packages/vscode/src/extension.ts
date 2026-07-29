@@ -15,6 +15,7 @@ import { trackActiveEditor, trackTerminal } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager } from './profileManager.js';
 import { RagIndexer } from './rag/indexer.js';
+import { WorkspaceKeywordIndex } from './rag/keywordIndex.js';
 import { RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { RetentionTracker } from './retentionTracker.js';
 import { ShadowGit } from './agent/shadowGit.js';
@@ -71,6 +72,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const permissions = new PermissionEngine(context.workspaceState, log, track);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   const rag = new RagIndexer(profiles, storageDir, log, track);
+  // Ghost text's typing trigger retrieves from this, not from the semantic
+  // index: BM25 over the same chunks, no embeddings, no model calls, no I/O
+  // on the keystroke path (docs/phase3-rag-design.md §2.3).
+  const keywords = new WorkspaceKeywordIndex(storageDir, log);
   const repoMap = new RepoMapIndexer(storageDir, log);
   // Settings are the extension's config source (the CLI injects a file
   // loader instead); `[mcp]` prefixing stays here so the log channel reads
@@ -168,6 +173,7 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar,
     completionStatus,
     rag,
+    keywords,
     repoMap,
     ragStatus,
     mcp,
@@ -321,7 +327,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.languages.registerInlineCompletionItemProvider(
       [{ scheme: 'file' }, { scheme: 'untitled' }],
-      new HeapCodeCompletionProvider(profiles, log, rag),
+      new HeapCodeCompletionProvider(profiles, log, rag, keywords.inner),
     ),
     vscode.commands.registerCommand('heapcode.toggleCompletion', async () => {
       const cfg = vscode.workspace.getConfiguration('heapcode.completion');
@@ -355,6 +361,9 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   // Repo map needs no embeddings model, but stays off the activation path too.
   setTimeout(() => void repoMap.buildIndex(), 5_000);
+  // Neither does the keyword index — it is the one retrieval path that works
+  // with no model configured at all, so it is never gated on rag.autoIndex.
+  setTimeout(() => void keywords.init().then(() => keywords.buildIndex()), 5_000);
 
   updateStatusBar();
   track('extension.activated');

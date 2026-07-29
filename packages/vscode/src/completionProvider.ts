@@ -7,6 +7,8 @@ import {
   isAbortError,
   LatencyTracker,
   PrefixCache,
+  type HitMeta,
+  type KeywordIndex,
 } from '@heapcode/core';
 import type { ProfileManager } from './profileManager.js';
 import type { RagIndexer } from './rag/indexer.js';
@@ -29,6 +31,13 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     private readonly profiles: ProfileManager,
     private readonly log: vscode.OutputChannel,
     private readonly rag: RagIndexer,
+    /**
+     * Vector-free BM25 over the same chunks, held in this process. Typing
+     * triggers retrieve from here rather than from the semantic index, which
+     * is what keeps the keystroke path free of I/O — see its own doc comment
+     * and docs/phase3-rag-design.md §2.3.
+     */
+    private readonly keywords: KeywordIndex,
   ) {}
 
   async provideInlineCompletionItems(
@@ -92,7 +101,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     const nativeFim = profile.preset === 'ollama' && templateSetting === 'auto' && template;
 
     const repoContext = cfg.get<boolean>('repoContext', true)
-      ? await collectRepoContext(this.rag, document, prefix, context.triggerKind)
+      ? await collectRepoContext(this.rag, this.keywords, document, prefix, context.triggerKind)
       : '';
     const crossFile = collectCrossFileContext(document);
     const started = Date.now();
@@ -193,28 +202,32 @@ function acceptTrackedItem(
  * inside the debounce window); manual-trigger completions use the fuller
  * embeddings+hybrid+rerank pipeline since the user is explicitly waiting.
  */
-async function collectRepoContext(
+/**
+ * Exported for tests: which index a completion's repo context comes from is
+ * the whole of decision 1 in the RAG migration, and it is not observable
+ * through provideInlineCompletionItems without standing up the model call too.
+ */
+export async function collectRepoContext(
   rag: RagIndexer,
+  keywords: KeywordIndex,
   current: vscode.TextDocument,
   prefix: string,
   triggerKind: vscode.InlineCompletionTriggerKind,
 ): Promise<string> {
-  if (!rag.ready) return '';
+  const invoked = triggerKind === vscode.InlineCompletionTriggerKind.Invoke;
+  if (!(invoked ? rag.ready : keywords.ready)) return '';
   const queryText = prefix.split('\n').slice(-REPO_QUERY_LINES).join('\n').slice(-REPO_QUERY_CHARS);
   if (!queryText.trim()) return '';
 
   const currentPath = vscode.workspace.asRelativePath(current.uri, false);
-  const hits =
-    triggerKind === vscode.InlineCompletionTriggerKind.Invoke
-      ? await rag.query(queryText, 4)
-      : rag.keywordSearch(queryText, 4);
+  const hits: HitMeta[] = invoked ? await rag.queryHits(queryText, 4) : keywords.search(queryText, 4);
 
   const parts: string[] = [];
   let used = 0;
   for (const hit of hits) {
-    if (hit.record.path === currentPath) continue;
+    if (hit.path === currentPath) continue;
     const commented = commentOut(
-      `From ${hit.record.path}:${hit.record.startLine}-${hit.record.endLine}:\n${hit.record.text}`,
+      `From ${hit.path}:${hit.startLine}-${hit.endLine}:\n${hit.text}`,
       current.languageId,
     );
     if (used + commented.length > REPO_CONTEXT_CHARS) break;

@@ -3,6 +3,7 @@ import {
   DEFAULT_IGNORE_GLOB,
   RagIndexer as RagIndex,
   RAG_INDEX_FILE,
+  type HitMeta,
   type IndexState,
   type QueryOptions,
   type SearchHit,
@@ -125,12 +126,13 @@ export class RagIndexer implements vscode.Disposable {
     await this.refresh();
   }
 
-  keywordSearch(text: string, k = 6): SearchHit[] {
-    return this.index.keywordSearch(text, k);
-  }
-
   query(text: string, k = 6): Promise<SearchHit[]> {
     return this.index.query(text, k, this.queryOptions());
+  }
+
+  /** Hits without their embeddings — what ghost text's manual trigger renders. */
+  queryHits(text: string, k = 6): Promise<HitMeta[]> {
+    return this.index.queryHits(text, k, this.queryOptions());
   }
 
   queryFormatted(text: string, k = 6): Promise<string> {

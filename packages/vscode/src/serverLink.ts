@@ -6,6 +6,8 @@ import {
   type AgentEventParams,
   type ChatSendParams,
   type ChatSendResult,
+  type CommitMessageParams,
+  type CommitMessageResult,
   type ConnectOptions,
   type KeyRequestParams,
   type KeyRequestResult,
@@ -220,6 +222,25 @@ export class ServerLink {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * One commit message from one diff, server-side.
+   *
+   * Request/response, no callbacks — genuinely a single model call, unlike
+   * chat's hidden tool loop or PR review's. The diff is collected here because
+   * the server has no business knowing about VS Code's git extension, and
+   * "staged, else working tree" is a decision about what the user meant.
+   */
+  async commitMessage(diff: string, signal?: AbortSignal): Promise<string> {
+    const profileName = this.activeProfileName();
+    const { peer } = await this.ensureConnection(profileName);
+    const { message } = await peer.request<CommitMessageResult>(
+      METHODS.commitMessage,
+      { diff } satisfies CommitMessageParams,
+      signal,
+    );
+    return message;
   }
 
   /** Model list for a profile, resolved with the server's copy of the key. */

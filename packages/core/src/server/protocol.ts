@@ -239,6 +239,30 @@ export interface ListModelsResult {
 }
 
 /**
+ * `git/commitMessage` — one commit message from one diff.
+ *
+ * Request/response with no callbacks and no streaming, the shape
+ * `provider/listModels` has. It is genuinely a single model call: no tools, no
+ * loop, no retry, and no follow-up question — the only feature on the
+ * not-yet-migrated list that turned out to be as simple as it looked.
+ *
+ * The diff is collected host-side and sent whole. The server has no business
+ * knowing about VS Code's git extension, and "staged, else working tree" is a
+ * host decision about what the user meant.
+ */
+export interface CommitMessageParams {
+  /** Already truncated by the host to whatever it considers sendable. */
+  diff: string;
+  /** Defaults to the session's active profile; the `editModel` role redirect is applied server-side. */
+  profileName?: string;
+}
+
+export interface CommitMessageResult {
+  /** Fence- and quote-stripped, ready to drop into a commit box. Empty when the model said nothing usable. */
+  message: string;
+}
+
+/**
  * `rag/query` — semantic retrieval, run server-side.
  *
  * Request/response with no callbacks, the shape `provider/listModels` has.
@@ -422,6 +446,7 @@ export const METHODS = {
   agentEvent: 'agent/event',
   chatSend: 'chat/send',
   listModels: 'provider/listModels',
+  commitMessage: 'git/commitMessage',
   ragQuery: 'rag/query',
   ragIndex: 'rag/index',
   ragStatus: 'rag/status',

@@ -383,7 +383,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void chatProvider.sendFromCommand('/security-review');
     }),
     vscode.commands.registerCommand('heapcode.generateCommitMessage', () =>
-      generateCommitMessage(profiles, log, track),
+      generateCommitMessage(link, log, track),
     ),
 
     vscode.languages.registerCodeActionsProvider(

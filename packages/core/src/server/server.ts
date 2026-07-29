@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { chmod, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
+import { buildCommitMessages, normalizeCommitMessage } from '../prompts/edit.js';
 import { runAgentForSession, type RunHost } from './agentRun.js';
 import { runChatForSession, type ChatHost } from './chatSend.js';
 import { RpcPeer } from './rpc.js';
@@ -16,6 +17,8 @@ import {
   type AgentEvent,
   type AgentRunParams,
   type ChatSendParams,
+  type CommitMessageParams,
+  type CommitMessageResult,
   type HelloParams,
   type HelloResult,
   type KeyRequestParams,
@@ -270,6 +273,28 @@ export class HeapcodeServer {
       } finally {
         if (params.runId) active.endRun(params.runId);
       }
+    });
+
+    /**
+     * A single model call on the `editModel` role, which is why it goes through
+     * providerForRole rather than providerFor: a profile can point commit
+     * messages at another profile entirely via `editProfile`, and that
+     * redirect's key is resolved through key/request like any other.
+     */
+    peer.onRequest(METHODS.commitMessage, async (raw, signal) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      const { diff, profileName } = (raw ?? {}) as CommitMessageParams;
+      if (!diff?.trim()) return { message: '' } satisfies CommitMessageResult;
+      const resolved = await session.providerForRole('editModel', requestKey, profileName);
+      if (!resolved) throw new Error(`Unknown profile "${profileName ?? session.activeProfile}" for this session.`);
+      const res = await resolved.provider.chat({
+        model: resolved.profile.editModel || resolved.profile.model,
+        messages: buildCommitMessages(diff),
+        temperature: 0.2,
+        maxTokens: 500,
+        signal,
+      });
+      return { message: normalizeCommitMessage(res.content) } satisfies CommitMessageResult;
     });
 
     peer.onRequest(METHODS.ragStatus, async () => {

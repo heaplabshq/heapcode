@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { buildCommitMessages, extractFirstCodeBlock, isAbortError } from '@heapcode/core';
-import type { ProfileManager } from './profileManager.js';
+import { isAbortError } from '@heapcode/core';
+import type { ServerLink } from './serverLink.js';
 
 const MAX_DIFF_CHARS = 30_000;
 
@@ -28,8 +28,15 @@ function getRepository(): GitRepository | undefined {
   return repos.find((r) => active?.startsWith(r.rootUri.toString())) ?? repos[0];
 }
 
+/**
+ * Everything here is host work: finding the repo through VS Code's own git
+ * extension, deciding whether "the changes" means staged or the working tree,
+ * and dropping the result into the commit box. The model call itself is one
+ * `git/commitMessage` request — no Provider, no key, and no prompt in this
+ * process (docs/phase3-protocol-design.md §4, shape 8b).
+ */
 export async function generateCommitMessage(
-  profiles: ProfileManager,
+  link: ServerLink,
   log: vscode.OutputChannel,
   track?: (name: string, meta?: Record<string, unknown>) => void,
 ): Promise<void> {
@@ -63,17 +70,10 @@ export async function generateCommitMessage(
       const abort = new AbortController();
       token.onCancellationRequested(() => abort.abort());
       try {
-        const { provider, profile } = await profiles.resolveRole('editModel');
-        const result = await provider.chat({
-          model: profile.editModel || profile.model,
-          messages: buildCommitMessages(diff),
-          temperature: 0.2,
-          maxTokens: 500,
-          signal: abort.signal,
-        });
-        // Models occasionally fence or quote the message despite instructions.
-        let message = (extractFirstCodeBlock(result.content) ?? result.content).trim();
-        message = message.replace(/^["'`]+|["'`]+$/g, '').trim();
+        // The editModel role redirect and the fence/quote stripping both moved
+        // server-side with the call — normalizeCommitMessage sits next to the
+        // prompt it belongs to now.
+        const message = await link.commitMessage(diff, abort.signal);
         if (message) {
           repo.inputBox.value = message;
           track?.('commit.generated');

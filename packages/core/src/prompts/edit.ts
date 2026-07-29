@@ -1,3 +1,4 @@
+import { extractFirstCodeBlock } from '../edit/codeBlocks.js';
 import type { ChatMessage } from '../providers/types.js';
 
 const EDIT_SYSTEM_PROMPT =
@@ -51,4 +52,15 @@ export function buildCommitMessages(diff: string): ChatMessage[] {
     { role: 'system', content: COMMIT_SYSTEM_PROMPT },
     { role: 'user', content: `Write the commit message for this diff:\n\n${diff}` },
   ];
+}
+
+/**
+ * Strips what models add despite the prompt: a code fence around the whole
+ * message, or wrapping quotes. Beside the prompt it belongs to rather than in
+ * whichever host happened to render the result — the extension did this
+ * inline before commit-message generation moved to the server.
+ */
+export function normalizeCommitMessage(content: string): string {
+  const unfenced = (extractFirstCodeBlock(content) ?? content).trim();
+  return unfenced.replace(/^["'`]+|["'`]+$/g, '').trim();
 }

@@ -74,10 +74,10 @@ export async function runAgentForSession(
         requestPermission: (subCall, tool) => host.requestPermission(subCall, tool),
         beforeToolCall: (subCall) => host.snapshotBefore(subCall),
         describe,
-        resolveProfile: async (name) => {
-          if (!session.hasKey(name) || !session.getProfile(name)) await host.requestKey(name);
-          return session.providerFor(name);
-        },
+        // Session.resolveProfile holds the same rule this used to inline, plus
+        // an ask-once guard — a keyless local profile leaves `hasKey` false
+        // forever, so the old condition re-asked the host on every delegation.
+        resolveProfile: (name) => session.resolveProfile(name, host.requestKey),
         events: {
           onSubToolCall: (subCall) =>
             host.emit({ type: 'tool_call', id: subCall.id, name: subCall.name, args: subCall.args, parent: call.id }),

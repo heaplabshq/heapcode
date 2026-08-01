@@ -560,6 +560,11 @@
           "default": 60,
           "description": "Terminal command timeout in seconds for agent-run commands."
         },
+        "heapcode.agent.askUserQuestionTimeout": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "How long an agent question waits with no activity before the agent is told you may be away and carries on with its own judgment — e.g. `60s`, `5m`, `10m`. Empty (the default) waits indefinitely. Typing or refocusing the question resets the clock, and the last 20 seconds are shown as a countdown. A question the agent marked as gating an action (\"may I delete this?\") never times out regardless of this setting."
+        },
         "heapcode.agent.memoryDistillation": {
           "type": "boolean",
           "default": true,

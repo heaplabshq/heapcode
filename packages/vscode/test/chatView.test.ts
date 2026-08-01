@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ASK_USER_NO_ANSWER,
+  askUserIdleMessage,
   HeapcodeServer,
   type ConversationStore,
   type ExtensionToWebview,
@@ -104,12 +106,19 @@ const store = {
 
 const log = { appendLine: () => {}, show: () => {} } as unknown as Parameters<typeof makeChat>[0]['log'];
 
-/** A webview stub that records what the provider posts and lets us push messages in. */
+/**
+ * A webview stub that records what the provider posts and lets us push
+ * messages in. `dispose()` fires the provider's own onDidDispose handler —
+ * the sidebar being closed mid-run is a real teardown path, and one of the
+ * places a pending ask_user question has to be resolved rather than hang.
+ */
 function fakeView(posts: ExtensionToWebview[]): {
   view: never;
   send(msg: WebviewToExtension): Promise<void>;
+  dispose(): void;
 } {
   let onMessage: ((msg: WebviewToExtension) => void) | undefined;
+  const disposeHandlers: Array<() => void> = [];
   const view = {
     visible: true,
     webview: {
@@ -126,7 +135,10 @@ function fakeView(posts: ExtensionToWebview[]): {
         return { dispose: () => {} };
       },
     },
-    onDidDispose: () => ({ dispose: () => {} }),
+    onDidDispose: (handler: () => void) => {
+      disposeHandlers.push(handler);
+      return { dispose: () => {} };
+    },
   };
   return {
     view: view as never,
@@ -135,6 +147,9 @@ function fakeView(posts: ExtensionToWebview[]): {
       // Let the provider's async handler settle.
       await new Promise((r) => setTimeout(r, 0));
     },
+    dispose: () => {
+      for (const handler of [...disposeHandlers]) handler();
+    },
   };
 }
 
@@ -142,21 +157,28 @@ interface ChatOpts {
   posts: ExtensionToWebview[];
   profiles?: ProfileManager;
   log?: unknown;
+  /** Override the conversation store — openConversation needs a `get` that returns one. */
+  store?: ConversationStore;
 }
 
-function makeChat(opts: ChatOpts): { chat: ChatViewProvider; link: ServerLink; send(msg: WebviewToExtension): Promise<void> } {
+function makeChat(opts: ChatOpts): {
+  chat: ChatViewProvider;
+  link: ServerLink;
+  send(msg: WebviewToExtension): Promise<void>;
+  disposeView(): void;
+} {
   const profiles = opts.profiles ?? stubProfiles([profile]);
   const link = new ServerLink(profiles, (opts.log ?? log) as never, serverOpts as never);
   const chat = new ChatViewProvider(
     Uri.file('/ext') as never,
     profiles,
-    store,
+    opts.store ?? store,
     (opts.log ?? log) as never,
     link,
   );
-  const { view, send } = fakeView(opts.posts);
+  const { view, send, dispose } = fakeView(opts.posts);
   chat.resolveWebviewView(view);
-  return { chat, link, send };
+  return { chat, link, send, disposeView: dispose };
 }
 
 function textOf(posts: ExtensionToWebview[]): string {
@@ -341,6 +363,210 @@ describe('settings connection test — still host-side', () => {
     expect(result?.models).toEqual([]);
     expect(result?.error).toBeTruthy();
     link.dispose();
+  });
+});
+
+/**
+ * ask_user's idle bound, extension side. Core covers the shared primitives
+ * (packages/core/test/askUser.test.ts) and the CLI covers its own surface;
+ * this covers the wiring that is only in this host — askAgentQuestion's
+ * deadline, the countdown posts, activity resetting it, and every teardown
+ * path that has to resolve a pending question rather than leave it hanging.
+ *
+ * Every assertion here waits on the promise actually settling. A test that
+ * only checked "no error was thrown" would pass just as happily against the
+ * hang these paths exist to prevent.
+ */
+describe('ChatViewProvider — ask_user idle bound', () => {
+  /** The question id the provider announced to the webview. */
+  function questionId(posts: ExtensionToWebview[]): string {
+    const q = posts.find((p): p is Extract<ExtensionToWebview, { type: 'agentQuestion' }> => p.type === 'agentQuestion');
+    if (!q) throw new Error('no agentQuestion was posted');
+    return q.id;
+  }
+
+  function closures(posts: ExtensionToWebview[]): Array<'idle' | 'cancelled'> {
+    return posts
+      .filter((p): p is Extract<ExtensionToWebview, { type: 'agentQuestionClosed' }> => p.type === 'agentQuestionClosed')
+      .map((p) => p.reason);
+  }
+
+  function countdowns(posts: ExtensionToWebview[]): number[] {
+    return posts
+      .filter(
+        (p): p is Extract<ExtensionToWebview, { type: 'agentQuestionCountdown' }> =>
+          p.type === 'agentQuestionCountdown',
+      )
+      .map((p) => p.seconds);
+  }
+
+  /** Waits for the question card to reach the webview before acting on it. */
+  async function awaitQuestion(posts: ExtensionToWebview[]): Promise<string> {
+    await vi.waitFor(() => expect(posts.some((p) => p.type === 'agentQuestion')).toBe(true), { timeout: 2_000 });
+    return questionId(posts);
+  }
+
+  it('waits indefinitely when no timeout is configured — the default', async () => {
+    const posts: ExtensionToWebview[] = [];
+    const { chat, link, send } = makeChat({ posts });
+    await send({ type: 'ready' } as WebviewToExtension);
+
+    const pending = chat.askAgentQuestion('Which one?', ['a', 'b']);
+    const id = await awaitQuestion(posts);
+
+    // Well past the old hardcoded 300s cap in wall-clock terms it is not, but
+    // it is past every deadline this test could configure: nothing fires.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(closures(posts)).toEqual([]);
+    expect(countdowns(posts)).toEqual([]);
+
+    await send({ type: 'agentQuestionResponse', id, answer: 'a' } as WebviewToExtension);
+    await expect(pending).resolves.toMatchObject({ answer: 'a', idle: false });
+    link.dispose();
+  });
+
+  it('counts down over successive posts and closes as idle when the bound expires', async () => {
+    const posts: ExtensionToWebview[] = [];
+    const { chat, link, send } = makeChat({ posts });
+    await send({ type: 'ready' } as WebviewToExtension);
+
+    // Under ASK_USER_COUNTDOWN_MS, so the countdown is live from the start.
+    // Long enough that the 500ms ticks land on distinct whole seconds — at a
+    // shorter bound every tick rounds to the same number and "it counted
+    // down" becomes unfalsifiable.
+    const pending = chat.askAgentQuestion('Which one?', undefined, 3_000);
+    await awaitQuestion(posts);
+
+    const outcome = await pending;
+    expect(outcome).toMatchObject({ idle: true });
+    expect(outcome.answer).toBeUndefined();
+
+    // It actually counted down rather than repeating one number: the ticks
+    // never increase, and the last is strictly below the first.
+    const seen = countdowns(posts);
+    expect(seen.length).toBeGreaterThan(1);
+    expect(seen.at(-1)!).toBeLessThan(seen[0]!);
+    expect([...seen].sort((a, b) => b - a)).toEqual(seen);
+    expect(closures(posts)).toEqual(['idle']);
+    link.dispose();
+  });
+
+  it('activity resets the deadline instead of letting it expire on schedule', async () => {
+    const posts: ExtensionToWebview[] = [];
+    const { chat, link, send } = makeChat({ posts });
+    await send({ type: 'ready' } as WebviewToExtension);
+
+    const pending = chat.askAgentQuestion('Which one?', undefined, 700);
+    const id = await awaitQuestion(posts);
+
+    // Keep reporting activity across a span longer than the bound. Without
+    // touch() this question would have expired mid-way — which is exactly the
+    // "expired while the user was mid-sentence" case.
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      await send({ type: 'agentQuestionActivity', id, partial: 'stil' } as WebviewToExtension);
+    }
+    expect(closures(posts)).toEqual([]);
+
+    // And once activity stops, it does still expire — carrying the partial.
+    const outcome = await pending;
+    expect(outcome).toMatchObject({ idle: true, partial: 'stil' });
+    expect(closures(posts)).toEqual(['idle']);
+    link.dispose();
+  });
+
+  it('distinguishes an expired question from a cancelled one, on the wire and to the agent', async () => {
+    const idlePosts: ExtensionToWebview[] = [];
+    const idleChat = makeChat({ posts: idlePosts });
+    await idleChat.send({ type: 'ready' } as WebviewToExtension);
+    const idleOutcome = await idleChat.chat.askAgentQuestion('Which one?', undefined, 300);
+
+    const cancelPosts: ExtensionToWebview[] = [];
+    const cancelChat = makeChat({ posts: cancelPosts });
+    await cancelChat.send({ type: 'ready' } as WebviewToExtension);
+    const cancelPending = cancelChat.chat.askAgentQuestion('Which one?', undefined, 60_000);
+    await awaitQuestion(cancelPosts);
+    await cancelChat.send({ type: 'stop' } as WebviewToExtension);
+    const cancelOutcome = await cancelPending;
+
+    // The card is told which of the two happened, so it can render them
+    // differently rather than just disappearing in both cases.
+    expect(closures(idlePosts)).toEqual(['idle']);
+    expect(closures(cancelPosts)).toEqual(['cancelled']);
+
+    // And the agent is told two different things: idle carries the
+    // "not approval" guidance, cancellation stays the plain no-answer line.
+    expect(idleOutcome).toMatchObject({ idle: true });
+    expect(cancelOutcome).toMatchObject({ idle: false });
+    expect(askUserIdleMessage(idleOutcome.partial)).toContain('NOT approval');
+    expect(ASK_USER_NO_ANSWER).not.toContain('NOT approval');
+
+    idleChat.link.dispose();
+    cancelChat.link.dispose();
+  });
+
+  /**
+   * Each teardown path, asserted by the promise settling. `resolves` is the
+   * whole point: before abortRun() these paths aborted the run and left the
+   * question's promise pending forever, which no "did it throw" check catches.
+   */
+  describe('every teardown path resolves the pending question rather than hanging', () => {
+    it('the stop button', async () => {
+      const posts: ExtensionToWebview[] = [];
+      const { chat, link, send } = makeChat({ posts });
+      await send({ type: 'ready' } as WebviewToExtension);
+      const pending = chat.askAgentQuestion('Which one?', undefined, 60_000);
+      await awaitQuestion(posts);
+
+      await send({ type: 'stop' } as WebviewToExtension);
+
+      await expect(pending).resolves.toMatchObject({ idle: false });
+      expect(closures(posts)).toEqual(['cancelled']);
+      link.dispose();
+    });
+
+    it('starting a new chat', async () => {
+      const posts: ExtensionToWebview[] = [];
+      const { chat, link, send } = makeChat({ posts });
+      await send({ type: 'ready' } as WebviewToExtension);
+      const pending = chat.askAgentQuestion('Which one?', undefined, 60_000);
+      await awaitQuestion(posts);
+
+      await send({ type: 'newChat' } as WebviewToExtension);
+
+      await expect(pending).resolves.toMatchObject({ idle: false });
+      expect(closures(posts)).toEqual(['cancelled']);
+      link.dispose();
+    });
+
+    it('opening an earlier conversation', async () => {
+      const posts: ExtensionToWebview[] = [];
+      const loaded = { id: 'other', title: 'other', updatedAt: 0, messages: [] };
+      const withGet = { ...store, get: () => Promise.resolve(loaded) } as unknown as ConversationStore;
+      const { chat, link, send } = makeChat({ posts, store: withGet });
+      await send({ type: 'ready' } as WebviewToExtension);
+      const pending = chat.askAgentQuestion('Which one?', undefined, 60_000);
+      await awaitQuestion(posts);
+
+      await send({ type: 'openConversation', id: 'other' } as WebviewToExtension);
+
+      await expect(pending).resolves.toMatchObject({ idle: false });
+      expect(closures(posts)).toEqual(['cancelled']);
+      link.dispose();
+    });
+
+    it('the sidebar being closed', async () => {
+      const posts: ExtensionToWebview[] = [];
+      const { chat, link, send, disposeView } = makeChat({ posts });
+      await send({ type: 'ready' } as WebviewToExtension);
+      const pending = chat.askAgentQuestion('Which one?', undefined, 60_000);
+      await awaitQuestion(posts);
+
+      disposeView();
+
+      await expect(pending).resolves.toMatchObject({ idle: false });
+      link.dispose();
+    });
   });
 });
 

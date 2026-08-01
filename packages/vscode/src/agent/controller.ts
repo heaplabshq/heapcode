@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
+  ASK_USER_NO_ANSWER,
+  askUserAnswerMessage,
+  askUserBlocksAction,
+  askUserIdleMessage,
   METHODS,
+  parseIdleTimeout,
   type RagIndexParams,
   type RagIndexResult,
   connectToServer,
@@ -87,8 +92,15 @@ export class AgentController {
   private toolCheckpoints = new Map<string, string>();
   private contextWindowSource?: ContextWindowSource;
 
-  /** ask_user tool: forwards the agent's question to the chat UI; set by extension.ts. */
-  askUser?: (question: string, options?: string[]) => Promise<string | undefined>;
+  /**
+   * ask_user tool: forwards the agent's question to the chat UI; set by
+   * extension.ts. `idleMs` is the opt-in bound; undefined waits indefinitely.
+   */
+  askUser?: (
+    question: string,
+    options?: string[],
+    idleMs?: number,
+  ) => Promise<{ answer?: string; idle: boolean; partial?: string }>;
 
   /** Built-in tools grouped the way Copilot groups its own (read/search/edit/execute/other). */
   private static readonly BUILTIN_CATEGORIES: Array<{ label: string; names: string[] }> = [
@@ -276,17 +288,27 @@ export class AgentController {
   private async executeTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
     if (call.name === 'ask_user') {
       const options = Array.isArray(call.args.options) ? call.args.options.map(String) : undefined;
-      // No timeout, deliberately: a human reading a chat card may take
-      // minutes. How a slow human is told apart from a wedged host is still
-      // open (§7's open question 2) — neither CLI client settled it and this
-      // one doesn't either.
-      const answer = await this.askUser?.(String(call.args.question ?? ''), options);
+      // Unbounded unless the user opted into heapcode.agent.askUserQuestionTimeout,
+      // and never bounded for a question the model marked as gating an action.
+      // Reading the setting per call rather than per run means changing it takes
+      // effect on the next question.
+      //
+      // (This comment used to claim there was no timeout at all. There was one:
+      // an invisible, hardcoded 300s in chatViewProvider.askAgentQuestion. It is
+      // gone — see that method's note.)
+      const idleMs = askUserBlocksAction(call.args)
+        ? undefined
+        : parseIdleTimeout(
+            vscode.workspace.getConfiguration('heapcode.agent').get<string>('askUserQuestionTimeout', ''),
+          );
+      const outcome = (await this.askUser?.(String(call.args.question ?? ''), options, idleMs)) ?? { idle: false };
+      if (outcome.answer?.trim()) {
+        return { id: call.id, name: call.name, content: askUserAnswerMessage(outcome.answer) };
+      }
       return {
         id: call.id,
         name: call.name,
-        content: answer?.trim()
-          ? `User answered: ${answer}`
-          : 'The user did not answer. Proceed with your best judgment.',
+        content: outcome.idle ? askUserIdleMessage(outcome.partial) : ASK_USER_NO_ANSWER,
       };
     }
     if (this.mcp?.isMcpTool(call.name)) {
@@ -578,11 +600,14 @@ export class AgentController {
               return this.post({ type: 'compacted', before: event.beforeTokens, after: event.afterTokens });
             case 'memory_candidate':
               void (async () => {
-                const answer = await this.askUser?.(
+                // No idle bound: an unanswered memory prompt must decay into
+                // "don't save", never into a save. Leaving `idleMs` undefined
+                // means it simply waits, and any non-answer falls through.
+                const outcome = await this.askUser?.(
                   `Worth remembering for next time?\n\n"${event.note}"`,
                   ['Save to memory', 'Skip'],
                 );
-                if (answer === 'Save to memory') await appendMemoryNote(event.note);
+                if (outcome?.answer === 'Save to memory') await appendMemoryNote(event.note);
               })();
               return;
           }

@@ -114,8 +114,11 @@ export function activate(context: vscode.ExtensionContext): void {
     serverOptions,
   );
   chatProvider.agent = agent;
-  chatProvider.agent.askUser = (question, options) =>
-    chatProvider.askAgentQuestion(question, options);
+  // `idleMs` is decided by the controller per call (the setting, unless the
+  // model marked the question as gating an action) and must be forwarded —
+  // dropping it here would silently leave every extension question unbounded.
+  chatProvider.agent.askUser = (question, options, idleMs) =>
+    chatProvider.askAgentQuestion(question, options, idleMs);
 
   const ragStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
   ragStatus.command = 'heapcode.buildIndex';

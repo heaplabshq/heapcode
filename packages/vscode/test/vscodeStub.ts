@@ -33,6 +33,15 @@ export class Uri {
     return new Uri(p);
   }
 
+  /**
+   * Replace parts of the Uri, keeping the rest — the real API's `with`.
+   * workspaceFs.ts:24 uses it to derive a parent directory before writing,
+   * so anything that writes a file through that helper needs it.
+   */
+  with(change: { path?: string; scheme?: string }): Uri {
+    return new Uri(change.path ?? this.fsPath, change.scheme ?? this.scheme);
+  }
+
   /** Test hook: a non-`file` root, the case RAG and ShadowGit both decline. */
   static withScheme(p: string, scheme: string): Uri {
     return new Uri(p, scheme);

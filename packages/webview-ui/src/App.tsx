@@ -164,6 +164,14 @@ interface QuestionCard {
   question: string;
   options?: string[];
   answered?: string;
+  /**
+   * Seconds left, set only for the last stretch of an idle timeout the user
+   * opted into — and only for a question that can time out at all (one the
+   * model marked as gating an action never does).
+   */
+  countdown?: number;
+  /** The question stopped waiting: it expired, or the run was cancelled. */
+  closed?: 'idle' | 'cancelled';
 }
 
 interface UiMessage {
@@ -297,21 +305,45 @@ function ContextMeter({
   );
 }
 
-/** The agent's ask_user tool: option buttons plus a free-text answer field. */
+/**
+ * The agent's ask_user tool: option buttons plus a free-text answer field.
+ *
+ * Typing and refocusing both report activity, which is what pushes the
+ * extension's idle deadline back — without it, a question would expire on
+ * schedule while the user was still mid-sentence. The report carries the text
+ * so far, so an expiring question hands the agent a partial answer rather than
+ * nothing.
+ */
 function QuestionCardView({
   q,
   onAnswer,
+  onActivity,
 }: {
   q: QuestionCard;
   onAnswer: (answer: string) => void;
+  onActivity: (partial: string) => void;
 }) {
   const [text, setText] = useState('');
   return (
     <div className="question-card">
-      <div className="question-head">Heap Code has a question</div>
+      <div className="question-head">
+        Heap Code has a question
+        {q.countdown !== undefined && q.closed === undefined && (
+          <span className="question-countdown">
+            {' '}
+            — no reply in {q.countdown}s and the agent will carry on
+          </span>
+        )}
+      </div>
       <div className="question-text">{q.question}</div>
       {q.answered !== undefined ? (
         <div className="question-answered">↳ {q.answered}</div>
+      ) : q.closed !== undefined ? (
+        <div className="question-answered">
+          {q.closed === 'idle'
+            ? '↳ No reply — the agent carried on with its own judgment.'
+            : '↳ Cancelled.'}
+        </div>
       ) : (
         <>
           {q.options && q.options.length > 0 && (
@@ -328,7 +360,11 @@ function QuestionCardView({
               className="question-input"
               value={text}
               placeholder="Type an answer…"
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                onActivity(e.target.value);
+              }}
+              onFocus={() => onActivity(text)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && text.trim()) onAnswer(text.trim());
               }}
@@ -606,6 +642,26 @@ export function App() {
               question: { id: msg.id, question: msg.question, options: msg.options },
             },
           ]);
+          break;
+        case 'agentQuestionCountdown':
+          setMessages((prev) =>
+            prev.map((x) =>
+              x.question?.id === msg.id
+                ? { ...x, question: { ...x.question, countdown: msg.seconds } }
+                : x,
+            ),
+          );
+          break;
+        case 'agentQuestionClosed':
+          // The card must stop accepting input: the extension has already
+          // resolved this question, so anything typed now would go nowhere.
+          setMessages((prev) =>
+            prev.map((x) =>
+              x.question?.id === msg.id
+                ? { ...x, question: { ...x.question, closed: msg.reason, countdown: undefined } }
+                : x,
+            ),
+          );
           break;
         case 'agentText':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text }]);
@@ -1096,6 +1152,9 @@ export function App() {
                 <QuestionCardView
                   key={i}
                   q={q}
+                  onActivity={(partial) =>
+                    postToExtension({ type: 'agentQuestionActivity', id: q.id, partial })
+                  }
                   onAnswer={(answer) => {
                     postToExtension({ type: 'agentQuestionResponse', id: q.id, answer });
                     setMessages((prev) =>

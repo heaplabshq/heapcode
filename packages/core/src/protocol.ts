@@ -84,6 +84,13 @@ export type WebviewToExtension =
   | { type: 'setProfile'; name: string }
   | { type: 'permissionResponse'; id: string; choice: PermissionChoice }
   | { type: 'agentQuestionResponse'; id: string; answer: string }
+  /**
+   * The user is still at the keyboard on a pending question — typing, or the
+   * card regaining focus. Pushes the opt-in idle deadline back and carries
+   * whatever has been typed so far, so an expiring question can hand the agent
+   * a partial answer rather than nothing.
+   */
+  | { type: 'agentQuestionActivity'; id: string; partial?: string }
   | { type: 'settingsLoad' }
   /**
    * Create or update a profile. `original` is the pre-edit name (absent for a
@@ -187,6 +194,14 @@ export type ExtensionToWebview =
     }
   /** The agent's ask_user tool: a question card in the chat. */
   | { type: 'agentQuestion'; id: string; question: string; options?: string[] }
+  /** Seconds left on a pending question's idle deadline, for the card's countdown. */
+  | { type: 'agentQuestionCountdown'; id: string; seconds: number }
+  /**
+   * A pending question stopped waiting without an answer, so the card must stop
+   * accepting input. `idle` = the opt-in timeout expired and the agent was told
+   * to use its own judgment; otherwise the run was cancelled or torn down.
+   */
+  | { type: 'agentQuestionClosed'; id: string; reason: 'idle' | 'cancelled' }
   /** Everything the settings panel renders. `keySaved[name]` = an API key exists for that profile. */
   | {
       type: 'settingsData';

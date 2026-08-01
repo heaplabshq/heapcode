@@ -4,7 +4,14 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HeapcodeServer, type ExtensionToWebview, type McpManager, type ProviderProfileConfig } from '@heapcode/core';
+import {
+  ASK_USER_NO_ANSWER,
+  HeapcodeServer,
+  parseIdleTimeout,
+  type ExtensionToWebview,
+  type McpManager,
+  type ProviderProfileConfig,
+} from '@heapcode/core';
 import { AgentController } from '../src/agent/controller.js';
 import { PermissionEngine } from '../src/agent/permissions.js';
 import type { ProfileManager } from '../src/profileManager.js';
@@ -588,5 +595,223 @@ describe('AgentController — running against the core server', () => {
     // One session at a time: the stale one is closed before the new one opens.
     expect(core.sessionCount).toBe(1);
     agent.dispose();
+  });
+});
+
+/**
+ * ask_user's idle bound as the controller decides it. The wait itself lives in
+ * ChatViewProvider (covered in chatView.test.ts); what is only here is the
+ * decision of *whether* to bound a given call at all, and the reading of the
+ * setting that supplies it.
+ */
+describe('AgentController — ask_user idle bound', () => {
+  /**
+   * The result of a named tool call. agentToolResult carries no tool name
+   * (protocol.ts:240-250), so it has to be correlated back through the
+   * matching agentToolCall's id.
+   */
+  function resultOf(posts: ExtensionToWebview[], name: string): string | undefined {
+    const call = posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'agentToolCall' }> => p.type === 'agentToolCall' && p.name === name,
+    );
+    if (!call) return undefined;
+    return posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'agentToolResult' }> =>
+        p.type === 'agentToolResult' && p.id === call.id,
+    )?.summary;
+  }
+
+  /** Captures what the controller asked the host to do, and answers as instructed. */
+  function captureAskUser(
+    agent: AgentController,
+    reply: { answer?: string; idle: boolean; partial?: string } = { idle: false },
+  ): Array<{ question: string; options?: string[]; idleMs?: number }> {
+    const calls: Array<{ question: string; options?: string[]; idleMs?: number }> = [];
+    agent.askUser = (question, options, idleMs) => {
+      calls.push({ question, options, idleMs });
+      return Promise.resolve(reply);
+    };
+    return calls;
+  }
+
+  /**
+   * Distillation off unless a test is about it: it defaults on and fires its
+   * own ask_user prompt after a clean finish, which would otherwise show up
+   * as a phantom second call in every assertion here.
+   */
+  function askUserConfig(extra: Record<string, unknown> = {}): void {
+    __setConfig('heapcode.agent', { enable: true, planFirst: false, memoryDistillation: false, ...extra });
+  }
+
+  it('passes the configured timeout through to the host as idleMs', async () => {
+    askUserConfig({ askUserQuestionTimeout: '90s' });
+    model.script([toolBlock('ask_user', { question: 'Which one?' }), finishBlock('Done.')]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+    const calls = captureAskUser(agent, { answer: 'the first', idle: false });
+
+    await agent.start('ask me something');
+
+    expect(calls).toHaveLength(1);
+    // '90s' really reached the host as milliseconds — the setting is not
+    // merely read and dropped, which is how it was broken before.
+    expect(calls[0]!.idleMs).toBe(90_000);
+    agent.dispose();
+  });
+
+  it('leaves the wait unbounded when the setting is unset — the default', async () => {
+    askUserConfig();
+    model.script([toolBlock('ask_user', { question: 'Which one?' }), finishBlock('Done.')]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+    const calls = captureAskUser(agent, { answer: 'a', idle: false });
+
+    await agent.start('ask me something');
+
+    expect(calls[0]!.idleMs).toBeUndefined();
+    agent.dispose();
+  });
+
+  it('never bounds a question the model marked as gating an action', async () => {
+    askUserConfig({ askUserQuestionTimeout: '30s' });
+    model.script([
+      toolBlock('ask_user', { question: 'Delete the old migrations?', blocksAction: true }),
+      finishBlock('Done.'),
+    ]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+    const calls = captureAskUser(agent, { answer: 'no', idle: false });
+
+    await agent.start('tidy up the migrations');
+
+    // Configured at 30s, yet still unbounded: a permission-shaped question
+    // waits for a real human answer however the timeout is set.
+    expect(calls[0]!.idleMs).toBeUndefined();
+    agent.dispose();
+  });
+
+  it('tells the agent an expired question is not approval, and hands over the partial answer', async () => {
+    askUserConfig({ askUserQuestionTimeout: '1s' });
+    model.script([toolBlock('ask_user', { question: 'Which one?' }), finishBlock('Went with my judgment.')]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+    captureAskUser(agent, { idle: true, partial: 'maybe the' });
+
+    await agent.start('ask me something');
+
+    // The belt-and-braces wording reaches the model, not just core's unit test.
+    const summary = resultOf(posts, 'ask_user');
+    expect(summary).toContain('may be away');
+    expect(summary).toContain('NOT approval');
+    expect(summary).toContain('maybe the');
+    agent.dispose();
+  });
+
+  it('falls back to the plain no-answer line when nobody answered and no timeout was involved', async () => {
+    model.script([toolBlock('ask_user', { question: 'Which one?' }), finishBlock('Done.')]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+    captureAskUser(agent, { idle: false });
+
+    await agent.start('ask me something');
+
+    const summary = resultOf(posts, 'ask_user');
+    expect(summary).toContain(ASK_USER_NO_ANSWER);
+    // A cancelled question must not carry the idle guidance — the two cases
+    // stay distinguishable to the model, not just to the card.
+    expect(summary).not.toContain('may be away');
+    agent.dispose();
+  });
+
+  /**
+   * The memory prompt shares the ask_user plumbing but must never inherit its
+   * timeout: an unanswered "worth remembering?" has to decay into *not* saving.
+   * Asserted on the file, because that is the only thing that would be wrong.
+   */
+  describe('the memory-distillation prompt', () => {
+    /** A clean finish, then the distillation call whose reply becomes the note. */
+    function scriptWithMemoryNote(): void {
+      model.script([finishBlock('All done.'), 'Prefers tabs over spaces.']);
+    }
+
+    it('is permanently unbounded, whatever the ask_user timeout is set to', async () => {
+      __setConfig('heapcode.agent', {
+        enable: true,
+        planFirst: false,
+        memoryDistillation: true,
+        askUserQuestionTimeout: '5s',
+      });
+      scriptWithMemoryNote();
+      const posts: ExtensionToWebview[] = [];
+      const agent = makeController({ posts });
+      const calls = captureAskUser(agent, { idle: false });
+
+      await agent.start('do a thing');
+      await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0), { timeout: 3_000 });
+
+      const memoryCall = calls.find((c) => c.question.includes('Worth remembering'));
+      expect(memoryCall).toBeDefined();
+      expect(memoryCall!.idleMs).toBeUndefined();
+      agent.dispose();
+    });
+
+    it('decays to "don\'t save" when the prompt goes unanswered', async () => {
+      __setConfig('heapcode.agent', { enable: true, planFirst: false, memoryDistillation: true });
+      scriptWithMemoryNote();
+      const posts: ExtensionToWebview[] = [];
+      const agent = makeController({ posts });
+      const calls = captureAskUser(agent, { idle: false });
+
+      await agent.start('do a thing');
+      await vi.waitFor(() => expect(calls.some((c) => c.question.includes('Worth remembering'))).toBe(true), {
+        timeout: 3_000,
+      });
+      await settle();
+
+      await expect(readFile(join(root, '.heapcode', 'memory.md'), 'utf8')).rejects.toThrow();
+      agent.dispose();
+    });
+
+    it('saves only on an explicit "Save to memory"', async () => {
+      __setConfig('heapcode.agent', { enable: true, planFirst: false, memoryDistillation: true });
+      scriptWithMemoryNote();
+      const posts: ExtensionToWebview[] = [];
+      const agent = makeController({ posts });
+      captureAskUser(agent, { answer: 'Save to memory', idle: false });
+
+      await agent.start('do a thing');
+      await vi.waitFor(async () => expect(await readFile(join(root, '.heapcode', 'memory.md'), 'utf8')).toContain('tabs'), {
+        timeout: 3_000,
+      });
+      agent.dispose();
+    });
+  });
+});
+
+/**
+ * The setting has to exist in the manifest, not just be read by the code: an
+ * unregistered key reads back as its fallback forever, which is precisely how
+ * this one was inert while looking wired.
+ */
+describe('the askUserQuestionTimeout setting is actually contributed', () => {
+  it('is declared in package.json, so VS Code surfaces it and persists a value', async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { contributes: { configuration: { properties: Record<string, { type: string; default: unknown }> } } };
+    const setting = manifest.contributes.configuration.properties['heapcode.agent.askUserQuestionTimeout'];
+
+    expect(setting).toBeDefined();
+    expect(setting!.type).toBe('string');
+    // Empty default = unbounded, matching the CLI's unset default.
+    expect(setting!.default).toBe('');
+  });
+
+  it('parses every documented duration form the description promises', () => {
+    expect(parseIdleTimeout('60s')).toBe(60_000);
+    expect(parseIdleTimeout('5m')).toBe(300_000);
+    expect(parseIdleTimeout('10m')).toBe(600_000);
+    // The contributed default, and the shapes a user can leave it in.
+    expect(parseIdleTimeout('')).toBeUndefined();
+    expect(parseIdleTimeout('nonsense')).toBeUndefined();
   });
 });

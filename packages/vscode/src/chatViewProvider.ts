@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
+  ASK_USER_COUNTDOWN_MS,
   assembleContext,
   builtinPrompts,
   COMPACTION_THRESHOLD,
   createProvider,
   DEFAULT_IGNORE_GLOB,
   estimateMessagesTokens,
+  IdleDeadline,
   isAbortError,
   parseSlashCommand,
   providerPresets,
@@ -82,6 +84,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
   private pendingQuestions = new Map<string, (answer: string | undefined) => void>();
+  /** Idle deadlines for pending questions, so webview activity can push them back. */
+  private questionDeadlines = new Map<string, IdleDeadline>();
+  /** Last partial answer the card reported, handed to the agent if the question expires. */
+  private questionPartials = new Map<string, string>();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -294,29 +300,86 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /** ask_user tool: question card in the chat, awaiting the user's answer. */
-  async askAgentQuestion(question: string, options?: string[]): Promise<string | undefined> {
+  /**
+   * ask_user tool: question card in the chat, awaiting the user's answer.
+   *
+   * This used to impose a hardcoded, invisible 300-second cap that resolved to
+   * `undefined` — so a question silently became "the user did not answer" after
+   * five minutes with no countdown, no way to configure it, and no way to tell
+   * it apart from a cancelled run. (controller.ts's comment claimed there was
+   * no timeout at all; the two disagreed.) That is replaced by the same opt-in
+   * idle bound the CLI has: unbounded unless `heapcode.agent.askUserQuestionTimeout`
+   * is set, reset by any activity, visible for its last stretch, and resolving
+   * with guidance rather than silence.
+   *
+   * `idleMs` undefined → waits indefinitely. Returns `{ idle: true }` only when
+   * the bound expired; cancellation and a dead view stay `idle: false` so the
+   * caller keeps using ASK_USER_NO_ANSWER for them.
+   */
+  async askAgentQuestion(
+    question: string,
+    options?: string[],
+    idleMs?: number,
+  ): Promise<{ answer?: string; idle: boolean; partial?: string }> {
     try {
       await vscode.commands.executeCommand('heapcode.chatView.focus');
       for (let i = 0; i < 20 && !this.viewReady; i++) {
         await new Promise((r) => setTimeout(r, 100));
       }
-      if (!this.view || !this.viewReady) return undefined;
+      if (!this.view || !this.viewReady) return { idle: false };
       const id = randomUUID();
-      return await new Promise<string | undefined>((resolve) => {
-        const timeout = setTimeout(() => {
-          if (this.pendingQuestions.delete(id)) resolve(undefined);
-        }, 300_000);
-        this.pendingQuestions.set(id, (answer) => {
-          clearTimeout(timeout);
+      return await new Promise<{ answer?: string; idle: boolean; partial?: string }>((resolve) => {
+        let countdown: ReturnType<typeof setInterval> | undefined;
+        const finish = (result: { answer?: string; idle: boolean; partial?: string }): void => {
+          deadline.stop();
+          if (countdown) clearInterval(countdown);
           this.pendingQuestions.delete(id);
-          resolve(answer);
+          this.questionPartials.delete(id);
+          resolve(result);
+        };
+        const deadline = new IdleDeadline(idleMs, () => {
+          // Tell the card to stop accepting input before answering the agent,
+          // so the user never types into a question that has already resolved.
+          this.post({ type: 'agentQuestionClosed', id, reason: 'idle' });
+          finish({ idle: true, partial: this.questionPartials.get(id) });
         });
+        this.pendingQuestions.set(id, (answer) => finish({ answer, idle: false }));
+        this.questionDeadlines.set(id, deadline);
+        deadline.start();
         this.post({ type: 'agentQuestion', id, question, options });
-      });
+        if (deadline.enabled) {
+          countdown = setInterval(() => {
+            const remaining = deadline.remainingMs();
+            if (remaining <= ASK_USER_COUNTDOWN_MS) {
+              this.post({ type: 'agentQuestionCountdown', id, seconds: Math.ceil(remaining / 1_000) });
+            }
+          }, 500);
+          countdown.unref?.();
+        }
+      }).finally(() => this.questionDeadlines.delete(id));
     } catch {
-      return undefined;
+      return { idle: false };
     }
+  }
+
+  /** Cancellation/teardown: take a pending question down the way it always did. */
+  closePendingQuestions(): void {
+    for (const [id, resolve] of [...this.pendingQuestions]) {
+      this.post({ type: 'agentQuestionClosed', id, reason: 'cancelled' });
+      resolve(undefined);
+    }
+  }
+
+  /**
+   * Abort the running turn. Always goes through here rather than calling
+   * `abortController.abort()` directly, because a pending question has nothing
+   * else to resolve it: aborting the run abandons the `await` in executeTool,
+   * so without this the promise and its card would both linger. The old
+   * hardcoded 300s cap used to paper over that; an unbounded wait cannot.
+   */
+  private abortRun(): void {
+    this.abortController?.abort();
+    this.closePendingQuestions();
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -333,6 +396,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Never leave the agent hanging on a card nobody can see — fall back to modal.
       for (const resolve of this.pendingPermissions.values()) resolve(undefined);
       this.pendingPermissions.clear();
+      // Same for questions, and now load-bearing: an unanswered question used
+      // to give up after the hardcoded 300s, but the default is now an
+      // unbounded wait, so a disposed view would hang the run forever.
+      this.closePendingQuestions();
     });
   }
 
@@ -490,6 +557,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.pendingPermissions.delete(msg.id);
         resolve?.(msg.choice);
         break;
+      }
+      case 'agentQuestionActivity': {
+        // Typing, or the card regaining focus — the user is still here.
+        if (msg.partial !== undefined) this.questionPartials.set(msg.id, msg.partial);
+        this.questionDeadlines.get(msg.id)?.touch();
+        return;
       }
       case 'agentQuestionResponse':
         this.pendingQuestions.get(msg.id)?.(msg.answer);
@@ -688,7 +761,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'stop':
-        this.abortController?.abort();
+        this.abortRun();
         break;
       case 'newChat':
         await this.startNewChat();
@@ -900,7 +973,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.abortController?.abort();
+    this.abortRun();
     this.agent?.stop();
 
     // The checkpoint on the edited turn — or the next one after it — is the
@@ -936,7 +1009,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async startNewChat(): Promise<void> {
-    this.abortController?.abort();
+    this.abortRun();
     if (this.conversation.messages.length > 0) {
       await this.store.save(this.conversation);
     }
@@ -947,7 +1020,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async openConversation(id: string): Promise<void> {
     const loaded = await this.store.get(id);
     if (!loaded) return;
-    this.abortController?.abort();
+    this.abortRun();
     if (this.conversation.messages.length > 0 && this.conversation.id !== id) {
       await this.store.save(this.conversation);
     }

@@ -370,11 +370,12 @@ describe('App', () => {
     await new Promise((r) => setTimeout(r, 20));
     stdin.write('hi');
     stdin.write('\r');
-    // Let the async runAgent()/state updates flush.
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(lastFrame()).toContain('Hello there');
-    expect(save).toHaveBeenCalled();
+    // Poll rather than sleep a fixed amount: runAgent() round-trips a real
+    // socket, and the reply had only ~15ms of slack inside the old 50ms sleep
+    // (it needs ~35ms), so any load on the machine turned this into a failure.
+    // Same pattern as every other assertion in this file.
+    await vi.waitFor(() => expect(lastFrame()).toContain('Hello there'), { timeout: 2_000 });
+    await vi.waitFor(() => expect(save).toHaveBeenCalled(), { timeout: 2_000 });
   });
 
   it('a tool call prompts for permission, and approving it (default "Allow once") runs the tool and shows its result', async () => {

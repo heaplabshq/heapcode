@@ -1087,11 +1087,15 @@ exit 0
     await new Promise((r) => setTimeout(r, 20));
     stdin.write('what does this repo do');
     stdin.write('\r');
-    await new Promise((r) => setTimeout(r, 100));
 
-    const metas = await historyStore.list();
-    expect(metas[0]?.title).toBe('what does this repo do');
-  });
+    // Poll rather than sleep a fixed 100ms: the title is only written once the
+    // turn has round-tripped a real socket *and* the store has hit disk, and
+    // under parallel load that overran the fixed wait.
+    await vi.waitFor(
+      async () => expect((await historyStore.list())[0]?.title).toBe('what does this repo do'),
+      { timeout: 5_000 },
+    );
+  }, 15_000);
 
   it('/persona architect filters write tools out of the offered set and prepends the persona addendum', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };

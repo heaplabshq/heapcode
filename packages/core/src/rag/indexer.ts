@@ -113,7 +113,10 @@ export interface IndexResult {
 export class RagIndexer {
   private store = new VectorStore();
   private state: IndexState = 'idle';
-  private indexing = false;
+  /** The build running right now, so a request that lands mid-build can wait for it. */
+  private inFlight?: Promise<IndexResult | undefined>;
+  /** At most one follow-up build, shared by every request that arrives while one runs. */
+  private queued?: Promise<IndexResult | undefined>;
   private saveTimer?: ReturnType<typeof setTimeout>;
   /**
    * Last-seen embeddings model, refreshed on every role resolution. Cached
@@ -201,12 +204,46 @@ export class RagIndexer {
    * the same distinction the agent loop draws between 'stopped' and 'error'.
    * Reporting it as an error would put "index error" in the status bar for a
    * build the user themselves stopped.
+   *
+   * A request that lands while a build is already running waits for it and
+   * then rebuilds, rather than returning immediately. Returning immediately
+   * was indistinguishable from a finished build to the caller: `rag/index`
+   * would answer with the *running* build's state, so `/index` during the
+   * startup index printed "Semantic search: indexing — 0 files, 0 chunks."
+   * and never printed again (server/rag.ts:135-137, cli/src/ink/App.tsx:1154
+   * — the status line is pushed once, so nothing later can correct it).
+   *
+   * It rebuilds rather than just joining because a rebuild has to cover the
+   * workspace as it was when asked for, and the running build may already be
+   * past those files. Every request that piles up behind one build shares a
+   * single follow-up, so N waiters cost one extra pass, and that pass
+   * re-embeds only what actually changed (indexOne hashes first).
    */
   async buildIndex(opts: BuildIndexOptions = {}): Promise<IndexResult | undefined> {
-    if (this.indexing) return undefined;
+    const running = this.inFlight;
+    if (running) {
+      this.queued ??= running.then(() => {
+        // Cleared as the follow-up starts, not when it ends: anything arriving
+        // from here on belongs behind *this* build, not behind the last one.
+        this.queued = undefined;
+        return this.start(opts);
+      });
+      return this.queued;
+    }
+    return this.start(opts);
+  }
+
+  private start(opts: BuildIndexOptions): Promise<IndexResult | undefined> {
+    const run = this.runBuild(opts).finally(() => {
+      if (this.inFlight === run) this.inFlight = undefined;
+    });
+    this.inFlight = run;
+    return run;
+  }
+
+  private async runBuild(opts: BuildIndexOptions): Promise<IndexResult | undefined> {
     if (!(await this.refreshEmbedder())) return undefined;
 
-    this.indexing = true;
     this.state = 'indexing';
     const started = Date.now();
     // Outside the try so a cancelled or failed run still reports what it did.
@@ -243,8 +280,6 @@ export class RagIndexer {
         this.state = 'error';
         this.opts.onLog?.(`index failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } finally {
-      this.indexing = false;
     }
     return { files: this.store.fileCount, chunks: this.store.chunkCount, embedded };
   }

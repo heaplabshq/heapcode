@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { nodeFileSource, nodeTextStore } from '@heapcode/repomap/node';
 import {
   createProvider,
@@ -29,6 +29,8 @@ interface Endpoint {
   paths: string[];
   /** Replies the chat endpoint hands out, in order; the last one repeats. */
   chatReplies: string[];
+  /** Per-embeddings-request delay, so a build can be caught mid-flight. */
+  delayMs: number;
 }
 
 /**
@@ -42,6 +44,7 @@ interface Endpoint {
 async function startEndpoint(): Promise<Endpoint> {
   const paths: string[] = [];
   const chatReplies: string[] = [];
+  const state = { delayMs: 0 };
   let chatCount = 0;
 
   const server: Server = createServer((req, res) => {
@@ -51,23 +54,37 @@ async function startEndpoint(): Promise<Endpoint> {
       const path = req.url ?? '';
       paths.push(path);
       const body = raw ? (JSON.parse(raw) as { input?: string[] }) : {};
-      res.writeHead(200, { 'content-type': 'application/json' });
-      if (path.includes('/embeddings')) {
-        const input = body.input ?? [];
-        res.end(JSON.stringify({ data: input.map((_, i) => ({ embedding: [1, 0, 0], index: i })) }));
-        return;
-      }
-      const reply = chatReplies[Math.min(chatCount++, chatReplies.length - 1)] ?? '';
-      res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+      const respond = (): void => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        if (path.includes('/embeddings')) {
+          const input = body.input ?? [];
+          res.end(JSON.stringify({ data: input.map((_, i) => ({ embedding: [1, 0, 0], index: i })) }));
+          return;
+        }
+        const reply = chatReplies[Math.min(chatCount++, chatReplies.length - 1)] ?? '';
+        res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }));
+      };
+      if (path.includes('/embeddings') && state.delayMs > 0) setTimeout(respond, state.delayMs);
+      else respond();
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
     paths,
     chatReplies,
+    get delayMs() {
+      return state.delayMs;
+    },
+    set delayMs(ms: number) {
+      state.delayMs = ms;
+    },
   };
 }
 
@@ -121,6 +138,7 @@ async function writeCorpus(): Promise<void> {
 }
 
 const chatCalls = (): number => endpoint.paths.filter((p) => p.includes('/chat/completions')).length;
+const embeddingCalls = (): number => endpoint.paths.filter((p) => p.includes('/embeddings')).length;
 
 describe('RagIndexer — contextual retrieval (host policy, per request)', () => {
   it('makes no LLM call when off — the extension\'s shipped default', async () => {
@@ -343,6 +361,52 @@ describe('RagIndexer — ready', () => {
     current = profile();
     await index.status();
     expect(index.ready).toBe(false);
+  });
+});
+
+describe('RagIndexer — overlapping builds', () => {
+  /**
+   * The unit-level half of the `/index` bug. `buildIndex` used to return
+   * undefined the moment it saw a build already running, which reads as "no
+   * embeddings model configured" to every caller — the same value the
+   * no-embedder path returns — and left the caller to report the running
+   * build's state as its own result.
+   */
+  it('waits for the build in flight and rebuilds, rather than returning undefined', async () => {
+    await writeCorpus();
+    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    await index.init();
+    endpoint.delayMs = 40;
+
+    const first = index.buildIndex({ contextualRetrieval: false });
+    await vi.waitFor(() => expect(embeddingCalls()).toBeGreaterThan(0));
+    const second = index.buildIndex({ contextualRetrieval: false });
+
+    expect(await first).toMatchObject({ files: 8 });
+    // Undefined here would be the old behavior, indistinguishable from
+    // "no embedder" (see the two no-embedder cases above).
+    expect(await second).toMatchObject({ files: 8 });
+    expect((await index.status()).state).toBe('idle');
+  });
+
+  it('runs one shared follow-up however many requests pile up behind a build', async () => {
+    await writeCorpus();
+    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    await index.init();
+    endpoint.delayMs = 40;
+
+    const first = index.buildIndex({ contextualRetrieval: false });
+    await vi.waitFor(() => expect(embeddingCalls()).toBeGreaterThan(0));
+    const waiters = [index.buildIndex(), index.buildIndex(), index.buildIndex()];
+
+    const settled = await Promise.all(waiters);
+    await first;
+    // One follow-up, not three: they all resolve to the very same build — and
+    // to a real result, since three undefineds would also be "identical".
+    expect(settled[0]).toMatchObject({ files: 8 });
+    expect(settled[0]).toBe(settled[1]);
+    expect(settled[1]).toBe(settled[2]);
+    expect((await index.status()).state).toBe('idle');
   });
 });
 

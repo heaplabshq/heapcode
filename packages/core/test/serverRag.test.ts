@@ -405,6 +405,58 @@ describe('rag/index — cancellation', () => {
   });
 });
 
+describe('rag/index — a rebuild requested while one is already running', () => {
+  /**
+   * The `/index` bug. A second full build used to return the instant it was
+   * asked for, without building and without waiting, and `runIndex` then
+   * answered with the *running* build's state (server/rag.ts:135-137). The
+   * CLI pushes its status line exactly once (cli/src/ink/App.tsx:1152-1163),
+   * so what the user saw was "Semantic search: indexing — 0 files, 0 chunks."
+   * standing forever, milliseconds before the index actually went idle.
+   *
+   * The assertions are ordered to catch precisely that: status is read as
+   * soon as the second request resolves, without waiting on the first.
+   */
+  it('answers for a finished index rather than the one still running', async () => {
+    for (let i = 0; i < 8; i++) {
+      await writeFile(join(root, `f${i}.ts`), `export function fn${i}() {\n  return ${i};\n}\n`);
+    }
+    endpoint.delayMs = 60;
+    const peer = await client();
+
+    const first = index(peer, { full: true });
+    // Only send the second once the first is demonstrably mid-flight.
+    await vi.waitFor(() => expect(endpoint.embeddingBatches.length).toBeGreaterThan(0));
+    const second = await index(peer, { full: true });
+
+    // Resolved because a build finished, not because one was already running.
+    expect(second.files).toBe(8);
+    expect((await status(peer)).state).toBe('idle');
+    await first;
+  });
+
+  it('picks up a file that appeared after the running build had listed the workspace', async () => {
+    // Enough files that the build is still walking when the second request
+    // lands — with one file the window closes before anything can arrive.
+    for (let i = 0; i < 8; i++) {
+      await writeFile(join(root, `f${i}.ts`), `export function fn${i}() {\n  return ${i};\n}\n`);
+    }
+    endpoint.delayMs = 60;
+    const peer = await client();
+
+    const first = index(peer, { full: true });
+    await vi.waitFor(() => expect(endpoint.embeddingBatches.length).toBeGreaterThan(0));
+    // The running build listed the workspace before this existed, so merely
+    // waiting for it would report a rebuild that never saw the file. Hence the
+    // follow-up pass rather than just joining (rag/indexer.ts:223-235).
+    await writeFile(join(root, 'late.ts'), 'export function late() {\n  return 9;\n}\n');
+    const second = await index(peer, { full: true });
+
+    expect((await first).files).toBe(8);
+    expect(second.files).toBe(9);
+  });
+});
+
 describe('the server can only index a workspace it can read', () => {
   it('reports unavailable for a root the host says is not local', async () => {
     // Decision 3: a VS Code virtual or remote-scheme workspace, where only the

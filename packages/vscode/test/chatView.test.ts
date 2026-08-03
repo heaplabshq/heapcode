@@ -555,6 +555,31 @@ describe('ChatViewProvider — ask_user idle bound', () => {
       link.dispose();
     });
 
+    /**
+     * The fourth abortRun() call site (chatViewProvider.ts:976), and the only
+     * one that can be reached mid-question by accident: the user edits an
+     * earlier prompt while the agent is waiting on an answer. It needs a real
+     * user turn to edit, or editUserMessage bails before ever aborting
+     * (chatViewProvider.ts:970-974).
+     */
+    it('editing an earlier prompt', async () => {
+      model.script(['Sure.']);
+      const posts: ExtensionToWebview[] = [];
+      const { chat, link, send } = makeChat({ posts });
+      await send({ type: 'ready' } as WebviewToExtension);
+      await send({ type: 'send', text: 'first prompt' } as WebviewToExtension);
+      await vi.waitFor(() => expect(textOf(posts)).toContain('Sure.'), { timeout: 2_000 });
+
+      const pending = chat.askAgentQuestion('Which one?', undefined, 60_000);
+      await awaitQuestion(posts);
+
+      await send({ type: 'editUserMessage', ordinal: 0, text: 'second prompt', mode: 'chat' } as WebviewToExtension);
+
+      await expect(pending).resolves.toMatchObject({ idle: false });
+      expect(closures(posts)).toEqual(['cancelled']);
+      link.dispose();
+    });
+
     it('the sidebar being closed', async () => {
       const posts: ExtensionToWebview[] = [];
       const { chat, link, send, disposeView } = makeChat({ posts });

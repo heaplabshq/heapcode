@@ -8,14 +8,18 @@ import {
   ASK_USER_NO_ANSWER,
   HeapcodeServer,
   parseIdleTimeout,
+  type ConversationStore,
   type ExtensionToWebview,
   type McpManager,
   type ProviderProfileConfig,
+  type WebviewToExtension,
 } from '@heapcode/core';
 import { AgentController } from '../src/agent/controller.js';
+import { ChatViewProvider } from '../src/chatViewProvider.js';
 import { PermissionEngine } from '../src/agent/permissions.js';
+import { ServerLink } from '../src/serverLink.js';
 import type { ProfileManager } from '../src/profileManager.js';
-import { __setConfig, __resetConfig, __setWorkspaceRoot, __shownMessages } from './vscodeStub.js';
+import { Uri, __setConfig, __resetConfig, __setWorkspaceRoot, __shownMessages } from './vscodeStub.js';
 
 /**
  * The extension is a client of the core server now, so the agent loop does
@@ -154,6 +158,58 @@ function makeController(opts: ControllerOpts): AgentController {
     undefined,
     (opts.server ?? serverOpts) as never,
   );
+}
+
+/**
+ * A real ChatViewProvider behind a recording webview, for the one test that
+ * needs the controller's `askUser` to land somewhere real instead of in a
+ * capture function. Its posts go into the same array as the controller's, so
+ * "what the webview saw" is one ordered list.
+ */
+function makeChatFor(posts: ExtensionToWebview[]): {
+  chat: ChatViewProvider;
+  link: ServerLink;
+  send(msg: WebviewToExtension): Promise<void>;
+} {
+  const profiles = {
+    ...(stubProfiles([profile]) as unknown as Record<string, unknown>),
+    getActiveProfile: () => profile,
+  } as unknown as ProfileManager;
+  const store = {
+    save: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  } as unknown as ConversationStore;
+  const link = new ServerLink(profiles, log as never, serverOpts as never);
+  const chat = new ChatViewProvider(Uri.file('/ext') as never, profiles, store, log as never, link);
+
+  let onMessage: ((msg: WebviewToExtension) => void) | undefined;
+  chat.resolveWebviewView({
+    visible: true,
+    webview: {
+      options: {},
+      html: '',
+      cspSource: '',
+      asWebviewUri: (u: unknown) => u,
+      postMessage: (msg: ExtensionToWebview) => {
+        posts.push(msg);
+        return Promise.resolve(true);
+      },
+      onDidReceiveMessage: (handler: (msg: WebviewToExtension) => void) => {
+        onMessage = handler;
+        return { dispose: () => {} };
+      },
+    },
+    onDidDispose: () => ({ dispose: () => {} }),
+  } as never);
+
+  return {
+    chat,
+    link,
+    send: async (msg) => {
+      onMessage?.(msg);
+      await new Promise((r) => setTimeout(r, 0));
+    },
+  };
 }
 
 /**
@@ -720,6 +776,50 @@ describe('AgentController — ask_user idle bound', () => {
     // A cancelled question must not carry the idle guidance — the two cases
     // stay distinguishable to the model, not just to the card.
     expect(summary).not.toContain('may be away');
+    agent.dispose();
+  });
+
+  /**
+   * The composition rather than either half. The tests above prove the setting
+   * reaches `idleMs`, and chatView.test.ts:428 proves an `idleMs` bounds the
+   * wait — but only together do they mean a user who sets a timeout gets a
+   * question that is actually counted down and actually expires.
+   *
+   * Wired the way extension.ts:120-121 wires it. That assignment lives inside
+   * activate() and isn't importable, so this mirrors it: what the test proves
+   * is that the chain holds once the forward is made, not that activate()
+   * makes it. Dropping `idleMs` there is the one failure this can't catch.
+   */
+  it('a configured timeout reaches the card the user sees, and expires it', async () => {
+    askUserConfig({ askUserQuestionTimeout: '2s' });
+    model.script([toolBlock('ask_user', { question: 'Which one?' }), finishBlock('Carried on alone.')]);
+    const posts: ExtensionToWebview[] = [];
+    const agent = makeController({ posts });
+    const { chat, link, send } = makeChatFor(posts);
+    agent.askUser = (question, options, idleMs) => chat.askAgentQuestion(question, options, idleMs);
+    await send({ type: 'ready' } as WebviewToExtension);
+
+    await agent.start('ask me something');
+
+    // The card was counted down rather than sitting there and vanishing.
+    const seconds = posts
+      .filter(
+        (p): p is Extract<ExtensionToWebview, { type: 'agentQuestionCountdown' }> =>
+          p.type === 'agentQuestionCountdown',
+      )
+      .map((p) => p.seconds);
+    expect(seconds.length).toBeGreaterThan(1);
+    expect(seconds.at(-1)!).toBeLessThan(seconds[0]!);
+
+    // Closed as idle — distinct from a cancellation — and the agent was told
+    // to carry on without treating it as approval.
+    const closed = posts.find(
+      (p): p is Extract<ExtensionToWebview, { type: 'agentQuestionClosed' }> => p.type === 'agentQuestionClosed',
+    );
+    expect(closed?.reason).toBe('idle');
+    expect(resultOf(posts, 'ask_user')).toContain('NOT approval');
+
+    link.dispose();
     agent.dispose();
   });
 

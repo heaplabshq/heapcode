@@ -31,7 +31,12 @@ jobs:
       # equivalent guard silently skipped the Marketplace publish when VSCE_PAT
       # wasn't set, and the release looked green while half of it hadn't
       # happened. A missing token here fails loudly instead.
+      # wranglerVersion is pinned because the action defaults to wrangler
+      # 3.90.0, which predates assets-only Workers: with `assets.directory`
+      # and no `main`, 3.x fails with "Missing entry-point" and the site has
+      # never deployed from CI as a result. The config was always correct.
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: website
+          wranglerVersion: "4.121.0"

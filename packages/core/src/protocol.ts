@@ -1,5 +1,6 @@
 import type { ConversationMeta } from './history/types.js';
 import type { ProviderProfileConfig } from './config/profiles.js';
+import type { PermissionMode } from './agent/permissionModes.js';
 
 /**
  * Typed message protocol between the VS Code extension host and the webview UI.
@@ -82,8 +83,17 @@ export type WebviewToExtension =
   | { type: 'listModels' }
   | { type: 'setModel'; model: string }
   | { type: 'setProfile'; name: string }
+  /** Shift+Tab in the chat input, or a click on the mode chip. */
+  | { type: 'setPermissionMode'; mode: PermissionMode }
   | { type: 'permissionResponse'; id: string; choice: PermissionChoice }
   | { type: 'agentQuestionResponse'; id: string; answer: string }
+  /**
+   * The user is still at the keyboard on a pending question — typing, or the
+   * card regaining focus. Pushes the opt-in idle deadline back and carries
+   * whatever has been typed so far, so an expiring question can hand the agent
+   * a partial answer rather than nothing.
+   */
+  | { type: 'agentQuestionActivity'; id: string; partial?: string }
   | { type: 'settingsLoad' }
   /**
    * Create or update a profile. `original` is the pre-edit name (absent for a
@@ -152,6 +162,8 @@ export type ExtensionToWebview =
       profile: string;
       model: string;
       slashCommands: SlashCommandInfo[];
+      /** Current permission mode, so the chat view can render its chip and Shift+Tab from real state. */
+      permissionMode: PermissionMode;
     }
   | { type: 'chunk'; text: string }
   | { type: 'done' }
@@ -187,6 +199,14 @@ export type ExtensionToWebview =
     }
   /** The agent's ask_user tool: a question card in the chat. */
   | { type: 'agentQuestion'; id: string; question: string; options?: string[] }
+  /** Seconds left on a pending question's idle deadline, for the card's countdown. */
+  | { type: 'agentQuestionCountdown'; id: string; seconds: number }
+  /**
+   * A pending question stopped waiting without an answer, so the card must stop
+   * accepting input. `idle` = the opt-in timeout expired and the agent was told
+   * to use its own judgment; otherwise the run was cancelled or torn down.
+   */
+  | { type: 'agentQuestionClosed'; id: string; reason: 'idle' | 'cancelled' }
   /** Everything the settings panel renders. `keySaved[name]` = an API key exists for that profile. */
   | {
       type: 'settingsData';
@@ -213,6 +233,13 @@ export type ExtensionToWebview =
       description: string;
       /** For run_command: the shell command, so the UI can offer "run in terminal". */
       terminalCommand?: string;
+      /**
+       * Set when a sub-agent made this call: the id of the delegate_task call
+       * that spawned it. The chat indents these — which is the whole of what
+       * sub-agent rendering is, now that recursion happens server-side
+       * (docs/phase3-protocol-design.md §2).
+       */
+      parent?: string;
     }
   | {
       type: 'agentToolResult';
@@ -223,6 +250,8 @@ export type ExtensionToWebview =
       fileEdit?: FileEditInfo;
       /** Shadow-git commit taken just before this call ran, if it wasn't read-only (PLAN.md M8). */
       checkpoint?: string;
+      /** See agentToolCall.parent. */
+      parent?: string;
     }
   | { type: 'agentStatus'; status: AgentRunStatus; changedFiles: ChangedFile[] }
   /** Estimated prompt tokens vs the model's context window (chat + agent). */

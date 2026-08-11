@@ -2,7 +2,7 @@
   "name": "heap-code",
   "displayName": "Heap Code",
   "description": "Model-agnostic AI coding assistant. Works with any OpenAI-compatible API — Ollama, OpenAI, OpenRouter, Groq, LM Studio, vLLM, and more.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "heapcode",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -182,6 +182,10 @@
       {
         "command": "heapcode.resetPermissions",
         "title": "Heap Code: Reset Agent Permissions"
+      },
+      {
+        "command": "heapcode.setWebSearchKey",
+        "title": "Heap Code: Set Web Search API Key"
       }
     ],
     "submenus": [
@@ -560,6 +564,11 @@
           "default": 60,
           "description": "Terminal command timeout in seconds for agent-run commands."
         },
+        "heapcode.agent.askUserQuestionTimeout": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "How long an agent question waits with no activity before the agent is told you may be away and carries on with its own judgment — e.g. `60s`, `5m`, `10m`. Empty (the default) waits indefinitely. Typing or refocusing the question resets the clock, and the last 20 seconds are shown as a countdown. A question the agent marked as gating an action (\"may I delete this?\") never times out regardless of this setting."
+        },
         "heapcode.agent.memoryDistillation": {
           "type": "boolean",
           "default": true,
@@ -594,6 +603,38 @@
           ],
           "default": "auto",
           "markdownDescription": "FIM prompt format. `auto` detects from the model id; `chat` forces the chat-based fallback for models without FIM support."
+        },
+        "heapcode.webSearch.provider": {
+          "type": "string",
+          "enum": [
+            "off",
+            "duckduckgo",
+            "brave",
+            "tavily",
+            "serper",
+            "searxng",
+            "custom"
+          ],
+          "default": "off",
+          "markdownDescription": "Search backend for the agent's `web_search` tool. **Off by default** — while off the tool stays visible to the model but every call is refused, so it cannot silently reach the internet.\n\n- `duckduckgo` — no API key or signup. DuckDuckGo publishes no search API, so this parses its HTML results page: it works, but it is unofficial, rate-limits quickly (requests are spaced ~2s apart and 429s are retried with backoff), and can break if their markup changes.\n- `brave` / `tavily` / `serper` — hosted APIs, far more reliable; run **Heap Code: Set Web Search API Key** to store the key in the OS keychain (never in settings.json). Brave's free tier allows ~1 request/second, which is enforced here.\n- `searxng` — your own SearXNG instance; no key and no third party. Set `#heapcode.webSearch.baseUrl#` if it isn't on `http://localhost:8888/search`.\n- `custom` — any endpoint returning Brave/Tavily/Serper/SearXNG-shaped JSON.\n\nResults are treated as untrusted content, the same as `fetch_url` and MCP output."
+        },
+        "heapcode.webSearch.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Overrides the search endpoint for the selected provider. Needed for a self-hosted SearXNG on a non-default address, and for `custom`."
+        },
+        "heapcode.webSearch.maxResults": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "markdownDescription": "How many results `web_search` returns to the model. Snippets are capped per result, so this is the main lever on how much context one search spends."
+        },
+        "heapcode.webSearch.timeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "markdownDescription": "Per-attempt timeout for a search request. Retries (up to 3, with backoff on 429/5xx) each get a fresh timeout."
         }
       }
     }
@@ -606,6 +647,7 @@
   },
   "dependencies": {
     "@heapcode/core": "workspace:*",
+    "@heapcode/repomap": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ignore": "^7.0.5"
   },

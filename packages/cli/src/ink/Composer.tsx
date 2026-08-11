@@ -20,9 +20,10 @@ export interface ComposerProps {
   mentionCandidates?: string[];
   /** Fired when the user types `@` — the host lazy-loads mentionCandidates. */
   onMentionTrigger?(): void;
-  /** Fires with whether the buffer currently has text — lets the host decide
-   * what Ctrl+C should do (clear input vs. arm exit). */
-  onActivity?(hasText: boolean): void;
+  /** Fires with whether the buffer currently has text, and the text itself —
+   * lets the host decide what Ctrl+C should do (clear input vs. arm exit), and
+   * lets an ask_user prompt report the partial answer typed so far. */
+  onActivity?(hasText: boolean, text: string): void;
   /** Increment to clear the buffer from outside (Ctrl+C-clears-input). */
   clearToken?: number;
 }
@@ -167,7 +168,7 @@ export function Composer({
     cursorRef.current = Math.max(0, Math.min(cur, text.length));
     setValue(valueRef.current);
     setCursor(cursorRef.current);
-    onActivity?.(valueRef.current.length > 0);
+    onActivity?.(valueRef.current.length > 0, valueRef.current);
   };
 
   // Only the token should retrigger this — setBuffer is stable in behavior.

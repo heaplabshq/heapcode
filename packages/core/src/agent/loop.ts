@@ -1,5 +1,5 @@
 import type { ChatMessage, ChatResponse, Provider } from '../providers/types.js';
-import { isAbortError } from '../providers/errors.js';
+import { isAbortError, isToolsUnsupported } from '../providers/errors.js';
 import {
   COMPACTION_THRESHOLD,
   DEFAULT_CONTEXT_WINDOW,
@@ -124,7 +124,30 @@ const CONTINUE_NUDGE =
   'current request actually asks for it. Call the next tool NOW in your reply. ' +
   'Do not describe what you will do; do it. Reply without a tool call ONLY when the current request is fully complete.';
 
+/**
+ * Shown once when a run drops from native tool calling to the text protocol.
+ * Says what happened and how to make it stick, because the automatic recovery
+ * costs a round trip on every run until the profile is changed.
+ */
+const TOOL_PROTOCOL_FALLBACK_NOTICE =
+  'This model rejected native tool calling, so heapcode switched to its text-based tool protocol ' +
+  'for the rest of this run. Tool support comes from the model\'s chat template, so this is a ' +
+  'property of the model rather than of the server. To skip this retry in future, set ' +
+  '`"capabilities": {"nativeToolCalls": false}` on the profile — "/nativetools off" in the terminal does it for you.';
+
 const MAX_NUDGES = 4;
+
+/**
+ * Sent when a reply contains a tool call written as text while the session is
+ * using native tool calling. Names the offending shapes explicitly: a model
+ * that emitted one is demonstrably fluent in it, and a generic "use the tool
+ * API" instruction leaves it guessing at what it did wrong.
+ */
+const NATIVE_TOOL_CALL_REPAIR =
+  'You wrote a tool call as plain text (e.g. <tool_call>, <function=…>, or <tool name=…>). ' +
+  'This endpoint supports real tool calling — emit the call through the tool-calling API instead, ' +
+  'as a structured tool_calls entry, not as text in your message content. ' +
+  'Do not repeat the text form; make the actual call now.';
 
 const FINISH_REMINDER =
   'If the CURRENT request (the last user message) is fully complete, call the finish tool with a summary. ' +
@@ -244,10 +267,20 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     model,
     tools,
     events,
-    nativeToolCalls,
     maxIterations = 25,
     signal,
   } = opts;
+
+  /**
+   * Mutable for the life of the run: a model whose chat template has no tool
+   * support rejects any request carrying `tools`, and the presets for local
+   * servers assume native tool calling because most hosted endpoints have it.
+   * Rather than failing the run over a protocol mismatch, the first such
+   * rejection flips this and the turn is retried through the text protocol —
+   * see the catch in respondLive.
+   */
+  let nativeToolCalls = opts.nativeToolCalls;
+  let toolProtocolFellBack = false;
 
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
   const toolsWithFinish = [...tools, FINISH_TOOL];
@@ -275,31 +308,56 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     withTools: boolean,
     liveText: boolean,
   ): Promise<{ response: ChatResponse; streamed: boolean }> => {
+    // One shot at recovering from "this model can't do tool calling": drop to
+    // the text protocol, rewrite the system prompt to describe it, and repeat
+    // the same turn. Only once per run, and only while still native.
+    const recoverFromUnsupportedTools = (err: unknown): boolean => {
+      if (toolProtocolFellBack || !nativeToolCalls || !withTools) return false;
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isToolsUnsupported(message)) return false;
+      toolProtocolFellBack = true;
+      nativeToolCalls = false;
+      messages[0] = { role: 'system', content: buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish) };
+      events.onText(TOOL_PROTOCOL_FALLBACK_NOTICE);
+      return true;
+    };
+
     if (!provider.chatStreamed) {
-      return { response: await provider.chat(buildRequest(msgs, withTools)), streamed: false };
+      try {
+        return { response: await provider.chat(buildRequest(msgs, withTools)), streamed: false };
+      } catch (err) {
+        if (!recoverFromUnsupportedTools(err)) throw err;
+        return { response: await provider.chat(buildRequest(msgs, false)), streamed: false };
+      }
     }
     let streamed = false;
     let reasoned = false;
     let toolChars = 0;
-    const response = await provider.chatStreamed(
-      buildRequest(msgs, withTools),
-      (text, kind = 'text') => {
-        if (kind === 'reasoning') {
-          reasoned = true;
-          events.onReasoningDelta?.(text);
-          return;
-        }
-        if (kind === 'tool') {
-          toolChars += text.length;
-          events.onToolStream?.(toolChars);
-          return;
-        }
-        if (liveText && nativeToolCalls) {
-          streamed = true;
-          events.onTextDelta?.(text);
-        }
-      },
-    );
+    const onDelta = (text: string, kind: 'text' | 'reasoning' | 'tool' = 'text'): void => {
+      if (kind === 'reasoning') {
+        reasoned = true;
+        events.onReasoningDelta?.(text);
+        return;
+      }
+      if (kind === 'tool') {
+        toolChars += text.length;
+        events.onToolStream?.(toolChars);
+        return;
+      }
+      if (liveText && nativeToolCalls) {
+        streamed = true;
+        events.onTextDelta?.(text);
+      }
+    };
+    let response: ChatResponse;
+    try {
+      response = await provider.chatStreamed(buildRequest(msgs, withTools), onDelta);
+    } catch (err) {
+      if (!recoverFromUnsupportedTools(err)) throw err;
+      // withTools is now moot — nativeToolCalls is false, so buildRequest
+      // omits the array either way; passing false says so at the call site.
+      response = await provider.chatStreamed(buildRequest(msgs, false), onDelta);
+    }
     if (reasoned) events.onReasoningEnd?.();
     if (streamed) events.onTextEnd?.();
     return { response, streamed };
@@ -354,6 +412,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         };
       }
     }
+    // The id belongs to the CALL, not to whatever the host chose to put on the
+    // result: it is what pairs the `role: 'tool'` message back to its
+    // `tool_calls` entry on the wire. Hosts that build a result from scratch
+    // have dropped it (the CLI's run_command returned `id: ''`), and the
+    // resulting tool message went out with no tool_call_id at all — OpenRouter
+    // answered `400 "Provider returned error"` (upstream: "missing field
+    // `tool_call_id`") on the *next* request, so every session died the first
+    // time the agent ran a shell command. Restamp here, once, for every host.
+    result = { ...result, id: call.id };
     events.onToolResult(result);
     return result;
   };
@@ -563,7 +630,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
                   isError: true,
                 }
               : await execTool({ id: requested.id, name: requested.name, args: requested.args });
-            messages.push({ role: 'tool', content: result.content, toolCallId: result.id });
+            // Pair off the call's own id (as chat/chatTurn.ts does), never the
+            // result's — see execTool.
+            messages.push({ role: 'tool', content: result.content, toolCallId: requested.id });
           }
           continue;
         }
@@ -576,6 +645,37 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           messages.push({ role: 'user', content: TRUNCATED_NUDGE });
           continue;
         }
+        // The model wrote a tool call as prose instead of emitting a real one.
+        // Some open-weight models do this no matter what the tools parameter
+        // says — they were fine-tuned on a textual dialect and fall back to it
+        // (a live Nemotron run emitted `<tool_call><function=run_command>…`
+        // and the loop, seeing no native call, nudged until it gave up on a
+        // task the model was actively trying to perform).
+        //
+        // Asking for a properly-formed call is tried first, because the native
+        // protocol is the one this session is actually configured for. Only
+        // when the model has been told and still repeats itself is the parsed
+        // call executed — by then "it won't comply" is established, and
+        // refusing to act on an unambiguous request the user can still see and
+        // approve (every tool goes through the permission engine either way)
+        // just reproduces the dead end this exists to fix.
+        const textual = parseToolBlocks(response.content);
+        if (textual.calls.length > 0 && !textual.calls[0]!.parseError) {
+          if (repairs < MAX_REPAIRS) {
+            repairs++;
+            if (!streamed && response.content.trim()) events.onText(response.content);
+            messages.push({ role: 'assistant', content: response.content });
+            messages.push({ role: 'user', content: NATIVE_TOOL_CALL_REPAIR });
+            continue;
+          }
+          const call = textual.calls[0]!;
+          if (!streamed && textual.narration.trim()) events.onText(textual.narration);
+          messages.push({ role: 'assistant', content: response.content });
+          const result = await execTool({ id: `call_${iteration}`, name: call.name, args: call.args ?? {} });
+          messages.push({ role: 'user', content: formatToolResult(result.name, result.content) });
+          continue;
+        }
+
         // A question addressed to the user beats every nudge below: the reply
         // is a turn boundary, and nudging would make the model answer itself.
         const awaitingUser = asksTheUser(response.content);

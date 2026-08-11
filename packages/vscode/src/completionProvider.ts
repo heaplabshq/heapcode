@@ -7,9 +7,11 @@ import {
   isAbortError,
   LatencyTracker,
   PrefixCache,
+  type HitMeta,
+  type KeywordIndex,
 } from '@heapcode/core';
 import type { ProfileManager } from './profileManager.js';
-import type { RagIndexer } from './rag/indexer.js';
+import type { ServerLink } from './serverLink.js';
 
 const PREFIX_CHARS = 6000;
 const SUFFIX_CHARS = 2000;
@@ -28,7 +30,19 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
   constructor(
     private readonly profiles: ProfileManager,
     private readonly log: vscode.OutputChannel,
-    private readonly rag: RagIndexer,
+    /**
+     * The semantic index, over the socket. Only a *manual* trigger reaches it:
+     * the user is explicitly waiting, so a round-trip plus an embedding call
+     * is affordable there and nowhere else on this path.
+     */
+    private readonly link: ServerLink,
+    /**
+     * Vector-free BM25 over the same chunks, held in this process. Typing
+     * triggers retrieve from here rather than from the semantic index, which
+     * is what keeps the keystroke path free of I/O — see its own doc comment
+     * and docs/phase3-rag-design.md §2.3.
+     */
+    private readonly keywords: KeywordIndex,
   ) {}
 
   async provideInlineCompletionItems(
@@ -92,7 +106,7 @@ export class HeapCodeCompletionProvider implements vscode.InlineCompletionItemPr
     const nativeFim = profile.preset === 'ollama' && templateSetting === 'auto' && template;
 
     const repoContext = cfg.get<boolean>('repoContext', true)
-      ? await collectRepoContext(this.rag, document, prefix, context.triggerKind)
+      ? await collectRepoContext(this.link, this.keywords, document, prefix, context.triggerKind)
       : '';
     const crossFile = collectCrossFileContext(document);
     const started = Date.now();
@@ -193,28 +207,32 @@ function acceptTrackedItem(
  * inside the debounce window); manual-trigger completions use the fuller
  * embeddings+hybrid+rerank pipeline since the user is explicitly waiting.
  */
-async function collectRepoContext(
-  rag: RagIndexer,
+/**
+ * Exported for tests: which index a completion's repo context comes from is
+ * the whole of decision 1 in the RAG migration, and it is not observable
+ * through provideInlineCompletionItems without standing up the model call too.
+ */
+export async function collectRepoContext(
+  link: Pick<ServerLink, 'ragQuery'>,
+  keywords: KeywordIndex,
   current: vscode.TextDocument,
   prefix: string,
   triggerKind: vscode.InlineCompletionTriggerKind,
 ): Promise<string> {
-  if (!rag.ready) return '';
+  const invoked = triggerKind === vscode.InlineCompletionTriggerKind.Invoke;
+  if (!invoked && !keywords.ready) return '';
   const queryText = prefix.split('\n').slice(-REPO_QUERY_LINES).join('\n').slice(-REPO_QUERY_CHARS);
   if (!queryText.trim()) return '';
 
   const currentPath = vscode.workspace.asRelativePath(current.uri, false);
-  const hits =
-    triggerKind === vscode.InlineCompletionTriggerKind.Invoke
-      ? await rag.query(queryText, 4)
-      : rag.keywordSearch(queryText, 4);
+  const hits: HitMeta[] = invoked ? (await link.ragQuery(queryText, 4)).hits : keywords.search(queryText, 4);
 
   const parts: string[] = [];
   let used = 0;
   for (const hit of hits) {
-    if (hit.record.path === currentPath) continue;
+    if (hit.path === currentPath) continue;
     const commented = commentOut(
-      `From ${hit.record.path}:${hit.record.startLine}-${hit.record.endLine}:\n${hit.record.text}`,
+      `From ${hit.path}:${hit.startLine}-${hit.endLine}:\n${hit.text}`,
       current.languageId,
     );
     if (used + commented.length > REPO_CONTEXT_CHARS) break;

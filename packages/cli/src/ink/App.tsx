@@ -6,45 +6,88 @@ import SelectInput from 'ink-select-input';
 import { useTerminalColumns } from './useTerminalColumns.js';
 import {
   builtinPrompts,
+  BUILTIN_PERSONAS,
+  DEFAULT_PERMISSION_MODE,
+  PERMISSION_MODES,
+  SEARCH_PRESETS,
+  WEB_SEARCH_SECRET_NAME,
+  describeWebSearchState,
+  getSearchPreset,
+  isSearchPresetId,
+  PERMISSION_MODE_INFO,
+  applyModeToPersona,
+  cyclePermissionMode,
+  filterToolsForPersona,
+  getPermissionModeInfo,
+  getPersona,
+  intersectPersonas,
+  isPermissionMode,
+  resolveCapabilities,
+  ASK_USER_COUNTDOWN_MS,
+  ASK_USER_NO_ANSWER,
+  IdleDeadline,
+  INIT_TASK,
+  METHODS,
+  askUserAnswerMessage,
+  askUserBlocksAction,
+  askUserIdleMessage,
   parseSlashCommand,
   renderTemplate,
-  reviewCurrentPr,
-  runAgent,
+  type AgentEvent,
+  type AgentEventParams,
+  type AgentPersona,
+  type AgentRunParams,
+  type AgentRunResult,
   type Conversation,
+  type KeyRequestParams,
+  type KeyRequestResult,
+  type ListModelsParams,
+  type ListModelsResult,
+  type McpManager,
   type PermissionChoice,
-  type PrReviewHost,
-  type Provider,
+  type PermissionMode,
+  type PermissionRequestParams,
+  type PermissionRequestResult,
   type ProviderProfileConfig,
+  type RagEventParams,
+  type RagIndexParams,
+  type RagIndexResult,
+  type RagQueryParams,
+  type RagQueryResult,
+  type RagStatusResult,
   type ReviewClient,
+  type ReviewConfirmParams,
+  type ReviewConfirmResult,
+  type ReviewEvent,
+  type ReviewEventParams,
+  type ReviewRunParams,
+  type ReviewRunResult,
+  type SnapshotBeforeParams,
   type StoredMessage,
+  type ToolCall,
   type ToolDefinition,
+  type ToolExecuteParams,
+  type ToolResult,
 } from '@heapcode/core';
 import type { ConfigStore } from '../config/store.js';
 import type { SecretsStore } from '../config/secrets.js';
 import type { JsonConversationStore } from '../history/store.js';
 import type { WorkspaceToolExecutor } from '../agent/workspaceTools.js';
 import type { SessionCheckpoint } from '../agent/checkpoint.js';
-import type { PermissionEngine } from '../agent/permissions.js';
+import { listPermissionGrants, type PermissionEngine } from '../agent/permissions.js';
 import type { ShadowGit } from '../agent/shadowGit.js';
-import {
-  BUILTIN_PERSONAS,
-  filterToolsForPersona,
-  getPersona,
-  intersectPersonas,
-  looksFilesystemMutating,
-  type AgentPersona,
-} from '../agent/personas.js';
 import { listSkillsFormatted } from '../agent/skills.js';
 import { trimHistoryForAgent } from '../agent/historyWindow.js';
 import { loadProjectInstructions } from '../memory.js';
-import { configFile, secretsFile } from '../paths.js';
-import type { RagIndexer } from '../rag/indexer.js';
+import { configFile, permissionsFile, secretsFile } from '../paths.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
-import type { McpManager } from '../agent/mcp.js';
-import { DELEGATE_TASK_TOOL, runSubAgent } from '../agent/delegate.js';
+import { DELEGATE_TASK_TOOL } from '../agent/delegate.js';
+import { connectToServer, type ConnectOptions, type ServerConnection } from '../server/client.js';
 import { Composer, type SlashCommand } from './Composer.js';
+import { FilterableList } from './FilterableList.js';
 import { Header } from './Header.js';
 import { Setup } from './Setup.js';
+import { TextInput } from './TextInput.js';
 import { MessageView } from './MessageView.js';
 import { renderMarkdown } from '../markdown.js';
 import { PermissionPrompt, type PermissionRequest } from './PermissionPrompt.js';
@@ -64,7 +107,12 @@ const COMMANDS: SlashCommand[] = [
   { name: '/model', args: '[id]', description: 'Switch the model (fetches the provider’s list)' },
   { name: '/profile', args: '[add|list|remove|name]', description: 'Switch, add, list, or remove provider profiles' },
   { name: '/persona', args: '[name]', description: 'Switch persona: agent, architect, debug, reviewer' },
+  { name: '/mode', args: '[name]', description: 'Permission mode: plan, default, auto-edit, full-auto (Shift+Tab cycles)' },
+  { name: '/websearch', args: '[provider|on|off]', description: 'Web search for the agent — off until you configure a provider' },
+  { name: '/permissions', args: '[reset]', description: 'Show or clear saved "Always allow" grants for this project' },
+  { name: '/nativetools', args: '[on|off]', description: 'Native tool calling vs the text protocol — turn off for models that reject tools' },
   { name: '/settings', description: 'Show current configuration' },
+  { name: '/init', description: 'Set up .heapcode/HEAPCODE.md & memory.md for this project (runs as an agent task)' },
   { name: '/memory', description: 'Show the project instructions & memory the agent sees' },
   { name: '/skills', description: 'List available Skills' },
   { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
@@ -99,6 +147,12 @@ function escapeRegExp(s: string): string {
 interface Picker {
   title: string;
   items: Array<{ label: string; value: string }>;
+  /**
+   * Renders a type-to-filter list instead of a plain arrow-key one. Only for
+   * lists long enough to need it — on a short confirm ("yes"/"no") swallowing
+   * keystrokes into a filter box would be surprising, not helpful.
+   */
+  filterable?: boolean;
   onPick(value: string): void;
   /** Called when the picker is dismissed with esc/ctrl+c instead of picked. Required by any caller awaiting a choice — without it, esc leaves that promise pending forever. */
   onCancel?(): void;
@@ -111,7 +165,6 @@ function cancelPicker(picker: Picker | undefined, clear: () => void): void {
 }
 
 export interface AppProps {
-  provider: Provider;
   profile: ProviderProfileConfig;
   conversation: Conversation;
   historyStore: JsonConversationStore;
@@ -120,25 +173,32 @@ export interface AppProps {
   permissions: PermissionEngine;
   shadowGit?: ShadowGit;
   tools: ToolDefinition[];
-  nativeToolCalls: boolean;
   workspaceName: string;
   contextWindow: number;
   /** Enables /model and /profile persistence; omitted in tests. */
   configStore?: ConfigStore;
   /** Needed by "/profile add" (stores the API key) and "/profile remove" (deletes it). */
   secretsStore?: SecretsStore;
-  /** Re-resolves a provider (API key lookup + client construction) for /profile switches. */
-  switchProvider?(profile: ProviderProfileConfig): Promise<{ provider: Provider; contextWindow: number }>;
+  /** Re-resolves the context window for a /profile switch. No Provider: nothing host-side calls one. */
+  switchProvider?(profile: ProviderProfileConfig): Promise<{ contextWindow: number }>;
   version?: string;
   cwd?: string;
   safeMode?: boolean;
+  /** Mode this session starts in (--permission-mode). Shift+Tab cycles from here. */
+  permissionMode?: PermissionMode;
+  /**
+   * Reports a Shift+Tab (or /mode) change back to the host, which owns the
+   * getter the PermissionEngine reads. Without this the engine would keep
+   * answering from the mode the session launched with.
+   */
+  onPermissionModeChange?(mode: PermissionMode): void;
+  /** Hands the host a sink for permission-engine log lines, so they reach the transcript. */
+  onPermissionLogReady?(log: (message: string) => void): void;
   /** Earlier conversations exist in this project at launch — shows the /resume hint. */
   canResume?: boolean;
   /** Lazy source for `@` mention autocomplete (ignore-aware workspace paths, folders end with `/`). */
   listWorkspaceFiles?(): Promise<string[]>;
-  /** Semantic search — omitted in tests/headless; /search and @workspace no-op gracefully without one. */
-  ragIndexer?: RagIndexer;
-  /** Structural repo outline — same tool/@workspace fallback path as ragIndexer when no embeddings model is configured. */
+  /** Structural repo outline — the @workspace fallback when the semantic index has nothing. */
   repoMapIndexer?: RepoMapIndexer;
   /** MCP servers — reconnected at the start of every task; their tools go through the same permission system as workspace tools. */
   mcpManager?: McpManager;
@@ -148,10 +208,17 @@ export interface AppProps {
   onSessionChange?(id: string): void;
   /** Best-effort registry check for a newer published version — omitted (no-op) when disabled via --no-update-check or config, or in tests/headless. */
   checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
+  /**
+   * Opt-in idle bound on an ask_user question, in ms — from
+   * `askUserQuestionTimeout` in ~/.heapcode/config.json. Undefined (the
+   * default) means the question waits indefinitely, exactly as before.
+   */
+  askUserIdleMs?: number;
+  /** Test seam: point at an already-running core server instead of autostarting one. */
+  server?: ConnectOptions;
 }
 
 export function App({
-  provider,
   profile,
   conversation,
   historyStore,
@@ -160,7 +227,6 @@ export function App({
   permissions,
   shadowGit,
   tools,
-  nativeToolCalls,
   workspaceName,
   contextWindow,
   configStore,
@@ -169,21 +235,49 @@ export function App({
   version,
   cwd,
   safeMode,
+  permissionMode: initialPermissionMode,
+  onPermissionModeChange,
+  onPermissionLogReady,
   canResume,
   listWorkspaceFiles,
-  ragIndexer,
   repoMapIndexer,
   mcpManager,
   onTrack,
   onSessionChange,
   checkUpdate,
+  askUserIdleMs,
+  server,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
 
   // Session state that /model and /profile can change mid-session. The props
   // are just the initial values resolved by cli.tsx.
-  const [active, setActive] = useState({ provider, profile, contextWindow });
+  const [active, setActive] = useState({ profile, contextWindow });
   const [model, setModel] = useState(profile.agentModel || profile.model);
+  /**
+   * Derived from the live profile, not from the launch-time prop. The prop is
+   * resolved once in cli.tsx, so it went stale the moment the session switched
+   * profiles with /profile — a run could keep using native tool calling after
+   * moving to a profile that disables it. /nativetools has the same
+   * requirement, so both are served by reading the current profile here.
+   */
+  const effectiveNativeToolCalls = resolveCapabilities(active.profile).nativeToolCalls;
+
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>(
+    initialPermissionMode ?? DEFAULT_PERMISSION_MODE,
+  );
+  /**
+   * Read by runTask, which is called from handlers registered once — the
+   * state value there would be whichever mode was current when the handler
+   * closed over it, so a mid-run Shift+Tab would not reach the next task.
+   */
+  const permissionModeRef = useRef(permissionMode);
+
+  function setPermissionMode(mode: PermissionMode): void {
+    permissionModeRef.current = mode;
+    setPermissionModeState(mode);
+    onPermissionModeChange?.(mode);
+  }
 
   const headerItem = (messageCount: number): TranscriptItem => ({
     kind: 'header',
@@ -264,7 +358,20 @@ export function App({
   const [error, setError] = useState<string>();
   const [pendingPermission, setPendingPermission] = useState<{ req: PermissionRequest; resolve: (c: PermissionChoice) => void }>();
   const [pendingQuestion, setPendingQuestion] = useState<{ req: AskUserRequest; resolve: (a: string) => void }>();
+  /**
+   * Seconds left on a pending question's idle bound, once inside the countdown
+   * window. Undefined whenever there is nothing to count down — no timeout
+   * configured, a blocksAction question, or still more than
+   * ASK_USER_COUNTDOWN_MS away.
+   */
+  const [questionCountdown, setQuestionCountdown] = useState<number>();
+  /** Whatever the user has typed or highlighted so far, for an expiring question to hand over. */
+  const questionPartial = useRef('');
+  /** Activity resets the pending question's deadline — see the useInput handler. */
+  const questionDeadline = useRef<IdleDeadline>();
   const [picker, setPicker] = useState<Picker>();
+  /** A masked inline prompt for a secret (currently the web-search API key). */
+  const [pendingSecret, setPendingSecret] = useState<{ label: string; onSubmit(value: string): void | Promise<void> }>();
   const [setupActive, setSetupActive] = useState(false);
   const [persona, setPersona] = useState<AgentPersona>(getPersona(undefined));
   // Sub-agent orchestration (delegate_task) is opt-in — a new,
@@ -285,55 +392,125 @@ export function App({
       });
   };
 
+  /**
+   * The review currently running, so the connection's own handlers can route
+   * review/event and review/confirm to it — the same shape activeRun has for
+   * agent runs.
+   */
+  const reviewRun = useRef<{
+    runId: string;
+    onEvent(event: ReviewEvent): void;
+    confirm(confirmation: ReviewConfirmParams['confirmation']): Promise<boolean>;
+  }>();
+
+  // Drives the pending question's countdown. One interval for the whole app
+  // rather than a timer per prompt, and it only exists while a bounded question
+  // is actually up.
+  useEffect(() => {
+    if (!pendingQuestion) return;
+    const tick = (): void => {
+      const remaining = questionDeadline.current?.remainingMs() ?? Number.POSITIVE_INFINITY;
+      setQuestionCountdown(
+        Number.isFinite(remaining) && remaining <= ASK_USER_COUNTDOWN_MS ? Math.ceil(remaining / 1_000) : undefined,
+      );
+    };
+    tick();
+    const handle = setInterval(tick, 500);
+    return () => clearInterval(handle);
+  }, [pendingQuestion]);
+
   const [indexProgress, setIndexProgress] = useState<{ embedded: number; total: number }>();
 
   // Build both indexes once at mount, in the background — never blocks the
-  // composer. RepoMapIndexer needs no embeddings model, so it's always
-  // useful; RagIndexer.buildIndex no-ops (logged, not shown) without one.
+  // composer. The repo map stays in-process (pure parsing, no key needed); the
+  // semantic index lives in the server, so building it means connecting. That
+  // is why this is best-effort: an unreachable server must not turn launching
+  // the CLI into an error, it just means no semantic search until a task
+  // connects for real.
   useEffect(() => {
-    if (!ragIndexer && !repoMapIndexer) return;
     let cancelled = false;
     void (async () => {
-      await Promise.all([ragIndexer?.init(), repoMapIndexer?.init()]);
+      await repoMapIndexer?.init();
       if (cancelled) return;
       void repoMapIndexer?.buildIndex();
-      void ragIndexer
-        ?.buildIndex((embedded, total) => {
-          if (!cancelled) setIndexProgress({ embedded, total });
-        })
-        .then(() => {
-          if (!cancelled) setIndexProgress(undefined);
-        });
+      await requestIndex({ full: true }).catch(() => {});
+      if (!cancelled) setIndexProgress(undefined);
     })();
     return () => {
       cancelled = true;
     };
-    // Indexers are stable instances for the process lifetime (constructed once in cli.tsx) — run once on mount only.
+    // The repo-map indexer is a stable instance for the process lifetime
+    // (constructed once in cli.tsx) — run once on mount only.
   }, []);
 
-  /** Keeps both indexes in sync with the agent's own file edits — see rag/indexer.ts's comment on why no filesystem watcher is used instead. */
+  /**
+   * Ask the server to index. Progress arrives as `rag/event` notifications
+   * rather than a callback, since the work is in another process now.
+   *
+   * contextualRetrieval is passed explicitly and always on: the CLI has no
+   * setting for it and never did, unlike the extension where it ships off.
+   * Decision 6 of the RAG migration keeps that per-host difference by making
+   * it a request parameter instead of something the index reads for itself.
+   */
+  async function requestIndex(params: Omit<RagIndexParams, 'contextualRetrieval'>): Promise<RagIndexResult | undefined> {
+    const connection = await ensureConnection();
+    return connection.peer.request<RagIndexResult>(METHODS.ragIndex, {
+      ...params,
+      contextualRetrieval: true,
+    } satisfies RagIndexParams);
+  }
+
+  /** Index state from the server; undefined when it cannot be reached at all. */
+  async function requestStatus(): Promise<RagStatusResult | undefined> {
+    try {
+      const connection = await ensureConnection();
+      return await connection.peer.request<RagStatusResult>(METHODS.ragStatus);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Semantic retrieval from the server. Empty (never throwing) when there is nothing to retrieve. */
+  async function requestQuery(text: string, k?: number): Promise<RagQueryResult> {
+    try {
+      const connection = await ensureConnection();
+      return await connection.peer.request<RagQueryResult>(METHODS.ragQuery, { text, k } satisfies RagQueryParams);
+    } catch {
+      return { formatted: '', hits: [] };
+    }
+  }
+
+  /**
+   * Keeps both indexes in sync with the agent's own file edits. The host is
+   * what knows a file changed, so the trigger stays here even though the work
+   * moved — see docs/phase3-rag-design.md §4. There is still no filesystem
+   * watcher: a terminal session has no open editor, and the agent's own write
+   * tools are the only mutations that matter in practice.
+   *
+   * One `rag/index` call covers every case. A delete needs no shape of its
+   * own because indexing a path the server cannot read drops it, and a rename
+   * is the two paths together for the same reason.
+   */
   async function syncIndexesAfterTool(name: string, args: Record<string, unknown>): Promise<void> {
-    if (!ragIndexer && !repoMapIndexer) return;
     const path = typeof args.path === 'string' ? args.path : undefined;
     const newPath = typeof args.newPath === 'string' ? args.newPath : undefined;
+    const sync = async (paths: string[], repoMap: () => Promise<void> | void): Promise<void> => {
+      await Promise.all([requestIndex({ paths }).catch(() => undefined), repoMap()]);
+    };
     switch (name) {
       case 'write_file':
       case 'edit_file':
       case 'multi_edit':
         if (!path) return;
         repoMapIndexer?.noteRecent(path);
-        await Promise.all([ragIndexer?.indexOne(path), repoMapIndexer?.indexOne(path)]);
-        return;
+        return sync([path], () => repoMapIndexer?.indexOne(path));
       case 'rename_file':
         if (!path || !newPath) return;
         repoMapIndexer?.noteRecent(newPath);
-        await Promise.all([ragIndexer?.renameFile(path, newPath), repoMapIndexer?.renameFile(path, newPath)]);
-        return;
+        return sync([path, newPath], () => repoMapIndexer?.renameFile(path, newPath));
       case 'delete_file':
         if (!path) return;
-        ragIndexer?.removeFile(path);
-        repoMapIndexer?.removeFile(path);
-        return;
+        return sync([path], () => repoMapIndexer?.removeFile(path));
       default:
         return;
     }
@@ -351,11 +528,197 @@ export function App({
   /** highlight.js language per in-flight call, inferred from a `path` arg — read_file's numbered content is the case this exists for. */
   const toolLanguages = useRef(new Map<string, string | undefined>());
 
+  /**
+   * The connection to the core server, opened lazily on the first task and
+   * kept for the session (docs/phase3-protocol-design.md §2: a session IS a
+   * connection). Reopened when the active profile changes, since profiles
+   * and key material are pushed at hello and the server never reads either
+   * host's config for itself.
+   */
+  const connectionRef = useRef<ServerConnection>();
+  const connectedProfile = useRef<string>();
+  /** The run currently streaming, so one notification handler can serve every task. */
+  const activeRun = useRef<{ runId: string; onEvent(event: AgentEvent): void }>();
+  /** Read inside handlers registered once — a ref, not the state value, or they'd close over a stale one. */
+  const subAgentsRef = useRef(false);
+  /**
+   * Tool definitions by name for the current run. `permission/request`
+   * carries the call and its permission class, but PermissionEngine wants
+   * the ToolDefinition — which the host already has, since it is the host
+   * that offered the tools in the first place.
+   */
+  const toolByName = useRef(new Map<string, ToolDefinition>());
+
+  useEffect(() => {
+    // Only the auto-allow/deny lines matter to a user; they explain an action
+    // that happened without a prompt. Rendered dim, like other system notes.
+    onPermissionLogReady?.((message) => pushSystem(message.replace(/^\[perm\]\s*/, 'Permission: ')));
+  }, [onPermissionLogReady]);
+
   useEffect(() => {
     permissions.attachRequester(
       (req) => new Promise<PermissionChoice>((resolve) => setPendingPermission({ req, resolve })),
     );
   }, [permissions]);
+
+  useEffect(() => {
+    subAgentsRef.current = subAgentsEnabled;
+  }, [subAgentsEnabled]);
+
+  // The socket outlives individual tasks but not the app.
+  useEffect(
+    () => () => {
+      connectionRef.current?.close();
+      connectionRef.current = undefined;
+    },
+    [],
+  );
+
+  /**
+   * Connect (starting the server if needed) and register the four
+   * server→host request handlers. The bodies are the same code that used to
+   * sit inline in the runAgent options object; only their trigger changed —
+   * the split docs/phase3-protocol-design.md §7 describes, and the same
+   * shape headless.ts already uses.
+   */
+  async function ensureConnection(): Promise<ServerConnection> {
+    const existing = connectionRef.current;
+    if (existing && connectedProfile.current === active.profile.name) return existing;
+    existing?.close();
+
+    const apiKey = await secretsStore?.getApiKey(active.profile.name);
+    const connection = await connectToServer(
+      {
+        client: { name: 'heapcode-cli', version },
+        root: cwd ?? process.cwd(),
+        profiles: [active.profile],
+        activeProfile: active.profile.name,
+        keys: apiKey ? { [active.profile.name]: apiKey } : {},
+      },
+      server,
+    );
+    connectionRef.current = connection;
+    connectedProfile.current = active.profile.name;
+    const { peer } = connection;
+
+    peer.onRequest(METHODS.toolExecute, async (raw, signal) => {
+      const { call } = raw as ToolExecuteParams;
+      return executeTool(call, signal);
+    });
+
+    peer.onRequest(METHODS.permissionRequest, async (raw) => {
+      const { call } = raw as PermissionRequestParams;
+      // delegate_task while sub-agents are off resolves to an informative
+      // error server-side — prompting the user to approve something that
+      // cannot run would be noise.
+      if (call.name === 'delegate_task' && !subAgentsRef.current) return { granted: true } satisfies PermissionRequestResult;
+      const tool = toolByName.current.get(call.name);
+      const granted = tool ? await permissions.request(call, tool, executor.describe(call)) : false;
+      return { granted } satisfies PermissionRequestResult;
+    });
+
+    peer.onRequest(METHODS.snapshotBefore, async (raw) => {
+      const { call } = raw as SnapshotBeforeParams;
+      await shadowGit?.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
+      return null;
+    });
+
+    peer.onRequest(METHODS.keyRequest, async (raw) => {
+      const { profileName } = raw as KeyRequestParams;
+      const target = await configStore?.getProfile(profileName);
+      // Unknown profile or no stored key → the server falls back to the
+      // parent's provider, which is what /subagents did before this moved.
+      if (!target) return {} satisfies KeyRequestResult;
+      return { profile: target, apiKey: await secretsStore?.getApiKey(profileName) } satisfies KeyRequestResult;
+    });
+
+    peer.onRequest(METHODS.reviewConfirm, async (raw) => {
+      const { runId, confirmation } = raw as ReviewConfirmParams;
+      const review = reviewRun.current;
+      if (!review || review.runId !== runId) return { ok: false } satisfies ReviewConfirmResult;
+      return { ok: await review.confirm(confirmation) } satisfies ReviewConfirmResult;
+    });
+
+    peer.onNotification(METHODS.reviewEvent, (raw) => {
+      const { runId, event } = raw as ReviewEventParams;
+      const review = reviewRun.current;
+      if (review && review.runId === runId) review.onEvent(event);
+    });
+
+    // Indexing progress. The status surface stays host-side and becomes a
+    // renderer (docs/phase3-rag-design.md §4) — this is the whole of it.
+    peer.onNotification(METHODS.ragEvent, (raw) => {
+      const { event } = raw as RagEventParams;
+      if (event.kind === 'progress') setIndexProgress({ embedded: event.embedded, total: event.total });
+      else if (event.state !== 'indexing') setIndexProgress(undefined);
+    });
+
+    peer.onNotification(METHODS.agentEvent, (raw) => {
+      const { runId, event } = raw as AgentEventParams;
+      const run = activeRun.current;
+      if (run && run.runId === runId) run.onEvent(event);
+    });
+
+    return connection;
+  }
+
+  /**
+   * The host half of a tool call. MCP dispatch stays here rather than moving
+   * server-side: hosting MCP subprocesses in the server is deliberately out
+   * of scope (docs/phase3-protocol-design.md §4 recommends it but flags it
+   * as needing its own look), and this is the same resolution headless.ts
+   * arrived at.
+   */
+  async function executeTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
+    if (call.name === 'ask_user') {
+      const options = Array.isArray(call.args.options) ? call.args.options.map(String) : undefined;
+      // The wait is unbounded by default and stays that way unless the user
+      // opted into askUserQuestionTimeout — and never bounded at all for a
+      // question the model marked as gating an action, however it is
+      // configured. Three things can end it: an answer, cancellation (which
+      // behaves exactly as it did before this), or the idle bound expiring.
+      const bounded = askUserIdleMs !== undefined && !askUserBlocksAction(call.args);
+      questionPartial.current = '';
+      let idle = false;
+      const answer = await new Promise<string | undefined>((resolve) => {
+        const settle = (value: string | undefined): void => {
+          questionDeadline.current?.stop();
+          questionDeadline.current = undefined;
+          setQuestionCountdown(undefined);
+          resolve(value);
+        };
+        const deadline = new IdleDeadline(bounded ? askUserIdleMs : undefined, () => {
+          idle = true;
+          settle(undefined);
+        });
+        questionDeadline.current = deadline;
+        deadline.start();
+        setPendingQuestion({ req: { question: String(call.args.question ?? ''), options }, resolve: settle });
+        // If the run is cancelled while the question is up, stop waiting and
+        // take the prompt down rather than leaving it on screen forever.
+        // Cancellation wins over the idle bound: `idle` stays false, so this
+        // resolves the way it always has.
+        signal.addEventListener('abort', () => settle(undefined), { once: true });
+      });
+      setPendingQuestion(undefined);
+      if (answer?.trim()) return { id: call.id, name: call.name, content: askUserAnswerMessage(answer) };
+      return {
+        id: call.id,
+        name: call.name,
+        content: idle ? askUserIdleMessage(questionPartial.current) : ASK_USER_NO_ANSWER,
+      };
+    }
+    if (mcpManager?.isMcpTool(call.name)) {
+      try {
+        return { id: call.id, name: call.name, content: await mcpManager.call(call.name, call.args) };
+      } catch (err) {
+        return { id: call.id, name: call.name, content: err instanceof Error ? err.message : String(err), isError: true };
+      }
+    }
+    const result = await executor.execute(call, signal);
+    if (!result.isError) await syncIndexesAfterTool(call.name, call.args);
+    return result;
+  }
 
   useEffect(() => () => clearTimeout(exitTimer.current), []);
 
@@ -364,8 +727,31 @@ export function App({
   }
 
   useInput((input, key) => {
+    // Any keypress means the user is still here — push a pending question's
+    // idle deadline back rather than cutting them off mid-thought. Runs before
+    // the Esc/Ctrl+C handling below because it applies to those too.
+    questionDeadline.current?.touch();
+    // Shift+Tab cycles the permission mode, the way it does in the editors
+    // people arrive from. Plain Tab is the composer's slash-command
+    // completion, so only the shifted form is taken. Allowed mid-run: the
+    // engine reads the mode per request, so escalating out of a wall of
+    // prompts without stopping the agent is the main reason to have a
+    // keystroke for this at all. Suppressed while a modal (permission
+    // prompt, picker, setup) owns the screen — changing the policy
+    // underneath a question about that policy is nobody's intent.
+    if (key.tab && key.shift) {
+      if (!pendingPermission && !pendingQuestion && !picker && !pendingSecret && !setupActive) {
+        const next = cyclePermissionMode(permissionModeRef.current);
+        setPermissionMode(next);
+        onTrack?.('permission.mode.changed', { mode: next, via: 'shift-tab' });
+      }
+      return;
+    }
     if (key.escape) {
-      if (setupActive) {
+      if (pendingSecret) {
+        setPendingSecret(undefined);
+        pushSystem('Cancelled — no key stored, web search stays off.');
+      } else if (setupActive) {
         setSetupActive(false);
         pushSystem('Profile setup cancelled.');
       } else if (picker) cancelPicker(picker, () => setPicker(undefined));
@@ -522,7 +908,12 @@ export function App({
   async function handleModel(arg?: string): Promise<void> {
     if (arg) return applyModel(arg);
     try {
-      const models = await active.provider.listModels();
+      // Server-side: it already holds this profile's key and Provider, so the
+      // CLI has no reason to build a second one just to read a model list.
+      const { peer } = await ensureConnection();
+      const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
+        profileName: active.profile.name,
+      } satisfies ListModelsParams);
       if (models.length === 0) {
         pushSystem('This endpoint does not list models. Set one directly with "/model <id>".');
         return;
@@ -530,6 +921,9 @@ export function App({
       setPicker({
         title: `Select a model (current: ${model})`,
         items: models.map((m) => ({ label: m.id === model ? `${m.id} (current)` : m.id, value: m.id })),
+        // Provider lists run to the hundreds — arrow-keying to a known id is
+        // the slowest possible way to pick one.
+        filterable: true,
         onPick: (id) => {
           setPicker(undefined);
           void applyModel(id);
@@ -592,7 +986,7 @@ export function App({
       try {
         const next = await switchProvider(target);
         await configStore.setActiveProfile(target.name);
-        setActive({ provider: next.provider, profile: target, contextWindow: next.contextWindow });
+        setActive({ profile: target, contextWindow: next.contextWindow });
         setModel(target.agentModel || target.model);
         pushSystem(`Switched to profile "${target.name}" (${target.preset}, ${target.agentModel || target.model}).`);
       } catch (err) {
@@ -615,6 +1009,175 @@ export function App({
         else void apply(name);
       },
     });
+  }
+
+  /**
+   * The typed equivalent of Shift+Tab. Worth having even with the keystroke:
+   * it is discoverable from /help, scriptable in tests, and the only way to
+   * jump straight to a mode instead of cycling to it.
+   */
+  function handleMode(arg?: string): void {
+    const describe = (mode: PermissionMode): string => {
+      const info = getPermissionModeInfo(mode);
+      return `Permission mode: ${info.label} — ${info.hint}`;
+    };
+    if (arg) {
+      if (!isPermissionMode(arg)) {
+        pushSystem(`No permission mode "${arg}". Available: ${PERMISSION_MODES.join(', ')}.`);
+        return;
+      }
+      setPermissionMode(arg);
+      onTrack?.('permission.mode.changed', { mode: arg, via: 'command' });
+      pushSystem(describe(arg));
+      return;
+    }
+    setPicker({
+      title: `Select a permission mode (current: ${getPermissionModeInfo(permissionMode).label})`,
+      items: PERMISSION_MODE_INFO.map((info) => ({
+        label: `${info.label} — ${info.hint}${info.id === permissionMode ? ' (current)' : ''}`,
+        value: info.id,
+      })),
+      onPick: (id) => {
+        setPicker(undefined);
+        if (!isPermissionMode(id)) return;
+        setPermissionMode(id);
+        onTrack?.('permission.mode.changed', { mode: id, via: 'command' });
+        pushSystem(describe(id));
+      },
+    });
+  }
+
+  /**
+   * Set up, toggle, or inspect web search. Search is off until a provider is
+   * chosen here (or in config.json); the key goes to secrets.json, never the
+   * config file, so this walks the user through both.
+   */
+  async function handleWebSearch(arg?: string): Promise<void> {
+    if (!configStore) {
+      pushSystem('Web search configuration is unavailable in this session.');
+      return;
+    }
+    const current = (await configStore.load()).webSearch ?? {};
+    const key = await secretsStore?.getApiKey(WEB_SEARCH_SECRET_NAME);
+    const status = (): string =>
+      `Web search: ${describeWebSearchState(current, key)}\nConfigure with "/websearch <${SEARCH_PRESETS.join('|')}>", or "/websearch off".`;
+
+    if (!arg) {
+      pushSystem(status());
+      return;
+    }
+    if (arg === 'off') {
+      await configStore.saveWebSearch({ enabled: false });
+      pushSystem('Web search turned off. "/websearch on" re-enables it with the same provider.');
+      return;
+    }
+    if (arg === 'on') {
+      if (!current.provider) {
+        pushSystem(`No search provider configured yet. Pick one: /websearch <${SEARCH_PRESETS.join('|')}>`);
+        return;
+      }
+      await configStore.saveWebSearch({ enabled: true });
+      const refreshed = { ...current, enabled: true };
+      pushSystem(`Web search: ${describeWebSearchState(refreshed, key)}`);
+      return;
+    }
+    if (!isSearchPresetId(arg)) {
+      pushSystem(`Unknown search provider "${arg}". Available: ${SEARCH_PRESETS.join(', ')}.`);
+      return;
+    }
+    const preset = getSearchPreset(arg);
+    await configStore.saveWebSearch({ provider: arg, enabled: true });
+    if (preset.requiresApiKey && !key) {
+      // The key is the only part that can't be set from a flag — ask for it
+      // inline rather than telling the user to go edit a file.
+      setPendingSecret({
+        label: `${preset.label} API key`,
+        onSubmit: async (value) => {
+          setPendingSecret(undefined);
+          if (!value.trim()) {
+            pushSystem(`No key entered — web search stays off. Run "/websearch ${arg}" again to retry.`);
+            return;
+          }
+          await secretsStore?.setApiKey(WEB_SEARCH_SECRET_NAME, value.trim());
+          pushSystem(`Web search: on (${preset.label}). Endpoint: ${preset.defaultBaseUrl}`);
+        },
+      });
+      return;
+    }
+    pushSystem(
+      `Web search: on (${preset.label}). Endpoint: ${current.baseUrl || preset.defaultBaseUrl}` +
+        (preset.selfHosted ? '\nSet "webSearch.baseUrl" in ~/.heapcode/config.json to point at your own instance.' : ''),
+    );
+  }
+
+  /**
+   * List or clear persisted "Always allow" grants. The engine's auto-allow
+   * message has always pointed at "/permissions reset" — the command simply
+   * did not exist, so the one instruction a surprised user was given led
+   * nowhere.
+   */
+  async function handlePermissions(arg?: string): Promise<void> {
+    if (arg === 'reset') {
+      const cleared = await permissions.reset();
+      pushSystem(
+        cleared === 0
+          ? 'No saved permission grants to clear.'
+          : `Cleared ${cleared} saved permission grant${cleared === 1 ? '' : 's'}. Every action will ask again.`,
+      );
+      return;
+    }
+    if (arg) {
+      pushSystem('Usage: /permissions [reset]');
+      return;
+    }
+    const grants = await listPermissionGrants(permissionsFile(cwd ?? process.cwd()));
+    pushSystem(
+      [
+        grants.length === 0
+          ? 'No saved "Always allow" grants for this project.'
+          : `Saved "Always allow" grants for this project:\n${grants.map((g) => `  ${g}`).join('\n')}`,
+        '',
+        `These apply in auto-edit and Auto modes only — in ${getPermissionModeInfo('default').label} mode every action asks, whatever is saved here.`,
+        '"/permissions reset" clears them.',
+      ].join('\n'),
+    );
+  }
+
+  /**
+   * Switch this profile between native tool calling and the text protocol.
+   * A config field with no UI is a field nobody finds: models whose chat
+   * template lacks tool support reject every request carrying `tools`, and
+   * the only documented cure was hand-editing config.json.
+   */
+  async function handleNativeTools(arg?: string): Promise<void> {
+    const current = effectiveNativeToolCalls;
+    if (arg !== 'on' && arg !== 'off') {
+      pushSystem(
+        [
+          `Native tool calling: ${current ? 'on' : 'off'} (profile "${active.profile.name}")`,
+          current
+            ? 'Turn it off ("/nativetools off") if the model rejects requests that carry tools — common for local GGUF builds whose chat template has no tool support.'
+            : 'heapcode is describing tools in the prompt instead of using the tool-calling API.',
+          'Usage: /nativetools on|off',
+        ].join('\n'),
+      );
+      return;
+    }
+    const next = arg === 'on';
+    const updated: ProviderProfileConfig = {
+      ...active.profile,
+      capabilities: { ...active.profile.capabilities, nativeToolCalls: next },
+    };
+    setActive((a) => ({ ...a, profile: updated }));
+    if (configStore) {
+      await configStore.saveProfile(updated);
+      pushSystem(
+        `Native tool calling ${next ? 'on' : 'off'} for profile "${updated.name}" (saved). ` +
+          'Takes effect on the next task.',
+      );
+    } else {
+      pushSystem(`Native tool calling ${next ? 'on' : 'off'} for this session.`);
+    }
   }
 
   function handlePersona(arg?: string): void {
@@ -650,13 +1213,11 @@ export function App({
       pushSystem('Usage: /search <query>');
       return;
     }
-    if (ragIndexer?.ready) {
-      const hits = await ragIndexer.query(query);
-      pushSystem(
-        hits.length === 0
-          ? `No semantic matches for "${query}".`
-          : hits.map((h) => `${h.record.path}:${h.record.startLine}-${h.record.endLine}  (score ${h.score.toFixed(2)})`).join('\n'),
-      );
+    // Ask the server first; an empty result means no index (or no embeddings
+    // model), which is the same condition the old `ready` gate stood for.
+    const { hits } = await requestQuery(query);
+    if (hits.length > 0) {
+      pushSystem(hits.map((h) => `${h.path}:${h.startLine}-${h.endLine}  (score ${h.score.toFixed(2)})`).join('\n'));
       return;
     }
     const words = query.split(/\W+/).filter((w) => w.length > 2).map(escapeRegExp);
@@ -666,11 +1227,13 @@ export function App({
   }
 
   /**
-   * /pr-review — the same review the VS Code extension runs (core's
-   * reviewCurrentPr); this only adapts it to the transcript: progress and
-   * warnings as system lines, the preview rendered as markdown, and the
-   * post/cancel decision as a picker. Nothing is posted to GitHub without
-   * that explicit pick.
+   * /pr-review — the same review the VS Code extension runs, now in the same
+   * *process* as well: core's reviewCurrentPr runs server-side behind
+   * `review/run`. This is only the transcript adapter — progress and warnings
+   * as system lines, the preview rendered as markdown, and the post/cancel
+   * decision as a picker. Nothing is posted to GitHub without that explicit
+   * pick, and the review's read-only tool calls come back over the same
+   * `tool/execute` channel an agent run uses.
    */
   async function handlePrReview(arg?: string): Promise<void> {
     const mode = arg?.toLowerCase();
@@ -688,63 +1251,73 @@ export function App({
     setBusy(true);
     setError(undefined);
     try {
-      const host: PrReviewHost = {
-        warn: (message) => pushSystem(`PR review: ${message}`),
-        error: (message) => setError(message),
-        // The extension writes these to an output channel; here they'd bury
-        // the transcript under per-tool-call noise, so they're dropped —
-        // tool activity is already visible in the progress lines.
-        log: () => {},
-        progress: (message) => pushSystem(`PR review: ${message}`),
-        confirm: ({ pr, preview, findingCount, inlineCount, plainText }) =>
-          new Promise<boolean>((resolve) => {
-            pushItem({ kind: 'markdown', text: preview });
-            let settled = false;
-            const finish = (value: boolean): void => {
-              if (settled) return;
-              settled = true;
-              abort.signal.removeEventListener('abort', onAbort);
-              resolve(value);
-            };
-            // Esc/ctrl+c during the confirm aborts the run — the picker's own
-            // cancel path and the abort signal both have to settle this
-            // promise, or the command hangs with the composer locked.
-            function onAbort(): void {
-              setPicker(undefined);
-              finish(false);
-            }
-            abort.signal.addEventListener('abort', onAbort, { once: true });
-            setPicker({
-              title: plainText
-                ? `Post this review as a comment on PR #${pr.number}? (posts publicly on GitHub)`
-                : `Post this review on PR #${pr.number}? ${findingCount} finding(s), ${inlineCount} as inline comments — posts publicly on GitHub`,
-              items: [
-                { label: plainText ? 'Post comment' : 'Post review', value: 'post' },
-                { label: "Don't post", value: 'cancel' },
-              ],
-              onPick: (value) => {
-                setPicker(undefined);
-                finish(value === 'post');
-              },
-              onCancel: () => finish(false),
-            });
-          }),
+      const onEvent = (event: ReviewEvent): void => {
+        // The extension writes `log` to an output channel; here it would bury
+        // the transcript under per-tool-call noise, so it's dropped — tool
+        // activity is already visible in the progress lines.
+        if (event.kind === 'warn' || event.kind === 'progress') pushSystem(`PR review: ${event.message}`);
+        else if (event.kind === 'error') setError(event.message);
       };
 
-      const result = await reviewCurrentPr({
-        cwd: cwd ?? process.cwd(),
-        provider: active.provider,
-        model,
-        temperature: active.profile.temperature,
-        maxTokens: active.profile.maxTokens,
-        contextWindow: active.contextWindow,
-        tools,
-        executor,
-        host,
-        client: CLI_REVIEW_CLIENT,
-        signal: abort.signal,
-        deep: mode === 'deep',
-      });
+      const confirm = ({
+        pr,
+        preview,
+        findingCount,
+        inlineCount,
+        plainText,
+      }: ReviewConfirmParams['confirmation']): Promise<boolean> =>
+        new Promise<boolean>((resolve) => {
+          pushItem({ kind: 'markdown', text: preview });
+          let settled = false;
+          const finish = (value: boolean): void => {
+            if (settled) return;
+            settled = true;
+            abort.signal.removeEventListener('abort', onAbort);
+            resolve(value);
+          };
+          // Esc/ctrl+c during the confirm aborts the run — the picker's own
+          // cancel path and the abort signal both have to settle this promise,
+          // or the command hangs with the composer locked.
+          function onAbort(): void {
+            setPicker(undefined);
+            finish(false);
+          }
+          abort.signal.addEventListener('abort', onAbort, { once: true });
+          setPicker({
+            title: plainText
+              ? `Post this review as a comment on PR #${pr.number}? (posts publicly on GitHub)`
+              : `Post this review on PR #${pr.number}? ${findingCount} finding(s), ${inlineCount} as inline comments — posts publicly on GitHub`,
+            items: [
+              { label: plainText ? 'Post comment' : 'Post review', value: 'post' },
+              { label: "Don't post", value: 'cancel' },
+            ],
+            onPick: (value) => {
+              setPicker(undefined);
+              finish(value === 'post');
+            },
+            onCancel: () => finish(false),
+          });
+        });
+
+      const connection = await ensureConnection();
+      const runId = `review-${randomUUID()}`;
+      abort.signal.addEventListener('abort', () => connection.peer.notify(METHODS.agentCancel, { runId }), { once: true });
+      reviewRun.current = { runId, onEvent, confirm };
+      let result: ReviewRunResult;
+      try {
+        result = await connection.peer.request<ReviewRunResult>(METHODS.reviewRun, {
+          model,
+          temperature: active.profile.temperature,
+          maxTokens: active.profile.maxTokens,
+          contextWindow: active.contextWindow,
+          tools,
+          client: CLI_REVIEW_CLIENT,
+          deep: mode === 'deep',
+          runId,
+        } satisfies ReviewRunParams);
+      } finally {
+        if (reviewRun.current?.runId === runId) reviewRun.current = undefined;
+      }
       onTrack?.(mode === 'deep' ? 'command.reviewPrDeep' : 'command.reviewPr', { status: result.status });
       if (result.status === 'posted') pushSystem(`PR review: posted on PR #${result.pr.number} — ${result.pr.url}`);
       else if (result.status === 'cancelled') pushSystem('PR review: nothing was posted.');
@@ -758,7 +1331,13 @@ export function App({
 
   async function showSettings(): Promise<void> {
     const p = active.profile;
-    const ragStatus = await ragIndexer?.status();
+    const ragStatus = await requestStatus();
+    const webSearchStatus = configStore
+      ? describeWebSearchState(
+          (await configStore.load()).webSearch,
+          await secretsStore?.getApiKey(WEB_SEARCH_SECRET_NAME),
+        )
+      : 'unavailable in this session';
     pushSystem(
       [
         `Session     ${conversationRef.current.id.slice(0, 8)}  (heapcode --resume ${conversationRef.current.id.slice(0, 8)} to continue this later)`,
@@ -768,7 +1347,10 @@ export function App({
         `Persona     ${persona.label}`,
         `Sub-agents  ${subAgentsEnabled ? 'on' : 'off'} (/subagents to toggle)`,
         `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
-        `Search      ${ragStatus ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
+        `Mode        ${getPermissionModeInfo(permissionMode).label} — ${getPermissionModeInfo(permissionMode).hint}`,
+        `Web search  ${webSearchStatus}`,
+        `Tool proto  ${effectiveNativeToolCalls ? 'native tool calling' : 'text protocol (nativeToolCalls: false)'}`,
+        `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
         `Secrets     ${secretsFile()}`,
@@ -791,8 +1373,27 @@ export function App({
       case '/provider':
         await handleProfile(rest[0], rest[1]);
         return true;
+      case '/mode':
+        handleMode(rest[0]);
+        return true;
+      case '/websearch':
+        await handleWebSearch(rest[0]?.toLowerCase());
+        return true;
+      case '/permissions':
+        await handlePermissions(rest[0]?.toLowerCase());
+        return true;
+      case '/nativetools':
+        await handleNativeTools(rest[0]?.toLowerCase());
+        return true;
       case '/persona':
         handlePersona(rest[0]);
+        return true;
+      // Shares core's INIT_TASK with the extension so a project initialized
+      // from the terminal and one initialized from the IDE get the same files.
+      // Runs as an ordinary agent turn: `/init` is what the transcript shows,
+      // the full task is what the agent receives.
+      case '/init':
+        await runTask('/init', INIT_TASK);
         return true;
       case '/memory': {
         const instructions = await loadProjectInstructions(cwd ?? process.cwd());
@@ -839,12 +1440,12 @@ export function App({
       }
       case '/index': {
         pushSystem('Rebuilding indexes…');
-        await Promise.all([ragIndexer?.buildIndex(), repoMapIndexer?.buildIndex()]);
-        const status = await ragIndexer?.status();
+        await Promise.all([requestIndex({ full: true }), repoMapIndexer?.buildIndex()]);
+        const status = await requestStatus();
         const rmReady = repoMapIndexer?.ready;
         pushSystem(
           [
-            status
+            status?.available
               ? `Semantic search: ${status.state} — ${status.files} files, ${status.chunks} chunks.`
               : 'Semantic search: unavailable.',
             `Repo map: ${rmReady ? 'ready' : 'empty'}.`,
@@ -921,7 +1522,12 @@ export function App({
    * it can only ever be as-or-more restrictive, never less.
    */
   async function runTask(display: string, task: string, personaOverride?: AgentPersona): Promise<void> {
-    const effectivePersona = personaOverride ? intersectPersonas(persona, personaOverride) : persona;
+    // Plan mode narrows on top of whatever the persona already allows, so the
+    // model is never offered a tool it would only be denied at call time.
+    const effectivePersona = applyModeToPersona(
+      personaOverride ? intersectPersonas(persona, personaOverride) : persona,
+      permissionModeRef.current,
+    );
     setError(undefined);
     setBusy(true);
     // Snapshot prior turns BEFORE pushing the new task message.
@@ -942,8 +1548,8 @@ export function App({
     let workspaceContext = '';
     if (/(^|\s)@workspace\b/.test(display)) {
       const query = display.replace(/(^|\s)@workspace\b/g, ' ').trim() || display;
-      const semantic = ragIndexer?.ready ? await ragIndexer.queryFormatted(query).catch(() => '') : '';
-      if (semantic) workspaceContext = `Relevant workspace context (semantic search):\n${semantic}`;
+      const { formatted } = await requestQuery(query);
+      if (formatted) workspaceContext = `Relevant workspace context (semantic search):\n${formatted}`;
       else if (repoMapIndexer?.ready) workspaceContext = `Workspace structure overview (no semantic index configured):\n${repoMapIndexer.format()}`;
     }
     const mentionNote = /(^|\s)@[^\s@]+/.test(display)
@@ -964,155 +1570,92 @@ export function App({
     // answered "delegate investigating X" by fabricating a completed
     // delegation out of the repo map already in its context.)
     const offeredTools = [...tools, DELEGATE_TASK_TOOL];
+    const offered = filterToolsForPersona([...offeredTools, ...mcpTools], effectivePersona);
+    toolByName.current = new Map(offered.map((t) => [t.name, t]));
 
     try {
-      const outcome = await runAgent({
-        provider: active.provider,
+      const { peer } = await ensureConnection();
+      const runId = randomUUID();
+      // Cancellation stays on the existing Esc / Ctrl+C wiring above: the
+      // controller is still what the UI aborts, but aborting now sends one
+      // `agent/cancel` notification to the server holding the real
+      // AbortSignal (docs/phase3-protocol-design.md §5). The server also
+      // cancels any in-flight tool/execute, so a running command stops too —
+      // not just the model call.
+      abort.signal.addEventListener('abort', () => peer.notify(METHODS.agentCancel, { runId }), { once: true });
+
+      activeRun.current = {
+        runId,
+        onEvent: (event) => {
+          switch (event.type) {
+            case 'text':
+              pushItem({ kind: 'message', message: { role: 'assistant', content: event.text } });
+              return;
+            case 'text_delta':
+              acc += event.text;
+              setLiveText(acc);
+              return;
+            case 'text_end':
+              if (acc.trim()) pushItem({ kind: 'message', message: { role: 'assistant', content: acc } });
+              acc = '';
+              setLiveText('');
+              return;
+            case 'plan':
+              pushItem({ kind: 'plan', text: event.text });
+              return;
+            case 'tool_call': {
+              const description =
+                event.name === 'ask_user'
+                  ? `Ask: ${String(event.args.question ?? '').slice(0, 80)}`
+                  : executor.describe({ id: event.id, name: event.name, args: event.args });
+              toolDescriptions.current.set(event.id, description);
+              if (event.name === 'read_file') toolLanguages.current.set(event.id, languageForPath(String(event.args.path ?? '')));
+              // A sub-agent's calls carry the delegate_task call id as
+              // `parent` — that is the whole of what the delegate_task
+              // branch's rendering used to do, exactly as the protocol
+              // design predicted.
+              const chip = { kind: 'tool' as const, id: event.id, name: event.name, description, status: 'running' as const };
+              if (event.parent) setLiveSubTool({ ...chip, indent: true });
+              else setLiveTool(chip);
+              return;
+            }
+            case 'tool_result': {
+              if (event.parent) setLiveSubTool(undefined);
+              else setLiveTool(undefined);
+              pushItem({
+                kind: 'tool',
+                id: event.id,
+                name: event.name,
+                description: toolDescriptions.current.get(event.id) ?? event.name,
+                status: event.isError ? 'error' : 'ok',
+                summary: event.content.slice(0, TOOL_SUMMARY_CHARS),
+                language: toolLanguages.current.get(event.id),
+                ...(event.parent ? { indent: true } : {}),
+              });
+              return;
+            }
+            default:
+              // reasoning/tool_stream/context_usage/compaction/memory_candidate
+              // are produced by the loop but have no rendering here yet — the
+              // same set headless.ts deliberately ignores.
+              return;
+          }
+        },
+      };
+
+      const { outcome } = await peer.request<AgentRunResult>(METHODS.agentRun, {
+        runId,
+        profileName: active.profile.name,
         model,
         task: fullTask,
         history,
         workspaceName,
-        tools: filterToolsForPersona([...offeredTools, ...mcpTools], effectivePersona),
-        nativeToolCalls,
+        tools: offered,
+        nativeToolCalls: effectiveNativeToolCalls,
         contextWindow: active.contextWindow,
-        signal: abort.signal,
-        execute: async (call) => {
-          if (call.name === 'ask_user') {
-            const options = Array.isArray(call.args.options) ? call.args.options.map(String) : undefined;
-            const answer = await new Promise<string>((resolve) =>
-              setPendingQuestion({ req: { question: String(call.args.question ?? ''), options }, resolve }),
-            );
-            setPendingQuestion(undefined);
-            return {
-              id: call.id,
-              name: call.name,
-              content: answer.trim() ? `User answered: ${answer}` : 'The user did not answer. Proceed with your best judgment.',
-            };
-          }
-          if (call.name === 'delegate_task') {
-            if (!subAgentsEnabled) {
-              return {
-                id: call.id,
-                name: call.name,
-                content:
-                  'Sub-agent delegation is disabled in this session. Tell the user they can enable it with ' +
-                  '/subagents on, and handle the sub-task yourself in this conversation — do not claim it was delegated.',
-                isError: true,
-              };
-            }
-            return runSubAgent(call, {
-              executor,
-              provider: active.provider,
-              profile: active.profile,
-              nativeToolCalls,
-              contextWindow: active.contextWindow,
-              tools,
-              mcpManager,
-              persona: effectivePersona,
-              permissions,
-              shadowGit,
-              workspaceName,
-              signal: abort.signal,
-              resolveProfile: async (name) => {
-                if (!configStore || !switchProvider) return undefined;
-                const target = await configStore.getProfile(name);
-                if (!target) return undefined;
-                const next = await switchProvider(target);
-                return { provider: next.provider, profile: target };
-              },
-              events: {
-                onSubToolCall: (subCall) => {
-                  const description = executor.describe(subCall);
-                  toolDescriptions.current.set(subCall.id, description);
-                  if (subCall.name === 'read_file') toolLanguages.current.set(subCall.id, languageForPath(String(subCall.args.path ?? '')));
-                  setLiveSubTool({ kind: 'tool', id: subCall.id, name: subCall.name, description, status: 'running', indent: true });
-                },
-                onSubToolResult: (result) => {
-                  setLiveSubTool(undefined);
-                  pushItem({
-                    kind: 'tool',
-                    id: result.id,
-                    name: result.name,
-                    description: toolDescriptions.current.get(result.id) ?? result.name,
-                    status: result.isError ? 'error' : 'ok',
-                    summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-                    language: toolLanguages.current.get(result.id),
-                    indent: true,
-                  });
-                },
-              },
-            });
-          }
-          if (mcpManager?.isMcpTool(call.name)) {
-            try {
-              return { id: call.id, name: call.name, content: await mcpManager.call(call.name, call.args) };
-            } catch (err) {
-              return { id: call.id, name: call.name, content: err instanceof Error ? err.message : String(err), isError: true };
-            }
-          }
-          // A shell command can mutate files as easily as write_file — block
-          // it for write-restricted personas (same guard as the extension).
-          if (
-            call.name === 'run_command' &&
-            effectivePersona.allowedPermissions &&
-            !effectivePersona.allowedPermissions.includes('write') &&
-            looksFilesystemMutating(String(call.args.command ?? ''))
-          ) {
-            return {
-              id: call.id,
-              name: call.name,
-              content:
-                `Blocked: this command looks like it would create, modify, or delete files, which the ` +
-                `${effectivePersona.label} persona does not allow. Use a persona with file-editing tools instead.`,
-              isError: true,
-            };
-          }
-          const result = await executor.execute(call, abort.signal);
-          if (!result.isError) await syncIndexesAfterTool(call.name, call.args);
-          return result;
-        },
-        requestPermission: (call, tool) => {
-          // delegate_task while sub-agents are off resolves to an informative
-          // error in execute() — prompting the user to approve something that
-          // cannot run would be noise.
-          if (call.name === 'delegate_task' && !subAgentsEnabled) return Promise.resolve(true);
-          return permissions.request(call, tool, executor.describe(call));
-        },
-        beforeToolCall: async (call) => {
-          await shadowGit?.snapshot(`${call.name}: ${executor.describe(call).slice(0, 80)}`);
-        },
-        events: {
-          onText: (text) => pushItem({ kind: 'message', message: { role: 'assistant', content: text } }),
-          onTextDelta: (chunk) => {
-            acc += chunk;
-            setLiveText(acc);
-          },
-          onTextEnd: () => {
-            if (acc.trim()) pushItem({ kind: 'message', message: { role: 'assistant', content: acc } });
-            acc = '';
-            setLiveText('');
-          },
-          onPlan: (planText) => pushItem({ kind: 'plan', text: planText }),
-          onToolCall: (call) => {
-            const description = call.name === 'ask_user' ? `Ask: ${String(call.args.question ?? '').slice(0, 80)}` : executor.describe(call);
-            toolDescriptions.current.set(call.id, description);
-            if (call.name === 'read_file') toolLanguages.current.set(call.id, languageForPath(String(call.args.path ?? '')));
-            setLiveTool({ kind: 'tool', id: call.id, name: call.name, description, status: 'running' });
-          },
-          onToolResult: (result) => {
-            setLiveTool(undefined);
-            pushItem({
-              kind: 'tool',
-              id: result.id,
-              name: result.name,
-              description: toolDescriptions.current.get(result.id) ?? result.name,
-              status: result.isError ? 'error' : 'ok',
-              summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-              language: toolLanguages.current.get(result.id),
-            });
-          },
-        },
-      });
+        subAgents: subAgentsEnabled,
+        persona: effectivePersona,
+      } satisfies AgentRunParams);
       if (outcome === 'stopped') pushSystem('Interrupted — send a new message to continue.');
       else if (outcome === 'incomplete')
         pushSystem(
@@ -1123,8 +1666,10 @@ export function App({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      activeRun.current = undefined;
       setLiveText('');
       setLiveTool(undefined);
+      setLiveSubTool(undefined);
       setBusy(false);
       abortRef.current = undefined;
     }
@@ -1137,7 +1682,7 @@ export function App({
       try {
         const next = await switchProvider!(added);
         await configStore!.setActiveProfile(added.name);
-        setActive({ provider: next.provider, profile: added, contextWindow: next.contextWindow });
+        setActive({ profile: added, contextWindow: next.contextWindow });
         setModel(added.agentModel || added.model);
         pushSystem(`Profile "${added.name}" added and active (${added.preset}, ${added.model}).`);
       } catch (err) {
@@ -1146,7 +1691,8 @@ export function App({
     })();
   }
 
-  const inputBlocked = busy || Boolean(pendingPermission) || Boolean(pendingQuestion) || Boolean(picker) || setupActive;
+  const inputBlocked =
+    busy || Boolean(pendingPermission) || Boolean(pendingQuestion) || Boolean(picker) || Boolean(pendingSecret) || setupActive;
 
   // The footer's right side (hint text / exit-armed warning / indexing
   // progress) is short and fixed-ish; the left side embeds the active
@@ -1163,8 +1709,19 @@ export function App({
         ? 'esc to interrupt'
         : '/ for commands · Ctrl+C twice to exit';
   const footerLeftFull = `${active.profile.name} · ${model} · ${workspaceName}${persona.id !== 'agent' ? ` · ${persona.label}` : ''}`;
+  /**
+   * The mode gets its own colored segment rather than being folded into the
+   * dim left string: it is the one footer item that changes what the agent
+   * can do without asking, so it has to stay legible at a glance — and it
+   * must survive the left side's truncation, which an overlong model name
+   * would otherwise eat.
+   */
+  const modeInfo = getPermissionModeInfo(permissionMode);
+  const modeBadge = `[${modeInfo.label}]`;
+  const modeColor =
+    permissionMode === 'full-auto' ? 'yellow' : permissionMode === 'plan' ? 'cyan' : undefined;
   const footerGap = 2;
-  const footerLeftMax = Math.max(0, columns - footerRight.length - footerGap);
+  const footerLeftMax = Math.max(0, columns - footerRight.length - modeBadge.length - footerGap - 1);
   const footerLeft =
     footerLeftFull.length > footerLeftMax ? `${footerLeftFull.slice(0, Math.max(0, footerLeftMax - 1))}…` : footerLeftFull;
 
@@ -1249,6 +1806,11 @@ export function App({
       )}
       {pendingQuestion && (
         <AskUserPrompt
+          countdownSeconds={questionCountdown}
+          onPartial={(partial) => {
+            questionPartial.current = partial;
+            questionDeadline.current?.touch();
+          }}
           request={pendingQuestion.req}
           onAnswer={(answer) => {
             pendingQuestion.resolve(answer);
@@ -1262,9 +1824,26 @@ export function App({
             {picker.title}
           </Text>
           <Box marginTop={1}>
-            <SelectInput items={picker.items} onSelect={(item) => picker.onPick(item.value)} />
+            {picker.filterable ? (
+              <FilterableList items={picker.items} onSelect={(value) => picker.onPick(value)} />
+            ) : (
+              <SelectInput items={picker.items} onSelect={(item) => picker.onPick(item.value)} />
+            )}
           </Box>
           <Text dimColor>esc to cancel</Text>
+        </Box>
+      )}
+      {pendingSecret && (
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
+          <Text color="cyan" bold>
+            {pendingSecret.label}
+          </Text>
+          <TextInput
+            label={pendingSecret.label}
+            mask
+            onSubmit={(value) => void pendingSecret.onSubmit(value)}
+          />
+          <Text dimColor>stored in {secretsFile()} (chmod 600) · esc to cancel</Text>
         </Box>
       )}
       {setupActive && (
@@ -1286,7 +1865,12 @@ export function App({
         clearToken={clearToken}
       />
       <Box justifyContent="space-between">
-        <Text dimColor>{footerLeft}</Text>
+        <Box>
+          <Text color={modeColor} bold={permissionMode !== 'default'}>
+            {modeBadge}
+          </Text>
+          <Text dimColor> {footerLeft}</Text>
+        </Box>
         <Text color={exitArmed ? 'yellow' : undefined} dimColor={!exitArmed}>
           {footerRight}
         </Text>

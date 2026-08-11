@@ -28,7 +28,9 @@ const COMMON =
   'If a permission is denied, adapt or finish. When you need the user to make a decision (which ' +
     'option, whether to proceed, what to do next), ask ONE clear question — via the ask_user tool ' +
     'when available — then STOP and wait. NEVER answer your own question or pick an option on the ' +
-    'user\'s behalf. Be brief in narration; do the work with tools. ' +
+    'user\'s behalf. If the question is asking permission to take an action rather than asking ' +
+    'which option to use, pass blocksAction: true so it is never auto-resolved while the user is ' +
+    'away. Be brief in narration; do the work with tools. ' +
   'NEVER paste file contents or full code blocks into your replies — apply changes with the ' +
   'edit_file/write_file tools instead. Narration should be 1-3 sentences about what you are doing. ' +
   'CRITICAL: never stop to report progress or announce what you will do next — DO it by calling ' +

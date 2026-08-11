@@ -1,15 +1,12 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { ProviderProfileConfig } from '@heapcode/core';
+import type { McpServerConfig, ProviderProfileConfig, WebSearchConfig } from '@heapcode/core';
 import { configFile } from '../paths.js';
 
-export interface McpServerConfig {
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  url?: string;
-  transport?: 'http' | 'sse';
-}
+// The shape of an `mcpServers` entry belongs to the MCP manager (core), not
+// to this file's config schema; re-exported so existing importers of it from
+// here keep working.
+export type { McpServerConfig };
 
 export interface CliConfig {
   profiles: ProviderProfileConfig[];
@@ -18,6 +15,20 @@ export interface CliConfig {
   telemetryEnabled?: boolean;
   /** Opt out of the startup check against npm's registry for a newer published version (see updateCheck.ts). Defaults to on. */
   updateCheckEnabled?: boolean;
+  /**
+   * How long an `ask_user` question waits with no activity before the agent is
+   * told the user may be away and carries on — e.g. "60s", "5m", "10m".
+   * Unset (the default) means it waits indefinitely. A question the model
+   * marked `blocksAction` never times out regardless. See core's askUser.ts.
+   */
+  askUserQuestionTimeout?: string;
+  /**
+   * Web search for the agent. Absent (the default) means the `web_search`
+   * tool is refused — see core's webSearch.ts. The API key is NOT here: it
+   * lives in secrets.json under WEB_SEARCH_SECRET_NAME, the same custody path
+   * as provider keys.
+   */
+  webSearch?: WebSearchConfig;
 }
 
 /** A fresh empty config each call — never share one mutable object across
@@ -74,6 +85,13 @@ export class ConfigStore {
     if (index >= 0) cfg.profiles[index] = profile;
     else cfg.profiles.push(profile);
     cfg.activeProfile ??= profile.name;
+    await this.persist();
+  }
+
+  /** Merge into the web-search config (never the API key — that's SecretsStore's). */
+  async saveWebSearch(patch: WebSearchConfig): Promise<void> {
+    const cfg = await this.load();
+    cfg.webSearch = { ...cfg.webSearch, ...patch };
     await this.persist();
   }
 

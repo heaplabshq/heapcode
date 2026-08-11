@@ -17,7 +17,7 @@ const SUMMARY_CHARS = 4000;
 const SUMMARY_LINES = 60;
 
 /** Matches a file-path header at the start of a line — search()'s "src/foo.ts:12:" and
- * RagIndexer.queryFormatted()'s "--- src/foo.ts:10-20 (score 0.87) ---", nothing else
+ * rag/query's formatted block, "--- src/foo.ts:10-20 (score 0.87) ---", nothing else
  * (log/stack-trace lines don't start with a bare path, so this doesn't false-positive on them). */
 const BLOCK_HEADER_RE = /^-{0,3}\s*([^\s:]+\.[A-Za-z0-9]+):\d/;
 

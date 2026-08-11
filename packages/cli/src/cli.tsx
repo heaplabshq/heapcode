@@ -1,17 +1,25 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { render } from 'ink';
 import fg from 'fast-glob';
-import { configureAstChunker, formatAuditDashboard, resolveCapabilities, type Conversation } from '@heapcode/core';
+import {
+  DEFAULT_PERMISSION_MODE,
+  PERMISSION_MODES,
+  configureAstChunker,
+  formatAuditDashboard,
+  isPermissionMode,
+  parseIdleTimeout,
+  type Conversation,
+  type PermissionMode,
+} from '@heapcode/core';
 import { ConfigStore } from './config/store.js';
 import { SecretsStore } from './config/secrets.js';
 import { JsonConversationStore } from './history/store.js';
 import { canonicalize, auditFile, conversationsFile, permissionsFile } from './paths.js';
 import { profileAdd, profileList, profileRemove, profileUse } from './profileCli.js';
-import { resolveProvider } from './provider/resolve.js';
+import { profileContextWindow } from './provider/resolve.js';
 import { runHeadless } from './headless.js';
 import { loadIgnoreMatcher } from './agent/ignoreFiles.js';
 import { PermissionEngine } from './agent/permissions.js';
@@ -19,18 +27,10 @@ import { buildAgentSession } from './agentSession.js';
 import { AuditLog } from './audit.js';
 import { checkForUpdate } from './updateCheck.js';
 import { App } from './ink/App.js';
+import { cliVersion } from './version.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 configureAstChunker((filename) => join(__dirname, 'wasm', filename));
-
-/** Best-effort version for the banner — dist/cli.js sits next to ../package.json. */
-function cliVersion(): string | undefined {
-  try {
-    return (JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version?: string }).version;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Coalesces the terminal's native `resize` events so the app only reacts
@@ -104,6 +104,17 @@ async function main(): Promise<void> {
   // remote sending to opt out of; this flag controls local recording only.
   const telemetryFlag = argv.includes('--no-telemetry') ? false : undefined;
 
+  // Parsed for both paths: headless resolves every decision from it, and an
+  // interactive session uses it as the mode Shift+Tab starts cycling from.
+  const modeFlagIndex = argv.findIndex((a) => a === '--permission-mode');
+  const modeArg = modeFlagIndex >= 0 ? argv[modeFlagIndex + 1] : undefined;
+  if (modeArg !== undefined && !isPermissionMode(modeArg)) {
+    console.error(`Invalid --permission-mode "${modeArg}". Must be one of: ${PERMISSION_MODES.join(', ')}.`);
+    process.exitCode = 1;
+    return;
+  }
+  const startingMode = modeArg;
+
   if (promptIndex >= 0) {
     const prompt = argv[promptIndex + 1];
     if (!prompt) {
@@ -113,14 +124,6 @@ async function main(): Promise<void> {
     }
     const personaFlagIndex = argv.findIndex((a) => a === '--persona');
     const personaId = personaFlagIndex >= 0 ? argv[personaFlagIndex + 1] : undefined;
-    const modeFlagIndex = argv.findIndex((a) => a === '--permission-mode');
-    const modeArg = modeFlagIndex >= 0 ? argv[modeFlagIndex + 1] : undefined;
-    const PERMISSION_MODES = ['plan', 'default', 'auto-edit', 'full-auto'] as const;
-    if (modeArg !== undefined && !(PERMISSION_MODES as readonly string[]).includes(modeArg)) {
-      console.error(`Invalid --permission-mode "${modeArg}". Must be one of: ${PERMISSION_MODES.join(', ')}.`);
-      process.exitCode = 1;
-      return;
-    }
     const code = await runHeadless({
       prompt,
       json: argv.includes('--json'),
@@ -128,7 +131,7 @@ async function main(): Promise<void> {
       newConversation,
       resumeId,
       personaId,
-      permissionMode: modeArg as (typeof PERMISSION_MODES)[number] | undefined,
+      permissionMode: startingMode,
       subAgents: argv.includes('--sub-agents'),
       reindex: argv.includes('--reindex'),
       telemetryEnabled: telemetryFlag,
@@ -155,7 +158,7 @@ async function main(): Promise<void> {
   }
 
   const secrets = new SecretsStore();
-  const { provider, contextWindow } = await resolveProvider(profile, secrets);
+  const contextWindow = profileContextWindow(profile);
   // Canonicalized once here and threaded through every root-taking class below —
   // see paths.ts's canonicalize() for why they'd otherwise silently disagree.
   const root = canonicalize(process.cwd());
@@ -175,30 +178,41 @@ async function main(): Promise<void> {
   conversation ??= { id: randomUUID(), title: 'New conversation', updatedAt: Date.now(), messages: [] };
 
   const safeMode = argv.includes('--safe-mode');
+  /**
+   * The live permission mode for this session. App owns the UI state and
+   * reports changes back here, because the engine is built before App renders
+   * and reads the mode per request — Shift+Tab has to affect a run already in
+   * flight, not just the next one.
+   */
+  let permissionMode: PermissionMode = startingMode ?? DEFAULT_PERMISSION_MODE;
   // Opt out with --no-update-check or { "updateCheckEnabled": false } in
   // ~/.heapcode/config.json — see updateCheck.ts; never phones anything but
   // npm's own registry, never blocks, renders as one dim line under the banner.
   const updateCheckEnabled = !argv.includes('--no-update-check') && (await config.load()).updateCheckEnabled !== false;
   const telemetryEnabled = telemetryFlag ?? (await config.load()).telemetryEnabled ?? true;
+  // Unset by default, which means an ask_user question waits indefinitely.
+  const askUserIdleMs = parseIdleTimeout((await config.load()).askUserQuestionTimeout);
   const audit = new AuditLog(auditFile(), () => telemetryEnabled);
+  /**
+   * Set by App once it renders, so the engine's auto-allow lines land in the
+   * transcript. They used to go to a no-op: an action approved by a saved
+   * grant simply happened, with nothing on screen explaining why it had not
+   * asked — which is how a stale grant reads as a broken permission system.
+   */
+  let logPermission: (message: string) => void = () => {};
   const permissions = new PermissionEngine(
     permissionsFile(root),
     () => safeMode,
-    () => {},
+    (message) => logPermission(message),
     (name, meta) => void audit.track(name, meta),
+    () => permissionMode,
   );
-  const capabilities = resolveCapabilities(profile);
 
   // Everything else (executor, checkpoint, shadow-git, RAG/repo-map
   // indexers, MCP) is built by the same shared path headless.ts uses — see
   // agentSession.ts's own comment on why (guardrail #8: headless is a
   // first-class peer of the interactive UI, not a bolted-on shortcut).
-  const { checkpoint, executor, shadowGit, ragIndexer, repoMapIndexer, mcpManager, tools } = buildAgentSession(
-    root,
-    profile,
-    config,
-    secrets,
-  );
+  const { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config, secrets);
 
   // Tracks the active conversation id across /new and /resume so it can be
   // printed on exit — App owns the actual conversation object (including
@@ -214,7 +228,6 @@ async function main(): Promise<void> {
   // typed input, Ctrl+C twice exits.
   const instance = render(
     <App
-      provider={provider}
       profile={profile}
       conversation={conversation}
       historyStore={historyStore}
@@ -223,21 +236,24 @@ async function main(): Promise<void> {
       permissions={permissions}
       shadowGit={shadowGit}
       tools={tools}
-      nativeToolCalls={capabilities.nativeToolCalls}
       workspaceName={basename(root)}
       contextWindow={contextWindow}
       configStore={config}
       secretsStore={secrets}
-      switchProvider={async (p) => {
-        const resolved = await resolveProvider(p, secrets);
-        return { provider: resolved.provider, contextWindow: resolved.contextWindow };
-      }}
+      switchProvider={(p) => Promise.resolve({ contextWindow: profileContextWindow(p) })}
+      askUserIdleMs={askUserIdleMs}
       version={cliVersion()}
       checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heaplabs/heapcode-cli', cliVersion() ?? '0.0.0') : undefined}
       cwd={root}
       safeMode={safeMode}
+      permissionMode={permissionMode}
+      onPermissionModeChange={(mode) => {
+        permissionMode = mode;
+      }}
+      onPermissionLogReady={(log) => {
+        logPermission = log;
+      }}
       canResume={priorConversations > 0}
-      ragIndexer={ragIndexer}
       repoMapIndexer={repoMapIndexer}
       mcpManager={mcpManager}
       onTrack={(name, meta) => void audit.track(name, meta)}
@@ -281,6 +297,7 @@ Usage:
   heapcode --resume <id>            Continue a specific past conversation by id or unambiguous prefix — printed when a session exits, or shown in /settings and /resume's picker
   heapcode --profile NAME           Use a specific provider profile for this session
   heapcode --safe-mode              Ask for permission on every action, even ones with a persisted "Always allow" grant
+  heapcode --permission-mode MODE   Start in a permission mode (see below); Shift+Tab cycles it in-session
   heapcode --no-update-check        Skip the startup check against npm for a newer published version (see "Config" below)
   heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG, MCP) with no TTY required — see below
 
@@ -297,18 +314,28 @@ Headless (-p) flags:
   --resume <id>                     Continue a specific conversation by id or unambiguous prefix instead of the most recent
   --no-telemetry                    Skip the local audit-log entry for this run (see "heapcode audit" — no remote sending exists to opt out of)
 
-Permission modes (headless has no one to prompt, so every mode resolves permissions on its own):
-  plan        Read-only tools only — nothing offered that could mutate anything
-  default     Every tool is visible, but writes/commands are denied — the agent adapts or reports what it would need
-  auto-edit   File edits auto-approved; shell commands still denied
-  full-auto   Everything auto-approved — for CI automation that should actually finish the task unattended
+Permission modes — how much runs without asking. Shift+Tab cycles them in-session (or /mode <name>);
+the current one shows bottom-left. Not persisted: every session starts at "default" unless
+--permission-mode says otherwise, so an auto mode is never silently inherited by a later run.
+  plan        Read-only — only read tools are offered, so nothing can be changed
+  default     Ask before every write, command, and destructive action
+  auto-edit   File edits apply without asking; commands and destructive actions still ask
+  full-auto   Edits and commands run without asking; destructive actions still ask
+
+Headless (-p) has no one to prompt, so it resolves each mode on its own: plan/default deny
+everything but reads, auto-edit allows writes, and full-auto — the mode meant to finish a task
+unattended in CI — allows everything, destructive actions included.
 
 In-session commands (type / for the autocomplete menu):
   /help                             Show available commands
   /model [id]                       Switch the model (fetches the provider's model list)
   /profile [add|list|remove|name]   Switch, add, list, or remove provider profiles
   /persona [name]                   Switch persona: agent, architect (read-only), debug (no edits), reviewer
+  /mode [name]                      Permission mode: plan, default, auto-edit, full-auto (Shift+Tab cycles)
+  /nativetools [on|off]             Native tool calling vs the text protocol — turn off for models that reject tools
+  /permissions [reset]              Show or clear saved "Always allow" grants for this project
   /settings                         Show current configuration
+  /init                             Set up .heapcode/HEAPCODE.md & memory.md for this project (runs as an agent task)
   /memory                           Show project instructions & memory (.heapcode/HEAPCODE.md, memory.md, AGENTS.md)
   /skills                           List available Skills (.claude/skills/)
   /explain /fix /refactor /review /security-review /test /docs /optimize <input>   Prompt templates run as agent tasks

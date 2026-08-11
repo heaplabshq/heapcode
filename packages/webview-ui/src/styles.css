@@ -434,6 +434,18 @@ button.ghost:not(:disabled):hover {
   opacity: 0.7;
 }
 
+/*
+ * A sub-agent's tool calls, indented under the delegate_task chip that
+ * spawned them. Sub-agent recursion runs server-side now, so the calls
+ * arrive as ordinary tool events carrying `parent` — indenting them is the
+ * whole of what sub-agent rendering is (docs/phase3-protocol-design.md §2).
+ */
+.tool-row.sub .tool-chip {
+  /* .tool-chip is width:100%, so indent with padding rather than margin. */
+  padding-left: 44px;
+  box-shadow: inset 22px 0 0 -21px var(--vscode-panel-border, rgba(128, 128, 128, 0.5));
+}
+
 .tool-row.ok .tool-icon {
   color: var(--vscode-testing-iconPassed, #73c991);
 }
@@ -709,6 +721,11 @@ button.ghost:not(:disabled):hover {
 .question-head {
   font-size: 0.85em;
   font-weight: 600;
+}
+
+.question-countdown {
+  font-weight: 400;
+  color: var(--vscode-editorWarning-foreground, #cca700);
 }
 
 .question-text {
@@ -1374,6 +1391,29 @@ select.settings-input {
 
 .tool-toggle:has(input:not(:checked)) {
   opacity: 0.55;
+}
+
+/*
+ * The permission chip is the one composer control whose value changes what
+ * runs without asking, so unlike its neighbours it stays legible rather than
+ * receding into descriptionForeground — and the two modes that relax or
+ * remove prompting are colour-coded (warning for Auto, which can run
+ * commands unattended; charts.blue for the read-only end).
+ */
+.permission-chip {
+  font-weight: 600;
+}
+
+.permission-chip.permission-plan {
+  color: var(--vscode-charts-blue, #3794ff);
+}
+
+.permission-chip.permission-auto-edit {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.permission-chip.permission-full-auto {
+  color: var(--vscode-editorWarning-foreground, #cca700);
 }
 
 .mode-chip:hover,

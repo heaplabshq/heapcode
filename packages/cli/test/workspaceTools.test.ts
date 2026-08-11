@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -275,6 +276,67 @@ describe('WorkspaceToolExecutor — run_command', () => {
       expect(result.content).toMatch(/private, loopback, or link-local/);
     }
   }, 15_000);
+});
+
+/**
+ * web_search is offered to the model whether or not it is configured, so the
+ * refusal path is the one that matters most: it is what stops an unconfigured
+ * agent quietly claiming it searched the web.
+ */
+describe('WorkspaceToolExecutor — web_search', () => {
+  it('refuses with an explanation when no settings resolver is wired at all', async () => {
+    const bare = new WorkspaceToolExecutor(root, checkpoint, 5_000);
+    const result = await bare.execute(call('web_search', { query: 'anything' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/disabled/i);
+    expect(result.content).toMatch(/not claim/i);
+  });
+
+  it('refuses when a provider is set but its API key is missing', async () => {
+    const gated = new WorkspaceToolExecutor(root, checkpoint, 5_000, undefined, undefined, undefined, async () => ({
+      config: { provider: 'brave' },
+    }));
+    const result = await gated.execute(call('web_search', { query: 'anything' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/disabled/i);
+  });
+
+  it('refuses when search is explicitly switched off, even though it is configured', async () => {
+    const off = new WorkspaceToolExecutor(root, checkpoint, 5_000, undefined, undefined, undefined, async () => ({
+      config: { provider: 'brave', enabled: false },
+      apiKey: 'k',
+    }));
+    expect((await off.execute(call('web_search', { query: 'q' }))).isError).toBe(true);
+  });
+
+  it('searches and formats results once configured', async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ web: { results: [{ title: 'Rust Book', url: 'https://doc.rust-lang.org', description: 'The book' }] } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      const enabled = new WorkspaceToolExecutor(root, checkpoint, 5_000, undefined, undefined, undefined, async () => ({
+        config: { provider: 'brave', baseUrl: `http://127.0.0.1:${port}/search` },
+        apiKey: 'k',
+      }));
+      const result = await enabled.execute(call('web_search', { query: 'rust book' }));
+      expect(result.isError).toBeFalsy();
+      expect(result.content).toContain('Rust Book');
+      expect(result.content).toContain('https://doc.rust-lang.org');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('reports a search failure to the model instead of throwing', async () => {
+    const broken = new WorkspaceToolExecutor(root, checkpoint, 5_000, undefined, undefined, undefined, async () => ({
+      config: { provider: 'custom', baseUrl: 'http://127.0.0.1:1/search' },
+    }));
+    const result = await broken.execute(call('web_search', { query: 'q' }));
+    expect(result.isError).toBe(true);
+  });
 });
 
 describe('WorkspaceToolExecutor — get_symbols', () => {

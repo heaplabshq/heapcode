@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { extractSymbols, formatRepoMap, type RepoMapFileEntry } from '../src/rag/symbols.js';
+import { extractSymbols, formatRepoMap, type RepoMapFileEntry } from '../src/rag/repoMap.js';
 import { configureAstChunker } from '../src/rag/astChunker.js';
 
 // Same test-local loader as astChunker.test.ts — production path resolution

@@ -1,32 +1,31 @@
 import * as vscode from 'vscode';
-import { configureAstChunker, formatAuditDashboard } from '@heapcode/core';
+import {
+  AST_GRAMMAR_FILES,
+  configureAstChunker,
+  formatAuditDashboard,
+  McpManager,
+  type IndexState,
+  type McpServerConfig,
+} from '@heapcode/core';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
-import { McpManager } from './agent/mcp.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { exportBundle, importBundle } from './bundle.js';
 import { openMemoryFile } from './memory.js';
 import { reviewCurrentPr } from './prReview.js';
 import { ChatViewProvider } from './chatViewProvider.js';
+import { ServerLink } from './serverLink.js';
 import { HeapCodeActionProvider } from './codeActions.js';
 import { HeapCodeCompletionProvider } from './completionProvider.js';
 import { generateCommitMessage } from './gitCommit.js';
 import { JsonConversationStore } from './historyStore.js';
 import { trackActiveEditor, trackTerminal } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
-import { ProfileManager } from './profileManager.js';
-import { RagIndexer } from './rag/indexer.js';
+import { ProfileManager, readWebSearchSettings, setWebSearchKeyFlow } from './profileManager.js';
+import { WorkspaceKeywordIndex } from './rag/keywordIndex.js';
 import { RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { RetentionTracker } from './retentionTracker.js';
 import { ShadowGit } from './agent/shadowGit.js';
 import { Telemetry } from './telemetry.js';
-
-const AST_GRAMMAR_FILES = [
-  'tree-sitter.wasm',
-  'tree-sitter-typescript.wasm',
-  'tree-sitter-tsx.wasm',
-  'tree-sitter-javascript.wasm',
-  'tree-sitter-python.wasm',
-];
 
 /**
  * Wires up AST-aware chunking (packages/core/src/rag/astChunker.ts) — core
@@ -66,14 +65,31 @@ export function activate(context: vscode.ExtensionContext): void {
   const profiles = new ProfileManager(context.secrets, log);
   const storageDir = context.storageUri ?? context.globalStorageUri;
   const store = new JsonConversationStore(storageDir);
-  const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, track);
+  // Chat turns and model listing run on the core server too; this is their
+  // connection, kept separate from the agent's (see ServerLink's note).
+  const serverOptions = {
+    clientVersion: String(context.extension.packageJSON.version ?? ''),
+    daemonEntry: vscode.Uri.joinPath(context.extensionUri, 'dist', 'daemon.js').fsPath,
+  };
+  const link = new ServerLink(profiles, log, serverOptions);
+  profiles.setModelLister((profileName) => link.listModels(profileName));
+  const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, link, track);
   activeChatProvider = chatProvider;
-  const permissions = new PermissionEngine(context.workspaceState, log, track);
+  const permissions = new PermissionEngine(context.workspaceState, log, track, () => chatProvider.permissionMode);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
-  const rag = new RagIndexer(profiles, storageDir, log, track);
+  // Ghost text's typing trigger retrieves from this, not from the semantic
+  // index: BM25 over the same chunks, no embeddings, no model calls, no I/O
+  // on the keystroke path (docs/phase3-rag-design.md §2.3).
+  const keywords = new WorkspaceKeywordIndex(storageDir, log);
   const repoMap = new RepoMapIndexer(storageDir, log);
-  const mcp = new McpManager(log);
-  chatProvider.rag = rag;
+  // Settings are the extension's config source (the CLI injects a file
+  // loader instead); `[mcp]` prefixing stays here so the log channel reads
+  // the same as it always has.
+  const mcp = new McpManager(
+    () => vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
+    (line) => log.appendLine(`[mcp] ${line}`),
+    String(context.extension.packageJSON.version ?? ''),
+  );
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (workspaceRoot?.scheme === 'file') {
     chatProvider.shadowGit = new ShadowGit(
@@ -82,24 +98,51 @@ export function activate(context: vscode.ExtensionContext): void {
       log,
     );
   }
-  chatProvider.agent = new AgentController(
+  const agent = new AgentController(
     profiles,
     permissions,
     log,
     (msg) => chatProvider.postToWebview(msg),
-    rag,
     mcp,
     repoMap,
     track,
     chatProvider.shadowGit,
+    // How this host reaches the core server. The agent loop runs there now,
+    // so the extension's job on that path is to answer tool/execute,
+    // permission/request, snapshot/before and key/request — see
+    // docs/phase3-protocol-design.md §7.
+    serverOptions,
   );
-  chatProvider.agent.askUser = (question, options) =>
-    chatProvider.askAgentQuestion(question, options);
+  chatProvider.agent = agent;
+  agent.permissionMode = () => chatProvider.permissionMode;
+  agent.webSearchSettings = () => readWebSearchSettings(context.secrets);
+  // `idleMs` is decided by the controller per call (the setting, unless the
+  // model marked the question as gating an action) and must be forwarded —
+  // dropping it here would silently leave every extension question unbounded.
+  chatProvider.agent.askUser = (question, options, idleMs) =>
+    chatProvider.askAgentQuestion(question, options, idleMs);
 
   const ragStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
   ragStatus.command = 'heapcode.buildIndex';
-  const updateRagStatus = () => {
-    const s = rag.status();
+  /**
+   * The status surface stays host-side and becomes pure rendering
+   * (docs/phase3-rag-design.md §4): counts and state arrive from `rag/status`
+   * and `rag/event` instead of from a local indexer.
+   */
+  let lastRagStatus: { state: IndexState; files: number; chunks: number; available: boolean } = {
+    state: 'idle',
+    files: 0,
+    chunks: 0,
+    available: true,
+  };
+  const renderRagStatus = (): void => {
+    const s = lastRagStatus;
+    if (!s.available) {
+      // A workspace the server cannot read for itself — no index, and saying
+      // "no embeddings model" would be wrong and unactionable.
+      ragStatus.hide();
+      return;
+    }
     switch (s.state) {
       case 'no-embedder':
         ragStatus.text = '$(database) no index';
@@ -119,6 +162,44 @@ export function activate(context: vscode.ExtensionContext): void {
         ragStatus.tooltip = `Heap Code semantic index: ${s.files} files / ${s.chunks} chunks. Click to re-index.`;
     }
     ragStatus.show();
+  };
+  const refreshRagStatus = async (): Promise<void> => {
+    lastRagStatus = (await link.ragStatus()) ?? { ...lastRagStatus, available: false };
+    renderRagStatus();
+  };
+  /**
+   * Rebuild the semantic index in the server. The "no embeddings model"
+   * warning stays here rather than becoming a log line: it is a setup gap the
+   * user can fix, and it is what they clicked the status bar to find out.
+   */
+  const buildSemanticIndex = async (): Promise<void> => {
+    const result = await link.ragIndex({ full: true, runId: `index-${Date.now()}` });
+    if (!result) {
+      await refreshRagStatus();
+      if (lastRagStatus.available && lastRagStatus.state === 'no-embedder') {
+        void vscode.window.showWarningMessage(
+          'Heap Code: no embeddings model configured. Status bar → Select model → Embeddings (e.g. nomic-embed-text on Ollama).',
+        );
+      }
+      return;
+    }
+    if (result.chunks === 0) {
+      void vscode.window.showWarningMessage(
+        'Heap Code: no embeddings model configured. Status bar → Select model → Embeddings (e.g. nomic-embed-text on Ollama).',
+      );
+    } else if (result.fresh) {
+      // Decision 5 of the RAG migration: the index moved out of this
+      // extension's own workspace storage into the shared project state dir,
+      // so the first build after upgrading is a full rebuild rather than an
+      // incremental update. Say so rather than leaving the user wondering why
+      // indexing took minutes this once.
+      log.appendLine(
+        `[rag] built a fresh index (${result.files} files / ${result.chunks} chunks) — no existing index was ` +
+          'found for this workspace, so every file was embedded',
+      );
+    }
+    track('rag.index.built');
+    await refreshRagStatus();
   };
 
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -143,18 +224,37 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
     telemetry,
     profiles,
+    // Closes the socket to the core server; the daemon itself is shared with
+    // every other window and shuts down on its own idle timer (§6).
+    agent,
+    // Profiles and key material are pushed at session/hello and the server
+    // never reads workspace settings for itself (§2), so a settings edit has
+    // to reach it as a fresh session — applied on the next run, not mid-run.
+    profiles.onDidChange(() => agent.markProfilesChanged()),
+    profiles.onDidChange(() => link.markProfilesChanged()),
+    { dispose: () => link.dispose() },
     statusBar,
     completionStatus,
-    rag,
+    keywords,
     repoMap,
     ragStatus,
     mcp,
-    rag.onStatus(updateRagStatus),
+    link.onRagEvent((event) => {
+      if (event.kind === 'progress') {
+        lastRagStatus = { ...lastRagStatus, state: 'indexing', files: event.total, available: true };
+      } else {
+        lastRagStatus = { state: event.state, files: event.files, chunks: event.chunks, available: true };
+      }
+      renderRagStatus();
+    }),
     vscode.commands.registerCommand('heapcode.buildIndex', () => {
       track('command.buildIndex');
-      void rag.buildIndex();
+      void buildSemanticIndex();
     }),
-    vscode.commands.registerCommand('heapcode.clearIndex', () => rag.clear()),
+    vscode.commands.registerCommand('heapcode.clearIndex', async () => {
+      await link.ragClear();
+      await refreshRagStatus();
+    }),
     vscode.commands.registerCommand('heapcode.openMemory', () => openMemoryFile()),
     vscode.commands.registerCommand('heapcode.showRepoMapDebug', async () => {
       if (!repoMap.ready) {
@@ -186,11 +286,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('heapcode.reviewPr', () => {
       track('command.reviewPr');
-      return reviewCurrentPr(profiles, log);
+      return reviewCurrentPr(profiles, link, log);
     }),
     vscode.commands.registerCommand('heapcode.reviewPrDeep', () => {
       track('command.reviewPrDeep');
-      return reviewCurrentPr(profiles, log, { deep: true });
+      return reviewCurrentPr(profiles, link, log, { deep: true });
     }),
     vscode.commands.registerCommand('heapcode.resetPermissions', async () => {
       const cleared = await permissions.reset();
@@ -254,6 +354,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('heapcode.addProfile', () => profiles.addProfileFlow()),
     vscode.commands.registerCommand('heapcode.selectModel', () => profiles.selectModelFlow()),
     vscode.commands.registerCommand('heapcode.setApiKey', () => profiles.setApiKeyFlow()),
+    vscode.commands.registerCommand('heapcode.setWebSearchKey', () => setWebSearchKeyFlow(context.secrets)),
 
     vscode.commands.registerCommand('heapcode.explain', () => {
       track('command.explain');
@@ -288,7 +389,7 @@ export function activate(context: vscode.ExtensionContext): void {
       void chatProvider.sendFromCommand('/security-review');
     }),
     vscode.commands.registerCommand('heapcode.generateCommitMessage', () =>
-      generateCommitMessage(profiles, log, track),
+      generateCommitMessage(link, log, track),
     ),
 
     vscode.languages.registerCodeActionsProvider(
@@ -299,7 +400,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.languages.registerInlineCompletionItemProvider(
       [{ scheme: 'file' }, { scheme: 'untitled' }],
-      new HeapCodeCompletionProvider(profiles, log, rag),
+      new HeapCodeCompletionProvider(profiles, log, link, keywords.inner),
     ),
     vscode.commands.registerCommand('heapcode.toggleCompletion', async () => {
       const cfg = vscode.workspace.getConfiguration('heapcode.completion');
@@ -323,16 +424,23 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidSaveTextDocument((document) => retention.checkOnSave(document)),
   );
 
-  registerInlineEdit(context, profiles, log, rag, track, retention);
+  registerInlineEdit(context, profiles, log, link, track, retention);
   registerAgentDiffProvider(context);
 
-  updateRagStatus();
+  renderRagStatus();
   if (vscode.workspace.getConfiguration('heapcode.rag').get<boolean>('autoIndex', true)) {
-    // Background, off the activation path.
-    setTimeout(() => void rag.buildIndex().then(updateRagStatus), 5_000);
+    // Background, off the activation path. This is the first thing in a plain
+    // editor window that reaches the server, so autoIndex is now also what
+    // decides whether a window starts the daemon it would otherwise only
+    // start on the first chat message or agent run. Turning the setting off
+    // restores the fully-lazy behavior.
+    setTimeout(() => void buildSemanticIndex(), 5_000);
   }
   // Repo map needs no embeddings model, but stays off the activation path too.
   setTimeout(() => void repoMap.buildIndex(), 5_000);
+  // Neither does the keyword index — it is the one retrieval path that works
+  // with no model configured at all, so it is never gated on rag.autoIndex.
+  setTimeout(() => void keywords.init().then(() => keywords.buildIndex()), 5_000);
 
   updateStatusBar();
   track('extension.activated');

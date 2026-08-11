@@ -45,7 +45,8 @@ export function Header({ version, profileName, model, baseUrl, cwd, messageCount
           <Text bold>Tips for getting started</Text>
           <Text dimColor> 1. Ask about this codebase, or describe what to build — the agent reads, edits, and runs things with your permission</Text>
           <Text dimColor> 2. Be specific: “add a /health endpoint returning 200” beats “improve the server”</Text>
-          <Text dimColor> 3. /help for commands · /model switches models · Esc interrupts · Ctrl+C twice exits</Text>
+          <Text dimColor> 3. Shift+Tab cycles permission modes: Plan → Confirm → Auto-edit → Auto (shown bottom-left)</Text>
+          <Text dimColor> 4. /help for commands · /model switches models · Esc interrupts · Ctrl+C twice exits</Text>
           {canResume ? <Text dimColor> ↩ earlier conversations exist — /resume continues one (or launch with --continue)</Text> : null}
         </Box>
       )}

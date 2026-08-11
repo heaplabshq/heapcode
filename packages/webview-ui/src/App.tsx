@@ -7,6 +7,14 @@ import type {
   PermissionChoice,
   SlashCommandInfo,
 } from '@heapcode/core';
+import { filterModels } from '@heapcode/core/modelFilter';
+import {
+  DEFAULT_PERMISSION_MODE,
+  PERMISSION_MODE_INFO,
+  cyclePermissionMode,
+  getPermissionModeInfo,
+  type PermissionMode,
+} from '@heapcode/core/permissionModes';
 import { postToExtension } from './vscodeApi.js';
 import { renderMarkdown } from './markdown.js';
 import { SettingsView, type SettingsData } from './SettingsView.js';
@@ -24,6 +32,8 @@ interface ToolChip {
   expanded?: boolean;
   /** Shadow-git commit taken just before this call ran — lets the user rewind to this exact step. */
   checkpoint?: string;
+  /** A sub-agent's call: rendered indented under the delegate_task chip it belongs to. */
+  sub?: boolean;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -35,7 +45,7 @@ const STATUS_LABEL: Record<string, string> = {
   planned: 'Plan ready — review below',
 };
 
-/** Mirrors packages/vscode/src/agent/personas.ts — restricts which tools the agent is offered. */
+/** Mirrors packages/core/src/agent/personas.ts — restricts which tools the agent is offered. */
 const PERSONAS = [
   { id: 'agent', label: 'Agent', hint: 'Full access — reads, edits, runs commands' },
   { id: 'architect', label: 'Architect', hint: 'Plans and explores — read-only' },
@@ -162,6 +172,14 @@ interface QuestionCard {
   question: string;
   options?: string[];
   answered?: string;
+  /**
+   * Seconds left, set only for the last stretch of an idle timeout the user
+   * opted into — and only for a question that can time out at all (one the
+   * model marked as gating an action never does).
+   */
+  countdown?: number;
+  /** The question stopped waiting: it expired, or the run was cancelled. */
+  closed?: 'idle' | 'cancelled';
 }
 
 interface UiMessage {
@@ -295,21 +313,45 @@ function ContextMeter({
   );
 }
 
-/** The agent's ask_user tool: option buttons plus a free-text answer field. */
+/**
+ * The agent's ask_user tool: option buttons plus a free-text answer field.
+ *
+ * Typing and refocusing both report activity, which is what pushes the
+ * extension's idle deadline back — without it, a question would expire on
+ * schedule while the user was still mid-sentence. The report carries the text
+ * so far, so an expiring question hands the agent a partial answer rather than
+ * nothing.
+ */
 function QuestionCardView({
   q,
   onAnswer,
+  onActivity,
 }: {
   q: QuestionCard;
   onAnswer: (answer: string) => void;
+  onActivity: (partial: string) => void;
 }) {
   const [text, setText] = useState('');
   return (
     <div className="question-card">
-      <div className="question-head">Heap Code has a question</div>
+      <div className="question-head">
+        Heap Code has a question
+        {q.countdown !== undefined && q.closed === undefined && (
+          <span className="question-countdown">
+            {' '}
+            — no reply in {q.countdown}s and the agent will carry on
+          </span>
+        )}
+      </div>
       <div className="question-text">{q.question}</div>
       {q.answered !== undefined ? (
         <div className="question-answered">↳ {q.answered}</div>
+      ) : q.closed !== undefined ? (
+        <div className="question-answered">
+          {q.closed === 'idle'
+            ? '↳ No reply — the agent carried on with its own judgment.'
+            : '↳ Cancelled.'}
+        </div>
       ) : (
         <>
           {q.options && q.options.length > 0 && (
@@ -326,7 +368,11 @@ function QuestionCardView({
               className="question-input"
               value={text}
               placeholder="Type an answer…"
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                onActivity(e.target.value);
+              }}
+              onFocus={() => onActivity(text)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && text.trim()) onAnswer(text.trim());
               }}
@@ -355,6 +401,7 @@ interface Config {
   profile: string;
   model: string;
   slashCommands: SlashCommandInfo[];
+  permissionMode: PermissionMode;
 }
 
 export function App() {
@@ -390,6 +437,7 @@ export function App() {
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
   const modePickerRef = useRef<HTMLDivElement>(null);
+  const permissionPickerRef = useRef<HTMLDivElement>(null);
   const plusPickerRef = useRef<HTMLDivElement>(null);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const toolsPickerRef = useRef<HTMLDivElement>(null);
@@ -403,6 +451,7 @@ export function App() {
   >([]);
   const [collapsedToolGroups, setCollapsedToolGroups] = useState<Record<string, boolean>>({});
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [persona, setPersona] = useState('agent');
 
@@ -420,11 +469,12 @@ export function App() {
 
   // Popover dismissal: Esc anywhere, or clicking outside the open picker.
   useEffect(() => {
-    if (!modelMenu && !modeMenuOpen && !plusMenuOpen && !toolsMenuOpen) return;
+    if (!modelMenu && !modeMenuOpen && !permissionMenuOpen && !plusMenuOpen && !toolsMenuOpen) return;
     const closeAll = () => {
       setModelMenu(null);
       setModelFilter('');
       setModeMenuOpen(false);
+      setPermissionMenuOpen(false);
       setPlusMenuOpen(false);
       setToolsMenuOpen(false);
     };
@@ -436,6 +486,7 @@ export function App() {
       if (
         !modelPickerRef.current?.contains(target) &&
         !modePickerRef.current?.contains(target) &&
+        !permissionPickerRef.current?.contains(target) &&
         !plusPickerRef.current?.contains(target) &&
         !toolsPickerRef.current?.contains(target)
       ) {
@@ -448,7 +499,7 @@ export function App() {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onMouseDown);
     };
-  }, [modelMenu, modeMenuOpen, plusMenuOpen, toolsMenuOpen]);
+  }, [modelMenu, modeMenuOpen, permissionMenuOpen, plusMenuOpen, toolsMenuOpen]);
 
   // Focus the model-filter input once the list loads — preventScroll avoids
   // the browser's default "scroll the focused element into view", which in
@@ -480,7 +531,12 @@ export function App() {
       const msg = event.data;
       switch (msg.type) {
         case 'config':
-          setConfig({ profile: msg.profile, model: msg.model, slashCommands: msg.slashCommands });
+          setConfig({
+            profile: msg.profile,
+            model: msg.model,
+            slashCommands: msg.slashCommands,
+            permissionMode: msg.permissionMode,
+          });
           break;
         case 'activeFile':
           setCurrentFile(msg.path);
@@ -605,6 +661,26 @@ export function App() {
             },
           ]);
           break;
+        case 'agentQuestionCountdown':
+          setMessages((prev) =>
+            prev.map((x) =>
+              x.question?.id === msg.id
+                ? { ...x, question: { ...x.question, countdown: msg.seconds } }
+                : x,
+            ),
+          );
+          break;
+        case 'agentQuestionClosed':
+          // The card must stop accepting input: the extension has already
+          // resolved this question, so anything typed now would go nowhere.
+          setMessages((prev) =>
+            prev.map((x) =>
+              x.question?.id === msg.id
+                ? { ...x, question: { ...x.question, closed: msg.reason, countdown: undefined } }
+                : x,
+            ),
+          );
+          break;
         case 'agentText':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text }]);
           break;
@@ -679,6 +755,7 @@ export function App() {
                 description: msg.description,
                 done: false,
                 terminalCommand: msg.terminalCommand,
+                sub: msg.parent !== undefined,
               },
             };
             // Ask mode streams the answer into an empty placeholder appended at send
@@ -755,6 +832,11 @@ export function App() {
     if (!el) return;
     nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
+
+  // The extension owns the mode (its permission engine reads the same value),
+  // so the chip renders from pushed config rather than local state — no
+  // optimistic toggle that could disagree with what actually gets enforced.
+  const permissionMode = config?.permissionMode ?? DEFAULT_PERMISSION_MODE;
 
   const slashMatches = useMemo(() => {
     if (!config || !input.startsWith('/') || input.includes(' ') || input.includes('\n')) return [];
@@ -1003,7 +1085,7 @@ export function App() {
                 );
               }
               return (
-                <div key={i} className={`tool-row${t.done ? (t.ok ? ' ok' : ' fail') : ''}`}>
+                <div key={i} className={`tool-row${t.done ? (t.ok ? ' ok' : ' fail') : ''}${t.sub ? ' sub' : ''}`}>
                   <button className="tool-chip" onClick={() => toggleTool(i)}>
                     <span className="tool-icon">{t.done ? (t.ok ? '✓' : '✗') : '⏳'}</span>
                     <span className="tool-desc">{t.description}</span>
@@ -1093,6 +1175,9 @@ export function App() {
                 <QuestionCardView
                   key={i}
                   q={q}
+                  onActivity={(partial) =>
+                    postToExtension({ type: 'agentQuestionActivity', id: q.id, partial })
+                  }
                   onAnswer={(answer) => {
                     postToExtension({ type: 'agentQuestionResponse', id: q.id, answer });
                     setMessages((prev) =>
@@ -1419,6 +1504,18 @@ export function App() {
               }
             }}
             onKeyDown={(e) => {
+              // Shift+Tab cycles the permission mode, matching the terminal.
+              // preventDefault stops it moving focus out of the composer,
+              // which is the browser default and would make the shortcut feel
+              // like it did nothing.
+              if (e.key === 'Tab' && e.shiftKey) {
+                e.preventDefault();
+                postToExtension({
+                  type: 'setPermissionMode',
+                  mode: cyclePermissionMode(config?.permissionMode ?? DEFAULT_PERMISSION_MODE),
+                });
+                return;
+              }
               if (e.key === 'Escape' && editing !== null) {
                 setEditing(null);
                 setInput('');
@@ -1529,6 +1626,34 @@ export function App() {
                 ▾
               </button>
             </div>
+            <div className="mode-picker" ref={permissionPickerRef}>
+              {permissionMenuOpen && (
+                <div className="model-menu mode-menu">
+                  <div className="menu-section">Permissions · Shift+Tab</div>
+                  {PERMISSION_MODE_INFO.map((info) => (
+                    <button
+                      key={info.id}
+                      className={`menu-item${permissionMode === info.id ? ' active' : ''}`}
+                      onClick={() => {
+                        postToExtension({ type: 'setPermissionMode', mode: info.id });
+                        setPermissionMenuOpen(false);
+                      }}
+                    >
+                      {permissionMode === info.id ? '✓ ' : ''}
+                      {info.label}
+                      <span className="menu-hint"> — {info.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                className={`mode-chip permission-chip permission-${permissionMode}`}
+                title={`${getPermissionModeInfo(permissionMode).hint} (Shift+Tab)`}
+                onClick={() => setPermissionMenuOpen((v) => !v)}
+              >
+                {getPermissionModeInfo(permissionMode).label} ▾
+              </button>
+            </div>
             <div className="model-picker" ref={modelPickerRef}>
               {modelMenu && (
                 <div className="model-menu">
@@ -1585,11 +1710,7 @@ export function App() {
                       <div className="menu-note">Could not list models</div>
                     )}
                     {(() => {
-                      const filtered = modelFilter.trim()
-                        ? modelMenu.models.filter((id) =>
-                            id.toLowerCase().includes(modelFilter.trim().toLowerCase()),
-                          )
-                        : modelMenu.models;
+                      const filtered = filterModels(modelMenu.models, modelFilter);
                       if (!modelMenu.loading && modelMenu.models.length > 0 && filtered.length === 0) {
                         return <div className="menu-note">No models match "{modelFilter}"</div>;
                       }

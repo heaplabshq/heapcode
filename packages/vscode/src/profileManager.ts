@@ -3,9 +3,14 @@ import {
   createProvider,
   DEFAULT_CONTEXT_WINDOW,
   getPreset,
+  getSearchPreset,
+  isSearchPresetId,
+  WEB_SEARCH_SECRET_NAME,
+  type WebSearchConfig,
   providerPresets,
   resolveCapabilities,
   type ContextWindowSource,
+  type ModelInfo,
   type ModelRole,
   type PresetId,
   type Provider,
@@ -74,6 +79,61 @@ function profileSecretKey(profileName: string): string {
   return `heapcode.apiKey.${profileName}`;
 }
 
+/**
+ * Web-search config from settings + its key from SecretStorage, in the shape
+ * the executor wants. Read per call so enabling search takes effect without
+ * a reload; the key rides the same custody path as provider keys (never
+ * settings.json, which syncs).
+ */
+export async function readWebSearchSettings(
+  secrets: vscode.SecretStorage,
+): Promise<{ config: WebSearchConfig; apiKey?: string }> {
+  const cfg = vscode.workspace.getConfiguration('heapcode.webSearch');
+  const provider = cfg.get<string>('provider', 'off');
+  return {
+    config: {
+      provider: isSearchPresetId(provider) ? provider : undefined,
+      baseUrl: cfg.get<string>('baseUrl') || undefined,
+      maxResults: cfg.get<number>('maxResults') || undefined,
+      timeoutMs: cfg.get<number>('timeoutMs') || undefined,
+    },
+    apiKey: await secrets.get(profileSecretKey(WEB_SEARCH_SECRET_NAME)),
+  };
+}
+
+/** Prompts for and stores the web-search API key. */
+export async function setWebSearchKeyFlow(secrets: vscode.SecretStorage): Promise<void> {
+  const provider = vscode.workspace.getConfiguration('heapcode.webSearch').get<string>('provider', 'off');
+  if (!isSearchPresetId(provider)) {
+    const pick = 'Open Settings';
+    const choice = await vscode.window.showWarningMessage(
+      'No web-search provider is selected. Set heapcode.webSearch.provider first.',
+      pick,
+    );
+    if (choice === pick) {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'heapcode.webSearch.provider');
+    }
+    return;
+  }
+  const preset = getSearchPreset(provider);
+  const key = await vscode.window.showInputBox({
+    title: `${preset.label} API key`,
+    password: true,
+    ignoreFocusOut: true,
+    prompt: preset.requiresApiKey
+      ? `Stored in the OS keychain, never in settings.json. ${preset.hint}`
+      : `${preset.label} needs no key — leave blank unless your instance requires one.`,
+  });
+  if (key === undefined) return;
+  if (key.trim()) {
+    await secrets.store(profileSecretKey(WEB_SEARCH_SECRET_NAME), key.trim());
+    void vscode.window.showInformationMessage(`Heap Code: ${preset.label} key saved. Web search is on.`);
+  } else {
+    await secrets.delete(profileSecretKey(WEB_SEARCH_SECRET_NAME));
+    void vscode.window.showInformationMessage('Heap Code: web-search key cleared.');
+  }
+}
+
 export class ProfileManager {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changeEmitter.event;
@@ -82,6 +142,29 @@ export class ProfileManager {
     private readonly secrets: vscode.SecretStorage,
     private readonly log: vscode.OutputChannel,
   ) {}
+
+  /**
+   * Lists a profile's models through the core server, which holds the key and
+   * builds the Provider. Injected by extension.ts rather than constructed here
+   * because ProfileManager is built before the server link exists, and because
+   * nothing about listing models should require this class to know the
+   * protocol.
+   *
+   * Deliberately no host-side fallback: falling back to a local
+   * `createProvider` would quietly reintroduce the very thing this moved. The
+   * one caller that must never fail (contextWindowFor) already degrades to a
+   * preset default when this throws.
+   */
+  private listModelsVia?: (profileName: string) => Promise<ModelInfo[]>;
+
+  setModelLister(lister: (profileName: string) => Promise<ModelInfo[]>): void {
+    this.listModelsVia = lister;
+  }
+
+  private async listModels(profileName: string): Promise<ModelInfo[]> {
+    if (!this.listModelsVia) throw new Error('The core server connection is not available yet.');
+    return this.listModelsVia(profileName);
+  }
 
   dispose(): void {
     this.changeEmitter.dispose();
@@ -125,12 +208,6 @@ export class ProfileManager {
     );
   }
 
-  async createActiveProvider(): Promise<{ provider: Provider; profile: ProviderProfileConfig }> {
-    const profile = this.getActiveProfile();
-    const apiKey = await this.getApiKey(profile);
-    return { provider: createProvider(profile, apiKey), profile };
-  }
-
   /**
    * Which profile actually serves a given role: the active profile, unless it names a
    * different one via its `<role>Profile` field (e.g. `embeddingsProfile`), in which case
@@ -168,10 +245,10 @@ export class ProfileManager {
     if (!this.modelContextCache.has(key)) {
       let reported: number | undefined;
       try {
-        const provider = createProvider(profile, await this.getApiKey(profile));
-        reported = (await provider.listModels()).find((m) => m.id === model)?.contextLength;
+        reported = (await this.listModels(profile.name)).find((m) => m.id === model)?.contextLength;
       } catch {
-        // unreachable or unlistable endpoint — preset default below
+        // unreachable endpoint, unlistable endpoint, or no server yet —
+        // preset default below. Never throws; this is on the chat hot path.
       }
       // Ollama and LM Studio don't report context in /v1/models — ask their
       // native APIs instead.
@@ -471,8 +548,7 @@ export class ProfileManager {
 
     let modelId: string | undefined;
     try {
-      const { provider } = await this.createActiveProvider();
-      const models = await provider.listModels();
+      const models = await this.listModels(this.getActiveProfile().name);
       if (models.length > 0) {
         const current = profile[role];
         const items: vscode.QuickPickItem[] = models.map((m) => ({

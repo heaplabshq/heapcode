@@ -2,25 +2,34 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
+  ASK_USER_COUNTDOWN_MS,
   assembleContext,
   builtinPrompts,
   COMPACTION_THRESHOLD,
   createProvider,
   DEFAULT_IGNORE_GLOB,
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
   estimateMessagesTokens,
+  IdleDeadline,
+  INIT_TASK,
   isAbortError,
   parseSlashCommand,
   providerPresets,
   renderTemplate,
   resolveCapabilities,
+  stripToolCallArtifacts,
   type ChatMessage,
   type Conversation,
   type ConversationStore,
   type DisplayMessage,
   type ExtensionToWebview,
   type PermissionChoice,
-  type Provider,
   type PromptTemplate,
+  type ProviderProfileConfig,
+  type ToolCall,
+  type ToolDefinition,
+  type ToolResult,
   type StoredMessage,
   type WebviewToExtension,
 } from '@heapcode/core';
@@ -41,31 +50,11 @@ import { SessionCheckpoint } from './agent/checkpoint.js';
 import { resultLabel, TOOL_SUMMARY_CHARS, type AgentController } from './agent/controller.js';
 import type { ShadowGit } from './agent/shadowGit.js';
 import type { ProfileManager } from './profileManager.js';
-import type { RagIndexer } from './rag/indexer.js';
-
-const INIT_TASK =
-  'Initialize this project for Heap Code. Explore the workspace (key files, tech stack, structure, ' +
-  'build/test/run commands, conventions), then: 1) create .heapcode/HEAPCODE.md — concise ' +
-  'project instructions for AI assistants (stack, layout, commands, conventions; under 60 lines); ' +
-  '2) create .heapcode/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
-  '(seed them with anything obvious from the code). Do not modify any other files.';
+import type { ServerLink } from './serverLink.js';
 
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 10_000_000;
-/** Ask-mode read-only tool loop: a few search/read rounds, then a forced final answer. */
-const MAX_ASK_TOOL_ITERATIONS = 4;
-
-/**
- * Defensive net for runAskWithTools: strips fake "[Tool call: ...]" text a
- * model can still free-associate into its final answer despite the nudge
- * telling it tools are gone. Best-effort — the response already streamed
- * live before this runs, so this only guarantees the stored/reloaded copy
- * is clean.
- */
-function stripToolCallArtifacts(text: string): string {
-  return text.replace(/\s*\[Tool call:[^\]]*\]/gi, '').replace(/\n{3,}/g, '\n\n').trim();
-}
 
 const SYSTEM_PROMPT =
   'You are Heap Code, an expert AI programming assistant inside the user\'s IDE. ' +
@@ -86,18 +75,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Set right after construction (controller needs this.post, we need controller). */
   agent?: AgentController;
-  rag?: RagIndexer;
   /** Workspace checkpoints for prompt editing; unset when git is unavailable. */
   shadowGit?: ShadowGit;
+  /**
+   * How much this chat session may do without asking. Deliberately in memory
+   * only — not workspaceState, not settings: a mode that auto-approves edits
+   * should never be silently inherited by tomorrow's window, so it resets to
+   * "Ask" whenever the extension host restarts. Both the permission engine
+   * and the agent controller read it through getters, so a change lands on a
+   * run already in flight.
+   */
+  permissionMode: PermissionMode = DEFAULT_PERMISSION_MODE;
 
   private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
   private pendingQuestions = new Map<string, (answer: string | undefined) => void>();
+  /** Idle deadlines for pending questions, so webview activity can push them back. */
+  private questionDeadlines = new Map<string, IdleDeadline>();
+  /** Last partial answer the card reported, handed to the agent if the question expires. */
+  private questionPartials = new Map<string, string>();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly profiles: ProfileManager,
     private readonly store: ConversationStore,
     private readonly log: vscode.OutputChannel,
+    /** Chat turns and model listing both run server-side now. */
+    private readonly link: ServerLink,
     private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
   ) {}
 
@@ -302,29 +305,86 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /** ask_user tool: question card in the chat, awaiting the user's answer. */
-  async askAgentQuestion(question: string, options?: string[]): Promise<string | undefined> {
+  /**
+   * ask_user tool: question card in the chat, awaiting the user's answer.
+   *
+   * This used to impose a hardcoded, invisible 300-second cap that resolved to
+   * `undefined` — so a question silently became "the user did not answer" after
+   * five minutes with no countdown, no way to configure it, and no way to tell
+   * it apart from a cancelled run. (controller.ts's comment claimed there was
+   * no timeout at all; the two disagreed.) That is replaced by the same opt-in
+   * idle bound the CLI has: unbounded unless `heapcode.agent.askUserQuestionTimeout`
+   * is set, reset by any activity, visible for its last stretch, and resolving
+   * with guidance rather than silence.
+   *
+   * `idleMs` undefined → waits indefinitely. Returns `{ idle: true }` only when
+   * the bound expired; cancellation and a dead view stay `idle: false` so the
+   * caller keeps using ASK_USER_NO_ANSWER for them.
+   */
+  async askAgentQuestion(
+    question: string,
+    options?: string[],
+    idleMs?: number,
+  ): Promise<{ answer?: string; idle: boolean; partial?: string }> {
     try {
       await vscode.commands.executeCommand('heapcode.chatView.focus');
       for (let i = 0; i < 20 && !this.viewReady; i++) {
         await new Promise((r) => setTimeout(r, 100));
       }
-      if (!this.view || !this.viewReady) return undefined;
+      if (!this.view || !this.viewReady) return { idle: false };
       const id = randomUUID();
-      return await new Promise<string | undefined>((resolve) => {
-        const timeout = setTimeout(() => {
-          if (this.pendingQuestions.delete(id)) resolve(undefined);
-        }, 300_000);
-        this.pendingQuestions.set(id, (answer) => {
-          clearTimeout(timeout);
+      return await new Promise<{ answer?: string; idle: boolean; partial?: string }>((resolve) => {
+        let countdown: ReturnType<typeof setInterval> | undefined;
+        const finish = (result: { answer?: string; idle: boolean; partial?: string }): void => {
+          deadline.stop();
+          if (countdown) clearInterval(countdown);
           this.pendingQuestions.delete(id);
-          resolve(answer);
+          this.questionPartials.delete(id);
+          resolve(result);
+        };
+        const deadline = new IdleDeadline(idleMs, () => {
+          // Tell the card to stop accepting input before answering the agent,
+          // so the user never types into a question that has already resolved.
+          this.post({ type: 'agentQuestionClosed', id, reason: 'idle' });
+          finish({ idle: true, partial: this.questionPartials.get(id) });
         });
+        this.pendingQuestions.set(id, (answer) => finish({ answer, idle: false }));
+        this.questionDeadlines.set(id, deadline);
+        deadline.start();
         this.post({ type: 'agentQuestion', id, question, options });
-      });
+        if (deadline.enabled) {
+          countdown = setInterval(() => {
+            const remaining = deadline.remainingMs();
+            if (remaining <= ASK_USER_COUNTDOWN_MS) {
+              this.post({ type: 'agentQuestionCountdown', id, seconds: Math.ceil(remaining / 1_000) });
+            }
+          }, 500);
+          countdown.unref?.();
+        }
+      }).finally(() => this.questionDeadlines.delete(id));
     } catch {
-      return undefined;
+      return { idle: false };
     }
+  }
+
+  /** Cancellation/teardown: take a pending question down the way it always did. */
+  closePendingQuestions(): void {
+    for (const [id, resolve] of [...this.pendingQuestions]) {
+      this.post({ type: 'agentQuestionClosed', id, reason: 'cancelled' });
+      resolve(undefined);
+    }
+  }
+
+  /**
+   * Abort the running turn. Always goes through here rather than calling
+   * `abortController.abort()` directly, because a pending question has nothing
+   * else to resolve it: aborting the run abandons the `await` in executeTool,
+   * so without this the promise and its card would both linger. The old
+   * hardcoded 300s cap used to paper over that; an unbounded wait cannot.
+   */
+  private abortRun(): void {
+    this.abortController?.abort();
+    this.closePendingQuestions();
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -341,6 +401,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Never leave the agent hanging on a card nobody can see — fall back to modal.
       for (const resolve of this.pendingPermissions.values()) resolve(undefined);
       this.pendingPermissions.clear();
+      // Same for questions, and now load-bearing: an unanswered question used
+      // to give up after the hardcoded 300s, but the default is now an
+      // unbounded wait, so a disposed view would hang the run forever.
+      this.closePendingQuestions();
     });
   }
 
@@ -381,6 +445,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ...this.allPrompts().map((p) => ({ command: p.command, title: p.title })),
         { command: 'init', title: 'Set up HEAPCODE.md & project memory (agent)' },
       ],
+      permissionMode: this.permissionMode,
     });
     this.postActiveFile();
   }
@@ -499,6 +564,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         resolve?.(msg.choice);
         break;
       }
+      case 'agentQuestionActivity': {
+        // Typing, or the card regaining focus — the user is still here.
+        if (msg.partial !== undefined) this.questionPartials.set(msg.id, msg.partial);
+        this.questionDeadlines.get(msg.id)?.touch();
+        return;
+      }
       case 'agentQuestionResponse':
         this.pendingQuestions.get(msg.id)?.(msg.answer);
         break;
@@ -506,8 +577,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const active = this.profiles.getActiveProfile();
         let models: string[] = [];
         try {
-          const { provider } = await this.profiles.createActiveProvider();
-          models = (await provider.listModels()).map((m) => m.id);
+          models = (await this.link.listModels(active.name)).map((m) => m.id);
         } catch (err) {
           this.log.appendLine(`[models] list failed: ${String(err)}`);
         }
@@ -525,6 +595,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'setProfile':
         await this.profiles.setActiveByName(msg.name);
+        break;
+      case 'setPermissionMode':
+        this.permissionMode = msg.mode;
+        this.track?.('permission.mode.changed', { mode: msg.mode, via: 'chat' });
+        this.postConfig();
         break;
       case 'settingsLoad':
         await this.postSettingsData();
@@ -697,7 +772,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case 'stop':
-        this.abortController?.abort();
+        this.abortRun();
         break;
       case 'newChat':
         await this.startNewChat();
@@ -909,7 +984,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.abortController?.abort();
+    this.abortRun();
     this.agent?.stop();
 
     // The checkpoint on the edited turn — or the next one after it — is the
@@ -945,7 +1020,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async startNewChat(): Promise<void> {
-    this.abortController?.abort();
+    this.abortRun();
     if (this.conversation.messages.length > 0) {
       await this.store.save(this.conversation);
     }
@@ -956,7 +1031,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async openConversation(id: string): Promise<void> {
     const loaded = await this.store.get(id);
     if (!loaded) return;
-    this.abortController?.abort();
+    this.abortRun();
     if (this.conversation.messages.length > 0 && this.conversation.id !== id) {
       await this.store.save(this.conversation);
     }
@@ -985,7 +1060,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let body: string;
     const { blocks, unresolved } = await resolveMentions(
       text,
-      this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
+      (q) => this.link.ragQuery(q).then((r) => r.formatted),
     );
 
     // Explicitly attached files (📎/drag-and-drop) — highest-priority context after selection.
@@ -1058,7 +1133,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleSend(text: string, files?: string[], images?: string[]): Promise<void> {
-    const { provider, profile } = await this.profiles.createActiveProvider();
+    const profile = this.profiles.getActiveProfile();
     if (!profile.model) {
       this.post({
         type: 'error',
@@ -1145,32 +1220,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.post({ type: 'chunk', text: delta });
       };
 
-      const toolOutcome = resolveCapabilities(profile).nativeToolCalls
-        ? await this.runAskWithTools(
-            provider,
-            profile.model,
-            conversationMessages,
-            profile.temperature,
-            maxTokens,
-            this.abortController.signal,
-            onDelta,
-          )
-        : undefined;
-
-      let finishReason: string | undefined = toolOutcome?.finishReason;
-      if (!toolOutcome) {
-        const stream = provider.streamChat({
+      // The turn runs server-side; what stays here is the half that needs the
+      // workspace (running a read tool, labelling its chip) and the half that
+      // needs the webview (rendering). Same split as the agent path.
+      const ask = this.askToolSupport(profile);
+      const { finishReason } = await this.link.chatSend(
+        {
+          profileName: profile.name,
           model: profile.model,
           messages: conversationMessages,
           temperature: profile.temperature,
           maxTokens,
-          signal: this.abortController.signal,
-        });
-        for await (const chunk of stream) {
-          if (chunk.content) onDelta(chunk.content);
-          if (chunk.finishReason) finishReason = chunk.finishReason;
-        }
-      }
+          tools: ask?.tools,
+        },
+        {
+          execute: ask ? (call) => ask.execute(call) : undefined,
+          onEvent: (event) => {
+            switch (event.type) {
+              case 'text_delta':
+                onDelta(event.text);
+                break;
+              case 'tool_call': {
+                const call = { id: event.id, name: event.name, args: event.args };
+                const description = ask?.describe(call) ?? event.name;
+                this.log.appendLine(`[ask] tool: ${description}`);
+                this.postToWebview({ type: 'agentToolCall', id: event.id, name: event.name, description });
+                break;
+              }
+              case 'tool_result':
+                this.postToWebview({
+                  type: 'agentToolResult',
+                  id: event.id,
+                  ok: !event.isError,
+                  summary: event.content.slice(0, TOOL_SUMMARY_CHARS),
+                  label: resultLabel(event.name, event.content, event.isError),
+                });
+                break;
+              default:
+                break; // chat turns emit no other events
+            }
+          },
+        },
+        this.abortController.signal,
+      );
       this.finishTurn(stripToolCallArtifacts(assistant));
       this.post({ type: 'done' });
       if (finishReason === 'length') {
@@ -1201,126 +1293,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Ask-mode read-only tool loop (mirrors how Copilot's Ask mode autonomously searches the
-   * codebase): lets the model call read/search tools — never write/execute/destructive ones,
-   * so this never needs a permission prompt — to ground its answer in real code instead of
-   * guessing. Bounded iterations; the last attempt always omits tools so the turn is
-   * guaranteed to end in a normal answer rather than looping forever.
-   * Returns undefined when there's no workspace, no read tools, or the model doesn't support
-   * native tool calling — the caller falls back to a plain streamed reply.
+   * Host-side half of the ask-mode tool loop: which tools chat may offer, how
+   * to run one, and how to label it. The loop itself is core's
+   * `runChatTurn` — only the parts that need the workspace live here.
+   *
+   * Undefined (→ a plain streamed reply) in exactly the three cases the
+   * extracted method returned undefined for: the model can't do native tool
+   * calls, there's no workspace, or no read tools survive the filter.
    */
-  private async runAskWithTools(
-    provider: Provider,
-    model: string,
-    messages: ChatMessage[],
-    temperature: number | undefined,
-    maxTokens: number,
-    signal: AbortSignal,
-    onDelta: (text: string) => void,
-  ): Promise<{ finishReason?: string } | undefined> {
+  private askToolSupport(profile: ProviderProfileConfig):
+    | {
+        tools: ToolDefinition[];
+        execute(call: ToolCall): Promise<ToolResult>;
+        describe(call: ToolCall): string;
+      }
+    | undefined {
+    if (!resolveCapabilities(profile).nativeToolCalls) return undefined;
     const root = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (!root) return undefined;
+    // Read-only, so core's loop never needs a permission prompt: runAgent's
+    // gate only fires for non-read tools (agent/loop.ts:335, :339). ask_user
+    // is excluded by NAME, not by permission — it is `permission: 'read'`
+    // (toolDefinitions.ts:200), so filtering on permission alone would
+    // silently hand chat a tool that blocks on the user.
     const readOnlyTools = agentToolDefinitions.filter(
       (t) => t.permission === 'read' && t.name !== 'ask_user',
     );
     if (readOnlyTools.length === 0) return undefined;
 
-    const executor = new WorkspaceToolExecutor(
-      root,
-      new SessionCheckpoint(),
-      60_000,
-      this.rag?.ready ? (q) => this.rag!.queryFormatted(q) : undefined,
-    );
-    const convo = [...messages];
-
-    for (let i = 0; i < MAX_ASK_TOOL_ITERATIONS; i++) {
-      const offerTools = i < MAX_ASK_TOOL_ITERATIONS - 1;
-      // Withdrawing tools silently invites a model mid-tool-use habit to
-      // free-associate fake "[Tool call: ...]" text instead of wrapping up —
-      // tell it plainly instead.
-      if (!offerTools) {
-        convo.push({
-          role: 'user',
-          content:
-            'Tool access has ended for this turn. Give your final, complete answer now in ' +
-            'plain text based on what you already found — do not mention, reference, or ' +
-            'write out any further tool calls.',
-        });
-      }
-
-      if (!offerTools && provider.chatStreamed) {
-        const res = await provider.chatStreamed(
-          { model, messages: convo, temperature, maxTokens, signal },
-          (text, kind) => {
-            if (!kind || kind === 'text') onDelta(text);
-          },
-        );
-        return { finishReason: res.finishReason };
-      }
-
-      const res = await provider.chat({
-        model,
-        messages: convo,
-        tools: offerTools ? readOnlyTools : undefined,
-        temperature,
-        maxTokens,
-        signal,
-      });
-
-      if (offerTools && res.toolCalls && res.toolCalls.length > 0) {
-        convo.push({
-          role: 'assistant',
-          content: res.content,
-          toolCalls: res.toolCalls.map((c) => ({ id: c.id, name: c.name, args: c.args })),
-        });
-        for (const call of res.toolCalls) {
-          const toolCall = { id: call.id, name: call.name, args: call.args };
-          const description = executor.describe(toolCall);
-          this.log.appendLine(`[ask] tool: ${description}`);
-          this.postToWebview({
-            type: 'agentToolCall',
-            id: call.id,
-            name: call.name,
-            description,
-          });
-          // Same guard as the core agent loop: a failed tool call (e.g. the
-          // model guessing a nonexistent path) becomes an error result the
-          // model can self-correct from, never an exception that kills the
-          // whole ask turn.
-          let result: { id: string; name: string; content: string; isError?: boolean };
-          try {
-            result = call.argsParseError
-              ? {
-                  id: call.id,
-                  name: call.name,
-                  content: `Invalid JSON arguments: ${call.argsParseError}`,
-                  isError: true,
-                }
-              : await executor.execute(toolCall);
-          } catch (err) {
-            result = {
-              id: call.id,
-              name: call.name,
-              content: `Tool failed: ${err instanceof Error ? err.message : String(err)}`,
-              isError: true,
-            };
-          }
-          this.postToWebview({
-            type: 'agentToolResult',
-            id: call.id,
-            ok: !result.isError,
-            summary: result.content.slice(0, TOOL_SUMMARY_CHARS),
-            label: resultLabel(result.name, result.content, result.isError),
-          });
-          convo.push({ role: 'tool', content: result.content, toolCallId: call.id });
-        }
-        continue;
-      }
-
-      if (res.content) onDelta(res.content);
-      return { finishReason: res.finishReason };
-    }
-    return undefined;
+    // No semanticSearch injection, same as the agent path: chat/send dispatches
+    // semantic_search from the server's own index and only hands the call back
+    // here when it has nothing. Passing one would make the server ask this host
+    // to run a tool whose answer this host would fetch back from the server —
+    // the out-and-back docs/phase3-rag-design.md §5.2 exists to avoid.
+    const executor = new WorkspaceToolExecutor(root, new SessionCheckpoint(), 60_000);
+    return {
+      tools: readOnlyTools,
+      execute: (call) => executor.execute(call),
+      describe: (call) => executor.describe(call),
+    };
   }
 
   private finishTurn(assistant: string): void {

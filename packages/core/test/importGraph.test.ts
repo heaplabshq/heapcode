@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { extractImportTargets } from '../src/rag/importGraph.js';
+import { extractImportTargets } from '../src/rag/repoMap.js';
 import { configureAstChunker } from '../src/rag/astChunker.js';
 
 const require = createRequire(import.meta.url);

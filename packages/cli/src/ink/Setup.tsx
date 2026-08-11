@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
 import Spinner from 'ink-spinner';
 import { createProvider, providerPresets, type ProviderPreset, type ProviderProfileConfig } from '@heapcode/core';
 import { ConfigStore } from '../config/store.js';
 import { SecretsStore } from '../config/secrets.js';
+import { FilterableList } from './FilterableList.js';
 import { TextInput } from './TextInput.js';
 
 type Step =
@@ -65,68 +66,22 @@ function stepNumber(kind: Step['kind']): number | undefined {
   }
 }
 
-const MODEL_LIST_ROWS = 12;
-
 /**
  * A fetched model list can run into the hundreds (OpenRouter, for one) —
  * dumping all of them into a plain arrow-key list makes finding one
- * miserable. Type-to-filter narrows it, and "Enter model name manually" is
- * always the first row so a model that isn't in the list (or was filtered
- * out) is never a dead end — this is the *only* escape hatch when the
- * provider's /models endpoint doesn't happen to list something the user
+ * miserable. FilterableList narrows it as you type, and "Enter model name
+ * manually" sits below the matches so a model that isn't in the list (or was
+ * filtered out) is never a dead end — this is the *only* escape hatch when
+ * the provider's /models endpoint doesn't happen to list something the user
  * knows exists.
  */
 function ModelSelect({ models, onSelect, onManual }: { models: string[]; onSelect(model: string): void; onManual(): void }): React.ReactElement {
-  const [filter, setFilter] = useState('');
-  const [highlight, setHighlight] = useState(0);
-  const filtered = filter ? models.filter((m) => m.toLowerCase().includes(filter.toLowerCase())) : models;
-  const shown = filtered.slice(0, MODEL_LIST_ROWS);
-  const manualIndex = shown.length; // trailing row — Enter still quick-picks the top model by default, same as before
-  const rowCount = shown.length + 1;
-
-  useInput((input, key) => {
-    if (key.upArrow) {
-      setHighlight((h) => (h - 1 + rowCount) % rowCount);
-      return;
-    }
-    if (key.downArrow) {
-      setHighlight((h) => (h + 1) % rowCount);
-      return;
-    }
-    if (key.return) {
-      if (highlight === manualIndex) onManual();
-      else if (shown[highlight]) onSelect(shown[highlight]!);
-      return;
-    }
-    if (key.backspace || key.delete) {
-      setFilter((f) => f.slice(0, -1));
-      setHighlight(0);
-      return;
-    }
-    if (key.ctrl || key.meta || key.tab) return;
-    if (input) {
-      setFilter((f) => f + input);
-      setHighlight(0);
-    }
-  });
-
   return (
-    <Box flexDirection="column">
-      <Text dimColor>Type to filter{filter ? `: ${filter}` : ''} · ↑↓ to navigate · Enter to select</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {shown.map((m, i) => (
-          <Text key={m} color={highlight === i ? 'cyan' : undefined} bold={highlight === i}>
-            {highlight === i ? '❯ ' : '  '}
-            {m}
-          </Text>
-        ))}
-        {filtered.length > shown.length && <Text dimColor> … {filtered.length - shown.length} more — keep typing to narrow</Text>}
-        {filtered.length === 0 && <Text dimColor> No matches.</Text>}
-        <Text color={highlight === manualIndex ? 'cyan' : undefined} bold={highlight === manualIndex}>
-          {highlight === manualIndex ? '❯ ' : '  '}Enter model name manually…
-        </Text>
-      </Box>
-    </Box>
+    <FilterableList
+      items={models.map((m) => ({ label: m, value: m }))}
+      onSelect={onSelect}
+      footer={{ label: 'Enter model name manually…', onSelect: onManual }}
+    />
   );
 }
 

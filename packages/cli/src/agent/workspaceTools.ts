@@ -4,60 +4,40 @@ import * as path from 'node:path';
 import fg from 'fast-glob';
 import {
   applySearchReplace,
+  buildEditSnippet,
+  checkPackageExists,
   checkSyntax,
+  CWD_MARKER,
   DEFAULT_IGNORE_GLOB,
+  detectPackageInstall,
   extractSymbols,
+  fetchUrl,
   findBestMatch,
-  safeFetch,
+  formatSearchResults,
+  isWebSearchEnabled,
+  getSymbolsTool,
+  killTree,
+  LARGE_FILE_LINES,
+  MAX_APPLY_MERGE_CHARS,
+  MAX_OUTPUT_CHARS,
+  MAX_READ_CHARS,
+  MAX_SEARCH_FILES,
+  MAX_SEARCH_RESULTS,
+  nearbyHint,
+  PROTECTED_MANIFEST_FILES,
+  sharedAgentTools as T,
+  truncate,
   unifiedDiff,
+  webSearch,
+  WEB_SEARCH_DISABLED_NOTICE,
   type ToolCall,
   type ToolDefinition,
+  type WebSearchConfig,
   type ToolResult,
 } from '@heapcode/core';
 import type { SessionCheckpoint } from './checkpoint.js';
 import { filterIgnored } from './ignoreFiles.js';
 import { listSkillsFormatted, loadSkill } from './skills.js';
-
-const MAX_READ_CHARS = 50_000;
-// Above this, an unranged read_file returns an outline instead of the full text —
-// SWE-agent's ACI work found this kind of windowed view (vs. dumping whole files)
-// meaningfully improves an agent's ability to navigate large codebases cheaply.
-const LARGE_FILE_LINES = 300;
-const MAX_OUTPUT_CHARS = 8_000;
-const MAX_SEARCH_RESULTS = 40;
-const MAX_SEARCH_FILES = 2_000;
-const MAX_FETCH_CHARS = 20_000;
-// A fast-apply model must re-emit the whole file — same ceiling inline-edit's own apply
-// action uses, past which the round-trip cost outweighs skipping the merge and just failing.
-const MAX_APPLY_MERGE_CHARS = 40_000;
-const CWD_MARKER = '__HEAPCODE_CWD__';
-
-// write_file does a blind full-file overwrite — fine for a new file, but a
-// real risk for a manifest/lockfile the model didn't fully re-derive: a live
-// incident had a sub-agent "fixing" an unrelated file rewrite package.json
-// via write_file and silently drop its "name" field. edit_file/multi_edit's
-// targeted search/replace can't lose content this way, so overwriting one of
-// these wholesale is refused in favor of that — only when the file already
-// exists; writing a brand new one is unaffected.
-const PROTECTED_MANIFEST_FILES = new Set([
-  'package.json',
-  'package-lock.json',
-  'pnpm-lock.yaml',
-  'yarn.lock',
-  'Cargo.toml',
-  'Cargo.lock',
-  'go.mod',
-  'go.sum',
-  'requirements.txt',
-  'Pipfile',
-  'Pipfile.lock',
-  'Gemfile',
-  'Gemfile.lock',
-  'composer.json',
-  'composer.lock',
-  'tsconfig.json',
-  'pyproject.toml',
-]);
 
 async function fileExists(abs: string): Promise<boolean> {
   try {
@@ -66,11 +46,6 @@ async function fileExists(abs: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function truncate(content: string): string {
-  if (content.length <= MAX_OUTPUT_CHARS) return content;
-  return content.slice(0, MAX_OUTPUT_CHARS / 2) + '\n…[output truncated]…\n' + content.slice(-MAX_OUTPUT_CHARS / 2);
 }
 
 /** Builds the tool-facing result text/error flag for a finished (or interrupted) command. */
@@ -101,269 +76,45 @@ function buildCommandResult(opts: {
 }
 
 /**
- * Node-native port of packages/vscode/src/agent/workspaceTools.ts's
- * agentToolDefinitions. Three tools are deliberately dropped from this list
- * — get_diagnostics, find_references, go_to_definition — since they're
- * deeply tied to VS Code's language-server command bus with no portable
- * fallback (docs/CLI_PLAN.md decisions log). get_symbols instead uses
- * core's own tree-sitter symbol extraction. delegate_task is CLI-M4 scope
- * (not implemented yet) so it's excluded too, rather than listed and failing.
+ * The tools this host offers, composed from core's shared schemas plus the
+ * CLI's own get_symbols wording.
+ *
+ * Three of the extension's tools are deliberately absent — get_diagnostics,
+ * find_references, go_to_definition — since they're deeply tied to VS Code's
+ * language-server command bus with no portable fallback (docs/CLI_PLAN.md
+ * decisions log); get_symbols instead uses core's own tree-sitter symbol
+ * extraction. delegate_task is offered separately (see delegate.ts), since
+ * its execution needs cross-cutting context this executor doesn't have.
  */
 export const agentToolDefinitions: ToolDefinition[] = [
-  {
-    name: 'read_file',
-    description:
-      'Read a file (or a line range of it). Returns content with line numbers. ' +
-      'For files over ~300 lines, calling this with no range first returns a symbol outline ' +
-      'instead of the full text — call again with start_line/end_line for the section you need, ' +
-      'or repeat the unranged call to force the full contents.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'Workspace-relative path' },
-        start_line: { type: 'number', description: 'Optional 1-based first line' },
-        end_line: { type: 'number', description: 'Optional 1-based last line (inclusive)' },
-      },
-      required: ['path'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'list_dir',
-    description: 'List files and directories at a workspace-relative path (non-recursive).',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string', description: 'Workspace-relative path, "." for root' } },
-      required: ['path'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'search',
-    description: 'Search file contents with a regex. Returns file:line matches.',
-    parameters: {
-      type: 'object',
-      properties: {
-        pattern: { type: 'string', description: 'Regular expression' },
-        glob: { type: 'string', description: 'Optional file glob, e.g. "**/*.ts"' },
-      },
-      required: ['pattern'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'write_file',
-    description: 'Create or overwrite a file with the given content.',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string' }, content: { type: 'string' } },
-      required: ['path', 'content'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'edit_file',
-    description:
-      'Replace an exact section of a file. "search" must match existing content (whitespace-tolerant); provide enough surrounding lines to be unique.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-        search: { type: 'string', description: 'Existing code to replace' },
-        replace: { type: 'string', description: 'New code' },
-      },
-      required: ['path', 'search', 'replace'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'rename_file',
-    description: 'Rename or move a file.',
-    parameters: {
-      type: 'object',
-      properties: { path: { type: 'string' }, newPath: { type: 'string' } },
-      required: ['path', 'newPath'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'delete_file',
-    description: 'Delete a file.',
-    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
-    permission: 'destructive',
-  },
-  {
-    name: 'semantic_search',
-    description:
-      'Search the codebase by meaning (embeddings), e.g. "where is authentication handled". Falls back to text search when no index exists.',
-    parameters: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'Natural-language query' } },
-      required: ['query'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'repo_map',
-    description:
-      'Get an outline of the workspace: every file and its top-level symbols (functions, classes, methods) with line numbers — no code bodies. Use it to orient before searching, e.g. to check whether something already exists before writing it.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description:
-            'Optional path prefix to scope the map to a directory or file (e.g. "packages/core/src/rag"). Omit for the whole workspace.',
-        },
-      },
-    },
-    permission: 'read',
-  },
-  {
-    name: 'run_command',
-    description:
-      'Run a shell command (npm/pnpm/git/etc). Returns stdout, stderr, and exit code. ' +
-      'The working directory persists between calls (cd carries over); it starts at the workspace root. ' +
-      'Prefer run_tests for the project\'s test suite. Package installs are checked against the ' +
-      'registry first and blocked if the package name looks hallucinated.',
-    parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
-    permission: 'execute',
-  },
-  {
-    name: 'run_tests',
-    description:
-      'Run the project\'s test command (e.g. "npm test", "pytest", "cargo test", "go test ./...") ' +
-      'and report pass/fail from the exit code. Use this — not run_command — to verify changes before finishing.',
-    parameters: { type: 'object', properties: { command: { type: 'string', description: 'The test command to run' } }, required: ['command'] },
-    permission: 'execute',
-    verifies: true,
-  },
-  {
-    name: 'check_package_exists',
-    description:
-      'Check whether a package name actually exists on npm or PyPI before adding it as a dependency — ' +
-      'catches hallucinated package names before they\'re installed.',
-    parameters: {
-      type: 'object',
-      properties: { registry: { type: 'string', enum: ['npm', 'pypi'] }, name: { type: 'string' } },
-      required: ['registry', 'name'],
-    },
-    permission: 'execute',
-  },
-  {
-    name: 'get_symbols',
-    description:
-      'Outline of a file: functions, classes, methods with their line numbers (tree-sitter based). Much cheaper than reading the whole file.',
-    parameters: { type: 'object', properties: { path: { type: 'string', description: 'Workspace-relative path' } }, required: ['path'] },
-    permission: 'read',
-  },
-  {
-    name: 'fetch_url',
-    description: 'Fetch a web page or API over HTTP(S) — documentation, READMEs, API responses. HTML is reduced to readable text.',
-    parameters: { type: 'object', properties: { url: { type: 'string', description: 'http(s):// URL' } }, required: ['url'] },
-    permission: 'execute',
-    // Arbitrary third-party content — same injection posture as MCP (PLAN.md M7).
-    untrustedOutput: true,
-  },
-  {
-    name: 'multi_edit',
-    description: 'Apply several search/replace edits to one file atomically (all succeed or none are written). Same matching rules as edit_file.',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: { type: 'string' },
-        edits: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: { search: { type: 'string', description: 'Existing code to replace' }, replace: { type: 'string', description: 'New code' } },
-            required: ['search', 'replace'],
-          },
-        },
-      },
-      required: ['path', 'edits'],
-    },
-    permission: 'write',
-  },
-  {
-    name: 'create_directory',
-    description: 'Create a directory (and any missing parents).',
-    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
-    permission: 'write',
-  },
-  {
-    name: 'ask_user',
-    description:
-      'Ask the user a clarifying question when blocked on a decision only they can make (ambiguous requirements, destructive trade-offs). Use sparingly — prefer sensible defaults.',
-    parameters: {
-      type: 'object',
-      properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'string' }, description: 'Optional short answer choices' } },
-      required: ['question'],
-    },
-    permission: 'read',
-  },
-  {
-    name: 'list_skills',
-    description:
-      'List available Skills (name + description) from .claude/skills/ (project) and ~/.claude/skills/ ' +
-      '(personal) — the same convention Claude Code itself uses. Skills are model-invoked: call this early, ' +
-      'and if one\'s description matches the current task, call load_skill on it before proceeding.',
-    parameters: { type: 'object', properties: {} },
-    permission: 'read',
-  },
-  {
-    name: 'load_skill',
-    description:
-      'Load a Skill\'s full instructions by name (from list_skills). If the instructions reference a bundled ' +
-      'file (e.g. "see FORMS.md"), call this again with that file as `resource` to read it.',
-    parameters: {
-      type: 'object',
-      properties: { name: { type: 'string', description: 'Skill name, from list_skills' }, resource: { type: 'string', description: 'Optional: relative path to a file bundled in the skill\'s own folder' } },
-      required: ['name'],
-    },
-    permission: 'read',
-  },
+  T.read_file,
+  T.list_dir,
+  T.search,
+  T.write_file,
+  T.edit_file,
+  T.rename_file,
+  T.delete_file,
+  T.semantic_search,
+  T.repo_map,
+  T.run_command,
+  T.run_tests,
+  T.check_package_exists,
+  getSymbolsTool(
+    'Outline of a file: functions, classes, methods with their line numbers (tree-sitter based). Much cheaper than reading the whole file.',
+  ),
+  T.fetch_url,
+  // Always offered, executed only when configured — the same posture as
+  // delegate_task. A model that cannot see the tool has no way to know web
+  // search is even a concept here, and a live session responded to that by
+  // claiming it had searched; refusing the call with an explanation is what
+  // makes it answer honestly instead.
+  T.web_search,
+  T.multi_edit,
+  T.create_directory,
+  T.ask_user,
+  T.list_skills,
+  T.load_skill,
 ];
-
-/**
- * When an edit_file search misses, locate the closest matching line and show
- * the model what that region of the file actually looks like — most misses
- * are stale/hallucinated context, and this lets the model self-correct in
- * one turn instead of blindly re-reading.
- */
-function nearbyHint(content: string, search: string): string {
-  const anchor = search.split('\n').find((l) => l.trim().length > 8);
-  if (!anchor) return '';
-  const match = findBestMatch(content, anchor.trim());
-  if (!match) return '';
-  const lines = content.split('\n');
-  let offset = 0;
-  let matchLine = 0;
-  for (let i = 0; i < lines.length; i++) {
-    offset += lines[i]!.length + 1;
-    if (offset > match.start) {
-      matchLine = i;
-      break;
-    }
-  }
-  const start = Math.max(0, matchLine - 6);
-  const end = Math.min(lines.length, matchLine + 7);
-  const snippet = lines
-    .slice(start, end)
-    .map((l, i) => `${start + i + 1}\t${l}`)
-    .join('\n');
-  return `The closest matching region is:\n${snippet}\n`;
-}
-
-/**
- * The "update" fed to the fast-apply model when edit_file's exact match fails —
- * gives it both what should disappear and what should appear, since the search
- * text alone drifting slightly from the file is exactly why the deterministic
- * match missed in the first place.
- */
-function buildEditSnippet(search: string, replace: string): string {
-  return `Replace this code:\n${search}\n\nwith this code:\n${replace}`;
-}
 
 export class WorkspaceToolExecutor {
   /** run_command working directory — persists across calls within a session. */
@@ -390,6 +141,8 @@ export class WorkspaceToolExecutor {
     private readonly repoMap?: (pathPrefix?: string) => string,
     /** Fast-apply merge (applyModel/applyProfile role) — edit_file's fallback when exact search/replace fails to match. */
     private readonly applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
+    /** Resolves web-search config + key at call time, so enabling it mid-session takes effect. */
+    private readonly webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>,
   ) {
     this.cwd = root;
   }
@@ -429,6 +182,8 @@ export class WorkspaceToolExecutor {
         return `Outline ${a.path}`;
       case 'fetch_url':
         return `Fetch ${a.url}`;
+      case 'web_search':
+        return `Web search: "${a.query}"`;
       case 'multi_edit': {
         const count = Array.isArray(call.args.edits) ? (call.args.edits as unknown[]).length : 0;
         return `Edit ${a.path} (${count} edits)`;
@@ -602,7 +357,10 @@ export class WorkspaceToolExecutor {
             );
           }
         }
-        return this.runCommand(command, signal);
+        // runCommand builds its result without the call (id: ''); restamp it,
+        // as run_tests below already does — a tool result with no id cannot be
+        // paired back to its tool_calls entry on the wire.
+        return { ...(await this.runCommand(command, signal)), id: call.id };
       }
       case 'run_tests': {
         const result = await this.runCommand(a.command ?? '', signal);
@@ -627,6 +385,24 @@ export class WorkspaceToolExecutor {
       }
       case 'fetch_url':
         return fetchUrl(a.url ?? '').then(ok, (err: Error) => fail(err.message));
+      case 'web_search': {
+        const settings = await this.webSearchSettings?.();
+        if (!settings || !isWebSearchEnabled(settings.config, settings.apiKey)) {
+          return fail(WEB_SEARCH_DISABLED_NOTICE);
+        }
+        const query = String(a.query ?? '');
+        try {
+          const results = await webSearch(
+            settings.config,
+            settings.apiKey,
+            query,
+            typeof a.max_results === 'number' ? a.max_results : undefined,
+          );
+          return ok(formatSearchResults(query, results));
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+      }
       case 'multi_edit': {
         const abs = this.resolve(a.path);
         const edits = Array.isArray(call.args.edits) ? (call.args.edits as Array<{ search?: unknown; replace?: unknown }>) : [];
@@ -820,141 +596,3 @@ export class WorkspaceToolExecutor {
   }
 }
 
-/**
- * Kill a spawned command *and everything it started*.
- *
- * `child.kill()` alone only signals the wrapper shell. Because run_command
- * wraps the user's command in a multi-statement script (the CWD_MARKER echo),
- * the shell can't exec-optimize it away and instead forks the real program as
- * a grandchild — which survives the shell's death, reparented to init. That
- * made both the timeout and the user's Stop a lie: the message said "killed"
- * while a dev server kept holding its port. Worse, the orphan inherits the
- * stdout pipe, so 'close' doesn't fire until it exits on its own — a timed-out
- * long-running process blocked the agent for its entire lifetime, not for the
- * timeout.
- *
- * POSIX: spawning detached puts the shell in its own process group whose id
- * equals its pid, so a negative pid signals the whole group. Windows has no
- * process groups to signal this way — taskkill /T walks the child tree
- * instead, with child.kill() as the last resort if it isn't available.
- */
-function killTree(child: ReturnType<typeof spawn>): void {
-  const pid = child.pid;
-  if (pid === undefined) return;
-  if (process.platform === 'win32') {
-    try {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F']).on('error', () => child.kill('SIGKILL'));
-    } catch {
-      child.kill('SIGKILL');
-    }
-    return;
-  }
-  try {
-    // Negative pid = "every process in this group". ESRCH here just means the
-    // group already exited between the timer firing and this call.
-    process.kill(-pid, 'SIGKILL');
-  } catch {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already gone */
-    }
-  }
-}
-
-/** Fetch a URL; HTML is reduced to readable text. Throws with a useful message. */
-async function fetchUrl(url: string): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
-  try {
-    // safeFetch (not fetch) — blocks private/loopback/link-local targets on the
-    // initial URL and on every redirect hop. See core's safeFetch for why.
-    const res = await safeFetch(url, {
-      signal: controller.signal,
-      headers: { 'user-agent': 'HeapCode-Agent', accept: 'text/html, text/plain, application/json, */*' },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
-    const type = res.headers.get('content-type') ?? '';
-    let body = await res.text();
-    if (type.includes('html')) body = htmlToText(body);
-    if (body.length > MAX_FETCH_CHARS) body = body.slice(0, MAX_FETCH_CHARS) + '\n…[truncated]';
-    return body.trim() || '(empty response)';
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') throw new Error(`Timed out fetching ${url}`);
-    throw err instanceof Error ? err : new Error(String(err));
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/** Install-command shapes we recognize per package registry (order doesn't matter — first match wins). */
-const INSTALL_PATTERNS: Array<{ re: RegExp; registry: 'npm' | 'pypi' }> = [
-  { re: /^(?:npm|pnpm)\s+(?:install|i|add)\b/, registry: 'npm' },
-  { re: /^yarn\s+add\b/, registry: 'npm' },
-  { re: /^(?:pip3?|python3?\s+-m\s+pip)\s+install\b/, registry: 'pypi' },
-  { re: /^poetry\s+add\b/, registry: 'pypi' },
-];
-
-/**
- * Extract package names from an install-shaped command, for the
- * hallucinated-package guard. Returns undefined when the command isn't an
- * install, installs from a file/lockfile (no new name being introduced), or
- * only references local paths/VCS URLs.
- */
-function detectPackageInstall(command: string): { registry: 'npm' | 'pypi'; names: string[] } | undefined {
-  const trimmed = command.trim();
-  const matched = INSTALL_PATTERNS.find((p) => p.re.test(trimmed));
-  if (!matched) return undefined;
-  const rest = trimmed.replace(matched.re, '').trim();
-  const tokens = rest.split(/\s+/).filter(Boolean);
-  const names: string[] = [];
-  for (const t of tokens) {
-    if (t.startsWith('-')) {
-      // Installing from a requirements file/editable local path — not a named package to verify.
-      if (['-r', '--requirement', '-e', '--editable'].includes(t)) return undefined;
-      continue;
-    }
-    if (t === '.' || t.startsWith('./') || t.startsWith('../') || t.startsWith('/') || t.includes('://')) {
-      continue; // local path or VCS/tarball URL — not a registry lookup
-    }
-    const name = matched.registry === 'npm' ? t.replace(/^(@?[^@]+).*$/, '$1') : t.split(/[=<>!~[]/)[0]!;
-    if (name) names.push(name);
-  }
-  return names.length > 0 ? { registry: matched.registry, names } : undefined;
-}
-
-/** Best-effort registry lookup; network failures resolve to "exists" (fail open, never block on our own flakiness). */
-async function checkPackageExists(registry: 'npm' | 'pypi', name: string): Promise<boolean> {
-  if (!name) return true;
-  const url =
-    registry === 'pypi'
-      ? `https://pypi.org/pypi/${encodeURIComponent(name)}/json`
-      : `https://registry.npmjs.org/${name.startsWith('@') ? name.replace('/', '%2f') : encodeURIComponent(name)}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    return res.ok;
-  } catch {
-    return true;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/** Crude but dependency-free HTML → text: drop script/style, strip tags, decode entities. */
-function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr)[^>]*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n\s*\n+/g, '\n\n');
-}

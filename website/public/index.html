@@ -720,7 +720,7 @@
       </div>
       <div class="feature-item">
         <h4>Agent mode</h4>
-        <p>Reads, searches, edits, and runs commands autonomously &mdash; every action gated by permission prompts, one-click revert.</p>
+        <p>Reads, searches, edits, and runs commands autonomously. Shift+Tab cycles how much runs unattended &mdash; Plan (read-only, mutating tools aren&rsquo;t even offered), Confirm, Auto-edit, or Auto &mdash; changeable mid-run, and Auto still stops for anything destructive. One-click revert on everything.</p>
       </div>
       <div class="feature-item">
         <h4>Semantic search</h4>
@@ -732,15 +732,15 @@
       </div>
       <div class="feature-item">
         <h4>Safety guardrails</h4>
-        <p>Untrusted content &mdash; files, URLs, MCP output &mdash; is tagged and quarantined before it reaches the model; hallucinated package installs are checked against the registry and blocked automatically; and agent web fetches can't reach private, loopback, or cloud-metadata addresses, at any redirect hop.</p>
+        <p>Untrusted content &mdash; files, URLs, search results, MCP output &mdash; is tagged and quarantined before it reaches the model; hallucinated package installs are checked against the registry and blocked automatically; and agent web fetches can't reach private, loopback, or cloud-metadata addresses, at any redirect hop.</p>
       </div>
       <div class="feature-item">
         <h4>Granular checkpoints</h4>
         <p>Every tool call gets its own shadow-git snapshot &mdash; rewind any single step, not just the whole turn or the whole session.</p>
       </div>
       <div class="feature-item">
-        <h4>Modes &amp; Plan/Act</h4>
-        <p>Architect, Debug, and Reviewer personas restrict which tools the agent is even offered; an optional plan-then-approve gate holds every change until you say go.</p>
+        <h4>Personas &amp; Plan/Act</h4>
+        <p>Architect, Debug, and Reviewer personas restrict which tools the agent is even offered; an optional plan-then-approve gate holds every change until you say go. Personas and permission modes compose &mdash; whichever is stricter wins.</p>
       </div>
       <div class="feature-item">
         <h4>Sub-agent delegation</h4>
@@ -749,6 +749,14 @@
       <div class="feature-item">
         <h4>AI PR review</h4>
         <p>Reviews a pull request file by file &mdash; never a truncated diff &mdash; then posts line-anchored comments with one-click suggestions via <code>gh</code>, after an explicit confirm. Deep mode adds a verification pass that drops false positives before you see them.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Web search</h4>
+        <p>Off until you configure it. DuckDuckGo needs no key; Brave, Tavily and Serper take one, and a self-hosted SearXNG keeps queries off third-party infrastructure entirely. Results are quarantined as untrusted, same as any fetched page.</p>
+      </div>
+      <div class="feature-item">
+        <h4>Runs on models that can&rsquo;t tool-call</h4>
+        <p>Plenty of local builds have no tool support in their chat template and reject the request outright. Heap Code notices, switches to a text-based tool protocol, and keeps going &mdash; so a model that would otherwise fail mid-task still finishes one.</p>
       </div>
       <div class="feature-item">
         <h4>Terminal CLI</h4>

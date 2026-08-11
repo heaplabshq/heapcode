@@ -10,13 +10,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # No `version:` here — pnpm/action-setup@v4 reads it from package.json's
+      # No `version:` here — pnpm/action-setup@v6 reads it from package.json's
       # "packageManager" field, and errors out if both are set.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -31,7 +31,7 @@ jobs:
         working-directory: packages/vscode
         run: pnpm package
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: heap-code-vsix
           path: packages/vscode/heap-code.vsix
@@ -43,7 +43,7 @@ jobs:
         working-directory: packages/cli
         run: npm pack
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: heapcode-cli-tarball
           path: packages/cli/*.tgz
@@ -58,15 +58,15 @@ jobs:
       VSCE_PAT: ${{ secrets.VSCE_PAT }}
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: heap-code-vsix
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: heapcode-cli-tarball
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             heap-code.vsix
@@ -85,7 +85,7 @@ jobs:
         continue-on-error: true
         run: npx @vscode/vsce publish --packagePath heap-code.vsix
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: ${{ env.NPM_TOKEN != '' }}
         with:
           node-version: 24

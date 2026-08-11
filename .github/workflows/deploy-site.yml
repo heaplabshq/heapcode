@@ -25,17 +25,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No `if: secrets... != ''` guard on purpose. The release job's
       # equivalent guard silently skipped the Marketplace publish when VSCE_PAT
       # wasn't set, and the release looked green while half of it hadn't
       # happened. A missing token here fails loudly instead.
-      # wranglerVersion is pinned because the action defaults to wrangler
-      # 3.90.0, which predates assets-only Workers: with `assets.directory`
-      # and no `main`, 3.x fails with "Missing entry-point" and the site has
-      # never deployed from CI as a result. The config was always correct.
-      - uses: cloudflare/wrangler-action@v3
+      # wranglerVersion stays pinned. wrangler-action@v3 defaulted to 3.90.0,
+      # which predates assets-only Workers — with `assets.directory` and no
+      # `main` it failed with "Missing entry-point", and the site never once
+      # deployed from CI because of it. v4 defaults to a 4.x that works, but
+      # an explicit pin is what stops a future default silently reintroducing
+      # the same class of breakage.
+      - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: website

@@ -26,6 +26,107 @@ function memoryGrants(): PermissionGrantStore & { keys: Set<string> } {
   };
 }
 
+const EXECUTE_TOOL: ToolDefinition = { name: 'run_command', description: 'x', parameters: {}, permission: 'execute' };
+
+/**
+ * The mode is the coarse switch that sits above per-tool grants: it is
+ * consulted first, so a user who just moved the session into auto is not
+ * still prompted for something they never granted individually.
+ */
+describe('PermissionEngine permission modes', () => {
+  it('auto-edit approves a write with no requester at all', async () => {
+    const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => 'auto-edit' });
+    engine.attachRequester(() => Promise.reject(new Error('should not be called')));
+    expect(await engine.request(CALL, WRITE_TOOL, 'write something')).toBe(true);
+  });
+
+  it('auto-edit still asks before running a command', async () => {
+    let asked = 0;
+    const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => 'auto-edit' });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('allow');
+    });
+    expect(await engine.request({ id: '2', name: 'run_command', args: {} }, EXECUTE_TOOL, 'run it')).toBe(true);
+    expect(asked).toBe(1);
+  });
+
+  it('full-auto approves writes and commands without asking', async () => {
+    const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => 'full-auto' });
+    engine.attachRequester(() => Promise.reject(new Error('should not be called')));
+    expect(await engine.request(CALL, WRITE_TOOL, 'write')).toBe(true);
+    expect(await engine.request({ id: '2', name: 'run_command', args: {} }, EXECUTE_TOOL, 'run')).toBe(true);
+  });
+
+  /** The line that makes the Shift+Tab toggle safe to leave on. */
+  it('full-auto still asks before a destructive action', async () => {
+    let asked = 0;
+    const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => 'full-auto' });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('deny');
+    });
+    const call: ToolCall = { id: '3', name: 'delete_file', args: {} };
+    expect(await engine.request(call, DESTRUCTIVE_TOOL, 'rm -rf')).toBe(false);
+    expect(asked).toBe(1);
+  });
+
+  it('plan mode denies a write without asking', async () => {
+    const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => 'plan' });
+    engine.attachRequester(() => Promise.reject(new Error('should not be called')));
+    expect(await engine.request(CALL, WRITE_TOOL, 'write something')).toBe(false);
+  });
+
+  it('plan mode overrides even a persisted "always" grant', async () => {
+    const grants = memoryGrants();
+    grants.keys.add('write.write_file');
+    const engine = new PermissionEngine({ grants, mode: () => 'plan' });
+    engine.attachRequester(() => Promise.reject(new Error('should not be called')));
+    expect(await engine.request(CALL, WRITE_TOOL, 'write something')).toBe(false);
+  });
+
+  it('safe mode wins over an auto mode — every action is asked about again', async () => {
+    let asked = 0;
+    const engine = new PermissionEngine({
+      grants: memoryGrants(),
+      safeMode: () => true,
+      mode: () => 'full-auto',
+    });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('allow');
+    });
+    expect(await engine.request(CALL, WRITE_TOOL, 'write something')).toBe(true);
+    expect(asked).toBe(1);
+  });
+
+  it('reads the mode per request, so a mid-run change takes effect', async () => {
+    let mode: 'default' | 'full-auto' = 'default';
+    let asked = 0;
+    const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => mode });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('allow');
+    });
+    await engine.request(CALL, WRITE_TOOL, 'first');
+    expect(asked).toBe(1);
+    mode = 'full-auto';
+    await engine.request(CALL, WRITE_TOOL, 'second');
+    expect(asked).toBe(1); // no second prompt
+  });
+
+  it('behaves exactly as before when no mode getter is supplied', async () => {
+    let asked = 0;
+    const engine = new PermissionEngine({ grants: memoryGrants() });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('allow');
+    });
+    expect(await engine.request(CALL, WRITE_TOOL, 'write')).toBe(true);
+    expect(asked).toBe(1);
+  });
+});
+
 describe('PermissionEngine', () => {
   it('read-permission tools never prompt', async () => {
     const engine = new PermissionEngine({ grants: memoryGrants() });

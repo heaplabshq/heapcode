@@ -75,7 +75,7 @@ export function activate(context: vscode.ExtensionContext): void {
   profiles.setModelLister((profileName) => link.listModels(profileName));
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, link, track);
   activeChatProvider = chatProvider;
-  const permissions = new PermissionEngine(context.workspaceState, log, track);
+  const permissions = new PermissionEngine(context.workspaceState, log, track, () => chatProvider.permissionMode);
   permissions.attachChatRequester((req) => chatProvider.requestPermissionInChat(req));
   // Ghost text's typing trigger retrieves from this, not from the semantic
   // index: BM25 over the same chunks, no embeddings, no model calls, no I/O
@@ -114,6 +114,7 @@ export function activate(context: vscode.ExtensionContext): void {
     serverOptions,
   );
   chatProvider.agent = agent;
+  agent.permissionMode = () => chatProvider.permissionMode;
   // `idleMs` is decided by the controller per call (the setting, unless the
   // model marked the question as gating an action) and must be forwarded —
   // dropping it here would silently leave every extension question unbounded.

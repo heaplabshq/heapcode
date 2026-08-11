@@ -1,4 +1,5 @@
 import type { PermissionChoice } from '../protocol.js';
+import { resolvePermission, type PermissionMode } from './permissionModes.js';
 import type { PermissionClass, ToolCall, ToolDefinition } from './tools.js';
 
 export interface PermissionRequest {
@@ -32,6 +33,13 @@ export interface PermissionEngineOptions {
   grants: PermissionGrantStore;
   /** Safe Mode forces asking every time, ignoring both grant kinds. */
   safeMode?: () => boolean;
+  /**
+   * The session's current permission mode, read per request so a host can let
+   * the user change it mid-run (Shift+Tab) without rebuilding the engine.
+   * Omitted means "default" — ask for everything but reads, which is what
+   * every caller did before modes existed.
+   */
+  mode?: () => PermissionMode;
   log?: (message: string) => void;
   /** Coarse audit hook — see the note on `audit` below. */
   track?: (name: string, meta?: Record<string, unknown>) => void;
@@ -82,6 +90,20 @@ export class PermissionEngine {
       this.opts.track?.('permission.decision', { tool: call.name, permission: tool.permission, decision });
 
     if (!safeMode) {
+      // The mode is consulted before grants: it is the coarser, more
+      // deliberate switch, and a user who just put the session in auto should
+      // not still be prompted for something they never granted individually.
+      const resolution = resolvePermission(tool.permission, this.opts.mode?.() ?? 'default');
+      if (resolution === 'allow') {
+        this.opts.log?.(`[perm] auto-allowed (${this.opts.mode?.() ?? 'default'} mode): ${description}`);
+        audit('auto-mode');
+        return true;
+      }
+      if (resolution === 'deny') {
+        this.opts.log?.(`[perm] denied by ${this.opts.mode?.() ?? 'default'} mode: ${description}`);
+        audit('deny-mode');
+        return false;
+      }
       if (this.sessionAllowed.has(key)) {
         this.opts.log?.(`[perm] auto-allowed (session grant): ${description}`);
         audit('auto-session');

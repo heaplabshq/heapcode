@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ExtensionToWebview, ProviderProfileConfig, SettingsPresetInfo } from '@heapcode/core';
+import { filterModels } from '@heapcode/core/modelFilter';
 import { postToExtension } from './vscodeApi.js';
 
 export interface SettingsData {
@@ -225,9 +226,7 @@ function ModelPickerInput({
     );
   }
 
-  const filtered = filter.trim()
-    ? models.filter((m) => m.toLowerCase().includes(filter.trim().toLowerCase()))
-    : models;
+  const filtered = filterModels(models, filter);
 
   return (
     <div className="settings-model-picker" ref={ref}>

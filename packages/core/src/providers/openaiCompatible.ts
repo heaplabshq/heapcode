@@ -1,4 +1,10 @@
-import { describeHttpError, ProviderError } from './errors.js';
+import {
+  describeErrorBody,
+  describeHttpError,
+  ProviderBodyError,
+  ProviderError,
+  type ProviderErrorBody,
+} from './errors.js';
 import { sseEvents } from './sse.js';
 import type {
   ChatChunk,
@@ -19,7 +25,37 @@ interface OpenAIStreamToolCall {
   function?: { name?: string; arguments?: string };
 }
 
+/**
+ * A 200 whose body carries an error instead of a reply. Routers do this for
+ * upstream failures — OpenRouter answers 200 with
+ * `{"error":{"message":"Upstream error from Nvidia: ResourceExhausted…"}}`,
+ * and mid-stream sends a chunk with empty `choices` and the same `error`.
+ * Both used to read as "the model replied with nothing": the agent then
+ * nudged, or accepted an empty turn as finished, instead of reporting that
+ * the request never ran. Free/shared endpoints hit this constantly.
+ */
+function throwIfBodyError(body: { error?: ProviderErrorBody } | undefined): void {
+  if (!body?.error) return;
+  const detail = describeErrorBody(body.error);
+  // Carry the embedded code as the status so these get the same retry
+  // treatment as the HTTP status they stand in for — an upstream 502
+  // smuggled inside a 200 is still a transient 502, and on busy shared
+  // endpoints it is the single most common way a request fails.
+  throw new ProviderBodyError(
+    detail || 'The endpoint returned an error with no message.',
+    typeof body.error.code === 'number' ? body.error.code : undefined,
+  );
+}
+
+/** A body error worth another attempt — same statuses fetchOrThrow retries. */
+function isRetryableBodyError(err: unknown): boolean {
+  return (
+    err instanceof ProviderBodyError && err.status !== undefined && RETRYABLE_STATUS.has(err.status)
+  );
+}
+
 interface OpenAIChatCompletionChunk {
+  error?: ProviderErrorBody;
   choices?: Array<{
     delta?: {
       content?: string | null;
@@ -39,6 +75,7 @@ interface OpenAIToolCall {
 }
 
 interface OpenAIChatCompletion {
+  error?: ProviderErrorBody;
   choices?: Array<{
     message?: { content?: string | null; tool_calls?: OpenAIToolCall[] };
     finish_reason?: string | null;
@@ -184,7 +221,34 @@ export class OpenAICompatibleProvider implements Provider {
     }
   }
 
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  /**
+   * Retries an attempt that failed on a retryable error smuggled into a 200
+   * body (see throwIfBodyError). fetchOrThrow's retry layer cannot catch
+   * these: by the time the body is parsed, the response has already come back
+   * 200 and been handed over. Only pass attempts that are safe to repeat —
+   * `canRetry` is how the streaming path refuses once it has emitted tokens.
+   */
+  protected async retryingBodyErrors<T>(
+    signal: AbortSignal | null | undefined,
+    attempt: () => Promise<T>,
+    canRetry: () => boolean = () => true,
+  ): Promise<T> {
+    for (let n = 1; ; n++) {
+      try {
+        return await attempt();
+      } catch (err) {
+        if (n >= MAX_ATTEMPTS || signal?.aborted || !canRetry() || !isRetryableBodyError(err)) throw err;
+        await new Promise((r) => setTimeout(r, Math.min(400 * 2 ** (n - 1) + Math.random() * 200, 10_000)));
+        if (signal?.aborted) throw err;
+      }
+    }
+  }
+
+  chat(req: ChatRequest): Promise<ChatResponse> {
+    return this.retryingBodyErrors(req.signal, () => this.chatOnce(req));
+  }
+
+  private async chatOnce(req: ChatRequest): Promise<ChatResponse> {
     const res = await this.fetchOrThrow(this.chatUrl(req), {
       method: 'POST',
       headers: this.headers(),
@@ -193,6 +257,7 @@ export class OpenAICompatibleProvider implements Provider {
     });
     if (!res.ok) throw await describeHttpError(res);
     const json = (await res.json()) as OpenAIChatCompletion;
+    throwIfBodyError(json);
     const choice = json.choices?.[0];
     const toolCalls = (choice?.message?.tool_calls ?? [])
       .filter((c) => c.function?.name)
@@ -236,6 +301,7 @@ export class OpenAICompatibleProvider implements Provider {
       } catch {
         continue; // tolerate malformed keep-alive lines from lax servers
       }
+      throwIfBodyError(chunk);
       const content = chunk.choices?.[0]?.delta?.content;
       const finishReason = chunk.choices?.[0]?.finish_reason ?? undefined;
       if (content || finishReason) yield { content: content ?? '', finishReason };
@@ -275,9 +341,28 @@ export class OpenAICompatibleProvider implements Provider {
     return { embeddings: data.map((d) => d.embedding ?? []) };
   }
 
-  async chatStreamed(
+  chatStreamed(
     req: ChatRequest,
     onDelta?: (text: string, kind?: 'text' | 'reasoning' | 'tool') => void,
+  ): Promise<ChatResponse> {
+    // Routers commonly answer a stream with nothing but an error chunk when
+    // the upstream is at capacity. Retrying is only safe while the caller has
+    // seen no tokens — once any delta is out, replaying would duplicate it.
+    let emitted = false;
+    const track = (text: string, kind?: 'text' | 'reasoning' | 'tool') => {
+      emitted = true;
+      onDelta?.(text, kind);
+    };
+    return this.retryingBodyErrors(
+      req.signal,
+      () => this.chatStreamedOnce(req, track),
+      () => !emitted,
+    );
+  }
+
+  private async chatStreamedOnce(
+    req: ChatRequest,
+    onDelta: (text: string, kind?: 'text' | 'reasoning' | 'tool') => void,
   ): Promise<ChatResponse> {
     // Timeout applies to time-to-first-byte only; total stream time is unbounded.
     const ttfbMs = this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -319,12 +404,13 @@ export class OpenAICompatibleProvider implements Provider {
       } catch {
         continue;
       }
+      throwIfBodyError(chunk);
       const choice = chunk.choices?.[0];
       const reasoning = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
-      if (reasoning) onDelta?.(reasoning, 'reasoning');
+      if (reasoning) onDelta(reasoning, 'reasoning');
       if (choice?.delta?.content) {
         content += choice.delta.content;
-        onDelta?.(choice.delta.content, 'text');
+        onDelta(choice.delta.content, 'text');
       }
       for (const tc of choice?.delta?.tool_calls ?? []) {
         const slot = toolSlots.get(tc.index ?? 0) ?? { name: '', args: '' };
@@ -332,7 +418,7 @@ export class OpenAICompatibleProvider implements Provider {
         if (tc.function?.name) slot.name += tc.function.name;
         if (tc.function?.arguments) {
           slot.args += tc.function.arguments;
-          onDelta?.(tc.function.arguments, 'tool');
+          onDelta(tc.function.arguments, 'tool');
         }
         toolSlots.set(tc.index ?? 0, slot);
       }

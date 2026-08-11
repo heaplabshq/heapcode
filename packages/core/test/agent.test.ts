@@ -89,6 +89,27 @@ describe('runAgent — native tool calls', () => {
     expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish']);
   });
 
+  it('pairs the tool message to the call id even when the host drops it from the result', async () => {
+    // Live failure: the CLI's run_command built its ToolResult without the
+    // call (id: ''), so the tool message went out with no tool_call_id and
+    // OpenRouter answered 400 "Provider returned error" (upstream: "missing
+    // field `tool_call_id`") on the NEXT request — every session died the
+    // first time the agent ran a shell command.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'call-abc', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'All done.' },
+    ]);
+    const h = harness({
+      execute: (call: ToolCall) => Promise.resolve({ id: '', name: call.name, content: 'exit code: 0' }),
+    });
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    const toolMessage = provider.requests[1]!.messages.find((m) => m.role === 'tool');
+    expect(toolMessage?.toolCallId).toBe('call-abc');
+    // The event stream carries it too — the UI pairs result to call by id.
+    expect(h.results[0]!.id).toBe('call-abc');
+  });
+
   it('unwraps a stray {"arg": {...}} envelope some models consistently emit, so the tool sees the real arguments', async () => {
     // Observed live with a local Gemma fine-tune: every tool call wrapped in
     // an extra "arg" key, never self-correcting even after repeated

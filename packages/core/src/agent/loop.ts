@@ -354,6 +354,15 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         };
       }
     }
+    // The id belongs to the CALL, not to whatever the host chose to put on the
+    // result: it is what pairs the `role: 'tool'` message back to its
+    // `tool_calls` entry on the wire. Hosts that build a result from scratch
+    // have dropped it (the CLI's run_command returned `id: ''`), and the
+    // resulting tool message went out with no tool_call_id at all — OpenRouter
+    // answered `400 "Provider returned error"` (upstream: "missing field
+    // `tool_call_id`") on the *next* request, so every session died the first
+    // time the agent ran a shell command. Restamp here, once, for every host.
+    result = { ...result, id: call.id };
     events.onToolResult(result);
     return result;
   };
@@ -563,7 +572,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
                   isError: true,
                 }
               : await execTool({ id: requested.id, name: requested.name, args: requested.args });
-            messages.push({ role: 'tool', content: result.content, toolCallId: result.id });
+            // Pair off the call's own id (as chat/chatTurn.ts does), never the
+            // result's — see execTool.
+            messages.push({ role: 'tool', content: result.content, toolCallId: requested.id });
           }
           continue;
         }

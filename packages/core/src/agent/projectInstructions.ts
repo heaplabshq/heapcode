@@ -6,6 +6,21 @@ const CONFIG_DIR = '.heapcode';
 const INSTRUCTIONS_DIR = `${CONFIG_DIR}/instructions`;
 const MEMORY_FILE = `${CONFIG_DIR}/memory.md`;
 
+/**
+ * The `/init` task: bootstraps the very files loadProjectInstructions reads
+ * below, so the wording lives next to them rather than in either host. Both
+ * the CLI and the extension run it as an ordinary agent task — it is a
+ * prompt, not a scaffold, so what it writes is only as good as the model.
+ * Shared because a project initialized from the IDE and one initialized from
+ * the terminal must produce the same files with the same sections.
+ */
+export const INIT_TASK =
+  'Initialize this project for Heap Code. Explore the workspace (key files, tech stack, structure, ' +
+  'build/test/run commands, conventions), then: 1) create .heapcode/HEAPCODE.md — concise ' +
+  'project instructions for AI assistants (stack, layout, commands, conventions; under 60 lines); ' +
+  '2) create .heapcode/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
+  '(seed them with anything obvious from the code). Do not modify any other files.';
+
 export const MEMORY_TEMPLATE = `# Heap Code Memory
 
 Notes Heap Code should remember about this project. Loaded into every chat and

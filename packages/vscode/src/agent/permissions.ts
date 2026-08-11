@@ -4,6 +4,7 @@ import {
   type PermissionChoice,
   type PermissionClass,
   type PermissionGrantStore,
+  type PermissionMode,
   type PermissionRequest,
 } from '@heapcode/core';
 
@@ -27,9 +28,12 @@ export class PermissionEngine extends CorePermissionEngine {
     state: vscode.Memento,
     log?: vscode.OutputChannel,
     track?: (name: string, meta?: Record<string, unknown>) => void,
+    /** The chat view's current permission mode — read per request, so the mode chip takes effect mid-run. */
+    mode?: () => PermissionMode,
   ) {
     super({
       grants: mementoGrantStore(state),
+      mode,
       safeMode: () => vscode.workspace.getConfiguration('heapcode.agent').get<boolean>('safeMode', false),
       log: log ? (message) => log.appendLine(message) : undefined,
       track,

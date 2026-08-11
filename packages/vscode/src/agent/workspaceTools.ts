@@ -514,7 +514,10 @@ export class WorkspaceToolExecutor {
             );
           }
         }
-        return this.runCommand(command, signal);
+        // runCommand builds its result without the call (id: ''); restamp it,
+        // as run_tests below already does — a tool result with no id cannot be
+        // paired back to its tool_calls entry on the wire.
+        return { ...(await this.runCommand(command, signal)), id: call.id };
       }
       case 'run_tests': {
         const result = await this.runCommand(a.command ?? '', signal);

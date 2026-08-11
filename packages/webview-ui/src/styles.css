@@ -1393,6 +1393,29 @@ select.settings-input {
   opacity: 0.55;
 }
 
+/*
+ * The permission chip is the one composer control whose value changes what
+ * runs without asking, so unlike its neighbours it stays legible rather than
+ * receding into descriptionForeground — and the two modes that relax or
+ * remove prompting are colour-coded (warning for Auto, which can run
+ * commands unattended; charts.blue for the read-only end).
+ */
+.permission-chip {
+  font-weight: 600;
+}
+
+.permission-chip.permission-plan {
+  color: var(--vscode-charts-blue, #3794ff);
+}
+
+.permission-chip.permission-auto-edit {
+  color: var(--vscode-charts-green, #89d185);
+}
+
+.permission-chip.permission-full-auto {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
 .mode-chip:hover,
 .model-chip:hover {
   color: var(--vscode-foreground);

@@ -8,8 +8,11 @@ import {
   COMPACTION_THRESHOLD,
   createProvider,
   DEFAULT_IGNORE_GLOB,
+  DEFAULT_PERMISSION_MODE,
+  type PermissionMode,
   estimateMessagesTokens,
   IdleDeadline,
+  INIT_TASK,
   isAbortError,
   parseSlashCommand,
   providerPresets,
@@ -49,13 +52,6 @@ import type { ShadowGit } from './agent/shadowGit.js';
 import type { ProfileManager } from './profileManager.js';
 import type { ServerLink } from './serverLink.js';
 
-const INIT_TASK =
-  'Initialize this project for Heap Code. Explore the workspace (key files, tech stack, structure, ' +
-  'build/test/run commands, conventions), then: 1) create .heapcode/HEAPCODE.md — concise ' +
-  'project instructions for AI assistants (stack, layout, commands, conventions; under 60 lines); ' +
-  '2) create .heapcode/memory.md with sections "## Coding style", "## Architecture", "## Preferences" ' +
-  '(seed them with anything obvious from the code). Do not modify any other files.';
-
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 10_000_000;
@@ -81,6 +77,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   agent?: AgentController;
   /** Workspace checkpoints for prompt editing; unset when git is unavailable. */
   shadowGit?: ShadowGit;
+  /**
+   * How much this chat session may do without asking. Deliberately in memory
+   * only — not workspaceState, not settings: a mode that auto-approves edits
+   * should never be silently inherited by tomorrow's window, so it resets to
+   * "Ask" whenever the extension host restarts. Both the permission engine
+   * and the agent controller read it through getters, so a change lands on a
+   * run already in flight.
+   */
+  permissionMode: PermissionMode = DEFAULT_PERMISSION_MODE;
 
   private pendingPermissions = new Map<string, (choice: PermissionChoice | undefined) => void>();
   private pendingQuestions = new Map<string, (answer: string | undefined) => void>();
@@ -440,6 +445,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ...this.allPrompts().map((p) => ({ command: p.command, title: p.title })),
         { command: 'init', title: 'Set up HEAPCODE.md & project memory (agent)' },
       ],
+      permissionMode: this.permissionMode,
     });
     this.postActiveFile();
   }
@@ -589,6 +595,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'setProfile':
         await this.profiles.setActiveByName(msg.name);
+        break;
+      case 'setPermissionMode':
+        this.permissionMode = msg.mode;
+        this.track?.('permission.mode.changed', { mode: msg.mode, via: 'chat' });
+        this.postConfig();
         break;
       case 'settingsLoad':
         await this.postSettingsData();

@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import {
   PermissionEngine as CorePermissionEngine,
   type PermissionGrantStore,
+  type PermissionMode,
   type PermissionRequester,
 } from '@heapcode/core';
 
@@ -22,8 +23,9 @@ export class PermissionEngine extends CorePermissionEngine {
     safeMode: () => boolean = () => false,
     log: (message: string) => void = () => {},
     track?: (name: string, meta?: Record<string, unknown>) => void,
+    mode?: () => PermissionMode,
   ) {
-    super({ grants: jsonGrantStore(grantsFile), safeMode, log, track, resetHint: '/permissions reset' });
+    super({ grants: jsonGrantStore(grantsFile), safeMode, log, track, mode, resetHint: '/permissions reset' });
   }
 }
 

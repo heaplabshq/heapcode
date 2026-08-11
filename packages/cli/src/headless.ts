@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import {
   ASK_USER_NO_ANSWER,
+  DEFAULT_PERMISSION_MODE,
   METHODS,
+  applyModeToPersona,
   filterToolsForPersona,
   getPersona,
-  intersectPersonas,
   resolveCapabilities,
   resolveContextWindow,
+  resolveUnattended,
+  type PermissionMode,
   type AgentEvent,
   type AgentEventParams,
   type AgentOutcome,
@@ -40,28 +43,18 @@ import { connectToServer, type ConnectOptions } from './server/client.js';
 import { cliVersion } from './version.js';
 
 /**
- * A closed, small set of non-interactive permission policies — deliberately
- * not a free-form allowlist DSL, to keep the safety surface reviewable.
- * There is no human to prompt in headless mode, so every mode must resolve
- * every permission decision on its own:
- *   plan      — read-only tools only; nothing to approve, nothing offered
- *               that could mutate anything.
- *   default   — every tool is offered so the model can see what exists and
- *               explain what it would need, but write/execute/destructive
- *               calls are denied (the agent adapts or finishes with a
- *               report) — the safe choice when no mode is specified.
- *   auto-edit — file edits auto-approved; shell commands still denied.
- *   full-auto — everything auto-approved. For CI automation that's meant
- *               to actually finish a task unattended.
+ * The permission modes are core's now (agent/permissionModes.ts) — the
+ * terminal UI and the extension toggle between the same four, so the policy
+ * cannot live here. Re-exported because `--permission-mode` is this module's
+ * public surface and callers already import the type from it.
+ *
+ * There is no human to prompt in headless mode, so `resolveUnattended` is
+ * what turns core's allow/ask/deny into a yes or no: everything fails closed
+ * except under full-auto, the mode whose entire purpose is finishing a run
+ * with nobody watching. That keeps CI behavior exactly as documented while
+ * the interactive hosts resolve the same `ask` by putting up a prompt.
  */
-export type PermissionMode = 'plan' | 'default' | 'auto-edit' | 'full-auto';
-
-function autoApprove(permission: PermissionClass, mode: PermissionMode): boolean {
-  if (permission === 'read') return true;
-  if (mode === 'full-auto') return true;
-  if (mode === 'auto-edit') return permission === 'write';
-  return false; // 'default' and 'plan' (plan additionally never offers non-read tools at all)
-}
+export type { PermissionMode };
 
 export interface HeadlessOptions {
   prompt: string;
@@ -171,13 +164,10 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
     await Promise.all([repoMapIndexer.init(), mcpManager.ensureConnected()]);
 
-    const mode: PermissionMode = opts.permissionMode ?? 'default';
-    // "plan" forces read-only regardless of the chosen persona — the same
-    // effect as always intersecting with Architect, reusing the exact logic
-    // that already keeps a restricted parent from granting a sub-agent more
-    // than it has itself.
-    let persona = getPersona(opts.personaId);
-    if (mode === 'plan') persona = intersectPersonas(persona, getPersona('architect'));
+    const mode: PermissionMode = opts.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    // "plan" forces read-only regardless of the chosen persona — see
+    // applyModeToPersona, which the interactive hosts call at the same point.
+    const persona = applyModeToPersona(getPersona(opts.personaId), mode);
 
     const mcpTools = mcpManager.getToolDefinitions();
     // delegate_task is always OFFERED so the model can see it exists and
@@ -242,7 +232,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       // informative error server-side — a generic permission denial here
       // would hide from the model WHY delegation can't happen.
       if (call.name === 'delegate_task' && !opts.subAgents) return { granted: true } satisfies PermissionRequestResult;
-      const decision = autoApprove(permission, mode);
+      const decision = resolveUnattended(permission, mode);
       if (permission !== 'read') {
         void audit.track('permission.decision', { tool: call.name, permission, decision: decision ? 'auto-allow' : 'auto-deny' });
       }

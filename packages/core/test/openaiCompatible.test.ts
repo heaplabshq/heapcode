@@ -186,6 +186,168 @@ describe('OpenAICompatibleProvider.chat', () => {
   });
 });
 
+/**
+ * Routers answer 200-with-an-error-body for upstream failures instead of a
+ * failing status, and bury the upstream provider's real message in
+ * metadata.raw. Both were losing information: an unactionable "Provider
+ * returned error", or (on 200) a silent empty reply the agent read as a real
+ * turn. Shapes below are verbatim from live OpenRouter responses.
+ */
+describe('gateway error bodies', () => {
+  const upstreamError = {
+    error: {
+      message: 'Provider returned error',
+      code: 400,
+      metadata: {
+        raw: '{"error":{"message":"missing field `tool_call_id`","type":"Bad Request","code":400}}',
+        provider_name: 'Nvidia',
+      },
+    },
+  };
+
+  it('surfaces the upstream provider message hidden in metadata.raw on a 4xx', async () => {
+    server = await startMockServer({ kind: 'json', status: 400, body: upstreamError });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(provider.chat({ model: 'm', messages: [] })).rejects.toThrow(
+      /Provider returned error \(Nvidia: missing field `tool_call_id`\)/,
+    );
+  });
+
+  /**
+   * The shape a listed-but-dead model produces, captured live from
+   * OpenRouter for `nvidia/nemotron-3-ultra-550b-a55b:free`: a 404 whose only
+   * useful content is the provider name, with `raw` empty. The base URL and
+   * model slug both resolved — the generic 404 copy sends users to check the
+   * two things that are provably fine.
+   */
+  const deadUpstream = {
+    error: {
+      message: 'Provider returned error',
+      code: 404,
+      metadata: { raw: '', provider_name: 'Nvidia', is_byok: false },
+    },
+  };
+
+  it('attributes the upstream provider on a 404 even when metadata.raw is empty', async () => {
+    server = await startMockServer({ kind: 'json', status: 404, body: deadUpstream });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(provider.chat({ model: 'm', messages: [] })).rejects.toThrow(
+      /Provider returned error \(Nvidia\)/,
+    );
+  });
+
+  it('blames the upstream, not the base URL, when a 404 names a provider', async () => {
+    server = await startMockServer({ kind: 'json', status: 404, body: deadUpstream });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const err = await provider.chat({ model: 'm', messages: [] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).message).toMatch(/Model unavailable upstream \(404\)/);
+    expect((err as ProviderError).message).not.toMatch(/Check the base URL/);
+  });
+
+  it('still points at the base URL on a 404 with no upstream attribution', async () => {
+    server = await startMockServer({
+      kind: 'json',
+      status: 404,
+      body: { error: { message: 'Not Found' } },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(provider.chat({ model: 'm', messages: [] })).rejects.toThrow(
+      /Endpoint or model not found \(404\)\. Check the base URL and model name\./,
+    );
+  });
+
+  it('fails loudly on a 200 whose body carries an error instead of a reply', async () => {
+    server = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: {
+        error: { message: 'Upstream error from Nvidia: ResourceExhausted', code: 502 },
+        choices: [],
+      },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(provider.chat({ model: 'm', messages: [] })).rejects.toThrow(/ResourceExhausted/);
+  });
+
+  it('retries a body error that stands in for a retryable status, then succeeds', async () => {
+    server = await startMockServer({
+      kind: 'sequence',
+      responses: [
+        {
+          kind: 'json',
+          status: 200,
+          body: { error: { message: 'Upstream error: ResourceExhausted', code: 502 }, choices: [] },
+        },
+        { kind: 'json', status: 200, body: { choices: [{ message: { content: 'answer' } }] } },
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    const res = await provider.chat({ model: 'm', messages: [] });
+    expect(res.content).toBe('answer');
+    expect(server.requests.length).toBe(2);
+  });
+
+  it('does not retry a body error whose code is not retryable', async () => {
+    server = await startMockServer({ kind: 'json', status: 200, body: upstreamError });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(provider.chat({ model: 'm', messages: [] })).rejects.toThrow(/tool_call_id/);
+    expect(server.requests.length).toBe(1);
+  });
+
+  it('gives up after 3 attempts, not 3 × fetchOrThrow\'s own 3', async () => {
+    server = await startMockServer({
+      kind: 'sequence',
+      responses: [
+        {
+          kind: 'json',
+          status: 200,
+          body: { error: { message: 'Upstream error: ResourceExhausted', code: 502 }, choices: [] },
+        },
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(provider.chat({ model: 'm', messages: [] })).rejects.toThrow(/ResourceExhausted/);
+    expect(server.requests.length).toBe(3);
+  });
+
+  it('does not replay a stream that already emitted tokens before the error chunk', async () => {
+    server = await startMockServer({
+      kind: 'sse-raw',
+      events: [
+        JSON.stringify({ choices: [{ delta: { content: 'partial' } }] }),
+        JSON.stringify({
+          choices: [],
+          error: { message: 'Upstream error: ResourceExhausted', code: 502 },
+        }),
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(provider.chatStreamed({ model: 'm', messages: [] })).rejects.toThrow(
+      /ResourceExhausted/,
+    );
+    // Retrying would have re-emitted "partial" on top of what the caller saw.
+    expect(server.requests.length).toBe(1);
+  });
+
+  it('fails loudly on an error chunk delivered mid-stream', async () => {
+    server = await startMockServer({
+      kind: 'sse-raw',
+      events: [
+        JSON.stringify({ choices: [{ delta: { content: 'partial' } }] }),
+        JSON.stringify({
+          choices: [],
+          error: { message: 'Upstream error from Nvidia: ResourceExhausted', code: 502 },
+        }),
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    await expect(
+      provider.chatStreamed({ model: 'm', messages: [] }),
+    ).rejects.toThrow(/ResourceExhausted/);
+  });
+});
+
 describe('OpenAICompatibleProvider.listModels', () => {
   it('lists model ids', async () => {
     server = await startMockServer({

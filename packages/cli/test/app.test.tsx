@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ChatResponse, Conversation, McpManager, Provider, ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
-import { HeapcodeServer } from '@heapcode/core';
+import { HeapcodeServer, INIT_TASK } from '@heapcode/core';
 import { SecretsStore } from '../src/config/secrets.js';
 import { ConfigStore } from '../src/config/store.js';
 import { JsonConversationStore } from '../src/history/store.js';
@@ -58,6 +58,8 @@ interface ModelServer {
   toolReply(calls: Array<{ name: string; args: unknown }>): void;
   reply(text: string): void;
   script(texts: string[]): void;
+  /** What GET /models answers — what `/model`'s picker lists. */
+  setModels(ids: string[]): void;
   close(): Promise<void>;
 }
 
@@ -68,6 +70,7 @@ async function startModelServer(): Promise<ModelServer> {
   const embeddingCalls: string[][] = [];
   const nonStreamedChats: ModelServer['nonStreamedChats'] = [];
   let nonStreamedToolCalls: Array<{ name: string; args: unknown }> = [];
+  let models: string[] = [];
   const server: Server = createServer((req, res) => {
     let raw = '';
     req.on('data', (d) => (raw += d));
@@ -80,6 +83,11 @@ async function startModelServer(): Promise<ModelServer> {
       // endpoint now that RAG runs in the server. Only *streamed* chat is an
       // agent turn, so only that advances the script and is recorded — the
       // rest would otherwise desync every scripted test.
+      if (req.method === 'GET' && req.url?.endsWith('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
+        return;
+      }
       if (req.url?.includes('/embeddings')) {
         embeddingCalls.push(body.input ?? []);
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -136,6 +144,9 @@ async function startModelServer(): Promise<ModelServer> {
     script: (texts) => {
       script = texts;
       call = 0;
+    },
+    setModels: (ids) => {
+      models = ids;
     },
     close: () =>
       new Promise((resolve) => {
@@ -295,6 +306,8 @@ function renderApp(overrides: {
   onSessionChange?(id: string): void;
   checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
   askUserIdleMs?: number;
+  permissionMode?: React.ComponentProps<typeof App>['permissionMode'];
+  onPermissionModeChange?: React.ComponentProps<typeof App>['onPermissionModeChange'];
   /** Overrides the harness's in-process server — used by the autostart test. */
   server?: React.ComponentProps<typeof App>['server'];
 }) {
@@ -325,6 +338,8 @@ function renderApp(overrides: {
       checkUpdate={overrides.checkUpdate}
       secretsStore={secretsStore}
       askUserIdleMs={overrides.askUserIdleMs}
+      permissionMode={overrides.permissionMode}
+      onPermissionModeChange={overrides.onPermissionModeChange}
       server={overrides.server ?? serverOpts}
     />,
   );
@@ -1011,6 +1026,167 @@ exit 0
     expect(lastFrame()).toContain('other  (ollama, llama)');
   });
 
+  /**
+   * The picker used to be a plain arrow-key list, which on a provider that
+   * lists hundreds of models (OpenRouter is past 400) means paging to reach an
+   * id the user can already name. Typing narrows it, and the terms need not be
+   * contiguous — "nvidia ultra" is nowhere in the id as one run.
+   */
+  it('/model filters the fetched list as you type and picks the match', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const configStore = new ConfigStore(join(root, 'config.json'));
+    await configStore.saveProfile(profile);
+    model.setModels([
+      'openai/gpt-4o-mini',
+      'nvidia/nemotron-3-ultra-550b-a55b:free',
+      'anthropic/claude-opus-4',
+    ]);
+
+    const { stdin, lastFrame } = renderApp({
+      provider: fakeProvider('unused'),
+      conversation,
+      historyStore,
+      configStore,
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/model');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('Select a model'), { timeout: 2_000 });
+    expect(lastFrame()).toContain('anthropic/claude-opus-4');
+
+    stdin.write('nvidia ultra');
+    await vi.waitFor(
+      () => expect(lastFrame()).toContain('❯ nvidia/nemotron-3-ultra-550b-a55b:free'),
+      { timeout: 2_000 },
+    );
+    expect(lastFrame()).not.toContain('anthropic/claude-opus-4');
+    expect(lastFrame()).not.toContain('openai/gpt-4o-mini');
+
+    stdin.write('\r');
+    await vi.waitFor(
+      () => expect(lastFrame()).toContain('Model set to nvidia/nemotron-3-ultra-550b-a55b:free'),
+      { timeout: 2_000 },
+    );
+    expect((await configStore.listProfiles()).find((p) => p.name === 'test')?.model).toBe(
+      'nvidia/nemotron-3-ultra-550b-a55b:free',
+    );
+  });
+
+  /**
+   * Shift+Tab arrives as the backtab sequence (ESC [ Z), which Ink reports as
+   * key.tab + key.shift — plain Tab stays the composer's slash completion.
+   */
+  describe('permission modes', () => {
+    const SHIFT_TAB = '\x1B[Z';
+
+    it('starts in Ask and cycles on Shift+Tab, showing the mode in the footer', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(lastFrame()).toContain('[Ask]');
+
+      stdin.write(SHIFT_TAB);
+      await vi.waitFor(() => expect(lastFrame()).toContain('[Auto-edit]'), { timeout: 2_000 });
+      stdin.write(SHIFT_TAB);
+      await vi.waitFor(() => expect(lastFrame()).toContain('[Auto]'), { timeout: 2_000 });
+      stdin.write(SHIFT_TAB);
+      await vi.waitFor(() => expect(lastFrame()).toContain('[Plan]'), { timeout: 2_000 });
+      stdin.write(SHIFT_TAB);
+      await vi.waitFor(() => expect(lastFrame()).toContain('[Ask]'), { timeout: 2_000 });
+    });
+
+    it('reports each change to the host, which is what the permission engine reads', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const changes: string[] = [];
+      const { stdin } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+        onPermissionModeChange: (mode) => changes.push(mode),
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write(SHIFT_TAB);
+      stdin.write(SHIFT_TAB);
+      await vi.waitFor(() => expect(changes).toEqual(['auto-edit', 'full-auto']), { timeout: 2_000 });
+    });
+
+    it('honours --permission-mode as the starting point of the cycle', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+        permissionMode: 'plan',
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(lastFrame()).toContain('[Plan]');
+      stdin.write(SHIFT_TAB);
+      await vi.waitFor(() => expect(lastFrame()).toContain('[Ask]'), { timeout: 2_000 });
+    });
+
+    it('/mode sets a mode directly and reports it', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const changes: string[] = [];
+      const { stdin, lastFrame } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+        onPermissionModeChange: (mode) => changes.push(mode),
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('/mode full-auto');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Permission mode: Auto'), { timeout: 2_000 });
+      expect(changes).toEqual(['full-auto']);
+      expect(lastFrame()).toContain('[Auto]');
+    });
+
+    it('/mode rejects an unknown mode without changing anything', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const changes: string[] = [];
+      const { stdin, lastFrame } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+        onPermissionModeChange: (mode) => changes.push(mode),
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('/mode yolo');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('No permission mode "yolo"'), { timeout: 2_000 });
+      expect(changes).toEqual([]);
+      expect(lastFrame()).toContain('[Ask]');
+    });
+
+    it('leaves plain Tab to the composer rather than cycling', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const changes: string[] = [];
+      const { stdin, lastFrame } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+        onPermissionModeChange: (mode) => changes.push(mode),
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('\t');
+      await new Promise((r) => setTimeout(r, 60));
+      expect(changes).toEqual([]);
+      expect(lastFrame()).toContain('[Ask]');
+    });
+  });
+
   it('/resume with no saved conversations reports that', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = new JsonConversationStore(join(root, 'conversations.json'));
@@ -1139,6 +1315,27 @@ exit 0
     expect(task).toContain('Explain the following code');
     expect(task).toContain('src/utils.ts');
     expect(lastFrame()).toContain('/explain src/utils.ts'); // transcript shows what the user typed
+  });
+
+  it('/init sends core\'s shared INIT_TASK while the transcript shows just the command', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const provider = recordingProvider('Created the files.');
+
+    const { stdin, lastFrame } = renderApp({ provider, conversation, historyStore });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('/init');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(provider.requests.length).toBeGreaterThan(0), { timeout: 2_000 });
+
+    // The literal string "/init" must never reach the model — the extension
+    // expands it the same way, from this same constant.
+    const task = provider.requests[0]!.at(-1)!.content;
+    expect(task).toContain(INIT_TASK);
+    expect(task).toContain('.heapcode/HEAPCODE.md');
+    expect(task).toContain('.heapcode/memory.md');
+    expect(lastFrame()).toContain('/init');
   });
 
   it('/review runs read-only even under the default Agent persona — the template says "point out", not "fix"', async () => {

@@ -11,6 +11,8 @@ import {
   type RagIndexParams,
   type RagIndexResult,
   connectToServer,
+  applyModeToPersona,
+  DEFAULT_PERMISSION_MODE,
   filterToolsForPersona,
   getPersona,
   lineDiffStats,
@@ -26,6 +28,7 @@ import {
   type KeyRequestResult,
   type McpManager,
   type FileEditInfo,
+  type PermissionMode,
   type PermissionRequestParams,
   type PermissionRequestResult,
   type ServerConnection,
@@ -158,6 +161,13 @@ export class AgentController {
 
     return groups;
   }
+
+  /**
+   * The chat view's current permission mode. Assigned after construction
+   * (the view and the controller are built in either order, same as `agent`
+   * and `shadowGit`), and read per task so a mid-session change applies.
+   */
+  permissionMode?: () => PermissionMode;
 
   constructor(
     private readonly profiles: ProfileManager,
@@ -427,7 +437,9 @@ export class AgentController {
     }
     // A fresh task (not a plan resume) invalidates any previously pending plan.
     if (!opts?.resumePlanText) this.pendingPlan = undefined;
-    const persona = getPersona(opts?.personaId);
+    // Plan mode narrows the persona to read-only, so the model is never
+    // offered a tool the permission engine would only deny at call time.
+    const persona = applyModeToPersona(getPersona(opts?.personaId), this.permissionMode?.() ?? DEFAULT_PERMISSION_MODE);
 
     // resolveRoleProfile, not resolveRole: the agent path no longer builds a
     // host-side Provider at all — the server resolves the profile to one

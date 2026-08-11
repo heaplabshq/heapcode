@@ -1,5 +1,6 @@
 import type { ConversationMeta } from './history/types.js';
 import type { ProviderProfileConfig } from './config/profiles.js';
+import type { PermissionMode } from './agent/permissionModes.js';
 
 /**
  * Typed message protocol between the VS Code extension host and the webview UI.
@@ -82,6 +83,8 @@ export type WebviewToExtension =
   | { type: 'listModels' }
   | { type: 'setModel'; model: string }
   | { type: 'setProfile'; name: string }
+  /** Shift+Tab in the chat input, or a click on the mode chip. */
+  | { type: 'setPermissionMode'; mode: PermissionMode }
   | { type: 'permissionResponse'; id: string; choice: PermissionChoice }
   | { type: 'agentQuestionResponse'; id: string; answer: string }
   /**
@@ -159,6 +162,8 @@ export type ExtensionToWebview =
       profile: string;
       model: string;
       slashCommands: SlashCommandInfo[];
+      /** Current permission mode, so the chat view can render its chip and Shift+Tab from real state. */
+      permissionMode: PermissionMode;
     }
   | { type: 'chunk'; text: string }
   | { type: 'done' }

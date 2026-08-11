@@ -7,6 +7,14 @@ import type {
   PermissionChoice,
   SlashCommandInfo,
 } from '@heapcode/core';
+import { filterModels } from '@heapcode/core/modelFilter';
+import {
+  DEFAULT_PERMISSION_MODE,
+  PERMISSION_MODE_INFO,
+  cyclePermissionMode,
+  getPermissionModeInfo,
+  type PermissionMode,
+} from '@heapcode/core/permissionModes';
 import { postToExtension } from './vscodeApi.js';
 import { renderMarkdown } from './markdown.js';
 import { SettingsView, type SettingsData } from './SettingsView.js';
@@ -393,6 +401,7 @@ interface Config {
   profile: string;
   model: string;
   slashCommands: SlashCommandInfo[];
+  permissionMode: PermissionMode;
 }
 
 export function App() {
@@ -428,6 +437,7 @@ export function App() {
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
   const modePickerRef = useRef<HTMLDivElement>(null);
+  const permissionPickerRef = useRef<HTMLDivElement>(null);
   const plusPickerRef = useRef<HTMLDivElement>(null);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const toolsPickerRef = useRef<HTMLDivElement>(null);
@@ -441,6 +451,7 @@ export function App() {
   >([]);
   const [collapsedToolGroups, setCollapsedToolGroups] = useState<Record<string, boolean>>({});
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [persona, setPersona] = useState('agent');
 
@@ -458,11 +469,12 @@ export function App() {
 
   // Popover dismissal: Esc anywhere, or clicking outside the open picker.
   useEffect(() => {
-    if (!modelMenu && !modeMenuOpen && !plusMenuOpen && !toolsMenuOpen) return;
+    if (!modelMenu && !modeMenuOpen && !permissionMenuOpen && !plusMenuOpen && !toolsMenuOpen) return;
     const closeAll = () => {
       setModelMenu(null);
       setModelFilter('');
       setModeMenuOpen(false);
+      setPermissionMenuOpen(false);
       setPlusMenuOpen(false);
       setToolsMenuOpen(false);
     };
@@ -474,6 +486,7 @@ export function App() {
       if (
         !modelPickerRef.current?.contains(target) &&
         !modePickerRef.current?.contains(target) &&
+        !permissionPickerRef.current?.contains(target) &&
         !plusPickerRef.current?.contains(target) &&
         !toolsPickerRef.current?.contains(target)
       ) {
@@ -486,7 +499,7 @@ export function App() {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onMouseDown);
     };
-  }, [modelMenu, modeMenuOpen, plusMenuOpen, toolsMenuOpen]);
+  }, [modelMenu, modeMenuOpen, permissionMenuOpen, plusMenuOpen, toolsMenuOpen]);
 
   // Focus the model-filter input once the list loads — preventScroll avoids
   // the browser's default "scroll the focused element into view", which in
@@ -518,7 +531,12 @@ export function App() {
       const msg = event.data;
       switch (msg.type) {
         case 'config':
-          setConfig({ profile: msg.profile, model: msg.model, slashCommands: msg.slashCommands });
+          setConfig({
+            profile: msg.profile,
+            model: msg.model,
+            slashCommands: msg.slashCommands,
+            permissionMode: msg.permissionMode,
+          });
           break;
         case 'activeFile':
           setCurrentFile(msg.path);
@@ -814,6 +832,11 @@ export function App() {
     if (!el) return;
     nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
+
+  // The extension owns the mode (its permission engine reads the same value),
+  // so the chip renders from pushed config rather than local state — no
+  // optimistic toggle that could disagree with what actually gets enforced.
+  const permissionMode = config?.permissionMode ?? DEFAULT_PERMISSION_MODE;
 
   const slashMatches = useMemo(() => {
     if (!config || !input.startsWith('/') || input.includes(' ') || input.includes('\n')) return [];
@@ -1481,6 +1504,18 @@ export function App() {
               }
             }}
             onKeyDown={(e) => {
+              // Shift+Tab cycles the permission mode, matching the terminal.
+              // preventDefault stops it moving focus out of the composer,
+              // which is the browser default and would make the shortcut feel
+              // like it did nothing.
+              if (e.key === 'Tab' && e.shiftKey) {
+                e.preventDefault();
+                postToExtension({
+                  type: 'setPermissionMode',
+                  mode: cyclePermissionMode(config?.permissionMode ?? DEFAULT_PERMISSION_MODE),
+                });
+                return;
+              }
               if (e.key === 'Escape' && editing !== null) {
                 setEditing(null);
                 setInput('');
@@ -1591,6 +1626,34 @@ export function App() {
                 ▾
               </button>
             </div>
+            <div className="mode-picker" ref={permissionPickerRef}>
+              {permissionMenuOpen && (
+                <div className="model-menu mode-menu">
+                  <div className="menu-section">Permissions · Shift+Tab</div>
+                  {PERMISSION_MODE_INFO.map((info) => (
+                    <button
+                      key={info.id}
+                      className={`menu-item${permissionMode === info.id ? ' active' : ''}`}
+                      onClick={() => {
+                        postToExtension({ type: 'setPermissionMode', mode: info.id });
+                        setPermissionMenuOpen(false);
+                      }}
+                    >
+                      {permissionMode === info.id ? '✓ ' : ''}
+                      {info.label}
+                      <span className="menu-hint"> — {info.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                className={`mode-chip permission-chip permission-${permissionMode}`}
+                title={`${getPermissionModeInfo(permissionMode).hint} (Shift+Tab)`}
+                onClick={() => setPermissionMenuOpen((v) => !v)}
+              >
+                {getPermissionModeInfo(permissionMode).label} ▾
+              </button>
+            </div>
             <div className="model-picker" ref={modelPickerRef}>
               {modelMenu && (
                 <div className="model-menu">
@@ -1647,11 +1710,7 @@ export function App() {
                       <div className="menu-note">Could not list models</div>
                     )}
                     {(() => {
-                      const filtered = modelFilter.trim()
-                        ? modelMenu.models.filter((id) =>
-                            id.toLowerCase().includes(modelFilter.trim().toLowerCase()),
-                          )
-                        : modelMenu.models;
+                      const filtered = filterModels(modelMenu.models, modelFilter);
                       if (!modelMenu.loading && modelMenu.models.length > 0 && filtered.length === 0) {
                         return <div className="menu-note">No models match "{modelFilter}"</div>;
                       }

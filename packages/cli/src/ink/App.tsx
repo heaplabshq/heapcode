@@ -7,12 +7,20 @@ import { useTerminalColumns } from './useTerminalColumns.js';
 import {
   builtinPrompts,
   BUILTIN_PERSONAS,
+  DEFAULT_PERMISSION_MODE,
+  PERMISSION_MODES,
+  PERMISSION_MODE_INFO,
+  applyModeToPersona,
+  cyclePermissionMode,
   filterToolsForPersona,
+  getPermissionModeInfo,
   getPersona,
   intersectPersonas,
+  isPermissionMode,
   ASK_USER_COUNTDOWN_MS,
   ASK_USER_NO_ANSWER,
   IdleDeadline,
+  INIT_TASK,
   METHODS,
   askUserAnswerMessage,
   askUserBlocksAction,
@@ -31,6 +39,7 @@ import {
   type ListModelsResult,
   type McpManager,
   type PermissionChoice,
+  type PermissionMode,
   type PermissionRequestParams,
   type PermissionRequestResult,
   type ProviderProfileConfig,
@@ -69,6 +78,7 @@ import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import { DELEGATE_TASK_TOOL } from '../agent/delegate.js';
 import { connectToServer, type ConnectOptions, type ServerConnection } from '../server/client.js';
 import { Composer, type SlashCommand } from './Composer.js';
+import { FilterableList } from './FilterableList.js';
 import { Header } from './Header.js';
 import { Setup } from './Setup.js';
 import { MessageView } from './MessageView.js';
@@ -90,7 +100,9 @@ const COMMANDS: SlashCommand[] = [
   { name: '/model', args: '[id]', description: 'Switch the model (fetches the provider’s list)' },
   { name: '/profile', args: '[add|list|remove|name]', description: 'Switch, add, list, or remove provider profiles' },
   { name: '/persona', args: '[name]', description: 'Switch persona: agent, architect, debug, reviewer' },
+  { name: '/mode', args: '[name]', description: 'Permission mode: plan, default, auto-edit, full-auto (Shift+Tab cycles)' },
   { name: '/settings', description: 'Show current configuration' },
+  { name: '/init', description: 'Set up .heapcode/HEAPCODE.md & memory.md for this project (runs as an agent task)' },
   { name: '/memory', description: 'Show the project instructions & memory the agent sees' },
   { name: '/skills', description: 'List available Skills' },
   { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
@@ -125,6 +137,12 @@ function escapeRegExp(s: string): string {
 interface Picker {
   title: string;
   items: Array<{ label: string; value: string }>;
+  /**
+   * Renders a type-to-filter list instead of a plain arrow-key one. Only for
+   * lists long enough to need it — on a short confirm ("yes"/"no") swallowing
+   * keystrokes into a filter box would be surprising, not helpful.
+   */
+  filterable?: boolean;
   onPick(value: string): void;
   /** Called when the picker is dismissed with esc/ctrl+c instead of picked. Required by any caller awaiting a choice — without it, esc leaves that promise pending forever. */
   onCancel?(): void;
@@ -157,6 +175,14 @@ export interface AppProps {
   version?: string;
   cwd?: string;
   safeMode?: boolean;
+  /** Mode this session starts in (--permission-mode). Shift+Tab cycles from here. */
+  permissionMode?: PermissionMode;
+  /**
+   * Reports a Shift+Tab (or /mode) change back to the host, which owns the
+   * getter the PermissionEngine reads. Without this the engine would keep
+   * answering from the mode the session launched with.
+   */
+  onPermissionModeChange?(mode: PermissionMode): void;
   /** Earlier conversations exist in this project at launch — shows the /resume hint. */
   canResume?: boolean;
   /** Lazy source for `@` mention autocomplete (ignore-aware workspace paths, folders end with `/`). */
@@ -199,6 +225,8 @@ export function App({
   version,
   cwd,
   safeMode,
+  permissionMode: initialPermissionMode,
+  onPermissionModeChange,
   canResume,
   listWorkspaceFiles,
   repoMapIndexer,
@@ -215,6 +243,21 @@ export function App({
   // are just the initial values resolved by cli.tsx.
   const [active, setActive] = useState({ profile, contextWindow });
   const [model, setModel] = useState(profile.agentModel || profile.model);
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>(
+    initialPermissionMode ?? DEFAULT_PERMISSION_MODE,
+  );
+  /**
+   * Read by runTask, which is called from handlers registered once — the
+   * state value there would be whichever mode was current when the handler
+   * closed over it, so a mid-run Shift+Tab would not reach the next task.
+   */
+  const permissionModeRef = useRef(permissionMode);
+
+  function setPermissionMode(mode: PermissionMode): void {
+    permissionModeRef.current = mode;
+    setPermissionModeState(mode);
+    onPermissionModeChange?.(mode);
+  }
 
   const headerItem = (messageCount: number): TranscriptItem => ({
     kind: 'header',
@@ -660,6 +703,22 @@ export function App({
     // idle deadline back rather than cutting them off mid-thought. Runs before
     // the Esc/Ctrl+C handling below because it applies to those too.
     questionDeadline.current?.touch();
+    // Shift+Tab cycles the permission mode, the way it does in the editors
+    // people arrive from. Plain Tab is the composer's slash-command
+    // completion, so only the shifted form is taken. Allowed mid-run: the
+    // engine reads the mode per request, so escalating out of a wall of
+    // prompts without stopping the agent is the main reason to have a
+    // keystroke for this at all. Suppressed while a modal (permission
+    // prompt, picker, setup) owns the screen — changing the policy
+    // underneath a question about that policy is nobody's intent.
+    if (key.tab && key.shift) {
+      if (!pendingPermission && !pendingQuestion && !picker && !setupActive) {
+        const next = cyclePermissionMode(permissionModeRef.current);
+        setPermissionMode(next);
+        onTrack?.('permission.mode.changed', { mode: next, via: 'shift-tab' });
+      }
+      return;
+    }
     if (key.escape) {
       if (setupActive) {
         setSetupActive(false);
@@ -831,6 +890,9 @@ export function App({
       setPicker({
         title: `Select a model (current: ${model})`,
         items: models.map((m) => ({ label: m.id === model ? `${m.id} (current)` : m.id, value: m.id })),
+        // Provider lists run to the hundreds — arrow-keying to a known id is
+        // the slowest possible way to pick one.
+        filterable: true,
         onPick: (id) => {
           setPicker(undefined);
           void applyModel(id);
@@ -914,6 +976,42 @@ export function App({
         setPicker(undefined);
         if (name === '__add__') setSetupActive(true);
         else void apply(name);
+      },
+    });
+  }
+
+  /**
+   * The typed equivalent of Shift+Tab. Worth having even with the keystroke:
+   * it is discoverable from /help, scriptable in tests, and the only way to
+   * jump straight to a mode instead of cycling to it.
+   */
+  function handleMode(arg?: string): void {
+    const describe = (mode: PermissionMode): string => {
+      const info = getPermissionModeInfo(mode);
+      return `Permission mode: ${info.label} — ${info.hint}`;
+    };
+    if (arg) {
+      if (!isPermissionMode(arg)) {
+        pushSystem(`No permission mode "${arg}". Available: ${PERMISSION_MODES.join(', ')}.`);
+        return;
+      }
+      setPermissionMode(arg);
+      onTrack?.('permission.mode.changed', { mode: arg, via: 'command' });
+      pushSystem(describe(arg));
+      return;
+    }
+    setPicker({
+      title: `Select a permission mode (current: ${getPermissionModeInfo(permissionMode).label})`,
+      items: PERMISSION_MODE_INFO.map((info) => ({
+        label: `${info.label} — ${info.hint}${info.id === permissionMode ? ' (current)' : ''}`,
+        value: info.id,
+      })),
+      onPick: (id) => {
+        setPicker(undefined);
+        if (!isPermissionMode(id)) return;
+        setPermissionMode(id);
+        onTrack?.('permission.mode.changed', { mode: id, via: 'command' });
+        pushSystem(describe(id));
       },
     });
   }
@@ -1079,6 +1177,7 @@ export function App({
         `Persona     ${persona.label}`,
         `Sub-agents  ${subAgentsEnabled ? 'on' : 'off'} (/subagents to toggle)`,
         `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
+        `Mode        ${getPermissionModeInfo(permissionMode).label} — ${getPermissionModeInfo(permissionMode).hint}`,
         `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
@@ -1102,8 +1201,18 @@ export function App({
       case '/provider':
         await handleProfile(rest[0], rest[1]);
         return true;
+      case '/mode':
+        handleMode(rest[0]);
+        return true;
       case '/persona':
         handlePersona(rest[0]);
+        return true;
+      // Shares core's INIT_TASK with the extension so a project initialized
+      // from the terminal and one initialized from the IDE get the same files.
+      // Runs as an ordinary agent turn: `/init` is what the transcript shows,
+      // the full task is what the agent receives.
+      case '/init':
+        await runTask('/init', INIT_TASK);
         return true;
       case '/memory': {
         const instructions = await loadProjectInstructions(cwd ?? process.cwd());
@@ -1232,7 +1341,12 @@ export function App({
    * it can only ever be as-or-more restrictive, never less.
    */
   async function runTask(display: string, task: string, personaOverride?: AgentPersona): Promise<void> {
-    const effectivePersona = personaOverride ? intersectPersonas(persona, personaOverride) : persona;
+    // Plan mode narrows on top of whatever the persona already allows, so the
+    // model is never offered a tool it would only be denied at call time.
+    const effectivePersona = applyModeToPersona(
+      personaOverride ? intersectPersonas(persona, personaOverride) : persona,
+      permissionModeRef.current,
+    );
     setError(undefined);
     setBusy(true);
     // Snapshot prior turns BEFORE pushing the new task message.
@@ -1413,8 +1527,19 @@ export function App({
         ? 'esc to interrupt'
         : '/ for commands · Ctrl+C twice to exit';
   const footerLeftFull = `${active.profile.name} · ${model} · ${workspaceName}${persona.id !== 'agent' ? ` · ${persona.label}` : ''}`;
+  /**
+   * The mode gets its own colored segment rather than being folded into the
+   * dim left string: it is the one footer item that changes what the agent
+   * can do without asking, so it has to stay legible at a glance — and it
+   * must survive the left side's truncation, which an overlong model name
+   * would otherwise eat.
+   */
+  const modeInfo = getPermissionModeInfo(permissionMode);
+  const modeBadge = `[${modeInfo.label}]`;
+  const modeColor =
+    permissionMode === 'full-auto' ? 'yellow' : permissionMode === 'plan' ? 'cyan' : undefined;
   const footerGap = 2;
-  const footerLeftMax = Math.max(0, columns - footerRight.length - footerGap);
+  const footerLeftMax = Math.max(0, columns - footerRight.length - modeBadge.length - footerGap - 1);
   const footerLeft =
     footerLeftFull.length > footerLeftMax ? `${footerLeftFull.slice(0, Math.max(0, footerLeftMax - 1))}…` : footerLeftFull;
 
@@ -1517,7 +1642,11 @@ export function App({
             {picker.title}
           </Text>
           <Box marginTop={1}>
-            <SelectInput items={picker.items} onSelect={(item) => picker.onPick(item.value)} />
+            {picker.filterable ? (
+              <FilterableList items={picker.items} onSelect={(value) => picker.onPick(value)} />
+            ) : (
+              <SelectInput items={picker.items} onSelect={(item) => picker.onPick(item.value)} />
+            )}
           </Box>
           <Text dimColor>esc to cancel</Text>
         </Box>
@@ -1541,7 +1670,12 @@ export function App({
         clearToken={clearToken}
       />
       <Box justifyContent="space-between">
-        <Text dimColor>{footerLeft}</Text>
+        <Box>
+          <Text color={modeColor} bold={permissionMode !== 'default'}>
+            {modeBadge}
+          </Text>
+          <Text dimColor> {footerLeft}</Text>
+        </Box>
         <Text color={exitArmed ? 'yellow' : undefined} dimColor={!exitArmed}>
           {footerRight}
         </Text>

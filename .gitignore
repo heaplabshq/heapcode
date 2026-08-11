@@ -10,3 +10,5 @@ packages/vscode/media/webview/
 
 # Per-project heapcode CLI session data (conversations, permissions, shadow-git)
 .heapcode/
+docs/heaplabs-roadmap.md
+docs/phase3-provider-custody-design.md

@@ -173,12 +173,6 @@ export interface AppProps {
   permissions: PermissionEngine;
   shadowGit?: ShadowGit;
   tools: ToolDefinition[];
-  /**
-   * Launch-time value from cli.tsx. Kept for the prop contract, but the run
-   * itself reads `effectiveNativeToolCalls`, which tracks the live profile —
-   * see the note there.
-   */
-  nativeToolCalls: boolean;
   workspaceName: string;
   contextWindow: number;
   /** Enables /model and /profile persistence; omitted in tests. */
@@ -233,7 +227,6 @@ export function App({
   permissions,
   shadowGit,
   tools,
-  nativeToolCalls,
   workspaceName,
   contextWindow,
   configStore,

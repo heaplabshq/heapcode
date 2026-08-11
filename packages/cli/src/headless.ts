@@ -19,7 +19,6 @@ import {
   type Conversation,
   type KeyRequestParams,
   type KeyRequestResult,
-  type PermissionClass,
   type PermissionRequestParams,
   type PermissionRequestResult,
   type RagIndexParams,

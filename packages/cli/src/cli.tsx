@@ -11,7 +11,6 @@ import {
   formatAuditDashboard,
   isPermissionMode,
   parseIdleTimeout,
-  resolveCapabilities,
   type Conversation,
   type PermissionMode,
 } from '@heapcode/core';
@@ -208,7 +207,6 @@ async function main(): Promise<void> {
     (name, meta) => void audit.track(name, meta),
     () => permissionMode,
   );
-  const capabilities = resolveCapabilities(profile);
 
   // Everything else (executor, checkpoint, shadow-git, RAG/repo-map
   // indexers, MCP) is built by the same shared path headless.ts uses — see
@@ -238,7 +236,6 @@ async function main(): Promise<void> {
       permissions={permissions}
       shadowGit={shadowGit}
       tools={tools}
-      nativeToolCalls={capabilities.nativeToolCalls}
       workspaceName={basename(root)}
       contextWindow={contextWindow}
       configStore={config}

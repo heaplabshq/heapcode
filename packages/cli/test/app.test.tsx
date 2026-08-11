@@ -326,7 +326,6 @@ function renderApp(overrides: {
       shadowGit={overrides.shadowGit}
       onSessionChange={overrides.onSessionChange}
       tools={overrides.tools ?? []}
-      nativeToolCalls={false}
       workspaceName="test"
       contextWindow={32_768}
       configStore={overrides.configStore}

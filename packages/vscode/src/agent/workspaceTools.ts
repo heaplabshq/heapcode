@@ -10,6 +10,11 @@ import {
   DEFAULT_IGNORE_GLOB,
   detectPackageInstall,
   fetchUrl,
+  formatSearchResults,
+  isWebSearchEnabled,
+  webSearch,
+  WEB_SEARCH_DISABLED_NOTICE,
+  type WebSearchConfig,
   findBestMatch,
   getSymbolsTool,
   killTree,
@@ -241,6 +246,9 @@ export const agentToolDefinitions: ToolDefinition[] = [
   FIND_REFERENCES_TOOL,
   GO_TO_DEFINITION_TOOL,
   T.fetch_url,
+  // Always offered, executed only when configured — see the CLI executor's
+  // note and core's webSearch.ts for why it stays visible while disabled.
+  T.web_search,
   T.multi_edit,
   T.create_directory,
   T.ask_user,
@@ -263,6 +271,8 @@ export class WorkspaceToolExecutor {
     private readonly repoMap?: (pathPrefix?: string) => string,
     /** Fast-apply merge (applyModel/applyProfile role) — edit_file's fallback when exact search/replace fails to match. */
     private readonly applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
+    /** Resolves web-search config + key at call time, so enabling it mid-session takes effect. */
+    private readonly webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>,
   ) {
     this.cwd = root.fsPath;
   }
@@ -310,6 +320,8 @@ export class WorkspaceToolExecutor {
         return `Find definition of ${a.symbol} (from ${a.path})`;
       case 'fetch_url':
         return `Fetch ${a.url}`;
+      case 'web_search':
+        return `Web search: "${a.query}"`;
       case 'multi_edit': {
         const count = Array.isArray(call.args.edits) ? call.args.edits.length : 0;
         return `Edit ${a.path} (${count} edits)`;
@@ -563,6 +575,24 @@ export class WorkspaceToolExecutor {
       }
       case 'fetch_url':
         return fetchUrl(a.url ?? '').then(ok, (err: Error) => fail(err.message));
+      case 'web_search': {
+        const settings = await this.webSearchSettings?.();
+        if (!settings || !isWebSearchEnabled(settings.config, settings.apiKey)) {
+          return fail(WEB_SEARCH_DISABLED_NOTICE);
+        }
+        const query = String(a.query ?? '');
+        try {
+          const results = await webSearch(
+            settings.config,
+            settings.apiKey,
+            query,
+            typeof a.max_results === 'number' ? a.max_results : undefined,
+          );
+          return ok(formatSearchResults(query, results));
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+      }
       case 'multi_edit': {
         const uri = this.resolve(a.path);
         const edits = Array.isArray(call.args.edits)

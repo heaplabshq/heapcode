@@ -33,15 +33,34 @@ describe('PermissionEngine grants file', () => {
     const saved = JSON.parse(await readFile(grantsFile, 'utf8')) as Record<string, string>;
     expect(saved['write.write_file']).toBe('always');
 
-    const fresh = new PermissionEngine(grantsFile);
+    // A later process picks the grant up — in the modes that opted out of
+    // prompting. The default ("Ask") mode deliberately re-asks instead; see
+    // the Ask-mode cases in core's permissions test for why.
+    const fresh = new PermissionEngine(grantsFile, () => false, () => {}, undefined, () => 'auto-edit');
     fresh.attachRequester(() => Promise.reject(new Error('should not be asked — persisted grant covers this')));
     expect(await fresh.request(CALL, WRITE_TOOL, 'second')).toBe(true);
+  });
+
+  it('re-asks in Ask mode even though the file grants it, and the file survives', async () => {
+    await writeFile(grantsFile, JSON.stringify({ 'write.write_file': 'always' }), 'utf8');
+
+    const engine = new PermissionEngine(grantsFile);
+    let asked = 0;
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('deny');
+    });
+    expect(await engine.request(CALL, WRITE_TOOL, 'covered by the existing file')).toBe(false);
+    expect(asked).toBe(1);
+    // Denying once must not quietly delete what the user saved.
+    const saved = JSON.parse(await readFile(grantsFile, 'utf8')) as Record<string, string>;
+    expect(saved['write.write_file']).toBe('always');
   });
 
   it('reads a grants file written by an earlier version', async () => {
     await writeFile(grantsFile, JSON.stringify({ 'write.write_file': 'always' }), 'utf8');
 
-    const engine = new PermissionEngine(grantsFile);
+    const engine = new PermissionEngine(grantsFile, () => false, () => {}, undefined, () => 'auto-edit');
     engine.attachRequester(() => Promise.reject(new Error('should not be asked')));
     expect(await engine.request(CALL, WRITE_TOOL, 'covered by the existing file')).toBe(true);
   });

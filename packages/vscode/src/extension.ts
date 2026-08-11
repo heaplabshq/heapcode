@@ -20,7 +20,7 @@ import { generateCommitMessage } from './gitCommit.js';
 import { JsonConversationStore } from './historyStore.js';
 import { trackActiveEditor, trackTerminal } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
-import { ProfileManager } from './profileManager.js';
+import { ProfileManager, readWebSearchSettings, setWebSearchKeyFlow } from './profileManager.js';
 import { WorkspaceKeywordIndex } from './rag/keywordIndex.js';
 import { RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { RetentionTracker } from './retentionTracker.js';
@@ -115,6 +115,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   chatProvider.agent = agent;
   agent.permissionMode = () => chatProvider.permissionMode;
+  agent.webSearchSettings = () => readWebSearchSettings(context.secrets);
   // `idleMs` is decided by the controller per call (the setting, unless the
   // model marked the question as gating an action) and must be forwarded —
   // dropping it here would silently leave every extension question unbounded.
@@ -353,6 +354,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('heapcode.addProfile', () => profiles.addProfileFlow()),
     vscode.commands.registerCommand('heapcode.selectModel', () => profiles.selectModelFlow()),
     vscode.commands.registerCommand('heapcode.setApiKey', () => profiles.setApiKeyFlow()),
+    vscode.commands.registerCommand('heapcode.setWebSearchKey', () => setWebSearchKeyFlow(context.secrets)),
 
     vscode.commands.registerCommand('heapcode.explain', () => {
       track('command.explain');

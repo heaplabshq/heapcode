@@ -28,7 +28,10 @@ export interface PermissionModeInfo {
 
 export const PERMISSION_MODE_INFO: readonly PermissionModeInfo[] = [
   { id: 'plan', label: 'Plan', hint: 'Read-only — investigate and propose, change nothing' },
-  { id: 'default', label: 'Ask', hint: 'Ask before writing, running commands, or anything destructive' },
+  // Labelled "Confirm" rather than "Ask": the extension's composer already has
+  // an Ask/Agent chip for chat-vs-agent, and two adjacent chips both reading
+  // "Ask" meant two unrelated settings looked like one.
+  { id: 'default', label: 'Confirm', hint: 'Ask before writing, running commands, or anything destructive' },
   { id: 'auto-edit', label: 'Auto-edit', hint: 'Apply file edits without asking; still ask to run commands' },
   { id: 'full-auto', label: 'Auto', hint: 'Edit and run without asking; still ask before destructive actions' },
 ];

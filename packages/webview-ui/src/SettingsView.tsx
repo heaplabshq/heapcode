@@ -39,6 +39,12 @@ interface Draft {
   maxTokens: string;
   /** Seconds, for form binding — converted to/from timeoutMs (ms). */
   timeoutSec: string;
+  /**
+   * Per-profile capability overrides. Only nativeToolCalls is editable here —
+   * it is the one a user has to reach for, because a model whose chat template
+   * lacks tool support rejects every request carrying tools.
+   */
+  capabilities?: ProviderProfileConfig['capabilities'];
   /** '' = untouched; anything typed is stored on save. */
   apiKey: string;
   clearKey: boolean;
@@ -69,6 +75,7 @@ function toDraft(p: ProviderProfileConfig): Draft {
     temperature: p.temperature != null ? String(p.temperature) : '',
     maxTokens: p.maxTokens != null ? String(p.maxTokens) : '',
     timeoutSec: p.timeoutMs != null ? String(Math.round(p.timeoutMs / 1000)) : '',
+    capabilities: p.capabilities,
     apiKey: '',
     clearKey: false,
   };
@@ -133,6 +140,9 @@ function fromDraft(d: Draft): ProviderProfileConfig {
   if (num(d.temperature) != null) profile.temperature = num(d.temperature);
   if (num(d.maxTokens) != null) profile.maxTokens = num(d.maxTokens);
   if (num(d.timeoutSec) != null) profile.timeoutMs = num(d.timeoutSec)! * 1000;
+  // Only carried when something was actually overridden — an empty object here
+  // would shadow nothing but would churn settings.json on every save.
+  if (d.capabilities && Object.keys(d.capabilities).length > 0) profile.capabilities = d.capabilities;
   return profile;
 }
 
@@ -494,6 +504,29 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
           {test.status === 'idle' && (
             <p className="settings-note">Test the connection above to pick a model from a list.</p>
           )}
+        </div>
+
+        <div className="settings-section">
+          <div className="settings-section-title">Tool calling</div>
+          <label className="settings-toggle-row">
+            <input
+              type="checkbox"
+              checked={draft.capabilities?.nativeToolCalls !== false}
+              onChange={(e) =>
+                set({ capabilities: { ...draft.capabilities, nativeToolCalls: e.target.checked } })
+              }
+            />
+            <span>
+              <strong>Native tool calling</strong>
+              <div className="settings-subtitle">
+                Send tool definitions through the API's <code>tools</code> field. Turn this off for
+                models whose chat template has no tool support — many local GGUF builds (Gemma 2 and
+                Codestral among them) reject any request carrying tools, which shows up as a 400 the
+                moment the agent moves past planning. With it off, tools are described in the prompt
+                instead, which works on any model that can follow instructions.
+              </div>
+            </span>
+          </label>
         </div>
 
         <div className="settings-section">

@@ -89,27 +89,37 @@ export class PermissionEngine {
     const audit = (decision: string): void =>
       this.opts.track?.('permission.decision', { tool: call.name, permission: tool.permission, decision });
 
+    const mode = this.opts.mode?.() ?? 'default';
     if (!safeMode) {
       // The mode is consulted before grants: it is the coarser, more
       // deliberate switch, and a user who just put the session in auto should
       // not still be prompted for something they never granted individually.
-      const resolution = resolvePermission(tool.permission, this.opts.mode?.() ?? 'default');
+      const resolution = resolvePermission(tool.permission, mode);
       if (resolution === 'allow') {
-        this.opts.log?.(`[perm] auto-allowed (${this.opts.mode?.() ?? 'default'} mode): ${description}`);
+        this.opts.log?.(`[perm] auto-allowed (${mode} mode): ${description}`);
         audit('auto-mode');
         return true;
       }
       if (resolution === 'deny') {
-        this.opts.log?.(`[perm] denied by ${this.opts.mode?.() ?? 'default'} mode: ${description}`);
+        this.opts.log?.(`[perm] denied by ${mode} mode: ${description}`);
         audit('deny-mode');
         return false;
       }
+      // A grant made during THIS session still stands: the user chose it
+      // moments ago, in context, and re-asking would make "Allow for this
+      // session" meaningless.
       if (this.sessionAllowed.has(key)) {
         this.opts.log?.(`[perm] auto-allowed (session grant): ${description}`);
         audit('auto-session');
         return true;
       }
-      if (await this.opts.grants.has(key)) {
+      // A grant persisted by an EARLIER session does not. Ask mode has to
+      // mean ask: a grant saved weeks ago silently auto-approving edits is
+      // indistinguishable, from the user's side, from the permission system
+      // being broken — which is exactly how it was reported. Persisted grants
+      // still apply in the auto modes, where the user has opted into less
+      // prompting for this session on purpose.
+      if (mode !== 'default' && (await this.opts.grants.has(key))) {
         const hint = this.opts.resetHint ? ` — reset via ${this.opts.resetHint}` : '';
         this.opts.log?.(`[perm] auto-allowed (persisted "Always" grant${hint}): ${description}`);
         audit('auto-always');
@@ -139,6 +149,11 @@ export class PermissionEngine {
         return true;
       case 'always':
         await this.opts.grants.add(key);
+        // Also a session grant, so the choice takes effect immediately even in
+        // Ask mode, where the persisted copy is deliberately not consulted.
+        // Without this, picking "Always" in the default mode would prompt
+        // again on the very next call — the opposite of what it says.
+        this.sessionAllowed.add(key);
         return true;
       default:
         return false;

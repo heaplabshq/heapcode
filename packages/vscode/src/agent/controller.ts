@@ -29,6 +29,7 @@ import {
   type McpManager,
   type FileEditInfo,
   type PermissionMode,
+  type WebSearchConfig,
   type PermissionRequestParams,
   type PermissionRequestResult,
   type ServerConnection,
@@ -118,7 +119,7 @@ export class AgentController {
     },
     { label: 'Built-in · Execute', names: ['run_command', 'run_tests', 'check_package_exists'] },
     { label: 'Built-in · Skills', names: ['list_skills', 'load_skill'] },
-    { label: 'Built-in · Other', names: ['ask_user', 'fetch_url', 'delegate_task'] },
+    { label: 'Built-in · Other', names: ['ask_user', 'fetch_url', 'web_search', 'delegate_task'] },
   ];
 
   /** All tools the agent could use, grouped by source (for the composer's tools picker). */
@@ -168,6 +169,12 @@ export class AgentController {
    * and `shadowGit`), and read per task so a mid-session change applies.
    */
   permissionMode?: () => PermissionMode;
+
+  /**
+   * Resolves web-search config + key. Assigned by extension.ts (which owns
+   * the SecretStorage handle) for the same reason as `permissionMode`.
+   */
+  webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>;
 
   constructor(
     private readonly profiles: ProfileManager,
@@ -476,6 +483,9 @@ export class AgentController {
       // edit_file's fast-apply fallback (M10) — no-ops (returns undefined) when no
       // applyModel is configured for the profile, same as inline-edit's own Apply action.
       (original, snippet) => mergeWithApplyModel(original, snippet, this.profiles, this.log),
+      // Read per call, so flipping heapcode.webSearch.provider (or storing a
+      // key) takes effect without restarting the session.
+      this.webSearchSettings,
     );
     this.abort = new AbortController();
     this.post({ type: 'agentStatus', status: 'running', changedFiles: [] });

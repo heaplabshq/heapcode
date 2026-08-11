@@ -9,6 +9,11 @@ import {
   BUILTIN_PERSONAS,
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODES,
+  SEARCH_PRESETS,
+  WEB_SEARCH_SECRET_NAME,
+  describeWebSearchState,
+  getSearchPreset,
+  isSearchPresetId,
   PERMISSION_MODE_INFO,
   applyModeToPersona,
   cyclePermissionMode,
@@ -17,6 +22,7 @@ import {
   getPersona,
   intersectPersonas,
   isPermissionMode,
+  resolveCapabilities,
   ASK_USER_COUNTDOWN_MS,
   ASK_USER_NO_ANSWER,
   IdleDeadline,
@@ -68,12 +74,12 @@ import type { SecretsStore } from '../config/secrets.js';
 import type { JsonConversationStore } from '../history/store.js';
 import type { WorkspaceToolExecutor } from '../agent/workspaceTools.js';
 import type { SessionCheckpoint } from '../agent/checkpoint.js';
-import type { PermissionEngine } from '../agent/permissions.js';
+import { listPermissionGrants, type PermissionEngine } from '../agent/permissions.js';
 import type { ShadowGit } from '../agent/shadowGit.js';
 import { listSkillsFormatted } from '../agent/skills.js';
 import { trimHistoryForAgent } from '../agent/historyWindow.js';
 import { loadProjectInstructions } from '../memory.js';
-import { configFile, secretsFile } from '../paths.js';
+import { configFile, permissionsFile, secretsFile } from '../paths.js';
 import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
 import { DELEGATE_TASK_TOOL } from '../agent/delegate.js';
 import { connectToServer, type ConnectOptions, type ServerConnection } from '../server/client.js';
@@ -81,6 +87,7 @@ import { Composer, type SlashCommand } from './Composer.js';
 import { FilterableList } from './FilterableList.js';
 import { Header } from './Header.js';
 import { Setup } from './Setup.js';
+import { TextInput } from './TextInput.js';
 import { MessageView } from './MessageView.js';
 import { renderMarkdown } from '../markdown.js';
 import { PermissionPrompt, type PermissionRequest } from './PermissionPrompt.js';
@@ -101,6 +108,9 @@ const COMMANDS: SlashCommand[] = [
   { name: '/profile', args: '[add|list|remove|name]', description: 'Switch, add, list, or remove provider profiles' },
   { name: '/persona', args: '[name]', description: 'Switch persona: agent, architect, debug, reviewer' },
   { name: '/mode', args: '[name]', description: 'Permission mode: plan, default, auto-edit, full-auto (Shift+Tab cycles)' },
+  { name: '/websearch', args: '[provider|on|off]', description: 'Web search for the agent — off until you configure a provider' },
+  { name: '/permissions', args: '[reset]', description: 'Show or clear saved "Always allow" grants for this project' },
+  { name: '/nativetools', args: '[on|off]', description: 'Native tool calling vs the text protocol — turn off for models that reject tools' },
   { name: '/settings', description: 'Show current configuration' },
   { name: '/init', description: 'Set up .heapcode/HEAPCODE.md & memory.md for this project (runs as an agent task)' },
   { name: '/memory', description: 'Show the project instructions & memory the agent sees' },
@@ -163,6 +173,11 @@ export interface AppProps {
   permissions: PermissionEngine;
   shadowGit?: ShadowGit;
   tools: ToolDefinition[];
+  /**
+   * Launch-time value from cli.tsx. Kept for the prop contract, but the run
+   * itself reads `effectiveNativeToolCalls`, which tracks the live profile —
+   * see the note there.
+   */
   nativeToolCalls: boolean;
   workspaceName: string;
   contextWindow: number;
@@ -183,6 +198,8 @@ export interface AppProps {
    * answering from the mode the session launched with.
    */
   onPermissionModeChange?(mode: PermissionMode): void;
+  /** Hands the host a sink for permission-engine log lines, so they reach the transcript. */
+  onPermissionLogReady?(log: (message: string) => void): void;
   /** Earlier conversations exist in this project at launch — shows the /resume hint. */
   canResume?: boolean;
   /** Lazy source for `@` mention autocomplete (ignore-aware workspace paths, folders end with `/`). */
@@ -227,6 +244,7 @@ export function App({
   safeMode,
   permissionMode: initialPermissionMode,
   onPermissionModeChange,
+  onPermissionLogReady,
   canResume,
   listWorkspaceFiles,
   repoMapIndexer,
@@ -243,6 +261,15 @@ export function App({
   // are just the initial values resolved by cli.tsx.
   const [active, setActive] = useState({ profile, contextWindow });
   const [model, setModel] = useState(profile.agentModel || profile.model);
+  /**
+   * Derived from the live profile, not from the launch-time prop. The prop is
+   * resolved once in cli.tsx, so it went stale the moment the session switched
+   * profiles with /profile — a run could keep using native tool calling after
+   * moving to a profile that disables it. /nativetools has the same
+   * requirement, so both are served by reading the current profile here.
+   */
+  const effectiveNativeToolCalls = resolveCapabilities(active.profile).nativeToolCalls;
+
   const [permissionMode, setPermissionModeState] = useState<PermissionMode>(
     initialPermissionMode ?? DEFAULT_PERMISSION_MODE,
   );
@@ -350,6 +377,8 @@ export function App({
   /** Activity resets the pending question's deadline — see the useInput handler. */
   const questionDeadline = useRef<IdleDeadline>();
   const [picker, setPicker] = useState<Picker>();
+  /** A masked inline prompt for a secret (currently the web-search API key). */
+  const [pendingSecret, setPendingSecret] = useState<{ label: string; onSubmit(value: string): void | Promise<void> }>();
   const [setupActive, setSetupActive] = useState(false);
   const [persona, setPersona] = useState<AgentPersona>(getPersona(undefined));
   // Sub-agent orchestration (delegate_task) is opt-in — a new,
@@ -526,6 +555,12 @@ export function App({
    * that offered the tools in the first place.
    */
   const toolByName = useRef(new Map<string, ToolDefinition>());
+
+  useEffect(() => {
+    // Only the auto-allow/deny lines matter to a user; they explain an action
+    // that happened without a prompt. Rendered dim, like other system notes.
+    onPermissionLogReady?.((message) => pushSystem(message.replace(/^\[perm\]\s*/, 'Permission: ')));
+  }, [onPermissionLogReady]);
 
   useEffect(() => {
     permissions.attachRequester(
@@ -712,7 +747,7 @@ export function App({
     // prompt, picker, setup) owns the screen — changing the policy
     // underneath a question about that policy is nobody's intent.
     if (key.tab && key.shift) {
-      if (!pendingPermission && !pendingQuestion && !picker && !setupActive) {
+      if (!pendingPermission && !pendingQuestion && !picker && !pendingSecret && !setupActive) {
         const next = cyclePermissionMode(permissionModeRef.current);
         setPermissionMode(next);
         onTrack?.('permission.mode.changed', { mode: next, via: 'shift-tab' });
@@ -720,7 +755,10 @@ export function App({
       return;
     }
     if (key.escape) {
-      if (setupActive) {
+      if (pendingSecret) {
+        setPendingSecret(undefined);
+        pushSystem('Cancelled — no key stored, web search stays off.');
+      } else if (setupActive) {
         setSetupActive(false);
         pushSystem('Profile setup cancelled.');
       } else if (picker) cancelPicker(picker, () => setPicker(undefined));
@@ -1016,6 +1054,139 @@ export function App({
     });
   }
 
+  /**
+   * Set up, toggle, or inspect web search. Search is off until a provider is
+   * chosen here (or in config.json); the key goes to secrets.json, never the
+   * config file, so this walks the user through both.
+   */
+  async function handleWebSearch(arg?: string): Promise<void> {
+    if (!configStore) {
+      pushSystem('Web search configuration is unavailable in this session.');
+      return;
+    }
+    const current = (await configStore.load()).webSearch ?? {};
+    const key = await secretsStore?.getApiKey(WEB_SEARCH_SECRET_NAME);
+    const status = (): string =>
+      `Web search: ${describeWebSearchState(current, key)}\nConfigure with "/websearch <${SEARCH_PRESETS.join('|')}>", or "/websearch off".`;
+
+    if (!arg) {
+      pushSystem(status());
+      return;
+    }
+    if (arg === 'off') {
+      await configStore.saveWebSearch({ enabled: false });
+      pushSystem('Web search turned off. "/websearch on" re-enables it with the same provider.');
+      return;
+    }
+    if (arg === 'on') {
+      if (!current.provider) {
+        pushSystem(`No search provider configured yet. Pick one: /websearch <${SEARCH_PRESETS.join('|')}>`);
+        return;
+      }
+      await configStore.saveWebSearch({ enabled: true });
+      const refreshed = { ...current, enabled: true };
+      pushSystem(`Web search: ${describeWebSearchState(refreshed, key)}`);
+      return;
+    }
+    if (!isSearchPresetId(arg)) {
+      pushSystem(`Unknown search provider "${arg}". Available: ${SEARCH_PRESETS.join(', ')}.`);
+      return;
+    }
+    const preset = getSearchPreset(arg);
+    await configStore.saveWebSearch({ provider: arg, enabled: true });
+    if (preset.requiresApiKey && !key) {
+      // The key is the only part that can't be set from a flag — ask for it
+      // inline rather than telling the user to go edit a file.
+      setPendingSecret({
+        label: `${preset.label} API key`,
+        onSubmit: async (value) => {
+          setPendingSecret(undefined);
+          if (!value.trim()) {
+            pushSystem(`No key entered — web search stays off. Run "/websearch ${arg}" again to retry.`);
+            return;
+          }
+          await secretsStore?.setApiKey(WEB_SEARCH_SECRET_NAME, value.trim());
+          pushSystem(`Web search: on (${preset.label}). Endpoint: ${preset.defaultBaseUrl}`);
+        },
+      });
+      return;
+    }
+    pushSystem(
+      `Web search: on (${preset.label}). Endpoint: ${current.baseUrl || preset.defaultBaseUrl}` +
+        (preset.selfHosted ? '\nSet "webSearch.baseUrl" in ~/.heapcode/config.json to point at your own instance.' : ''),
+    );
+  }
+
+  /**
+   * List or clear persisted "Always allow" grants. The engine's auto-allow
+   * message has always pointed at "/permissions reset" — the command simply
+   * did not exist, so the one instruction a surprised user was given led
+   * nowhere.
+   */
+  async function handlePermissions(arg?: string): Promise<void> {
+    if (arg === 'reset') {
+      const cleared = await permissions.reset();
+      pushSystem(
+        cleared === 0
+          ? 'No saved permission grants to clear.'
+          : `Cleared ${cleared} saved permission grant${cleared === 1 ? '' : 's'}. Every action will ask again.`,
+      );
+      return;
+    }
+    if (arg) {
+      pushSystem('Usage: /permissions [reset]');
+      return;
+    }
+    const grants = await listPermissionGrants(permissionsFile(cwd ?? process.cwd()));
+    pushSystem(
+      [
+        grants.length === 0
+          ? 'No saved "Always allow" grants for this project.'
+          : `Saved "Always allow" grants for this project:\n${grants.map((g) => `  ${g}`).join('\n')}`,
+        '',
+        `These apply in auto-edit and Auto modes only — in ${getPermissionModeInfo('default').label} mode every action asks, whatever is saved here.`,
+        '"/permissions reset" clears them.',
+      ].join('\n'),
+    );
+  }
+
+  /**
+   * Switch this profile between native tool calling and the text protocol.
+   * A config field with no UI is a field nobody finds: models whose chat
+   * template lacks tool support reject every request carrying `tools`, and
+   * the only documented cure was hand-editing config.json.
+   */
+  async function handleNativeTools(arg?: string): Promise<void> {
+    const current = effectiveNativeToolCalls;
+    if (arg !== 'on' && arg !== 'off') {
+      pushSystem(
+        [
+          `Native tool calling: ${current ? 'on' : 'off'} (profile "${active.profile.name}")`,
+          current
+            ? 'Turn it off ("/nativetools off") if the model rejects requests that carry tools — common for local GGUF builds whose chat template has no tool support.'
+            : 'heapcode is describing tools in the prompt instead of using the tool-calling API.',
+          'Usage: /nativetools on|off',
+        ].join('\n'),
+      );
+      return;
+    }
+    const next = arg === 'on';
+    const updated: ProviderProfileConfig = {
+      ...active.profile,
+      capabilities: { ...active.profile.capabilities, nativeToolCalls: next },
+    };
+    setActive((a) => ({ ...a, profile: updated }));
+    if (configStore) {
+      await configStore.saveProfile(updated);
+      pushSystem(
+        `Native tool calling ${next ? 'on' : 'off'} for profile "${updated.name}" (saved). ` +
+          'Takes effect on the next task.',
+      );
+    } else {
+      pushSystem(`Native tool calling ${next ? 'on' : 'off'} for this session.`);
+    }
+  }
+
   function handlePersona(arg?: string): void {
     const describe = (p: AgentPersona): string => `Persona: ${p.label} — ${p.description}`;
     if (arg) {
@@ -1168,6 +1339,12 @@ export function App({
   async function showSettings(): Promise<void> {
     const p = active.profile;
     const ragStatus = await requestStatus();
+    const webSearchStatus = configStore
+      ? describeWebSearchState(
+          (await configStore.load()).webSearch,
+          await secretsStore?.getApiKey(WEB_SEARCH_SECRET_NAME),
+        )
+      : 'unavailable in this session';
     pushSystem(
       [
         `Session     ${conversationRef.current.id.slice(0, 8)}  (heapcode --resume ${conversationRef.current.id.slice(0, 8)} to continue this later)`,
@@ -1178,6 +1355,8 @@ export function App({
         `Sub-agents  ${subAgentsEnabled ? 'on' : 'off'} (/subagents to toggle)`,
         `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
         `Mode        ${getPermissionModeInfo(permissionMode).label} — ${getPermissionModeInfo(permissionMode).hint}`,
+        `Web search  ${webSearchStatus}`,
+        `Tool proto  ${effectiveNativeToolCalls ? 'native tool calling' : 'text protocol (nativeToolCalls: false)'}`,
         `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
@@ -1203,6 +1382,15 @@ export function App({
         return true;
       case '/mode':
         handleMode(rest[0]);
+        return true;
+      case '/websearch':
+        await handleWebSearch(rest[0]?.toLowerCase());
+        return true;
+      case '/permissions':
+        await handlePermissions(rest[0]?.toLowerCase());
+        return true;
+      case '/nativetools':
+        await handleNativeTools(rest[0]?.toLowerCase());
         return true;
       case '/persona':
         handlePersona(rest[0]);
@@ -1470,7 +1658,7 @@ export function App({
         history,
         workspaceName,
         tools: offered,
-        nativeToolCalls,
+        nativeToolCalls: effectiveNativeToolCalls,
         contextWindow: active.contextWindow,
         subAgents: subAgentsEnabled,
         persona: effectivePersona,
@@ -1510,7 +1698,8 @@ export function App({
     })();
   }
 
-  const inputBlocked = busy || Boolean(pendingPermission) || Boolean(pendingQuestion) || Boolean(picker) || setupActive;
+  const inputBlocked =
+    busy || Boolean(pendingPermission) || Boolean(pendingQuestion) || Boolean(picker) || Boolean(pendingSecret) || setupActive;
 
   // The footer's right side (hint text / exit-armed warning / indexing
   // progress) is short and fixed-ish; the left side embeds the active
@@ -1649,6 +1838,19 @@ export function App({
             )}
           </Box>
           <Text dimColor>esc to cancel</Text>
+        </Box>
+      )}
+      {pendingSecret && (
+        <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
+          <Text color="cyan" bold>
+            {pendingSecret.label}
+          </Text>
+          <TextInput
+            label={pendingSecret.label}
+            mask
+            onSubmit={(value) => void pendingSecret.onSubmit(value)}
+          />
+          <Text dimColor>stored in {secretsFile()} (chmod 600) · esc to cancel</Text>
         </Box>
       )}
       {setupActive && (

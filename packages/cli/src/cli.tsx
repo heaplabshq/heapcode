@@ -194,10 +194,17 @@ async function main(): Promise<void> {
   // Unset by default, which means an ask_user question waits indefinitely.
   const askUserIdleMs = parseIdleTimeout((await config.load()).askUserQuestionTimeout);
   const audit = new AuditLog(auditFile(), () => telemetryEnabled);
+  /**
+   * Set by App once it renders, so the engine's auto-allow lines land in the
+   * transcript. They used to go to a no-op: an action approved by a saved
+   * grant simply happened, with nothing on screen explaining why it had not
+   * asked — which is how a stale grant reads as a broken permission system.
+   */
+  let logPermission: (message: string) => void = () => {};
   const permissions = new PermissionEngine(
     permissionsFile(root),
     () => safeMode,
-    () => {},
+    (message) => logPermission(message),
     (name, meta) => void audit.track(name, meta),
     () => permissionMode,
   );
@@ -207,7 +214,7 @@ async function main(): Promise<void> {
   // indexers, MCP) is built by the same shared path headless.ts uses — see
   // agentSession.ts's own comment on why (guardrail #8: headless is a
   // first-class peer of the interactive UI, not a bolted-on shortcut).
-  const { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config);
+  const { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config, secrets);
 
   // Tracks the active conversation id across /new and /resume so it can be
   // printed on exit — App owns the actual conversation object (including
@@ -245,6 +252,9 @@ async function main(): Promise<void> {
       permissionMode={permissionMode}
       onPermissionModeChange={(mode) => {
         permissionMode = mode;
+      }}
+      onPermissionLogReady={(log) => {
+        logPermission = log;
       }}
       canResume={priorConversations > 0}
       repoMapIndexer={repoMapIndexer}
@@ -325,6 +335,8 @@ In-session commands (type / for the autocomplete menu):
   /profile [add|list|remove|name]   Switch, add, list, or remove provider profiles
   /persona [name]                   Switch persona: agent, architect (read-only), debug (no edits), reviewer
   /mode [name]                      Permission mode: plan, default, auto-edit, full-auto (Shift+Tab cycles)
+  /nativetools [on|off]             Native tool calling vs the text protocol — turn off for models that reject tools
+  /permissions [reset]              Show or clear saved "Always allow" grants for this project
   /settings                         Show current configuration
   /init                             Set up .heapcode/HEAPCODE.md & memory.md for this project (runs as an agent task)
   /memory                           Show project instructions & memory (.heapcode/HEAPCODE.md, memory.md, AGENTS.md)

@@ -222,18 +222,37 @@ export async function checkPackageExists(registry: 'npm' | 'pypi', name: string)
 }
 
 /** Crude but dependency-free HTML → text: drop script/style, strip tags, decode entities. */
-export function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr)[^>]*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+/**
+ * Decode the HTML entities that show up in page text and search snippets.
+ * Hex escapes matter as much as decimal ones: DuckDuckGo emits `&#x27;` for
+ * an apostrophe, so a decoder that only handled `&#39;` left "Rust&#x27;s"
+ * in front of the model.
+ */
+export function decodeHtmlEntities(text: string): string {
+  return text
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)))
+    .replace(/&#0*39;|&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => safeCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, n: string) => safeCodePoint(Number(n)))
+    // Ampersand last, so "&amp;lt;" decodes to "&lt;" rather than to "<".
+    .replace(/&amp;/g, '&');
+}
+
+function safeCodePoint(n: number): string {
+  return Number.isFinite(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '';
+}
+
+export function htmlToText(html: string): string {
+  return decodeHtmlEntities(
+    html
+      .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/tr)[^>]*>/gi, '\n')
+      .replace(/<[^>]+>/g, ''),
+  )
     .replace(/[ \t]+/g, ' ')
     .replace(/\n\s*\n\s*\n+/g, '\n\n');
 }

@@ -162,6 +162,25 @@ export const sharedAgentTools = {
     // Arbitrary third-party content — same injection posture as MCP (PLAN.md M7).
     untrustedOutput: true,
   },
+  web_search: {
+    name: 'web_search',
+    description:
+      'Search the web and get back titles, URLs and snippets. Use for current information, ' +
+      'library docs, error messages, and anything outside this repository. Follow up with ' +
+      'fetch_url to read a result in full — snippets alone are rarely enough to answer from.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        max_results: { type: 'number', description: 'How many results to return (1-10, default 5)' },
+      },
+      required: ['query'],
+    },
+    permission: 'execute',
+    // Arbitrary third-party content chosen by a model-authored query — the
+    // strongest form of the fetch_url/MCP injection posture.
+    untrustedOutput: true,
+  },
   multi_edit: {
     name: 'multi_edit',
     description: 'Apply several search/replace edits to one file atomically (all succeed or none are written). Same matching rules as edit_file.',

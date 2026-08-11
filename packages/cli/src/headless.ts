@@ -159,7 +159,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     conversation ??= { id: randomUUID(), title: opts.prompt.slice(0, 60), updatedAt: Date.now(), messages: [] };
     const history = trimHistoryForAgent(conversation.messages);
 
-    const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config);
+    const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config, secrets);
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
     await Promise.all([repoMapIndexer.init(), mcpManager.ensureConnected()]);

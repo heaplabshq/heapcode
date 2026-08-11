@@ -3,6 +3,10 @@ import {
   createProvider,
   DEFAULT_CONTEXT_WINDOW,
   getPreset,
+  getSearchPreset,
+  isSearchPresetId,
+  WEB_SEARCH_SECRET_NAME,
+  type WebSearchConfig,
   providerPresets,
   resolveCapabilities,
   type ContextWindowSource,
@@ -73,6 +77,61 @@ async function probeNativeContextLength(
 
 function profileSecretKey(profileName: string): string {
   return `heapcode.apiKey.${profileName}`;
+}
+
+/**
+ * Web-search config from settings + its key from SecretStorage, in the shape
+ * the executor wants. Read per call so enabling search takes effect without
+ * a reload; the key rides the same custody path as provider keys (never
+ * settings.json, which syncs).
+ */
+export async function readWebSearchSettings(
+  secrets: vscode.SecretStorage,
+): Promise<{ config: WebSearchConfig; apiKey?: string }> {
+  const cfg = vscode.workspace.getConfiguration('heapcode.webSearch');
+  const provider = cfg.get<string>('provider', 'off');
+  return {
+    config: {
+      provider: isSearchPresetId(provider) ? provider : undefined,
+      baseUrl: cfg.get<string>('baseUrl') || undefined,
+      maxResults: cfg.get<number>('maxResults') || undefined,
+      timeoutMs: cfg.get<number>('timeoutMs') || undefined,
+    },
+    apiKey: await secrets.get(profileSecretKey(WEB_SEARCH_SECRET_NAME)),
+  };
+}
+
+/** Prompts for and stores the web-search API key. */
+export async function setWebSearchKeyFlow(secrets: vscode.SecretStorage): Promise<void> {
+  const provider = vscode.workspace.getConfiguration('heapcode.webSearch').get<string>('provider', 'off');
+  if (!isSearchPresetId(provider)) {
+    const pick = 'Open Settings';
+    const choice = await vscode.window.showWarningMessage(
+      'No web-search provider is selected. Set heapcode.webSearch.provider first.',
+      pick,
+    );
+    if (choice === pick) {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'heapcode.webSearch.provider');
+    }
+    return;
+  }
+  const preset = getSearchPreset(provider);
+  const key = await vscode.window.showInputBox({
+    title: `${preset.label} API key`,
+    password: true,
+    ignoreFocusOut: true,
+    prompt: preset.requiresApiKey
+      ? `Stored in the OS keychain, never in settings.json. ${preset.hint}`
+      : `${preset.label} needs no key — leave blank unless your instance requires one.`,
+  });
+  if (key === undefined) return;
+  if (key.trim()) {
+    await secrets.store(profileSecretKey(WEB_SEARCH_SECRET_NAME), key.trim());
+    void vscode.window.showInformationMessage(`Heap Code: ${preset.label} key saved. Web search is on.`);
+  } else {
+    await secrets.delete(profileSecretKey(WEB_SEARCH_SECRET_NAME));
+    void vscode.window.showInformationMessage('Heap Code: web-search key cleared.');
+  }
 }
 
 export class ProfileManager {

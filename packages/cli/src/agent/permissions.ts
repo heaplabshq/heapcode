@@ -29,6 +29,16 @@ export class PermissionEngine extends CorePermissionEngine {
   }
 }
 
+/** The saved grant keys for a project, for "/permissions" to display. */
+export async function listPermissionGrants(file: string): Promise<string[]> {
+  try {
+    const grants = JSON.parse(await readFile(file, 'utf8')) as Record<string, string>;
+    return Object.keys(grants).sort();
+  } catch {
+    return [];
+  }
+}
+
 function jsonGrantStore(file: string): PermissionGrantStore {
   let grants: Record<string, 'always'> | undefined;
 

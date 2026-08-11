@@ -22,6 +22,7 @@ export * from './agent/tools.js';
 export * from './agent/askUser.js';
 export * from './agent/personas.js';
 export * from './agent/permissionModes.js';
+export * from './agent/webSearch.js';
 export * from './agent/mcp.js';
 export * from './agent/skills.js';
 export * from './agent/projectInstructions.js';

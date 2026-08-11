@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { McpServerConfig, ProviderProfileConfig } from '@heapcode/core';
+import type { McpServerConfig, ProviderProfileConfig, WebSearchConfig } from '@heapcode/core';
 import { configFile } from '../paths.js';
 
 // The shape of an `mcpServers` entry belongs to the MCP manager (core), not
@@ -22,6 +22,13 @@ export interface CliConfig {
    * marked `blocksAction` never times out regardless. See core's askUser.ts.
    */
   askUserQuestionTimeout?: string;
+  /**
+   * Web search for the agent. Absent (the default) means the `web_search`
+   * tool is refused — see core's webSearch.ts. The API key is NOT here: it
+   * lives in secrets.json under WEB_SEARCH_SECRET_NAME, the same custody path
+   * as provider keys.
+   */
+  webSearch?: WebSearchConfig;
 }
 
 /** A fresh empty config each call — never share one mutable object across
@@ -78,6 +85,13 @@ export class ConfigStore {
     if (index >= 0) cfg.profiles[index] = profile;
     else cfg.profiles.push(profile);
     cfg.activeProfile ??= profile.name;
+    await this.persist();
+  }
+
+  /** Merge into the web-search config (never the API key — that's SecretsStore's). */
+  async saveWebSearch(patch: WebSearchConfig): Promise<void> {
+    const cfg = await this.load();
+    cfg.webSearch = { ...cfg.webSearch, ...patch };
     await this.persist();
   }
 

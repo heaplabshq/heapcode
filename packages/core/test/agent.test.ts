@@ -3,6 +3,7 @@ import { runAgent, type AgentOptions } from '../src/agent/loop.js';
 import { parseToolBlocks } from '../src/agent/textProtocol.js';
 import type { ToolCall, ToolDefinition, ToolResult } from '../src/agent/tools.js';
 import type { ChatRequest, ChatResponse, Provider } from '../src/providers/types.js';
+import { ProviderError } from '../src/providers/errors.js';
 
 const TOOLS: ToolDefinition[] = [
   {
@@ -718,6 +719,190 @@ describe('runAgent — beforeToolCall (PLAN.md M8 checkpoint hook)', () => {
   });
 });
 
+/**
+ * A model that writes its tool call as text while the session is configured
+ * for native tool calling. Reported live: Nemotron emitted
+ * `<tool_call><function=run_command>…` and the run simply stopped — the loop
+ * saw no native call, read the reply as narration, nudged, and gave up on a
+ * task the model was actively trying to perform.
+ */
+/**
+ * Reported live: five local models across LM Studio and Ollama all died with a
+ * 400 immediately after the planning stage. Planning sends no `tools`; the
+ * turn after it sends every schema — and models whose chat template has no
+ * tool support (Gemma 2 and Codestral among them) reject that outright. The
+ * request was never malformed; the model simply speaks a different dialect.
+ */
+describe('runAgent — a model whose template cannot do tool calling', () => {
+  /** Provider that fails any request carrying `tools`, the way Ollama does. */
+  function templateWithoutTools(textReplies: string[]) {
+    const requests: Array<{ hadTools: boolean }> = [];
+    let i = 0;
+    return {
+      requests,
+      chat: (req: { tools?: unknown[] }) => {
+        requests.push({ hadTools: Boolean(req.tools?.length) });
+        if (req.tools?.length) {
+          return Promise.reject(new ProviderError('registry.ollama.ai/library/gemma2 does not support tools', 400));
+        }
+        return Promise.resolve({ content: textReplies[Math.min(i++, textReplies.length - 1)] ?? '' });
+      },
+    } as unknown as Provider & { requests: Array<{ hadTools: boolean }> };
+  }
+
+  it('falls back to the text protocol and completes the task', async () => {
+    const provider = templateWithoutTools([
+      '<tool name="read_file">{"path":"a.ts"}</tool>',
+      '<tool name="finish">{"summary":"done"}</tool>',
+    ]);
+    const executed: string[] = [];
+    const h = harness({
+      execute: (call: ToolCall) => {
+        executed.push(call.name);
+        return Promise.resolve({ id: call.id, name: call.name, content: 'ok' });
+      },
+    });
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(provider.requests[0]!.hadTools).toBe(true); // tried native first
+    expect(provider.requests[1]!.hadTools).toBe(false); // retried without
+    expect(executed).toContain('read_file');
+    expect(outcome).toBe('done');
+  });
+
+  it('tells the user what happened and how to make it permanent', async () => {
+    const provider = templateWithoutTools(['<tool name="finish">{"summary":"done"}</tool>']);
+    const texts: string[] = [];
+    const h = harness({});
+    await runAgent({
+      ...h.options,
+      provider,
+      nativeToolCalls: true,
+      events: { ...h.options.events, onText: (t: string) => texts.push(t) },
+    });
+    const notice = texts.join('\n');
+    expect(notice).toMatch(/text-based tool protocol/);
+    expect(notice).toMatch(/nativeToolCalls/);
+  });
+
+  it('retries the protocol switch only once, not on every turn', async () => {
+    const provider = templateWithoutTools([
+      '<tool name="read_file">{"path":"a.ts"}</tool>',
+      '<tool name="read_file">{"path":"b.ts"}</tool>',
+      '<tool name="finish">{"summary":"done"}</tool>',
+    ]);
+    const h = harness({ execute: (c: ToolCall) => Promise.resolve({ id: c.id, name: c.name, content: 'ok' }) });
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    // Exactly one request should have carried tools — the very first.
+    expect(provider.requests.filter((r) => r.hadTools)).toHaveLength(1);
+  });
+
+  it('does not swallow an unrelated failure', async () => {
+    const provider = {
+      chat: () => Promise.reject(new ProviderError('Authentication failed (401). Check your API key.', 401)),
+    } as unknown as Provider;
+    const texts: string[] = [];
+    const h = harness({});
+    const outcome = await runAgent({
+      ...h.options,
+      provider,
+      nativeToolCalls: true,
+      events: { ...h.options.events, onText: (t: string) => texts.push(t) },
+    });
+    expect(outcome).toBe('error');
+    expect(texts.join('\n')).toMatch(/Authentication failed/);
+    expect(texts.join('\n')).not.toMatch(/text-based tool protocol/);
+  });
+});
+
+describe('runAgent — a tool call written as text under native tool calling', () => {
+  // Same shape as the live reply, retargeted at a tool this harness offers.
+  const TEXTUAL_CALL =
+    '<tool_call>\n<function=write_file>\n<parameter=path>a.ts</parameter>\n<parameter=content>\nx\n' +
+    '</parameter>\n</function>\n</tool_call>';
+
+  it('asks for a real tool call before doing anything else', async () => {
+    const provider = scriptedProvider([
+      { content: TEXTUAL_CALL },
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a.ts', content: 'x' } }] },
+      { content: '', toolCalls: [{ id: 'c2', name: 'finish', args: { summary: 'done' } }] },
+    ]);
+    const executed: string[] = [];
+    const h = harness({
+      execute: (call: ToolCall) => {
+        executed.push(call.name);
+        return Promise.resolve({ id: call.id, name: call.name, content: 'ok' });
+      },
+    });
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    const repair = provider.requests[1]!.messages.at(-1)!;
+    expect(repair.content).toContain('tool-calling API');
+    // The repair comes first: the session is configured for native calls, so
+    // complying is preferable to us parsing prose.
+    expect(executed).toEqual(['write_file']);
+    expect(outcome).toBe('done');
+  });
+
+  it('executes the parsed call once the model has been told and still repeats itself', async () => {
+    const provider = scriptedProvider([
+      { content: TEXTUAL_CALL },
+      { content: TEXTUAL_CALL },
+      { content: TEXTUAL_CALL },
+      { content: TEXTUAL_CALL },
+      { content: '', toolCalls: [{ id: 'c9', name: 'finish', args: { summary: 'done' } }] },
+    ]);
+    const executed: Array<{ name: string; args: unknown }> = [];
+    const h = harness({
+      execute: (call: ToolCall) => {
+        executed.push({ name: call.name, args: call.args });
+        return Promise.resolve({ id: call.id, name: call.name, content: 'downloaded' });
+      },
+    });
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    // The whole point: the task runs instead of dead-ending at 'incomplete'.
+    expect(executed[0]).toEqual({ name: 'write_file', args: { path: 'a.ts', content: 'x' } });
+    expect(outcome).toBe('done');
+  });
+
+  it('still goes through the permission engine for a text-parsed call', async () => {
+    const provider = scriptedProvider([
+      { content: TEXTUAL_CALL },
+      { content: TEXTUAL_CALL },
+      { content: TEXTUAL_CALL },
+      { content: TEXTUAL_CALL },
+      { content: '', toolCalls: [{ id: 'c9', name: 'finish', args: { summary: 'done' } }] },
+    ]);
+    const asked: string[] = [];
+    const executed: string[] = [];
+    const h = harness({
+      requestPermission: (call: ToolCall) => {
+        asked.push(call.name);
+        return Promise.resolve(false);
+      },
+      execute: (call: ToolCall) => {
+        executed.push(call.name);
+        return Promise.resolve({ id: call.id, name: call.name, content: 'ok' });
+      },
+    });
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(asked).toContain('write_file');
+    expect(executed).toEqual([]);
+  });
+
+  it('leaves ordinary tool-free narration on the existing nudge path', async () => {
+    const provider = scriptedProvider([
+      { content: 'I will start by reading the file.' },
+      { content: '', toolCalls: [{ id: 'c1', name: 'finish', args: { summary: 'done' } }] },
+    ]);
+    const h = harness();
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    const nudge = provider.requests[1]!.messages.at(-1)!;
+    expect(nudge.content).not.toContain('tool-calling API');
+  });
+});
+
 describe('runAgent — prompt-injection defense (untrustedOutput)', () => {
   const fetchTool: ToolDefinition = {
     name: 'fetch_url',
@@ -929,5 +1114,86 @@ describe('parseToolBlocks', () => {
   it('reports JSON errors per call', () => {
     const out = parseToolBlocks('<tool name="x">\nnot json\n</tool>');
     expect(out.calls[0]!.parseError).toBeDefined();
+  });
+});
+
+/**
+ * Dialects open-weight models emit instead of the canonical block, because
+ * they were fine-tuned on them. Each of these used to parse as zero calls and
+ * zero tool intent, which made the loop treat an active attempt to use a tool
+ * as narration and eventually abandon the task.
+ */
+describe('parseToolBlocks — tolerated dialects', () => {
+  it('parses the Llama/Nemotron <function=…><parameter=…> form, verbatim from a live run', () => {
+    const out = parseToolBlocks(
+      '<tool_call>\n<function=run_command>\n<parameter=command>\n' +
+        'curl -L -o public/images/a.jpg "https://example.com/a.jpg" -H "User-Agent: Mozilla/5.0"\n' +
+        '</parameter>\n</function>\n</tool_call>',
+    );
+    expect(out.calls).toHaveLength(1);
+    expect(out.calls[0]!.name).toBe('run_command');
+    // The command must survive as a string — coercion would wreck it.
+    expect(out.calls[0]!.args!.command).toBe(
+      'curl -L -o public/images/a.jpg "https://example.com/a.jpg" -H "User-Agent: Mozilla/5.0"',
+    );
+  });
+
+  it('parses the bare <function=…> form with no <tool_call> wrapper', () => {
+    const out = parseToolBlocks('<function=read_file><parameter=path>src/a.ts</parameter></function>');
+    expect(out.calls).toEqual([{ name: 'read_file', args: { path: 'src/a.ts' } }]);
+  });
+
+  it('parses the attribute spelling of both tags', () => {
+    const out = parseToolBlocks(
+      '<function name="read_file"><parameter name="path">src/a.ts</parameter></function>',
+    );
+    expect(out.calls).toEqual([{ name: 'read_file', args: { path: 'src/a.ts' } }]);
+  });
+
+  it('parses the Hermes/Qwen JSON form', () => {
+    const out = parseToolBlocks('<tool_call>{"name":"read_file","arguments":{"path":"a.ts"}}</tool_call>');
+    expect(out.calls).toEqual([{ name: 'read_file', args: { path: 'a.ts' } }]);
+  });
+
+  it('unwraps Hermes arguments that were double-encoded as a JSON string', () => {
+    const out = parseToolBlocks('<tool_call>{"name":"x","arguments":"{\\"a\\":1}"}</tool_call>');
+    expect(out.calls[0]!.args).toEqual({ a: 1 });
+  });
+
+  it('coerces only unambiguous JSON literals, leaving other values as strings', () => {
+    const out = parseToolBlocks(
+      '<function=f><parameter=n>5</parameter><parameter=b>true</parameter>' +
+        '<parameter=o>{"k":1}</parameter><parameter=s>2024</parameter>' +
+        '<parameter=path>v1.2-beta</parameter></function>',
+    );
+    const args = out.calls[0]!.args!;
+    expect(args.n).toBe(5);
+    expect(args.b).toBe(true);
+    expect(args.o).toEqual({ k: 1 });
+    expect(args.path).toBe('v1.2-beta');
+  });
+
+  it('keeps narration outside the call', () => {
+    const out = parseToolBlocks('Let me fetch it.\n<function=read_file><parameter=path>a.ts</parameter></function>');
+    expect(out.narration).toBe('Let me fetch it.');
+  });
+
+  it('does not double-count a reply that also uses the canonical form', () => {
+    const out = parseToolBlocks(
+      '<tool name="read_file">{"path":"a.ts"}</tool>\n<function=read_file><parameter=path>a.ts</parameter></function>',
+    );
+    expect(out.calls).toHaveLength(1);
+  });
+
+  it('flags tool intent for a half-written call in any dialect', () => {
+    for (const partial of ['<tool_call>{"name":', '<function=run_command>', '<parameter=command>x']) {
+      expect(parseToolBlocks(partial).hasToolIntent, partial).toBe(true);
+    }
+  });
+
+  it('leaves ordinary prose alone', () => {
+    const out = parseToolBlocks('I considered calling a function but there is nothing to do.');
+    expect(out.calls).toEqual([]);
+    expect(out.hasToolIntent).toBe(false);
   });
 });

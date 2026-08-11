@@ -1090,7 +1090,7 @@ exit 0
         historyStore,
       });
       await new Promise((r) => setTimeout(r, 20));
-      expect(lastFrame()).toContain('[Ask]');
+      expect(lastFrame()).toContain('[Confirm]');
 
       stdin.write(SHIFT_TAB);
       await vi.waitFor(() => expect(lastFrame()).toContain('[Auto-edit]'), { timeout: 2_000 });
@@ -1099,7 +1099,7 @@ exit 0
       stdin.write(SHIFT_TAB);
       await vi.waitFor(() => expect(lastFrame()).toContain('[Plan]'), { timeout: 2_000 });
       stdin.write(SHIFT_TAB);
-      await vi.waitFor(() => expect(lastFrame()).toContain('[Ask]'), { timeout: 2_000 });
+      await vi.waitFor(() => expect(lastFrame()).toContain('[Confirm]'), { timeout: 2_000 });
     });
 
     it('reports each change to the host, which is what the permission engine reads', async () => {
@@ -1130,7 +1130,7 @@ exit 0
       await new Promise((r) => setTimeout(r, 20));
       expect(lastFrame()).toContain('[Plan]');
       stdin.write(SHIFT_TAB);
-      await vi.waitFor(() => expect(lastFrame()).toContain('[Ask]'), { timeout: 2_000 });
+      await vi.waitFor(() => expect(lastFrame()).toContain('[Confirm]'), { timeout: 2_000 });
     });
 
     it('/mode sets a mode directly and reports it', async () => {
@@ -1166,7 +1166,7 @@ exit 0
       stdin.write('\r');
       await vi.waitFor(() => expect(lastFrame()).toContain('No permission mode "yolo"'), { timeout: 2_000 });
       expect(changes).toEqual([]);
-      expect(lastFrame()).toContain('[Ask]');
+      expect(lastFrame()).toContain('[Confirm]');
     });
 
     it('leaves plain Tab to the composer rather than cycling', async () => {
@@ -1183,7 +1183,49 @@ exit 0
       stdin.write('\t');
       await new Promise((r) => setTimeout(r, 60));
       expect(changes).toEqual([]);
-      expect(lastFrame()).toContain('[Ask]');
+      expect(lastFrame()).toContain('[Confirm]');
+    });
+  });
+
+  /**
+   * The setting that unblocks models whose chat template has no tool support.
+   * It had no UI in either client — only a hand-edited config file — which is
+   * precisely why a user hitting the 400 had nowhere to go.
+   */
+  describe('/nativetools', () => {
+    it('persists the choice to the profile', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const configStore = new ConfigStore(join(root, 'config.json'));
+      await configStore.saveProfile(profile);
+
+      const { stdin, lastFrame } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+        configStore,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('/nativetools off');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Native tool calling off'), { timeout: 2_000 });
+
+      const saved = (await configStore.listProfiles()).find((p) => p.name === 'test');
+      expect(saved?.capabilities?.nativeToolCalls).toBe(false);
+    });
+
+    it('reports the current setting when called with no argument', async () => {
+      const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+      const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+      const { stdin, lastFrame } = renderApp({
+        provider: fakeProvider('unused'),
+        conversation,
+        historyStore,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      stdin.write('/nativetools');
+      stdin.write('\r');
+      await vi.waitFor(() => expect(lastFrame()).toContain('Native tool calling:'), { timeout: 2_000 });
     });
   });
 

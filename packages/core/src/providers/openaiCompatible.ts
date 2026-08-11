@@ -49,9 +49,10 @@ function throwIfBodyError(body: { error?: ProviderErrorBody } | undefined): void
 
 /** A body error worth another attempt — same statuses fetchOrThrow retries. */
 function isRetryableBodyError(err: unknown): boolean {
-  return (
-    err instanceof ProviderBodyError && err.status !== undefined && RETRYABLE_STATUS.has(err.status)
-  );
+  if (!(err instanceof ProviderBodyError)) return false;
+  if (err.status !== undefined) return RETRYABLE_STATUS.has(err.status);
+  // No code to go on — fall back to what the gateway actually said.
+  return TRANSIENT_MESSAGE.test(err.message);
 }
 
 interface OpenAIChatCompletionChunk {
@@ -82,7 +83,24 @@ interface OpenAIChatCompletion {
   }>;
 }
 
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+/**
+ * Statuses worth another attempt. Beyond the obvious 429/5xx: 408, and the
+ * Cloudflare 52x family that fronts several hosted gateways — 524 in
+ * particular is what a stalled upstream surfaces as, and treating it as
+ * permanent turned a transient hiccup into a failed agent run.
+ */
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
+
+/**
+ * Transient failures a gateway reports in the error *message* while giving no
+ * usable status code — OpenRouter answers a stalled upstream with a bare
+ * `{"error":{"message":"Upstream idle timeout exceeded"}}`, which carried no
+ * code and so was never retried. Deliberately narrow: it must not catch
+ * durable errors, and phrasings like "maximum context length exceeded" or
+ * "model not found" match none of these.
+ */
+const TRANSIENT_MESSAGE =
+  /\b(?:idle timeout|timeout exceeded|timed out|temporarily unavailable|overloaded|at capacity|no instances available|connection (?:reset|closed|error)|upstream (?:error|connect error|timeout)|please try again)\b/i;
 const MAX_ATTEMPTS = 3;
 // Local models can take a while to first-token on a long prompt (agent turns
 // especially — big system prompt, tool schemas, file contents) while they
@@ -346,17 +364,27 @@ export class OpenAICompatibleProvider implements Provider {
     onDelta?: (text: string, kind?: 'text' | 'reasoning' | 'tool') => void,
   ): Promise<ChatResponse> {
     // Routers commonly answer a stream with nothing but an error chunk when
-    // the upstream is at capacity. Retrying is only safe while the caller has
-    // seen no tokens — once any delta is out, replaying would duplicate it.
-    let emitted = false;
+    // the upstream is at capacity, or kill one that has gone idle. Retrying is
+    // only safe while nothing REPLAYABLE has been emitted — text and tool-call
+    // deltas both accumulate into the returned response, so replaying them
+    // would duplicate the answer or the arguments.
+    //
+    // Reasoning deltas do not: they are forwarded to the caller for display
+    // and never folded into `content` (see chatStreamedOnce). Counting them as
+    // replayable made a stall during a long think unrecoverable — exactly the
+    // case a reasoning model on a shared endpoint hits most, since it is the
+    // stretch where the upstream sends nothing the gateway recognizes as
+    // progress. Re-showing a few thinking tokens is a far smaller cost than
+    // losing the turn.
+    let replayable = false;
     const track = (text: string, kind?: 'text' | 'reasoning' | 'tool') => {
-      emitted = true;
+      if (kind !== 'reasoning') replayable = true;
       onDelta?.(text, kind);
     };
     return this.retryingBodyErrors(
       req.signal,
       () => this.chatStreamedOnce(req, track),
-      () => !emitted,
+      () => !replayable,
     );
   }
 

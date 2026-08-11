@@ -1,5 +1,6 @@
-import { McpManager, type ToolDefinition } from '@heapcode/core';
+import { McpManager, WEB_SEARCH_SECRET_NAME, type ToolDefinition } from '@heapcode/core';
 import type { ConfigStore } from './config/store.js';
+import type { SecretsStore } from './config/secrets.js';
 import { WorkspaceToolExecutor, agentToolDefinitions } from './agent/workspaceTools.js';
 import { SessionCheckpoint } from './agent/checkpoint.js';
 import { ShadowGit } from './agent/shadowGit.js';
@@ -24,7 +25,7 @@ export interface AgentSession {
  * headless is a first-class peer of the interactive UI, not a bolted-on
  * shortcut). `root` must already be canonicalized (see paths.ts).
  */
-export function buildAgentSession(root: string, config: ConfigStore): AgentSession {
+export function buildAgentSession(root: string, config: ConfigStore, secrets?: SecretsStore): AgentSession {
   const checkpoint = new SessionCheckpoint(root);
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
 
@@ -42,6 +43,13 @@ export function buildAgentSession(root: string, config: ConfigStore): AgentSessi
     60_000,
     undefined,
     (pathPrefix) => (repoMapIndexer.ready ? repoMapIndexer.format(pathPrefix) : ''),
+    undefined,
+    // Resolved per call rather than captured: turning search on with
+    // /websearch has to affect the run in progress, not just the next one.
+    async () => ({
+      config: (await config.load()).webSearch ?? {},
+      apiKey: await secrets?.getApiKey(WEB_SEARCH_SECRET_NAME),
+    }),
   );
 
   // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with

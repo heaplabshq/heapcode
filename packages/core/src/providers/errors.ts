@@ -58,6 +58,37 @@ function hasUpstreamAttribution(error: ProviderErrorBody | undefined): boolean {
 }
 
 /**
+ * How the servers people actually run locally say "your prompt is longer than
+ * the context I was started with". Each phrases it differently, and all of
+ * them use HTTP 400 — which reads as a malformed request, so the generic
+ * "Request failed with status 400" sent users hunting for a bug in the
+ * request instead of at the one setting that fixes it.
+ */
+const CONTEXT_OVERFLOW =
+  /exceeds? the available context|context (?:size|length|window)|n_ctx|num_ctx|too many tokens|maximum context length|tokens? to keep|prompt is too long/i;
+
+export function isContextOverflow(message: string): boolean {
+  return CONTEXT_OVERFLOW.test(message);
+}
+
+/**
+ * How a server says "this model cannot do tool calling". Tool support lives in
+ * the model's chat template, not in the server or the hardware, so a large
+ * share of local GGUF builds reject a request the moment it carries a `tools`
+ * array — Gemma 2 and Codestral among them. Ollama answers
+ * `<model> does not support tools`; llama.cpp fails rendering the template.
+ *
+ * Matched so the agent loop can drop to its text protocol instead of failing
+ * the run: the request is fine, the model simply speaks a different dialect.
+ */
+const TOOLS_UNSUPPORTED =
+  /does not support tools|doesn'?t support tools|tools? (?:are|is) not supported|tool (?:calling|use) (?:is )?not supported|no tool support|does not support function calling|template.*tool|tool.*not.*(?:template|supported)|failed to parse tools/i;
+
+export function isToolsUnsupported(message: string): boolean {
+  return TOOLS_UNSUPPORTED.test(message);
+}
+
+/**
  * An error the endpoint put in the body of a response it did NOT fail — see
  * throwIfBodyError in openaiCompatible.ts. A distinct type because it needs
  * its own retry pass: an HTTP-status error has already been through
@@ -93,6 +124,23 @@ export async function describeHttpError(res: Response): Promise<ProviderError> {
       );
     case 429:
       return new ProviderError(`Rate limited (429). Try again shortly.${suffix}`, res.status);
+    case 400:
+      // llama.cpp/LM Studio/Ollama all answer 400 here, and a local server's
+      // context is whatever it was *started* with — commonly 4096 — not what
+      // the model card advertises. An agent turn spends a few thousand tokens
+      // on the system prompt and tool schemas before the task even begins, so
+      // this typically strikes on the second turn, once a tool result lands:
+      // the first request fits and the next one does not.
+      if (isContextOverflow(detail)) {
+        return new ProviderError(
+          'The prompt is longer than the context window this endpoint was started with (400). ' +
+            'Local servers default to a small context (often 4096 tokens) regardless of what the model supports — ' +
+            'raise it (Ollama: num_ctx / OLLAMA_CONTEXT_LENGTH; LM Studio: the model\'s Context Length), ' +
+            `and set "contextWindow" on the profile to match so heapcode compacts before overflowing.${suffix}`,
+          res.status,
+        );
+      }
+      return new ProviderError(`Request failed with status 400.${suffix}`, res.status);
     default:
       return new ProviderError(`Request failed with status ${res.status}.${suffix}`, res.status);
   }

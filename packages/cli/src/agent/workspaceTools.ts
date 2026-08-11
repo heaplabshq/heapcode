@@ -13,6 +13,8 @@ import {
   extractSymbols,
   fetchUrl,
   findBestMatch,
+  formatSearchResults,
+  isWebSearchEnabled,
   getSymbolsTool,
   killTree,
   LARGE_FILE_LINES,
@@ -26,8 +28,11 @@ import {
   sharedAgentTools as T,
   truncate,
   unifiedDiff,
+  webSearch,
+  WEB_SEARCH_DISABLED_NOTICE,
   type ToolCall,
   type ToolDefinition,
+  type WebSearchConfig,
   type ToolResult,
 } from '@heapcode/core';
 import type { SessionCheckpoint } from './checkpoint.js';
@@ -98,6 +103,12 @@ export const agentToolDefinitions: ToolDefinition[] = [
     'Outline of a file: functions, classes, methods with their line numbers (tree-sitter based). Much cheaper than reading the whole file.',
   ),
   T.fetch_url,
+  // Always offered, executed only when configured — the same posture as
+  // delegate_task. A model that cannot see the tool has no way to know web
+  // search is even a concept here, and a live session responded to that by
+  // claiming it had searched; refusing the call with an explanation is what
+  // makes it answer honestly instead.
+  T.web_search,
   T.multi_edit,
   T.create_directory,
   T.ask_user,
@@ -130,6 +141,8 @@ export class WorkspaceToolExecutor {
     private readonly repoMap?: (pathPrefix?: string) => string,
     /** Fast-apply merge (applyModel/applyProfile role) — edit_file's fallback when exact search/replace fails to match. */
     private readonly applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
+    /** Resolves web-search config + key at call time, so enabling it mid-session takes effect. */
+    private readonly webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>,
   ) {
     this.cwd = root;
   }
@@ -169,6 +182,8 @@ export class WorkspaceToolExecutor {
         return `Outline ${a.path}`;
       case 'fetch_url':
         return `Fetch ${a.url}`;
+      case 'web_search':
+        return `Web search: "${a.query}"`;
       case 'multi_edit': {
         const count = Array.isArray(call.args.edits) ? (call.args.edits as unknown[]).length : 0;
         return `Edit ${a.path} (${count} edits)`;
@@ -370,6 +385,24 @@ export class WorkspaceToolExecutor {
       }
       case 'fetch_url':
         return fetchUrl(a.url ?? '').then(ok, (err: Error) => fail(err.message));
+      case 'web_search': {
+        const settings = await this.webSearchSettings?.();
+        if (!settings || !isWebSearchEnabled(settings.config, settings.apiKey)) {
+          return fail(WEB_SEARCH_DISABLED_NOTICE);
+        }
+        const query = String(a.query ?? '');
+        try {
+          const results = await webSearch(
+            settings.config,
+            settings.apiKey,
+            query,
+            typeof a.max_results === 'number' ? a.max_results : undefined,
+          );
+          return ok(formatSearchResults(query, results));
+        } catch (err) {
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+      }
       case 'multi_edit': {
         const abs = this.resolve(a.path);
         const edits = Array.isArray(call.args.edits) ? (call.args.edits as Array<{ search?: unknown; replace?: unknown }>) : [];

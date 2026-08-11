@@ -33,6 +33,83 @@ const EXECUTE_TOOL: ToolDefinition = { name: 'run_command', description: 'x', pa
  * consulted first, so a user who just moved the session into auto is not
  * still prompted for something they never granted individually.
  */
+/**
+ * Reported live: "the agent could edit in ask mode itself". Ask mode was
+ * prompting correctly — a `write.edit_file: always` grant saved by an earlier
+ * session was short-circuiting it, invisibly. A mode the UI labels "Ask" has
+ * to ask, so persisted grants no longer apply there.
+ */
+describe('PermissionEngine — Ask mode versus saved grants', () => {
+  it('asks anyway when an earlier session saved an "always" grant', async () => {
+    const grants = memoryGrants();
+    grants.keys.add('write.edit_file');
+    let asked = 0;
+    const engine = new PermissionEngine({ grants, mode: () => 'default' });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('deny');
+    });
+    const call: ToolCall = { id: '1', name: 'edit_file', args: {} };
+    const tool: ToolDefinition = { name: 'edit_file', description: 'x', parameters: {}, permission: 'write' };
+    expect(await engine.request(call, tool, 'edit a.ts')).toBe(false);
+    expect(asked).toBe(1);
+  });
+
+  it('still honours a grant made during this session', async () => {
+    let asked = 0;
+    const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => 'default' });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('session');
+    });
+    expect(await engine.request(CALL, WRITE_TOOL, 'write')).toBe(true);
+    expect(await engine.request(CALL, WRITE_TOOL, 'write again')).toBe(true);
+    expect(asked).toBe(1);
+  });
+
+  /** Otherwise "Always" would re-prompt on the very next call in Ask mode. */
+  it('makes an "always" choice take effect immediately in Ask mode too', async () => {
+    let asked = 0;
+    const grants = memoryGrants();
+    const engine = new PermissionEngine({ grants, mode: () => 'default' });
+    engine.attachRequester(() => {
+      asked++;
+      return Promise.resolve('always');
+    });
+    expect(await engine.request(CALL, WRITE_TOOL, 'write')).toBe(true);
+    expect(await engine.request(CALL, WRITE_TOOL, 'write again')).toBe(true);
+    expect(asked).toBe(1);
+    // …and it is still written down, for the auto modes.
+    expect(grants.keys.has('write.write_file')).toBe(true);
+  });
+
+  it('applies a persisted grant in the auto modes, where prompting was opted out of', async () => {
+    const grants = memoryGrants();
+    grants.keys.add('execute.run_command');
+    const engine = new PermissionEngine({ grants, mode: () => 'auto-edit' });
+    engine.attachRequester(() => Promise.reject(new Error('should not be called')));
+    const call: ToolCall = { id: '1', name: 'run_command', args: {} };
+    const tool: ToolDefinition = { name: 'run_command', description: 'x', parameters: {}, permission: 'execute' };
+    expect(await engine.request(call, tool, 'run it')).toBe(true);
+  });
+
+  it('logs why an action was allowed without asking', async () => {
+    const lines: string[] = [];
+    const grants = memoryGrants();
+    grants.keys.add('execute.run_command');
+    const engine = new PermissionEngine({
+      grants,
+      mode: () => 'auto-edit',
+      log: (m) => lines.push(m),
+      resetHint: '/permissions reset',
+    });
+    const call: ToolCall = { id: '1', name: 'run_command', args: {} };
+    const tool: ToolDefinition = { name: 'run_command', description: 'x', parameters: {}, permission: 'execute' };
+    await engine.request(call, tool, 'run it');
+    expect(lines.join('\n')).toMatch(/persisted "Always" grant.*\/permissions reset/);
+  });
+});
+
 describe('PermissionEngine permission modes', () => {
   it('auto-edit approves a write with no requester at all', async () => {
     const engine = new PermissionEngine({ grants: memoryGrants(), mode: () => 'auto-edit' });
@@ -157,16 +234,29 @@ describe('PermissionEngine', () => {
     expect(await engine.request(CALL, WRITE_TOOL, 'third')).toBe(false);
   });
 
-  it('"always" grant is written to the store under <permission>.<tool> and skips later prompts', async () => {
+  it('"always" grant is written to the store under <permission>.<tool>, and skips later prompts in the auto modes', async () => {
     const grants = memoryGrants();
     const engine = new PermissionEngine({ grants });
     engine.attachRequester(() => Promise.resolve('always'));
     expect(await engine.request(CALL, WRITE_TOOL, 'first')).toBe(true);
     expect([...grants.keys]).toEqual(['write.write_file']);
 
-    const fresh = new PermissionEngine({ grants });
+    // This assertion used to be made for the default mode as well. It was
+    // changed deliberately, not relaxed: a saved grant silently approving
+    // edits in a mode labelled "Ask" is the bug this pins the fix for. The
+    // grant still does its job wherever the user opted out of prompting.
+    const fresh = new PermissionEngine({ grants, mode: () => 'auto-edit' });
     fresh.attachRequester(() => Promise.reject(new Error('should not be asked — persisted grant covers this')));
     expect(await fresh.request(CALL, WRITE_TOOL, 'second')).toBe(true);
+
+    const asking = new PermissionEngine({ grants, mode: () => 'default' });
+    let asked = 0;
+    asking.attachRequester(() => {
+      asked++;
+      return Promise.resolve('deny');
+    });
+    expect(await asking.request(CALL, WRITE_TOOL, 'third')).toBe(false);
+    expect(asked).toBe(1);
   });
 
   it('destructive tools are never offered "always" persistence (allowPersist=false)', async () => {

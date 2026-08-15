@@ -12,12 +12,7 @@ export interface SidebarProps {
   busy: boolean;
   state?: UiState;
   status: 'connecting' | 'open' | 'closed';
-  changeCount: number;
-  panelOpen: boolean;
   onOpenArtifacts(): void;
-  onOpenChanges(): void;
-  onOpenFiles(): void;
-  onOpenTerminal(): void;
   onOpenSettings(focus?: 'context'): void;
   onOpenPalette(): void;
 }
@@ -64,14 +59,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           hint={props.busy ? 'Stop the current run first' : undefined}
         />
         <RailItem icon={<IconArtifact />} label="Artifacts" collapsed={collapsed} onClick={props.onOpenArtifacts} />
-        <RailItem
-          icon={<IconDiff />}
-          label="Changes"
-          collapsed={collapsed}
-          onClick={props.onOpenChanges}
-          active={props.panelOpen}
-          badge={props.changeCount || undefined}
-        />
         <RailItem icon={<IconSliders />} label="Customize" collapsed={collapsed} onClick={() => props.onOpenSettings()} />
 
         {!collapsed && (
@@ -93,12 +80,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                 </button>
                 <button className="rail-subitem" onClick={() => props.onOpenSettings('context')}>
                   Context &amp; tokens
-                </button>
-                <button className="rail-subitem" onClick={props.onOpenFiles}>
-                  Files
-                </button>
-                <button className="rail-subitem" onClick={props.onOpenTerminal}>
-                  Terminal
                 </button>
               </div>
             )}
@@ -230,17 +211,6 @@ function IconArtifact(): JSX.Element {
       <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
       <path d="M14 3v5h5" />
       <path d="M9 13h6M9 17h4" />
-    </svg>
-  );
-}
-
-/** Changes: a plus over a minus, the shape a diff already uses. */
-function IconDiff(): JSX.Element {
-  return (
-    <svg {...S}>
-      <path d="M6 4v7M3 7.5h6" />
-      <path d="M15 16.5h6" />
-      <path d="M18 4 6 20" />
     </svg>
   );
 }

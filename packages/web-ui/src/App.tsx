@@ -43,6 +43,7 @@ import { MessageList } from './components/MessageList.js';
 import { Sidebar } from './components/Sidebar.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
+import { ChatTools } from './components/ChatTools.js';
 import {
   concat,
   emptyTranscript,
@@ -386,7 +387,7 @@ export function App(): JSX.Element {
           setPanelOpen(true);
           setPanelTab('changes');
           refreshWorkspace();
-          setNotice('Checkpoints are listed in the Changes tab — pick one to rewind to.');
+          setNotice('Checkpoints are listed under the changed files — pick one to rewind to.');
           return;
         case '/index':
           setNotice('Rebuilding the semantic index…');
@@ -579,34 +580,26 @@ export function App(): JSX.Element {
           busy={busy}
           state={state}
           status={status}
-          changeCount={changes.length}
-          panelOpen={panelOpen}
           onOpenArtifacts={() => {
             setPanelOpen(true);
             setPanelTab('preview');
             refreshArtifacts();
-          }}
-          onOpenChanges={() => {
-            // Second click on an already-open Changes tab closes the panel —
-            // the same toggle the header button used to be.
-            if (panelOpen && panelTab === 'changes') return setPanelOpen(false);
-            setPanelOpen(true);
-            setPanelTab('changes');
-            refreshWorkspace();
-          }}
-          onOpenFiles={() => {
-            setPanelOpen(true);
-            setPanelTab('files');
-          }}
-          onOpenTerminal={() => {
-            setPanelOpen(true);
-            setPanelTab('terminal');
           }}
           onOpenSettings={openSettings}
           onOpenPalette={() => setPaletteOpen(true)}
         />
 
         <main className="chat">
+          <ChatTools
+            panelOpen={panelOpen}
+            changeCount={changes.length}
+            onTogglePanel={() => {
+              const next = !panelOpen;
+              setPanelOpen(next);
+              if (next) refreshWorkspace();
+            }}
+          />
+
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
           {error && <div className="banner banner-error">{error}</div>}
           {notice && (

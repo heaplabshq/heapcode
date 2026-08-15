@@ -40,12 +40,7 @@ function railProps(over: Partial<SidebarProps> = {}): SidebarProps {
     busy: false,
     state: STATE,
     status: 'open',
-    changeCount: 0,
-    panelOpen: false,
     onOpenArtifacts: vi.fn(),
-    onOpenChanges: vi.fn(),
-    onOpenFiles: vi.fn(),
-    onOpenTerminal: vi.fn(),
     onOpenSettings: vi.fn(),
     onOpenPalette: vi.fn(),
     ...over,
@@ -53,16 +48,23 @@ function railProps(over: Partial<SidebarProps> = {}): SidebarProps {
 }
 
 describe('the left rail', () => {
-  it('carries what the old header did, minus the meter', () => {
-    // The header held: brand, connection state, context meter, panel toggle
-    // with a change count, and an overflow menu. Losing any of them silently
-    // in the move is the failure this guards. The meter is the one deliberate
-    // exception — it moved to the composer, and ContextMeter covers it.
-    const { container } = render(<Sidebar {...railProps({ changeCount: 3 })} />);
+  it('carries the brand, connection and profile', () => {
+    const { container } = render(<Sidebar {...railProps()} />);
     expect(screen.getByText('Heap Code')).toBeTruthy();
     expect(container.querySelector('.dot-open')).not.toBeNull();
-    expect(screen.getByText('3')).toBeTruthy();
     expect(screen.getByText('ollama')).toBeTruthy();
+  });
+
+  it('holds nothing that is really a workspace-panel tab', () => {
+    // Changes, Files and Terminal are tabs of the panel, not destinations of
+    // their own — a rail entry named after one could only open that single tab
+    // while looking like it owned the whole panel. ChatTools opens the panel;
+    // the tabs take it from there.
+    render(<Sidebar {...railProps()} />);
+    fireEvent.click(screen.getByText('More'));
+    for (const gone of ['Changes', 'Files', 'Terminal']) {
+      expect(screen.queryByText(gone)).toBeNull();
+    }
   });
 
   it('marks the open conversation, and only that one', () => {
@@ -92,9 +94,9 @@ describe('the left rail', () => {
 
   it('hides the More group until it is asked for', () => {
     render(<Sidebar {...railProps()} />);
-    expect(screen.queryByText('Terminal')).toBeNull();
+    expect(screen.queryByText('Commands')).toBeNull();
     fireEvent.click(screen.getByText('More'));
-    expect(screen.getByText('Terminal')).toBeTruthy();
+    expect(screen.getByText('Commands')).toBeTruthy();
   });
 });
 

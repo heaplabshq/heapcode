@@ -112,8 +112,34 @@ function Changes(props: PanelProps): JSX.Element {
     );
   }
 
+  const totals = props.changes.reduce(
+    (acc, f) => ({ added: acc.added + f.added, removed: acc.removed + f.removed }),
+    { added: 0, removed: 0 },
+  );
+
   return (
     <div className="changes">
+      {/* Count and totals on the left, the two whole-session actions on the
+          right. They used to be a pair of full-size buttons sitting between
+          the file list and the checkpoints, which read as a divider and put
+          "Revert all" — the most destructive thing here — directly under the
+          cursor's path down the list. */}
+      <header className="changes-head">
+        <span className="changes-count">
+          {props.changes.length} file{props.changes.length === 1 ? '' : 's'}
+        </span>
+        <span className="stat stat-add">+{totals.added}</span>
+        <span className="stat stat-del">−{totals.removed}</span>
+        <span className="changes-head-actions">
+          <button className="link-btn" onClick={props.onKeepAll} disabled={props.busy}>
+            Keep all
+          </button>
+          <button className="link-btn link-btn-danger" onClick={props.onRevertAll} disabled={props.busy}>
+            Revert all
+          </button>
+        </span>
+      </header>
+
       <ul className="file-list">
         {props.changes.map((f) => (
           <li key={f.path}>
@@ -121,7 +147,9 @@ function Changes(props: PanelProps): JSX.Element {
               className={`file-row ${selected === f.path ? 'file-row-active' : ''}`}
               onClick={() => setSelected(selected === f.path ? undefined : f.path)}
             >
-              <span className="file-path">{f.path}</span>
+              <span className="file-path" title={f.path}>
+                {f.path}
+              </span>
               {f.created && <span className="badge badge-ok">new</span>}
               {f.deleted && <span className="badge badge-off">deleted</span>}
               {f.reverted && <span className="badge badge-off">reverted</span>}
@@ -131,7 +159,7 @@ function Changes(props: PanelProps): JSX.Element {
             {selected === f.path && (
               <div className="file-detail">
                 {diff?.note ? <p className="hint">{diff.note}</p> : diff ? <DiffView diff={diff.diff} /> : <p className="hint">Loading…</p>}
-                <button className="btn btn-danger" onClick={() => props.onRevertFile(f.path)} disabled={props.busy}>
+                <button className="link-btn link-btn-danger" onClick={() => props.onRevertFile(f.path)} disabled={props.busy}>
                   Revert this file
                 </button>
               </div>
@@ -140,43 +168,73 @@ function Changes(props: PanelProps): JSX.Element {
         ))}
       </ul>
 
-      <div className="changes-actions">
-        <button className="btn" onClick={props.onKeepAll} disabled={props.busy}>
-          Keep all
-        </button>
-        <button className="btn btn-danger" onClick={props.onRevertAll} disabled={props.busy}>
-          Revert all
-        </button>
-      </div>
-
       <Checkpoints {...props} />
     </div>
   );
 }
 
+/** Beyond this many, the list is opened on request rather than by default. */
+const CHECKPOINTS_COLLAPSE_ABOVE = 5;
+/** And even then it shows a window, not the whole history, until asked. */
+const CHECKPOINTS_PAGE = 8;
+
+/**
+ * The rewind history.
+ *
+ * Was a stack of bordered cards, each carrying its own full-size "Rewind here"
+ * button — so a session with a dozen snapshots turned the Changes tab into a
+ * wall of buttons that dwarfed the changed files above it, which is the thing
+ * the tab is actually about. Now: a collapsible section, a compact row per
+ * snapshot with the time first so a long list can be scanned down one column,
+ * and a quiet Rewind that only asserts itself on hover.
+ *
+ * Collapsed only once the list is long enough to be the problem. A section
+ * that hides three items behind a click is worse than one that shows them.
+ */
 function Checkpoints(props: PanelProps): JSX.Element | null {
-  if (props.checkpoints.length === 0) return null;
+  const total = props.checkpoints.length;
+  const [open, setOpen] = useState(total <= CHECKPOINTS_COLLAPSE_ABOVE);
+  const [all, setAll] = useState(false);
+  if (total === 0) return null;
+
+  const shown = all ? props.checkpoints : props.checkpoints.slice(0, CHECKPOINTS_PAGE);
+
   return (
-    <div className="checkpoints">
-      <h4>Checkpoints</h4>
-      <p className="hint">A snapshot is taken before each change. Rewinding restores the whole workspace.</p>
-      <ul className="rows">
-        {props.checkpoints.map((c) => (
-          <li key={c.hash} className="row">
-            <span className="row-name">{c.label}</span>
-            <span className="hint">{new Date(c.date).toLocaleTimeString()}</span>
-            <button
-              className="btn"
-              style={{ marginLeft: 'auto' }}
-              onClick={() => props.onRewind(c.hash)}
-              disabled={props.busy}
-            >
-              Rewind here
+    <section className="checkpoints">
+      <button className="cp-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <span className="cp-caret">{open ? '▾' : '▸'}</span>
+        Checkpoints
+        <span className="cp-count">{total}</span>
+      </button>
+
+      {open && (
+        <>
+          <p className="hint cp-note">
+            A snapshot is taken before each change. Rewinding restores the whole workspace.
+          </p>
+          <ul className="cp-list">
+            {shown.map((c) => (
+              <li key={c.hash} className="cp">
+                <time className="cp-time" dateTime={new Date(c.date).toISOString()}>
+                  {new Date(c.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </time>
+                <span className="cp-label" title={c.label}>
+                  {c.label}
+                </span>
+                <button className="cp-rewind" onClick={() => props.onRewind(c.hash)} disabled={props.busy}>
+                  Rewind
+                </button>
+              </li>
+            ))}
+          </ul>
+          {!all && total > CHECKPOINTS_PAGE && (
+            <button className="link-btn" onClick={() => setAll(true)}>
+              Show all {total}
             </button>
-          </li>
-        ))}
-      </ul>
-    </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

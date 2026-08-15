@@ -5,6 +5,7 @@ import {
   type UiSaveProfileParams,
   type UiSettings,
 } from '@heapcode/web-host/protocol';
+import { ModelInput } from './ModelInput.js';
 
 export interface SettingsProps {
   settings?: UiSettings;
@@ -19,6 +20,8 @@ export interface SettingsProps {
   onUseProfile(name: string): void;
   onDeleteProfile(name: string): void;
   onSaveProfile(profile: UiSaveProfileParams['profile'], apiKey?: string): void;
+  /** Models a given profile's endpoint serves, for the role fields' type-ahead. */
+  listModels?(profileName: string): Promise<string[]>;
   /** Lazy, because both read files: only fetched when their page is opened. */
   loadSkills?(): Promise<string>;
   loadMemory?(): Promise<string>;
@@ -161,6 +164,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                           )
                         }
                         onSaveProfile={(patch) => props.onSaveProfile(patch)}
+                        listModels={props.listModels}
                       />
                     ))}
                   </ul>
@@ -422,6 +426,7 @@ function ProfileRow({
   onDelete,
   onSaveKey,
   onSaveProfile,
+  listModels,
 }: {
   profile: UiProfile;
   /** Sibling profile names, for "run this role on another provider". */
@@ -431,6 +436,7 @@ function ProfileRow({
   onDelete(): void;
   onSaveKey(key: string): void;
   onSaveProfile(p: UiSaveProfileParams['profile']): void;
+  listModels?(profileName: string): Promise<string[]>;
 }): JSX.Element {
   const [editing, setEditing] = useState(Boolean(startOpen));
   const [draft, setDraft] = useState<UiProfileDraft>({
@@ -483,10 +489,11 @@ function ProfileRow({
             />
           </Field>
           <Field label="Model">
-            <input
-              className="card-input"
+            <ModelInput
               value={draft.model}
-              onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+              aria-label="Model"
+              onChange={(model) => setDraft({ ...draft, model })}
+              listModels={() => listModels?.(profile.name) ?? Promise.resolve([])}
             />
           </Field>
           <Field label="Preset">
@@ -531,6 +538,8 @@ function ProfileRow({
             roles={draft.roles ?? {}}
             profiles={otherProfiles}
             onChange={(roles) => setDraft({ ...draft, roles })}
+            listModels={listModels}
+            ownProfile={profile.name}
           />
 
           <div className="field-row">
@@ -687,10 +696,15 @@ function ModelRoles({
   roles,
   profiles,
   onChange,
+  listModels,
+  ownProfile,
 }: {
   roles: Record<string, string>;
   profiles: string[];
   onChange(next: Record<string, string>): void;
+  listModels?(profileName: string): Promise<string[]>;
+  /** Whose endpoint a role uses when it is not redirected elsewhere. */
+  ownProfile: string;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const set = (key: string, value: string): void => onChange({ ...roles, [key]: value });
@@ -710,12 +724,18 @@ function ModelRoles({
               {UI_MODEL_ROLES.filter((r) => r.group === group).map((role) => (
                 <div key={role.key} className="role">
                   <span className="role-label">{role.label}</span>
-                  <input
-                    className="card-input role-input"
+                  <ModelInput
                     value={roles[`${role.key}Model`] ?? ''}
                     placeholder={role.hint}
                     aria-label={`${role.label} model`}
-                    onChange={(e) => set(`${role.key}Model`, e.target.value)}
+                    onChange={(v) => set(`${role.key}Model`, v)}
+                    // The list has to come from wherever the role actually
+                    // runs: redirect embeddings to a local Ollama and the
+                    // models worth offering are that endpoint's, not this
+                    // profile's.
+                    listModels={() =>
+                      listModels?.(roles[`${role.key}Profile`] || ownProfile) ?? Promise.resolve([])
+                    }
                   />
                   {/* The second half of a role: run it against a different
                       profile's endpoint and key entirely — embeddings on a

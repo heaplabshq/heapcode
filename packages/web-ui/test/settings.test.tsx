@@ -181,3 +181,46 @@ describe('model roles', () => {
     expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ embeddingsModel: '' });
   });
 });
+
+describe('role model suggestions', () => {
+  const withRoles: UiSettings = {
+    ...SETTINGS,
+    profiles: [
+      SETTINGS.profiles[0]!,
+      {
+        name: 'local',
+        preset: 'ollama',
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'llama',
+        active: false,
+        hasKey: false,
+        effectiveContextWindow: 8_000,
+      },
+    ],
+  };
+
+  function openRoles(listModels: (p: string) => Promise<string[]>): void {
+    render(<Settings {...props({ settings: withRoles, listModels })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    fireEvent.click(screen.getAllByText('Edit')[0]!);
+    fireEvent.click(screen.getByText(/Model roles/));
+  }
+
+  it('suggests from this profile when the role is not redirected', async () => {
+    const listModels = vi.fn(() => Promise.resolve(['nomic-embed-text']));
+    openRoles(listModels);
+    fireEvent.focus(screen.getByLabelText('Embeddings model'));
+    await waitFor(() => expect(listModels).toHaveBeenCalledWith('ollama'));
+  });
+
+  it('suggests from the TARGET profile once the role is redirected', async () => {
+    // Point embeddings at a local Ollama and the models worth offering are
+    // that endpoint's — listing this profile's would suggest ids the role can
+    // never reach.
+    const listModels = vi.fn(() => Promise.resolve([]));
+    openRoles(listModels);
+    fireEvent.change(screen.getByLabelText('Embeddings profile'), { target: { value: 'local' } });
+    fireEvent.focus(screen.getByLabelText('Embeddings model'));
+    await waitFor(() => expect(listModels).toHaveBeenCalledWith('local'));
+  });
+});

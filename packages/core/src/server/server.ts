@@ -251,7 +251,14 @@ export class HeapcodeServer {
       if (!session) throw new Error('session/hello must be sent first');
       const { profileName } = (raw ?? {}) as ListModelsParams;
       const name = profileName ?? session.activeProfile;
-      const resolved = session.providerFor(name);
+      // `resolveProfile`, not `providerFor`: every host pushes only the ACTIVE
+      // profile at hello (App.tsx:426, headless.ts:207, serverLink.ts:91), so
+      // asking for any other one's models used to fail with "Unknown profile"
+      // even though the host knew it perfectly well. This is the same
+      // key/request path `providerForRole` already uses for `<role>Profile`
+      // redirects — the profile a role is redirected TO is exactly the profile
+      // whose models a settings UI needs to offer.
+      const resolved = await session.resolveProfile(name, requestKey);
       if (!resolved) throw new Error(`Unknown profile "${name}" for this session.`);
       return { models: await resolved.provider.listModels() } satisfies ListModelsResult;
     });

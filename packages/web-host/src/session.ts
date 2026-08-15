@@ -71,6 +71,7 @@ import {
   type UiEventParams,
   type UiHelloParams,
   type UiHelloResult,
+  type UiListModelsParams,
   type UiListModelsResult,
   type UiMessage,
   type UiOpenConversationParams,
@@ -481,11 +482,15 @@ export class WebSession {
       return { id: this.conversation.id, messages: [] };
     });
 
-    ui.onRequest(UI_METHODS.listModels, async (): Promise<UiListModelsResult> => {
+    ui.onRequest(UI_METHODS.listModels, async (raw): Promise<UiListModelsResult> => {
       await this.start();
+      const { profileName } = (raw ?? {}) as UiListModelsParams;
       const res = await this.connection!.peer.request<{ models: Array<{ id: string; contextLength?: number }> }>(
         METHODS.listModels,
-        {},
+        // The daemon resolves an unknown name through `key/request`, which this
+        // host answers from its own config and secrets — so any configured
+        // profile can be listed, not just the one the session is running on.
+        { profileName },
       );
       return { models: res.models };
     });

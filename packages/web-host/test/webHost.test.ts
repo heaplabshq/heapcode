@@ -29,6 +29,7 @@ import {
   type UiEventParams,
   type UiFileTreeResult,
   type UiHelloResult,
+  type UiListModelsResult,
   type UiOpenConversationResult,
   type UiReadFileResult,
   type UiPermissionRequestParams,
@@ -1354,6 +1355,37 @@ describe('web host — model roles', () => {
     await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'go' });
 
     expect(mock!.requests.at(-1)?.body).toMatchObject({ model: 'agent-only-model' });
+    browser.close();
+  });
+});
+
+describe('web host — listing models', () => {
+  it('lists a profile that is not the active one', async () => {
+    // Every host pushes only the ACTIVE profile at session/hello, so this used
+    // to come back "Unknown profile" even though the host had it in config all
+    // along. The role editor needs exactly this: a role redirected to another
+    // profile should suggest that endpoint's models.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'second', preset: 'custom', baseUrl: mock!.baseUrl, model: 'other-model' },
+    });
+
+    const res = await browser.peer.request<UiListModelsResult>(UI_METHODS.listModels, {
+      profileName: 'second',
+    });
+    expect(res.models.map((m) => m.id)).toContain('other-model');
+    browser.close();
+  });
+
+  it('still defaults to the active profile when none is named', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    const res = await browser.peer.request<UiListModelsResult>(UI_METHODS.listModels);
+    expect(res.models.map((m) => m.id)).toContain('mock-model');
     browser.close();
   });
 });

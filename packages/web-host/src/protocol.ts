@@ -194,6 +194,15 @@ export interface UiOpenConversationResult {
   messages: UiMessage[];
 }
 
+export interface UiListModelsParams {
+  /**
+   * Whose endpoint to list. Defaults to the session's active profile — the
+   * composer's picker wants that one; the role editor wants whichever profile
+   * the role is pointed at.
+   */
+  profileName?: string;
+}
+
 export interface UiListModelsResult {
   models: Array<{ id: string; contextLength?: number }>;
 }

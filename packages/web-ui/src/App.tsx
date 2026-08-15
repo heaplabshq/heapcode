@@ -298,6 +298,14 @@ export function App(): JSX.Element {
     [rpc],
   );
 
+  const listProfileModels = useCallback(
+    (profileName: string) =>
+      rpc
+        .request<UiListModelsResult>(UI_METHODS.listModels, { profileName })
+        .then((r) => r.models.map((m) => m.id)),
+    [rpc],
+  );
+
   const loadSkills = useCallback(
     () => rpc.request<{ skills: string }>(UI_METHODS.skills).then((r) => r.skills),
     [rpc],
@@ -720,6 +728,7 @@ export function App(): JSX.Element {
           }
           loadSkills={loadSkills}
           loadMemory={loadMemory}
+          listModels={listProfileModels}
           onResetPermissions={() => {
             void rpc
               .request<UiResetPermissionsResult>(UI_METHODS.resetPermissions)

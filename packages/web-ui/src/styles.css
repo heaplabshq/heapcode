@@ -1013,3 +1013,24 @@ body {
   .role { grid-template-columns: 1fr; gap: 4px; }
   .role-select { max-width: none; }
 }
+
+/* ---------- model type-ahead ---------- */
+.mi { position: relative; min-width: 0; }
+.mi-input { width: 100%; }
+.mi-list {
+  position: absolute; top: calc(100% + 3px); left: 0; right: 0; z-index: 40;
+  list-style: none; margin: 0; padding: 4px;
+  max-height: 220px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.22);
+}
+.mi-item {
+  width: 100%; text-align: left; background: none; border: 0; cursor: pointer;
+  color: var(--text); padding: 5px 8px; border-radius: 6px;
+  font-family: var(--mono); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Hover and keyboard drive the same class, so there is only ever one
+   highlighted row however you are moving through the list. */
+.mi-item-active { background: var(--chip-bg); }
+.mi-note { margin: 3px 0 0; }

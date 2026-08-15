@@ -379,12 +379,35 @@ export type UiStateChangedParams = Partial<UiState>;
  * (the browser can set one) and never back down — the same write-only custody
  * rule the settings form depends on (§6.1).
  */
-export interface UiProfile {
+/**
+ * The non-chat model roles, in the order the editor lists them.
+ *
+ * A profile can point each role at its own model, and (via `<role>Profile`) at
+ * another profile's provider entirely — embeddings on a local Ollama while the
+ * agent stays on a cloud endpoint, say. `label`/`hint` are here rather than in
+ * the browser so the three hosts describe the same field the same way.
+ */
+export const UI_MODEL_ROLES = [
+  { key: 'agent', group: 'Core', label: 'Agent', hint: 'inherits the chat model' },
+  { key: 'apply', group: 'Core', label: 'Apply', hint: 'fast-apply merge, when an edit’s search text does not match' },
+  { key: 'edit', group: 'Core', label: 'Edit', hint: 'inherits the chat model' },
+  { key: 'completion', group: 'Core', label: 'Autocomplete', hint: 'editor ghost text — used by the extension, not here' },
+  { key: 'embeddings', group: 'Retrieval', label: 'Embeddings', hint: 'semantic search and the repo index' },
+  { key: 'rerank', group: 'Retrieval', label: 'Rerank', hint: 'inherits edit → chat' },
+  { key: 'context', group: 'Retrieval', label: 'Context', hint: 'per-chunk blurbs at index time; inherits rerank → edit → chat' },
+] as const;
+
+export type UiModelRole = (typeof UI_MODEL_ROLES)[number]['key'];
+
+/** `{ agentModel, agentProfile, … }` — the shape both directions carry roles in. */
+export type UiRoleFields = Partial<Record<`${UiModelRole}Model` | `${UiModelRole}Profile`, string>>;
+
+export interface UiProfile extends UiRoleFields {
   name: string;
   preset: string;
   baseUrl: string;
   model: string;
-  agentModel?: string;
+  temperature?: number;
   hasKey: boolean;
   active: boolean;
   /** Effective value, after `resolveCapabilities` — not the raw stored flag. */
@@ -443,14 +466,14 @@ export interface UiSaveProfileParams {
    * would silently drop `temperature`, `headers`, `capabilities` and the rest.
    * `null` clears a field back to its inherited default.
    */
-  profile: {
+  profile: UiRoleFields & {
     name: string;
     preset?: string;
     baseUrl?: string;
     model?: string;
-    agentModel?: string;
     contextWindow?: number | null;
     maxTokens?: number | null;
+    temperature?: number | null;
   };
   /** Write-only. Omitted leaves any existing key untouched. */
   apiKey?: string;

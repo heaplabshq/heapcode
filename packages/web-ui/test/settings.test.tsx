@@ -105,3 +105,79 @@ describe('the settings dialog', () => {
     expect(await screen.findByText('- deploy')).toBeTruthy();
   });
 });
+
+describe('model roles', () => {
+  const withRoles: UiSettings = {
+    ...SETTINGS,
+    profiles: [
+      { ...SETTINGS.profiles[0]!, embeddingsModel: 'nomic-embed', applyModel: 'fast-apply' },
+      {
+        name: 'local',
+        preset: 'ollama',
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'llama',
+        active: false,
+        hasKey: false,
+        effectiveContextWindow: 8_000,
+      },
+    ],
+  };
+
+  function openRoles(over: Partial<SettingsProps> = {}): void {
+    render(<Settings {...props({ settings: withRoles, ...over })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    fireEvent.click(screen.getAllByText('Edit')[0]!);
+    fireEvent.click(screen.getByText(/Model roles/));
+  }
+
+  it('is collapsed by default, and says how many roles are set', () => {
+    render(<Settings {...props({ settings: withRoles })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    fireEvent.click(screen.getAllByText('Edit')[0]!);
+    // Most profiles need none of this, so it stays out of the way — but the
+    // count says whether there is anything behind the toggle.
+    expect(screen.queryByLabelText('Embeddings model')).toBeNull();
+    expect(screen.getByText('2 set')).toBeTruthy();
+  });
+
+  it('loads the stored role models into their fields', () => {
+    openRoles();
+    expect(screen.getByLabelText<HTMLInputElement>('Embeddings model').value).toBe('nomic-embed');
+    expect(screen.getByLabelText<HTMLInputElement>('Apply model').value).toBe('fast-apply');
+    expect(screen.getByLabelText<HTMLInputElement>('Rerank model').value).toBe('');
+  });
+
+  it('offers the other profiles for running a role elsewhere, but not itself', () => {
+    openRoles();
+    const select = screen.getByLabelText<HTMLSelectElement>('Embeddings profile');
+    const options = [...select.options].map((o) => o.textContent);
+    // Pointing a role at its own profile is what leaving it unset already means.
+    expect(options).toEqual(['this profile', 'on local']);
+  });
+
+  it('sends roles flattened, the way a stored profile carries them', () => {
+    const onSaveProfile = vi.fn();
+    openRoles({ onSaveProfile });
+    fireEvent.change(screen.getByLabelText('Rerank model'), { target: { value: 'rerank-1' } });
+    fireEvent.change(screen.getByLabelText('Embeddings profile'), { target: { value: 'local' } });
+    fireEvent.click(screen.getByText('Save changes'));
+
+    const sent = onSaveProfile.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sent).toMatchObject({
+      name: 'ollama',
+      rerankModel: 'rerank-1',
+      embeddingsProfile: 'local',
+      embeddingsModel: 'nomic-embed',
+    });
+    // The form's nested map is an editor detail; it never crosses the wire.
+    expect(sent.roles).toBeUndefined();
+  });
+
+  it('sends an emptied field as "", which the host reads as "clear it"', () => {
+    const onSaveProfile = vi.fn();
+    openRoles({ onSaveProfile });
+    fireEvent.change(screen.getByLabelText('Embeddings model'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save changes'));
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ embeddingsModel: '' });
+  });
+});

@@ -62,6 +62,7 @@ import {
 } from '@heapcode/host';
 import {
   UI_METHODS,
+  UI_MODEL_ROLES,
   UI_PROTOCOL_VERSION,
   type UiAskUserParams,
   type UiAskUserResult,
@@ -114,6 +115,7 @@ import {
   type UiBrowseFoldersResult,
   type UiContextResult,
   type UiContextSlice,
+  type UiRoleFields,
   type UiSetWorkspaceParams,
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
@@ -806,7 +808,8 @@ export class WebSession {
           preset: p.preset,
           baseUrl: p.baseUrl,
           model: p.model,
-          agentModel: p.agentModel,
+          ...roleFields(p),
+          temperature: p.temperature,
           hasKey: Boolean(await this.deps.secrets.getApiKey(p.name)),
           active: p.name === this.profile?.name,
           nativeToolCalls: resolveCapabilities(p).nativeToolCalls,
@@ -1453,12 +1456,34 @@ export function mergeProfile(
   }
   if (patch.baseUrl !== undefined) next.baseUrl = patch.baseUrl;
   if (patch.model !== undefined) next.model = patch.model;
-  if (patch.agentModel !== undefined) next.agentModel = patch.agentModel || undefined;
+  // Every role, in one loop rather than fourteen near-identical lines. An
+  // empty string clears the override, which is what the editor sends when the
+  // field is emptied — the role then falls back down its inheritance chain.
+  for (const role of UI_MODEL_ROLES) {
+    for (const suffix of ['Model', 'Profile'] as const) {
+      const key = `${role.key}${suffix}` as const;
+      const value = patch[key];
+      if (value !== undefined) next[key] = value || undefined;
+    }
+  }
   // `?? undefined` is the clear: JSON.stringify drops the key on persist, so
   // the profile goes back to inheriting the preset's value.
   if (patch.contextWindow !== undefined) next.contextWindow = patch.contextWindow ?? undefined;
   if (patch.maxTokens !== undefined) next.maxTokens = patch.maxTokens ?? undefined;
+  if (patch.temperature !== undefined) next.temperature = patch.temperature ?? undefined;
   return next;
+}
+
+/** A profile's role fields, for the editor to load. */
+function roleFields(p: ProviderProfileConfig): UiRoleFields {
+  const out: UiRoleFields = {};
+  for (const role of UI_MODEL_ROLES) {
+    for (const suffix of ['Model', 'Profile'] as const) {
+      const key = `${role.key}${suffix}` as const;
+      if (p[key]) out[key] = p[key];
+    }
+  }
+  return out;
 }
 
 /**

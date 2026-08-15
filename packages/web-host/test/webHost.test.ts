@@ -1260,6 +1260,104 @@ describe('web host — switching workspace', () => {
   });
 });
 
+describe('web host — model roles', () => {
+  it('round-trips every role model and its cross-profile override', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: {
+        name: 'mock',
+        agentModel: 'big-agent',
+        applyModel: 'fast-apply-1.5b',
+        embeddingsModel: 'nomic-embed',
+        embeddingsProfile: 'local',
+        rerankModel: 'rerank-1',
+        contextModel: 'tiny',
+        editModel: 'edit-1',
+        completionModel: 'complete-1',
+        temperature: 0.2,
+      },
+    });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    const saved = settings.profiles.find((p) => p.name === 'mock')!;
+    expect(saved).toMatchObject({
+      agentModel: 'big-agent',
+      applyModel: 'fast-apply-1.5b',
+      embeddingsModel: 'nomic-embed',
+      embeddingsProfile: 'local',
+      rerankModel: 'rerank-1',
+      contextModel: 'tiny',
+      editModel: 'edit-1',
+      completionModel: 'complete-1',
+      temperature: 0.2,
+    });
+    browser.close();
+  });
+
+  it('an emptied field clears the override rather than pinning it to ""', async () => {
+    // The editor sends '' when you clear the box. Storing that would leave the
+    // role pointed at a model with no name instead of back on its inherited
+    // one, and the failure surfaces as a provider 404 much later.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', embeddingsModel: 'nomic-embed' },
+    });
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', embeddingsModel: '' },
+    });
+
+    const stored = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
+      profiles: Array<Record<string, unknown>>;
+    };
+    const p = stored.profiles.find((x) => x.name === 'mock')!;
+    expect('embeddingsModel' in p).toBe(false);
+    browser.close();
+  });
+
+  it('setting one role leaves the others alone', async () => {
+    // The browser patches by name; a wholesale replace would drop every field
+    // the editor did not happen to send.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', applyModel: 'fast-apply', rerankModel: 'rerank-1' },
+    });
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', agentModel: 'big-agent' },
+    });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    expect(settings.profiles.find((p) => p.name === 'mock')).toMatchObject({
+      applyModel: 'fast-apply',
+      rerankModel: 'rerank-1',
+      agentModel: 'big-agent',
+    });
+    browser.close();
+  });
+
+  it('the agent role really drives which model runs', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', agentModel: 'agent-only-model' },
+    });
+    await browser.peer.request(UI_METHODS.useProfile, { name: 'mock' });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'go' });
+
+    expect(mock!.requests.at(-1)?.body).toMatchObject({ model: 'agent-only-model' });
+    browser.close();
+  });
+});
+
 describe('web host — context breakdown', () => {
   it('prices out the next turn, slice by slice, adding up to the window', async () => {
     const { host } = await boot(WRITE_THEN_FINISH, { contextWindow: 40_000 });

@@ -896,3 +896,32 @@ body {
   :root:not([data-theme='light']) .hljs-built_in,
   :root:not([data-theme='light']) .hljs-title.function_ { color: #d2a8ff; }
 }
+
+/* ---------- model roles ---------- */
+.roles { margin: 14px 0 10px; }
+.roles-toggle {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: 0; cursor: pointer;
+  color: var(--text); font: inherit; font-size: 12.5px; padding: 4px 0;
+}
+.roles-toggle:hover { color: var(--accent); }
+.roles-body { padding: 6px 0 0 14px; }
+.roles-group {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim); margin: 10px 0 4px;
+}
+/* Label, model, "on which profile" — one row per role, so the two halves of a
+   role read as one decision rather than as two unrelated fields. */
+.role {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  gap: 8px; align-items: center; margin-bottom: 6px;
+}
+.role-label { font-size: 12.5px; color: var(--text-dim); }
+.role-input { font-family: var(--mono); font-size: 12px; }
+.role-select { max-width: 16ch; font-size: 12px; }
+
+@media (max-width: 620px) {
+  .role { grid-template-columns: 1fr; gap: 4px; }
+  .role-select { max-width: none; }
+}

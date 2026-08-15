@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
-import type { UiProfile, UiSettings } from '@heapcode/web-host/protocol';
+import {
+  UI_MODEL_ROLES,
+  type UiProfile,
+  type UiSaveProfileParams,
+  type UiSettings,
+} from '@heapcode/web-host/protocol';
 
 export interface SettingsProps {
   settings?: UiSettings;
@@ -13,7 +18,7 @@ export interface SettingsProps {
   onResetPermissions(): void;
   onUseProfile(name: string): void;
   onDeleteProfile(name: string): void;
-  onSaveProfile(profile: UiProfileDraft, apiKey?: string): void;
+  onSaveProfile(profile: UiSaveProfileParams['profile'], apiKey?: string): void;
   /** Lazy, because both read files: only fetched when their page is opened. */
   loadSkills?(): Promise<string>;
   loadMemory?(): Promise<string>;
@@ -27,6 +32,9 @@ export interface UiProfileDraft {
   /** `null` clears the override so the preset's default applies again. */
   contextWindow?: number | null;
   maxTokens?: number | null;
+  temperature?: number | null;
+  /** `<role>Model` / `<role>Profile`; '' clears back to the inherited value. */
+  roles?: Record<string, string>;
 }
 
 /** Left-nav entries, in the two groups the dialog shows them under. */
@@ -142,6 +150,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                       <ProfileRow
                         key={p.name}
                         profile={p}
+                        otherProfiles={s.profiles.map((o) => o.name).filter((n) => n !== p.name)}
                         startOpen={props.focus === 'context' && p.active}
                         onUse={() => props.onUseProfile(p.name)}
                         onDelete={() => props.onDeleteProfile(p.name)}
@@ -151,7 +160,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                             key,
                           )
                         }
-                        onSaveProfile={(draft) => props.onSaveProfile(draft)}
+                        onSaveProfile={(patch) => props.onSaveProfile(patch)}
                       />
                     ))}
                   </ul>
@@ -334,19 +343,22 @@ function NumberField({
   value,
   placeholder,
   onChange,
+  step = 1,
 }: {
   label: string;
   value?: number | null;
   placeholder: string;
   onChange(v: number | null): void;
+  /** 0.1 for temperature; whole numbers everywhere else. */
+  step?: number;
 }): JSX.Element {
   return (
     <Field label={label}>
       <input
         className="card-input"
         type="number"
-        min={1}
-        step={1}
+        min={0}
+        step={step}
         inputMode="numeric"
         value={value ?? ''}
         placeholder={placeholder}
@@ -354,7 +366,10 @@ function NumberField({
           const raw = e.target.value.trim();
           if (!raw) return onChange(null);
           const n = Number(raw);
-          onChange(Number.isFinite(n) && n > 0 ? Math.floor(n) : null);
+          if (!Number.isFinite(n) || n < 0) return onChange(null);
+          // Fractional values are meaningful for temperature and nonsense for
+          // token counts, so the step decides whether to round.
+          onChange(step < 1 ? n : Math.floor(n) || null);
         }}
       />
     </Field>
@@ -401,6 +416,7 @@ function SecretField({
 
 function ProfileRow({
   profile,
+  otherProfiles,
   startOpen,
   onUse,
   onDelete,
@@ -408,11 +424,13 @@ function ProfileRow({
   onSaveProfile,
 }: {
   profile: UiProfile;
+  /** Sibling profile names, for "run this role on another provider". */
+  otherProfiles: string[];
   startOpen?: boolean;
   onUse(): void;
   onDelete(): void;
   onSaveKey(key: string): void;
-  onSaveProfile(p: UiProfileDraft): void;
+  onSaveProfile(p: UiSaveProfileParams['profile']): void;
 }): JSX.Element {
   const [editing, setEditing] = useState(Boolean(startOpen));
   const [draft, setDraft] = useState<UiProfileDraft>({
@@ -422,6 +440,8 @@ function ProfileRow({
     model: profile.model,
     contextWindow: profile.contextWindow ?? null,
     maxTokens: profile.maxTokens ?? null,
+    temperature: profile.temperature ?? null,
+    roles: rolesOf(profile),
   });
 
   return (
@@ -499,13 +519,27 @@ function ProfileRow({
             onChange={(maxTokens) => setDraft({ ...draft, maxTokens })}
           />
           <p className="hint">Cap on a single reply. Raise it if long answers or large edits get cut off.</p>
+          <NumberField
+            label="Temperature"
+            value={draft.temperature}
+            placeholder="provider default"
+            onChange={(temperature) => setDraft({ ...draft, temperature })}
+            step={0.1}
+          />
+
+          <ModelRoles
+            roles={draft.roles ?? {}}
+            profiles={otherProfiles}
+            onChange={(roles) => setDraft({ ...draft, roles })}
+          />
+
           <div className="field-row">
             <button
               className="btn btn-primary"
               disabled={!draft.baseUrl.trim() || !draft.model.trim()}
               // Saving under the same name updates in place — `saveProfile`
               // upserts by name, so renaming here would create a second one.
-              onClick={() => onSaveProfile({ ...draft, name: profile.name })}
+              onClick={() => onSaveProfile(toSaveParams({ ...draft, name: profile.name }))}
             >
               Save changes
             </button>
@@ -544,7 +578,11 @@ const PRESETS = [
   'custom',
 ];
 
-function AddProfile({ onAdd }: { onAdd(p: UiProfileDraft, key?: string): void }): JSX.Element {
+function AddProfile({
+  onAdd,
+}: {
+  onAdd(p: UiSaveProfileParams['profile'], key?: string): void;
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<UiProfileDraft>({ name: '', preset: 'openai', baseUrl: '', model: '' });
   const [key, setKey] = useState('');
@@ -604,7 +642,7 @@ function AddProfile({ onAdd }: { onAdd(p: UiProfileDraft, key?: string): void })
           className="btn btn-primary"
           disabled={!valid}
           onClick={() => {
-            onAdd(draft, key || undefined);
+            onAdd(toSaveParams(draft), key || undefined);
             setDraft({ name: '', preset: 'openai', baseUrl: '', model: '' });
             setKey('');
             setOpen(false);
@@ -618,4 +656,102 @@ function AddProfile({ onAdd }: { onAdd(p: UiProfileDraft, key?: string): void })
       </div>
     </div>
   );
+}
+
+/** A profile's role overrides, flattened into the draft's `roles` map. */
+function rolesOf(profile: UiProfile): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const role of UI_MODEL_ROLES) {
+    for (const suffix of ['Model', 'Profile'] as const) {
+      const key = `${role.key}${suffix}` as const;
+      out[key] = profile[key] ?? '';
+    }
+  }
+  return out;
+}
+
+/**
+ * Per-role model overrides, collapsed by default.
+ *
+ * A profile is one endpoint with one chat model, but the agent does not only
+ * chat: it merges edits with a fast-apply model, embeds and reranks for
+ * semantic search, and writes per-chunk blurbs at index time. Those were
+ * settable in the extension and in config.json but nowhere in the browser, so
+ * anyone who wanted local embeddings behind a cloud agent had to leave the web
+ * UI to arrange it — even though this host is the one running the index.
+ *
+ * Collapsed because most profiles never need any of it: everything here
+ * inherits, and the placeholders say what from.
+ */
+function ModelRoles({
+  roles,
+  profiles,
+  onChange,
+}: {
+  roles: Record<string, string>;
+  profiles: string[];
+  onChange(next: Record<string, string>): void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const set = (key: string, value: string): void => onChange({ ...roles, [key]: value });
+  const overridden = Object.values(roles).filter(Boolean).length;
+
+  return (
+    <div className="roles">
+      <button className="roles-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        {open ? '▾' : '▸'} Model roles
+        {overridden > 0 && <span className="badge badge-ok">{overridden} set</span>}
+      </button>
+      {open && (
+        <div className="roles-body">
+          {(['Core', 'Retrieval'] as const).map((group) => (
+            <div key={group}>
+              <div className="roles-group">{group}</div>
+              {UI_MODEL_ROLES.filter((r) => r.group === group).map((role) => (
+                <div key={role.key} className="role">
+                  <span className="role-label">{role.label}</span>
+                  <input
+                    className="card-input role-input"
+                    value={roles[`${role.key}Model`] ?? ''}
+                    placeholder={role.hint}
+                    aria-label={`${role.label} model`}
+                    onChange={(e) => set(`${role.key}Model`, e.target.value)}
+                  />
+                  {/* The second half of a role: run it against a different
+                      profile's endpoint and key entirely — embeddings on a
+                      local Ollama while the agent stays on a cloud model. */}
+                  <select
+                    className="select role-select"
+                    value={roles[`${role.key}Profile`] ?? ''}
+                    aria-label={`${role.label} profile`}
+                    onChange={(e) => set(`${role.key}Profile`, e.target.value)}
+                  >
+                    <option value="">this profile</option>
+                    {profiles.map((name) => (
+                      <option key={name} value={name}>
+                        on {name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Editor draft → the wire shape.
+ *
+ * `roles` is a nested map because that is what the form binds to; the protocol
+ * carries the same thing flat (`agentModel`, `agentProfile`, …) because that is
+ * what a stored profile looks like. Flattening here means neither side has to
+ * hold the other's shape, and `roles` itself never crosses the wire.
+ */
+function toSaveParams(draft: UiProfileDraft): UiSaveProfileParams['profile'] {
+  const { roles, ...rest } = draft;
+  return { ...rest, ...(roles ?? {}) };
 }

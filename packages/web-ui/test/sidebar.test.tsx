@@ -53,17 +53,15 @@ function railProps(over: Partial<SidebarProps> = {}): SidebarProps {
 }
 
 describe('the left rail', () => {
-  it('carries everything the old header did', () => {
+  it('carries what the old header did, minus the meter', () => {
     // The header held: brand, connection state, context meter, panel toggle
     // with a change count, and an overflow menu. Losing any of them silently
-    // in the move is the failure this guards.
-    const { container } = render(
-      <Sidebar {...railProps({ changeCount: 3, usedTokens: 8_000, windowTokens: 32_000 })} />,
-    );
+    // in the move is the failure this guards. The meter is the one deliberate
+    // exception — it moved to the composer, and ContextMeter covers it.
+    const { container } = render(<Sidebar {...railProps({ changeCount: 3 })} />);
     expect(screen.getByText('Heap Code')).toBeTruthy();
     expect(container.querySelector('.dot-open')).not.toBeNull();
     expect(screen.getByText('3')).toBeTruthy();
-    expect(screen.getByText('25% of 32k')).toBeTruthy();
     expect(screen.getByText('ollama')).toBeTruthy();
   });
 

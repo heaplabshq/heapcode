@@ -14,8 +14,6 @@ export interface SidebarProps {
   status: 'connecting' | 'open' | 'closed';
   changeCount: number;
   panelOpen: boolean;
-  usedTokens?: number;
-  windowTokens?: number;
   onOpenArtifacts(): void;
   onOpenChanges(): void;
   onOpenFiles(): void;
@@ -150,34 +148,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           aria-label={`Connection ${status}`}
         />
       </div>
-
-      {!collapsed && <ContextMeter {...props} />}
     </aside>
-  );
-}
-
-/** The context-window bar. A button, because the number it shows is editable. */
-function ContextMeter(props: SidebarProps): JSX.Element | null {
-  const ctxWindow = props.windowTokens || props.state?.contextWindow;
-  if (!ctxWindow) return null;
-  const used = props.usedTokens ?? 0;
-  const pct = used ? Math.min(100, Math.round((used / ctxWindow) * 100)) : 0;
-  return (
-    <button
-      className="rail-meter"
-      onClick={() => props.onOpenSettings('context')}
-      title={`Context: ${used.toLocaleString()} / ${ctxWindow.toLocaleString()} tokens — click to change it on the profile`}
-    >
-      <span className="rail-meter-row">
-        <span>Context</span>
-        <span className="rail-meter-pct">
-          {pct}% of {fmt(ctxWindow)}
-        </span>
-      </span>
-      <span className="rail-meter-track">
-        <span className="rail-meter-fill" style={{ width: `${pct}%` }} />
-      </span>
-    </button>
   );
 }
 
@@ -214,10 +185,6 @@ function RailItem({
       {badge !== undefined && <span className="rail-badge">{badge}</span>}
     </button>
   );
-}
-
-function fmt(n: number): string {
-  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
 /*

@@ -23,6 +23,7 @@ import {
   type UiArtifactsResult,
   type UiChangesResult,
   type UiCheckpointsResult,
+  type UiContextResult,
   type UiConversationMeta,
   type UiDiffResult,
   type UiEventParams,
@@ -1256,6 +1257,78 @@ describe('web host — switching workspace', () => {
     await browser.peer.request(UI_METHODS.cancel, { runId: 'whatever' });
     browser.close();
     await rm(other, { recursive: true, force: true });
+  });
+});
+
+describe('web host — context breakdown', () => {
+  it('prices out the next turn, slice by slice, adding up to the window', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH, { contextWindow: 40_000 });
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const ctx = await browser.peer.request<UiContextResult>(UI_METHODS.context);
+    expect(ctx.window).toBe(40_000);
+    expect(ctx.windowSource).toBe('profile');
+    expect(ctx.slices.map((s) => s.key)).toEqual([
+      'system',
+      'tools',
+      'instructions',
+      'conversation',
+      'free',
+    ]);
+    // Free is the remainder, so the slices account for the whole window.
+    expect(ctx.slices.reduce((n, s) => n + s.tokens, 0)).toBe(40_000);
+    // The two that are never zero: the loop's own prompt, and the tools.
+    expect(ctx.slices.find((s) => s.key === 'system')!.tokens).toBeGreaterThan(0);
+    expect(ctx.slices.find((s) => s.key === 'tools')!.tokens).toBeGreaterThan(0);
+    browser.close();
+  });
+
+  it('counts the conversation once a turn has happened', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const before = await browser.peer.request<UiContextResult>(UI_METHODS.context);
+    expect(before.slices.find((s) => s.key === 'conversation')!.tokens).toBe(0);
+
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'rewrite it' });
+
+    const after = await browser.peer.request<UiContextResult>(UI_METHODS.context);
+    expect(after.slices.find((s) => s.key === 'conversation')!.tokens).toBeGreaterThan(0);
+    // And free shrank by what the conversation took.
+    expect(after.slices.find((s) => s.key === 'free')!.tokens).toBeLessThan(
+      before.slices.find((s) => s.key === 'free')!.tokens,
+    );
+    browser.close();
+  });
+
+  it('does not double-count tools on the text protocol, where they live in the prompt', async () => {
+    // Native calling sends schemas as a separate array; the text protocol
+    // embeds them in the system prompt. Counting the prompt whole and the
+    // schemas again would report tools twice — and blaming "system" for them
+    // would hide the one number a persona change actually moves.
+    const { host } = await boot(WRITE_THEN_FINISH); // nativeToolCalls: false
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const ctx = await browser.peer.request<UiContextResult>(UI_METHODS.context);
+    const system = ctx.slices.find((s) => s.key === 'system')!.tokens;
+    const tools = ctx.slices.find((s) => s.key === 'tools')!.tokens;
+    // Tools dominate the prompt they are embedded in — if `system` were the
+    // whole fallback prompt, it would be the larger of the two.
+    expect(tools).toBeGreaterThan(system);
+    browser.close();
+  });
+
+  it('says when the window size is the preset default rather than a choice', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH); // no contextWindow on the profile
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    const ctx = await browser.peer.request<UiContextResult>(UI_METHODS.context);
+    expect(ctx.windowSource).toBe('preset');
+    browser.close();
   });
 });
 

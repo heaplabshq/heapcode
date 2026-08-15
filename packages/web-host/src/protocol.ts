@@ -77,6 +77,9 @@ export const UI_METHODS = {
   browseFolders: 'ui/browseFolders',
   setWorkspace: 'ui/setWorkspace',
 
+  /** Where the context window is actually going — the meter's detail view. */
+  context: 'ui/context',
+
   // host → browser (requests — the host waits for an answer)
   permissionRequest: 'ui/permissionRequest',
   askUser: 'ui/askUser',
@@ -243,6 +246,41 @@ export interface UiBrowseFoldersResult {
 
 export interface UiSetWorkspaceParams {
   path: string;
+}
+
+// ---------------------------------------------------------------------------
+// context breakdown
+// ---------------------------------------------------------------------------
+
+/** One claim on the context window. `free` is what is left, not a consumer. */
+export interface UiContextSlice {
+  key: 'system' | 'tools' | 'instructions' | 'conversation' | 'free';
+  label: string;
+  tokens: number;
+  /** Why this slice is the size it is, in one sentence. */
+  note?: string;
+}
+
+/**
+ * What the next turn would actually send, priced out.
+ *
+ * Computed rather than measured: the host rebuilds the same system prompt,
+ * tool list and preamble the next `agent/run` would carry and estimates each,
+ * so the numbers move when you change persona, toggle sub-agents or switch
+ * profile — which is the whole reason to look at this screen.
+ *
+ * Estimates, and labelled as such in the UI. Heap Code is model-agnostic and
+ * carries no tokenizer (core's `estimateTokens` is ~4 chars/token), so these
+ * are directionally right and never exact. Presenting them as precise would be
+ * the lie; presenting nothing is what the meter did before.
+ */
+export interface UiContextResult {
+  window: number;
+  slices: UiContextSlice[];
+  /** Fraction of the window at which the loop starts compacting. */
+  compactionThreshold: number;
+  /** What the window size was read from, for the "is this number right" question. */
+  windowSource: 'profile' | 'preset';
 }
 
 /**

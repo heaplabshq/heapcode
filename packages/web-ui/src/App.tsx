@@ -26,6 +26,7 @@ import {
   type UiSettings,
   type UiState,
   type UiBrowseFoldersResult,
+  type UiContextResult,
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
 } from '@heapcode/web-host/protocol';
@@ -41,6 +42,7 @@ import { ModelPicker } from './components/ModelPicker.js';
 import { MessageList } from './components/MessageList.js';
 import { Sidebar } from './components/Sidebar.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
+import { ContextMeter } from './components/ContextMeter.js';
 import {
   concat,
   emptyTranscript,
@@ -287,6 +289,23 @@ export function App(): JSX.Element {
     setPanelTab('files');
     setOpenPath(path);
   }, []);
+
+  /** Stable identity: the modal fetches on mount, so a new function each
+   *  render would make it refetch on every parent render instead. */
+  const loadContext = useCallback(
+    () => rpc.request<UiContextResult>(UI_METHODS.context),
+    [rpc],
+  );
+
+  const loadSkills = useCallback(
+    () => rpc.request<{ skills: string }>(UI_METHODS.skills).then((r) => r.skills),
+    [rpc],
+  );
+
+  const loadMemory = useCallback(
+    () => rpc.request<{ instructions: string }>(UI_METHODS.memory).then((r) => r.instructions),
+    [rpc],
+  );
 
   const refreshSettings = useCallback(() => {
     void rpc
@@ -562,8 +581,6 @@ export function App(): JSX.Element {
           status={status}
           changeCount={changes.length}
           panelOpen={panelOpen}
-          usedTokens={transcript.usedTokens}
-          windowTokens={transcript.windowTokens}
           onOpenArtifacts={() => {
             setPanelOpen(true);
             setPanelTab('preview');
@@ -642,6 +659,12 @@ export function App(): JSX.Element {
                 </select>
 
                 <div className="composer-bar-right">
+                  <ContextMeter
+                    used={transcript.usedTokens}
+                    window={transcript.windowTokens || state?.contextWindow}
+                    load={loadContext}
+                    onOpenSettings={() => openSettings('context')}
+                  />
                   <ModelPicker
                     current={state?.model ?? ''}
                     placement="up"
@@ -702,6 +725,8 @@ export function App(): JSX.Element {
           onSaveProfile={(profile: UiProfileDraft, apiKey?: string) =>
             act(UI_METHODS.saveProfile, { profile, apiKey })
           }
+          loadSkills={loadSkills}
+          loadMemory={loadMemory}
           onResetPermissions={() => {
             void rpc
               .request<UiResetPermissionsResult>(UI_METHODS.resetPermissions)

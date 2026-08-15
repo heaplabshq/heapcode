@@ -5,6 +5,7 @@ import { basename, join } from 'node:path';
 import {
   ASK_USER_NO_ANSWER,
   BUILTIN_PERSONAS,
+  COMPACTION_THRESHOLD,
   DEFAULT_PERMISSION_MODE,
   INIT_TASK,
   METHODS,
@@ -13,6 +14,10 @@ import {
   applyModeToPersona,
   askUserAnswerMessage,
   askUserBlocksAction,
+  buildFallbackAgentSystemPrompt,
+  buildNativeAgentSystemPrompt,
+  estimateMessagesTokens,
+  estimateTokens,
   filterToolsForPersona,
   getPersona,
   isPermissionMode,
@@ -107,6 +112,8 @@ import {
   type UiSaveArtifactResult,
   type UiBrowseFoldersParams,
   type UiBrowseFoldersResult,
+  type UiContextResult,
+  type UiContextSlice,
   type UiSetWorkspaceParams,
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
@@ -527,6 +534,95 @@ export class WebSession {
       await this.setWorkspace(path);
       return { state: await this.state(), messages: toUiMessages(this.conversation?.messages ?? []) };
     });
+
+    ui.onRequest(UI_METHODS.context, async (): Promise<UiContextResult> => {
+      await this.start();
+      return this.contextBreakdown();
+    });
+  }
+
+  /**
+   * Price out the next turn's prompt, slice by slice.
+   *
+   * Rebuilds exactly what `run()` would send rather than reporting the last
+   * turn's `context_usage`, because the useful question here is "what is
+   * filling my window, and what can I do about it" — and the answer changes
+   * with persona, sub-agents, MCP servers and profile, none of which the
+   * post-hoc number reflects until you have already spent a turn finding out.
+   */
+  private async contextBreakdown(): Promise<UiContextResult> {
+    const session = this.session!;
+    const profile = this.profile!;
+    const workspaceName = basename(this.root);
+    const persona = applyModeToPersona(getPersona(this.personaId), this.mode);
+    const tools = filterToolsForPersona(
+      [...session.tools, DELEGATE_TASK_TOOL, CREATE_ARTIFACT_TOOL, ...session.mcpManager.getToolDefinitions()],
+      persona,
+    );
+    const nativeToolCalls = this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls;
+
+    // Where the tool schemas land depends on the protocol: native calling
+    // sends them as a separate `tools` array, the text protocol embeds them in
+    // the system prompt. Building the fallback prompt twice — once with the
+    // real tools and once with none — separates the two exactly, instead of
+    // either double-counting them or hiding them inside "system".
+    let systemTokens: number;
+    let toolTokens: number;
+    if (nativeToolCalls) {
+      systemTokens = estimateTokens(buildNativeAgentSystemPrompt(workspaceName));
+      toolTokens = estimateTokens(JSON.stringify(tools));
+    } else {
+      const withTools = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, tools));
+      systemTokens = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, []));
+      toolTokens = Math.max(0, withTools - systemTokens);
+    }
+
+    const instructions = (await this.deps.loadInstructions?.(this.root).catch(() => '')) ?? '';
+    const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
+    const history = trimHistoryForAgent(this.conversation?.messages ?? []);
+
+    const window = profileContextWindow(profile);
+    const slices: UiContextSlice[] = [
+      {
+        key: 'system',
+        label: 'System prompt',
+        tokens: systemTokens,
+        note: 'Fixed — the agent loop’s own instructions.',
+      },
+      {
+        key: 'tools',
+        label: 'Tool definitions',
+        tokens: toolTokens,
+        note: `${tools.length} tools offered. Persona and sub-agent settings change this.`,
+      },
+      {
+        key: 'instructions',
+        label: 'Project instructions',
+        tokens: estimateTokens(preamble),
+        note: 'HEAPCODE.md, memory.md and the persona’s addendum.',
+      },
+      {
+        key: 'conversation',
+        label: 'Conversation',
+        tokens: estimateMessagesTokens(history),
+        note: `The last ${history.length} message(s) that fit the window — older turns are already dropped here.`,
+      },
+    ];
+
+    const used = slices.reduce((sum, s) => sum + s.tokens, 0);
+    slices.push({
+      key: 'free',
+      label: 'Free',
+      tokens: Math.max(0, window - used),
+      note: 'Room left for this turn’s reply.',
+    });
+
+    return {
+      window,
+      slices,
+      compactionThreshold: COMPACTION_THRESHOLD,
+      windowSource: profile.contextWindow ? 'profile' : 'preset',
+    };
   }
 
   /** The workspace panel (§7.3): changes, diffs, files, checkpoints. */

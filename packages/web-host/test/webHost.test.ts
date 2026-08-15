@@ -29,7 +29,9 @@ import {
   type UiEventParams,
   type UiFileTreeResult,
   type UiHelloResult,
+  type UiIndexStatus,
   type UiListModelsResult,
+  type UiRepoMapResult,
   type UiOpenConversationResult,
   type UiReadFileResult,
   type UiPermissionRequestParams,
@@ -1386,6 +1388,91 @@ describe('web host — listing models', () => {
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
     const res = await browser.peer.request<UiListModelsResult>(UI_METHODS.listModels);
     expect(res.models.map((m) => m.id)).toContain('mock-model');
+    browser.close();
+  });
+});
+
+describe('web host — the index', () => {
+  it('reports both indexes separately, because they fail independently', async () => {
+    // The semantic half needs a reachable embeddings model; the repo map is
+    // local parsing. Which one is empty is the whole diagnosis when
+    // semantic_search comes back with nothing.
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'a.ts'), 'export function alpha() {}\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const status = await browser.peer.request<UiIndexStatus>(UI_METHODS.indexStatus);
+    expect(status.semantic).toMatchObject({ state: expect.any(String), available: expect.any(Boolean) });
+    expect(status.repoMap).toMatchObject({ ready: expect.any(Boolean), files: expect.any(Number) });
+    browser.close();
+  });
+
+  it('builds the repo map on rebuild, and reports what it found', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'a.ts'), 'export function alpha() {}\n', 'utf8');
+    await writeFile(join(root, 'b.ts'), 'export class Beta {}\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.reindex);
+
+    const status = await browser.peer.request<UiIndexStatus>(UI_METHODS.indexStatus);
+    expect(status.repoMap.ready).toBe(true);
+    expect(status.repoMap.files).toBeGreaterThanOrEqual(2);
+    expect(status.repoMap.symbols).toBeGreaterThan(0);
+    browser.close();
+  });
+
+  it('returns the map itself, filterable by path or symbol', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'alpha.ts'), 'export function findMe() {}\n', 'utf8');
+    await writeFile(join(root, 'beta.ts'), 'export class Other {}\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.reindex);
+
+    const all = await browser.peer.request<UiRepoMapResult>(UI_METHODS.repoMap, {});
+    expect(all.files.map((f) => f.path)).toEqual(expect.arrayContaining(['alpha.ts', 'beta.ts']));
+
+    // By path…
+    const byPath = await browser.peer.request<UiRepoMapResult>(UI_METHODS.repoMap, { query: 'beta' });
+    expect(byPath.files.map((f) => f.path)).toEqual(['beta.ts']);
+
+    // …and by a symbol that appears in only one of them.
+    const bySymbol = await browser.peer.request<UiRepoMapResult>(UI_METHODS.repoMap, { query: 'findMe' });
+    expect(bySymbol.files.map((f) => f.path)).toEqual(['alpha.ts']);
+    browser.close();
+  });
+
+  it('caps what it returns but says how many matched', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    for (let i = 0; i < 5; i++) {
+      await writeFile(join(root, `f${i}.ts`), `export function fn${i}() {}\n`, 'utf8');
+    }
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.reindex);
+
+    const res = await browser.peer.request<UiRepoMapResult>(UI_METHODS.repoMap, { limit: 2 });
+    expect(res.files).toHaveLength(2);
+    expect(res.total).toBeGreaterThanOrEqual(5);
+    browser.close();
+  });
+
+  it('clearing empties the map rather than rebuilding it', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'a.ts'), 'export function alpha() {}\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.reindex);
+    expect((await browser.peer.request<UiIndexStatus>(UI_METHODS.indexStatus)).repoMap.files).toBeGreaterThan(0);
+
+    await browser.peer.request(UI_METHODS.reindex, { clear: true });
+    expect((await browser.peer.request<UiIndexStatus>(UI_METHODS.indexStatus)).repoMap.files).toBe(0);
     browser.close();
   });
 });

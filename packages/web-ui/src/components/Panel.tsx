@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
   UiArtifactMeta,
+  UiIndexStatus,
+  UiRepoMapResult,
   UiArtifactResult,
   UiChangedFile,
   UiCheckpoint,
@@ -10,8 +12,9 @@ import type {
 } from '@heapcode/web-host/protocol';
 import { DiffView } from './DiffView.js';
 import { Preview } from './Preview.js';
+import { IndexView } from './IndexView.js';
 
-export type PanelTab = 'changes' | 'files' | 'terminal' | 'preview';
+export type PanelTab = 'changes' | 'files' | 'index' | 'terminal' | 'preview';
 
 export interface TerminalEntry {
   id: string;
@@ -41,6 +44,14 @@ export interface PanelProps {
   /** Set by the chat pane when the user clicks a path in a tool chip. */
   openPath?: string;
 
+  /** Both indexes, live — see IndexView. */
+  indexStatus?: UiIndexStatus;
+  loadRepoMap(query: string): Promise<UiRepoMapResult>;
+  onReindex(): void;
+  onClearIndex(): void;
+  /** Opening a path from the map switches to Files, like a tool chip does. */
+  onOpenPath(path: string): void;
+
   artifacts: UiArtifactMeta[];
   selectedArtifact?: string;
   onSelectArtifact(id: string): void;
@@ -52,7 +63,7 @@ export function Panel(props: PanelProps): JSX.Element {
   return (
     <section className="panel" aria-label="Workspace">
       <div className="panel-tabs">
-        {(['changes', 'files', 'terminal', 'preview'] as const).map((t) => (
+        {(['changes', 'files', 'index', 'terminal', 'preview'] as const).map((t) => (
           <button
             key={t}
             className={`panel-tab ${props.tab === t ? 'panel-tab-active' : ''}`}
@@ -71,6 +82,16 @@ export function Panel(props: PanelProps): JSX.Element {
       <div className="panel-body">
         {props.tab === 'changes' && <Changes {...props} />}
         {props.tab === 'files' && <Files {...props} />}
+        {props.tab === 'index' && (
+          <IndexView
+            status={props.indexStatus}
+            loadMap={props.loadRepoMap}
+            onRebuild={props.onReindex}
+            onClear={props.onClearIndex}
+            busy={props.busy}
+            onOpenPath={props.onOpenPath}
+          />
+        )}
         {props.tab === 'terminal' && <Terminal entries={props.terminal} />}
         {props.tab === 'preview' && (
           <Preview

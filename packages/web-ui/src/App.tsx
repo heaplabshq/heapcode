@@ -27,6 +27,8 @@ import {
   type UiState,
   type UiBrowseFoldersResult,
   type UiContextResult,
+  type UiIndexStatus,
+  type UiRepoMapResult,
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
 } from '@heapcode/web-host/protocol';
@@ -108,6 +110,7 @@ export function App(): JSX.Element {
   const [checkpoints, setCheckpoints] = useState<UiCheckpoint[]>([]);
   const [openPath, setOpenPath] = useState<string>();
   const [artifacts, setArtifacts] = useState<UiArtifactMeta[]>([]);
+  const [indexStatus, setIndexStatus] = useState<UiIndexStatus>();
   const [selectedArtifact, setSelectedArtifact] = useState<string>();
 
   const seq = useRef(0);
@@ -157,6 +160,20 @@ export function App(): JSX.Element {
       .catch(() => {});
   }, [rpc]);
 
+  const refreshIndex = useCallback(() => {
+    void rpc
+      .request<UiIndexStatus>(UI_METHODS.indexStatus)
+      .then(setIndexStatus)
+      .catch(() => {
+        /* the index panel is non-critical — a failure must not break chat */
+      });
+  }, [rpc]);
+
+  const loadRepoMap = useCallback(
+    (query: string) => rpc.request<UiRepoMapResult>(UI_METHODS.repoMap, { query }),
+    [rpc],
+  );
+
   const refreshConversations = useCallback(() => {
     void rpc
       .request<UiConversationMeta[]>(UI_METHODS.conversations)
@@ -180,6 +197,8 @@ export function App(): JSX.Element {
       setHostRunId(next.runId);
     });
     rpc.onNotification(UI_METHODS.workspaceChanged, (raw) => setChanges((raw as UiChangesResult).files));
+    // Pushed rather than polled, so a long rebuild shows a moving bar.
+    rpc.onNotification(UI_METHODS.indexChanged, (raw) => setIndexStatus(raw as UiIndexStatus));
 
     // A new artifact opens the Preview tab on it — the agent just made
     // something to look at, so showing it is the point.
@@ -258,6 +277,7 @@ export function App(): JSX.Element {
           refreshConversations();
           refreshWorkspace();
           refreshArtifacts();
+          refreshIndex();
         })
         .catch((err: Error) => setError(err.message));
     };
@@ -267,7 +287,7 @@ export function App(): JSX.Element {
       cancelled = true;
       rpc.close();
     };
-  }, [rpc, applyEvent, refreshConversations, refreshWorkspace, refreshArtifacts]);
+  }, [rpc, applyEvent, refreshConversations, refreshWorkspace, refreshArtifacts, refreshIndex]);
 
   // Stable identities so the Panel's effects can depend on them honestly
   // rather than re-fetching on every parent render.
@@ -398,11 +418,16 @@ export function App(): JSX.Element {
           setNotice('Checkpoints are listed under the changed files — pick one to rewind to.');
           return;
         case '/index':
-          setNotice('Rebuilding the semantic index…');
+          // Opens the tab that shows what the rebuild is doing, rather than
+          // leaving a one-line notice as the only feedback.
+          setPanelOpen(true);
+          setPanelTab('index');
+          setNotice('Rebuilding the index…');
           void rpc
             .request(UI_METHODS.reindex)
             .then(() => setNotice('Index rebuilt.'))
-            .catch((err: Error) => setError(err.message));
+            .catch((err: Error) => setError(err.message))
+            .finally(refreshIndex);
           return;
         case '/memory':
           void rpc
@@ -695,6 +720,24 @@ export function App(): JSX.Element {
             onRevertAll={() => workspaceAct(UI_METHODS.revertAll, undefined)}
             onKeepAll={() => workspaceAct(UI_METHODS.keepAll, undefined)}
             onRewind={(hash) => workspaceAct(UI_METHODS.rewind, { hash })}
+            indexStatus={indexStatus}
+            loadRepoMap={loadRepoMap}
+            onReindex={() => {
+              setNotice('Rebuilding the index…');
+              void rpc
+                .request(UI_METHODS.reindex)
+                .then(() => setNotice('Index rebuilt.'))
+                .catch((err: Error) => setError(err.message))
+                .finally(refreshIndex);
+            }}
+            onClearIndex={() => {
+              void rpc
+                .request(UI_METHODS.reindex, { clear: true })
+                .then(() => setNotice('Index cleared.'))
+                .catch((err: Error) => setError(err.message))
+                .finally(refreshIndex);
+            }}
+            onOpenPath={openInFiles}
             artifacts={artifacts}
             selectedArtifact={selectedArtifact}
             onSelectArtifact={setSelectedArtifact}

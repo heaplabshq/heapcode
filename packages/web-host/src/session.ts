@@ -116,6 +116,10 @@ import {
   type UiBrowseFoldersResult,
   type UiContextResult,
   type UiContextSlice,
+  type UiIndexStatus,
+  type UiReindexParams,
+  type UiRepoMapParams,
+  type UiRepoMapResult,
   type UiRoleFields,
   type UiSetWorkspaceParams,
   type UiSetWorkspaceResult,
@@ -264,6 +268,8 @@ export class WebSession {
   private pendingDisplay?: string;
   /** Overrides the profile's model for this session only, set by `ui/setModel`. */
   private modelOverride?: string;
+  /** Live embed progress while a rebuild runs; cleared when the state settles. */
+  private indexProgress?: { embedded: number; total: number };
 
   /**
    * Persona and sub-agents start from `deps` but are session state, not
@@ -715,13 +721,67 @@ export class WebSession {
       return { kind: 'text', results: fallback.content };
     });
 
-    ui.onRequest(UI_METHODS.reindex, async () => {
+    ui.onRequest(UI_METHODS.reindex, async (raw) => {
       await this.start();
-      await Promise.all([
-        this.connection!.peer.request(METHODS.ragIndex, { full: true, contextualRetrieval: true }),
-        this.session!.repoMapIndexer.buildIndex(),
-      ]);
+      const { clear } = (raw ?? {}) as UiReindexParams;
+      if (clear) {
+        await Promise.all([
+          this.connection!.peer.request(METHODS.ragIndex, { clear: true }),
+          this.session!.repoMapIndexer.clear(),
+        ]);
+      } else {
+        await Promise.all([
+          this.connection!.peer.request(METHODS.ragIndex, { full: true, contextualRetrieval: true }),
+          this.session!.repoMapIndexer.buildIndex(),
+        ]);
+      }
+      // The progress stream says nothing about the repo map — that half is
+      // local parsing with no events — so a push here is what tells the panel
+      // the whole operation is done.
+      void this.pushIndex();
       return null;
+    });
+
+    ui.onRequest(UI_METHODS.indexStatus, async (): Promise<UiIndexStatus> => {
+      await this.start();
+      return this.indexStatus();
+    });
+
+    ui.onRequest(UI_METHODS.repoMap, async (raw): Promise<UiRepoMapResult> => {
+      await this.start();
+      const { query, limit = 200 } = (raw ?? {}) as UiRepoMapParams;
+      const snapshot = this.session!.repoMapIndexer.snapshot();
+
+      // Reverse the edges once, here, rather than storing both directions:
+      // "who imports this" is the question a reader actually has, and the map
+      // only records the outgoing half.
+      const importedBy = new Map<string, string[]>();
+      for (const entry of snapshot) {
+        for (const target of entry.imports) {
+          const list = importedBy.get(target);
+          if (list) list.push(entry.path);
+          else importedBy.set(target, [entry.path]);
+        }
+      }
+
+      const needle = query?.trim().toLowerCase();
+      const matches = needle
+        ? snapshot.filter(
+            (e) =>
+              e.path.toLowerCase().includes(needle) ||
+              e.symbols.some((sym) => sym.name.toLowerCase().includes(needle)),
+          )
+        : snapshot;
+
+      return {
+        total: matches.length,
+        files: matches.slice(0, limit).map((e) => ({
+          path: e.path,
+          symbols: e.symbols,
+          imports: e.imports,
+          importedBy: importedBy.get(e.path) ?? [],
+        })),
+      };
     });
 
     ui.onRequest(UI_METHODS.memory, async (): Promise<UiMemoryResult> => {
@@ -951,6 +1011,41 @@ export class WebSession {
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
+  }
+
+  /** Both indexes, side by side — see `UiIndexStatus` for why both. */
+  private async indexStatus(): Promise<UiIndexStatus> {
+    const map = this.session!.repoMapIndexer;
+    const snapshot = map.snapshot();
+    let semantic = { state: 'unavailable', files: 0, chunks: 0, available: false };
+    try {
+      const res = await this.connection!.peer.request<{
+        state: string;
+        files: number;
+        chunks: number;
+        available: boolean;
+      }>(METHODS.ragStatus, {});
+      semantic = res;
+    } catch {
+      // A daemon that cannot answer is reported as unavailable rather than
+      // failing the whole panel — the repo-map half is still worth showing.
+    }
+    return {
+      semantic,
+      repoMap: {
+        ready: map.ready,
+        files: snapshot.length,
+        symbols: snapshot.reduce((n, e) => n + e.symbols.length, 0),
+        links: snapshot.reduce((n, e) => n + e.imports.length, 0),
+      },
+      progress: this.indexProgress,
+    };
+  }
+
+  /** Pushes index status to the attached tab, so a rebuild is watchable. */
+  private async pushIndex(): Promise<void> {
+    if (!this.ui || !this.session || !this.connection) return;
+    this.ui.notify(UI_METHODS.indexChanged, await this.indexStatus());
   }
 
   /** Fire-and-forget state push, so switchers update every attached tab. */
@@ -1197,6 +1292,16 @@ export class WebSession {
       const target = await this.deps.config.getProfile(profileName);
       if (!target) return {};
       return { profile: target, apiKey: await this.deps.secrets.getApiKey(profileName) };
+    });
+
+    // Indexing progress. The daemon streams it; the panel renders it — the
+    // same arrangement the CLI's progress line and the extension's status bar
+    // already use (server/protocol.ts, `rag/event`).
+    peer.onNotification(METHODS.ragEvent, (raw) => {
+      const { event } = raw as { event: { kind: string; embedded?: number; total?: number } };
+      this.indexProgress =
+        event.kind === 'progress' ? { embedded: event.embedded ?? 0, total: event.total ?? 0 } : undefined;
+      void this.pushIndex();
     });
 
     peer.onNotification(METHODS.agentEvent, (raw) => {

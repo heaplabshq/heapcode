@@ -80,6 +80,10 @@ export const UI_METHODS = {
   /** Where the context window is actually going — the meter's detail view. */
   context: 'ui/context',
 
+  // the index: what the agent knows about this workspace
+  indexStatus: 'ui/indexStatus',
+  repoMap: 'ui/repoMap',
+
   // host → browser (requests — the host waits for an answer)
   permissionRequest: 'ui/permissionRequest',
   askUser: 'ui/askUser',
@@ -91,6 +95,8 @@ export const UI_METHODS = {
   workspaceChanged: 'ui/workspaceChanged',
   /** An artifact was created or got a new version. */
   artifactChanged: 'ui/artifactChanged',
+  /** Indexing progress and state, forwarded from the daemon's `rag/event`. */
+  indexChanged: 'ui/indexChanged',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -255,6 +261,76 @@ export interface UiBrowseFoldersResult {
 
 export interface UiSetWorkspaceParams {
   path: string;
+}
+
+// ---------------------------------------------------------------------------
+// the index
+// ---------------------------------------------------------------------------
+
+/**
+ * What the agent has actually indexed about this workspace.
+ *
+ * Two indexes, deliberately reported side by side because they answer
+ * different questions and fail independently: the *semantic* index (embedded
+ * chunks, what `semantic_search` queries) needs a reachable embeddings model
+ * and can be empty while everything else works, whereas the *repo map* (files
+ * parsed to symbols and import edges) is local tree-sitter work that needs no
+ * provider at all. "Search found nothing" has a very different cause depending
+ * on which of the two is empty.
+ */
+export interface UiIndexStatus {
+  semantic: {
+    state: string;
+    files: number;
+    chunks: number;
+    /** False when the daemon cannot read this workspace itself; RAG is then off. */
+    available: boolean;
+  };
+  repoMap: {
+    /** Built at least once — `format()` returns nothing before that. */
+    ready: boolean;
+    files: number;
+    symbols: number;
+    /** Resolved intra-repo import edges: the "links" between files. */
+    links: number;
+  };
+  /** Set while a rebuild is running, so the UI can show a bar rather than a spinner. */
+  progress?: { embedded: number; total: number };
+}
+
+export interface UiReindexParams {
+  /** Empty both indexes instead of building them. */
+  clear?: boolean;
+}
+
+export interface UiRepoMapParams {
+  /** Case-insensitive; matches a path or a symbol name. */
+  query?: string;
+  /** How many files to return. The map is thousands of entries on a real repo. */
+  limit?: number;
+}
+
+export interface UiRepoMapSymbol {
+  name: string;
+  /** Tree-sitter node type, or "line" for the regex fallback. */
+  kind: string;
+  line: number;
+}
+
+export interface UiRepoMapFile {
+  path: string;
+  symbols: UiRepoMapSymbol[];
+  /** Workspace-relative paths this file imports — only edges inside the repo. */
+  imports: string[];
+  /** Files that import this one. Computed host-side; the map stores only one direction. */
+  importedBy: string[];
+}
+
+export interface UiRepoMapResult {
+  /** In the same import-graph centrality order the agent's own map uses. */
+  files: UiRepoMapFile[];
+  /** Matching files before `limit` was applied. */
+  total: number;
 }
 
 // ---------------------------------------------------------------------------

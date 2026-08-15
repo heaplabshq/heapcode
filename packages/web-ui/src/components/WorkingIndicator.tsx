@@ -43,12 +43,15 @@ function label(activity: Activity): string {
       return 'Thinking…';
     case 'responding':
       return 'Responding…';
+    case 'writing-call':
+      // Arguments streaming out of the model — a large edit is written as one
+      // long JSON string, so this is the phase where a long silence otherwise
+      // looks like a stall. The extension says "Generating changes…" for the
+      // same event; this names what it actually is, since the call may equally
+      // be a command or a search.
+      return `Writing a tool call… ${activity.writingCallK}k`;
     case 'tool':
-      // The streamed size only appears once there is some, so a fast tool
-      // doesn't flash "0k" on its way past.
-      return activity.streamedK
-        ? `Running ${activity.tool} — ${activity.streamedK}k of output…`
-        : `Running ${activity.tool}…`;
+      return `Running ${activity.tool}…`;
     default:
       return 'Working…';
   }

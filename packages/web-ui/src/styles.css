@@ -276,9 +276,6 @@ body {
 /* `+n −n` on an edit chip, the same summary the extension puts on its file
    cards — enough to judge the size of a change without expanding it. */
 .chip-stats { display: inline-flex; gap: 6px; font-variant-numeric: tabular-nums; }
-/* Live output size on a running tool. Pushed right so it sits where the caret
-   will be once the call finishes, instead of shifting the row on completion. */
-.chip-progress { margin-left: auto; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .chip-body {
   /* Tool output is whitespace-significant — never collapse it. */
   white-space: pre;

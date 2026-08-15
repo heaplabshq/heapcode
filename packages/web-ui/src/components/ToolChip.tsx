@@ -44,9 +44,6 @@ export function ToolChip({
             <span className="stat-del">−{stats.removed}</span>
           </span>
         )}
-        {/* Live output size, so a long `npm test` visibly progresses instead of
-            sitting on a static spinner. */}
-        {!tool.done && tool.streamedK ? <span className="chip-progress">{tool.streamedK}k</span> : null}
         {tool.done && tool.result && <span className="chip-caret">{open ? '▾' : '▸'}</span>}
       </button>
       {open && (

@@ -227,16 +227,24 @@ describe('transcript reducer', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('tracks streamed output on the running tool, quantised to 1k', () => {
-    const running = fold([{ type: 'tool_call', id: 'c', name: 'run_command', args: { command: 'npm test' } }]);
-
+  it('tracks tool-call arguments as the model writes them, quantised to 1k', () => {
+    // `tool_stream` counts ARGUMENT fragments streaming out of the provider
+    // (openaiCompatible.ts:449) and fires BEFORE any `tool_call` event exists.
+    // Attaching it to "the last unfinished tool" — which this used to do —
+    // credited the count to the previous call and called it that call's output.
+    const empty = fold([{ type: 'tool_stream', chars: 400 }]);
     // Under 1k is not worth a re-render — same object back.
-    expect(fold([{ type: 'tool_stream', chars: 400 }], running)).toBe(running);
+    expect(empty).toBe(emptyTranscript);
 
-    const some = fold([{ type: 'tool_stream', chars: 2_400 }], running);
-    expect((some.items[0] as ToolItem).streamedK).toBe(2);
+    const writing = fold([{ type: 'tool_stream', chars: 2_400 }]);
+    expect(writing.writingCallK).toBe(2);
+    expect(writing.items).toHaveLength(0);
     // Within the same 1k step, still no re-render.
-    expect(fold([{ type: 'tool_stream', chars: 2_900 }], some)).toBe(some);
+    expect(fold([{ type: 'tool_stream', chars: 2_900 }], writing)).toBe(writing);
+
+    // The call arrives; there is nothing left to count.
+    const called = fold([{ type: 'tool_call', id: 'c', name: 'edit_file', args: {} }], writing);
+    expect(called.writingCallK).toBeUndefined();
   });
 
   it('settle() also closes an unfinished tool and an open thought', () => {
@@ -251,16 +259,19 @@ describe('transcript reducer', () => {
     expect((done.items[1] as ToolItem).done).toBe(true);
     // Nothing to close means nothing to re-render.
     expect(settle(done)).toBe(done);
+    // A cancel mid-call also drops the counter for arguments that will never
+    // finish arriving.
+    expect(settle(fold([{ type: 'tool_stream', chars: 2_000 }])).writingCallK).toBeUndefined();
   });
 });
 
 describe('activityOf — what the working indicator says', () => {
-  it('names the running tool, with its output size once there is some', () => {
-    const t = fold([
-      { type: 'tool_call', id: 'c', name: 'run_command', args: {} },
-      { type: 'tool_stream', chars: 3_100 },
-    ]);
-    expect(activityOf(t)).toEqual({ phase: 'tool', tool: 'run_command', streamedK: 3 });
+  it('reports a call being written before it exists, then the tool running', () => {
+    const writing = fold([{ type: 'tool_stream', chars: 3_100 }]);
+    expect(activityOf(writing)).toEqual({ phase: 'writing-call', writingCallK: 3 });
+
+    const running = fold([{ type: 'tool_call', id: 'c', name: 'run_command', args: {} }], writing);
+    expect(activityOf(running)).toEqual({ phase: 'tool', tool: 'run_command' });
   });
 
   it('distinguishes thinking from responding', () => {

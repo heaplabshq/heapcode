@@ -46,12 +46,14 @@ describe('the working indicator', () => {
   });
 
   it('names what is happening while it happens', () => {
-    const running = fold([
-      { type: 'tool_call', id: 'c', name: 'run_command', args: { command: 'npm test' } },
-      { type: 'tool_stream', chars: 4_200 },
-    ]);
+    const writing = fold([{ type: 'tool_stream', chars: 4_200 }]);
+    render(<MessageList transcript={writing} busy runStartedAt={Date.now()} />);
+    expect(screen.getByRole('status').textContent).toContain('Writing a tool call… 4k');
+    cleanup();
+
+    const running = fold([{ type: 'tool_call', id: 'c', name: 'run_command', args: { command: 'npm test' } }]);
     render(<MessageList transcript={running} busy runStartedAt={Date.now()} />);
-    expect(screen.getByRole('status').textContent).toContain('Running run_command — 4k of output…');
+    expect(screen.getByRole('status').textContent).toContain('Running run_command…');
   });
 
   it('is gone the moment the run is not', () => {

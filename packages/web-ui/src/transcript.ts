@@ -29,16 +29,6 @@ export interface ToolItem {
   /** The delegate_task call this ran under, if any — drives nesting. */
   parent?: string;
   done: boolean;
-  /**
-   * Output bytes streamed so far, rounded down to the nearest 1k.
-   *
-   * Quantised on purpose. `tool_stream` fires per chunk — hundreds of times
-   * during one `npm test` — and a byte-exact counter would re-render the whole
-   * transcript on every one of them. A 1k step is still enough to see that a
-   * long command is producing output rather than hanging, which is the only
-   * question this answers.
-   */
-  streamedK?: number;
 }
 
 export interface ReasoningItem {
@@ -63,6 +53,21 @@ export interface Transcript {
   windowTokens?: number;
   /** Set when the loop compacted mid-run, so the UI can say so once. */
   compacted?: { before: number; after: number };
+  /**
+   * Characters of tool-call *arguments* the model has written so far, in whole
+   * thousands, while it is still writing them.
+   *
+   * This belongs to the transcript, not to a tool item, because at the moment
+   * these arrive there is no tool item yet: `tool_stream` counts the argument
+   * fragments streaming out of the provider (openaiCompatible.ts:449), and the
+   * `tool_call` event only exists once that JSON is complete. Hanging it off
+   * "the last unfinished tool" — which is what this used to do — attributed the
+   * count to the *previous* call and labelled it as that call's output.
+   *
+   * Quantised to 1k: the event fires per chunk, and a byte-exact counter would
+   * re-render the transcript on every one of them.
+   */
+  writingCallK?: number;
 }
 
 export const emptyTranscript: Transcript = { items: [] };
@@ -187,6 +192,9 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
     case 'tool_call':
       return {
         ...t,
+        // The call is written; the counter that was tracking it writing has
+        // nothing left to describe.
+        writingCallK: undefined,
         items: [
           ...t.items,
           {
@@ -201,27 +209,14 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       };
 
     case 'tool_stream': {
-      // The event carries only a char count, no call id (server/protocol.ts),
-      // so it belongs to whichever call is still open — there is at most one
-      // producing output at a time. Quantised to 1k so a chatty command
-      // doesn't re-render the transcript per chunk; see `ToolItem.streamedK`.
+      // The model is writing a tool call's arguments. See
+      // `Transcript.writingCallK` for why this is transcript state and not a
+      // property of any tool item.
       const k = Math.floor(event.chars / 1000);
-      let index = -1;
-      for (let i = t.items.length - 1; i >= 0; i--) {
-        const item = t.items[i]!;
-        if (item.kind === 'tool' && !item.done) {
-          index = i;
-          break;
-        }
-      }
-      if (index === -1) return t;
-      const tool = t.items[index] as ToolItem;
       // `?? 0`, so the first sub-1k chunk doesn't count as a change from
       // "unset" to zero and re-render the transcript to display nothing.
-      if ((tool.streamedK ?? 0) === k) return t;
-      const items = [...t.items];
-      items[index] = { ...tool, streamedK: k };
-      return { ...t, items };
+      if ((t.writingCallK ?? 0) === k) return t;
+      return { ...t, writingCallK: k };
     }
 
     case 'tool_result': {
@@ -256,6 +251,9 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
  * are only ever closed by an event that a cancelled run never sends.
  */
 export function settle(t: Transcript): Transcript {
+  // A run cancelled while the model was mid-call leaves a counter describing
+  // something that will never arrive.
+  if (t.writingCallK) t = { ...t, writingCallK: undefined };
   let changed = false;
   const items = t.items.map((item): Item => {
     if ((item.kind === 'text' || item.kind === 'reasoning') && item.streaming) {
@@ -280,18 +278,19 @@ export function settle(t: Transcript): Transcript {
  * what the user can see on screen.
  */
 export interface Activity {
-  phase: 'thinking' | 'tool' | 'responding' | 'working';
+  phase: 'thinking' | 'writing-call' | 'tool' | 'responding' | 'working';
   /** The running tool's name, when `phase` is 'tool'. */
   tool?: string;
-  /** Its streamed output so far, in whole thousands of chars. */
-  streamedK?: number;
+  /** Arguments written so far, in whole thousands, when 'writing-call'. */
+  writingCallK?: number;
 }
 
 export function activityOf(t: Transcript): Activity {
   for (let i = t.items.length - 1; i >= 0; i--) {
     const item = t.items[i]!;
-    if (item.kind === 'tool' && !item.done)
-      return { phase: 'tool', tool: item.name, streamedK: item.streamedK };
+    // A call that has been issued but not returned outranks everything: the
+    // tool is running now, whatever the model was doing a moment ago.
+    if (item.kind === 'tool' && !item.done) return { phase: 'tool', tool: item.name };
     if (item.kind === 'reasoning' && item.streaming) return { phase: 'thinking' };
     if (item.kind === 'text' && item.streaming) return { phase: 'responding' };
     // Anything settled means the last thing on screen is finished and the
@@ -299,5 +298,8 @@ export function activityOf(t: Transcript): Activity {
     // stretch that used to show nothing at all.
     if (item.kind === 'tool' || item.kind === 'text' || item.kind === 'plan') break;
   }
+  // Nothing on screen is moving, but arguments are still streaming: the model
+  // is mid-way through writing a call that has no item yet.
+  if (t.writingCallK) return { phase: 'writing-call', writingCallK: t.writingCallK };
   return { phase: 'working' };
 }

@@ -14,6 +14,12 @@ export interface ToolDisplay {
   label?: string;
   /** Truncated tool output for the expandable chip; persisted so history reloads keep it. */
   summary?: string;
+  /**
+   * The call's arguments, with long strings clipped. Hosts that render the
+   * chip's one-liner from the args rather than from `description` (the web UI
+   * does) need these to redraw the same chip after a reload.
+   */
+  args?: Record<string, unknown>;
   fileEdit?: FileEditInfo;
   /** Shadow-git commit taken just before this tool call ran — lets the user rewind to this exact step (PLAN.md M8). */
   checkpoint?: string;

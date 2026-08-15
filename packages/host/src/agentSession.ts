@@ -7,7 +7,6 @@ import { ShadowGit } from './agent/shadowGit.js';
 import { loadMcpServers } from './agent/mcpConfig.js';
 import { createRepoMapIndexer, type RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { projectStateDir, shadowGitDir } from './paths.js';
-import { cliVersion } from './version.js';
 
 export interface AgentSession {
   checkpoint: SessionCheckpoint;
@@ -24,8 +23,19 @@ export interface AgentSession {
  * mode (headless.ts), so the two can't silently drift apart (guardrail #8:
  * headless is a first-class peer of the interactive UI, not a bolted-on
  * shortcut). `root` must already be canonicalized (see paths.ts).
+ *
+ * `clientVersion` is passed in rather than read here: it is the *host's* own
+ * version (reported to MCP servers in the initialize handshake), and each host
+ * reads it from its own package.json relative to its own bundle — see
+ * packages/cli/src/version.ts. A shared package resolving that for itself
+ * would report this package's version to every host, which is exactly wrong.
  */
-export function buildAgentSession(root: string, config: ConfigStore, secrets?: SecretsStore): AgentSession {
+export function buildAgentSession(
+  root: string,
+  config: ConfigStore,
+  secrets?: SecretsStore,
+  clientVersion?: string,
+): AgentSession {
   const checkpoint = new SessionCheckpoint(root);
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
 
@@ -55,7 +65,7 @@ export function buildAgentSession(root: string, config: ConfigStore, secrets?: S
   // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with
   // project-scoped (<cwd>/.heapcode/mcp.json), project wins name collisions.
   // Reconnected (idempotent) at the start of every task by the caller.
-  const mcpManager = new McpManager(() => loadMcpServers(root, config), undefined, cliVersion());
+  const mcpManager = new McpManager(() => loadMcpServers(root, config), undefined, clientVersion);
 
   return { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools: agentToolDefinitions };
 }

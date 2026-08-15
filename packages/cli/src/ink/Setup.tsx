@@ -3,8 +3,7 @@ import { Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
 import Spinner from 'ink-spinner';
 import { createProvider, providerPresets, type ProviderPreset, type ProviderProfileConfig } from '@heapcode/core';
-import { ConfigStore } from '../config/store.js';
-import { SecretsStore } from '../config/secrets.js';
+import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { FilterableList } from './FilterableList.js';
 import { TextInput } from './TextInput.js';
 

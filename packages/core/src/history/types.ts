@@ -16,6 +16,13 @@ export interface StoredMessage extends ChatMessage {
     plan?: boolean;
     tool?: ToolDisplay & { id?: string };
     status?: { state: string };
+    /**
+     * A reasoning ("thinking") block. Transcript furniture like tool chips:
+     * kept so a reload re-renders the turn as it happened, and excluded from
+     * future LLM context — a model's own scratchpad is not something to feed
+     * back to it as if it were dialogue.
+     */
+    reasoning?: boolean;
   };
 }
 

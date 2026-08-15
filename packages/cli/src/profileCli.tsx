@@ -1,8 +1,7 @@
 import React from 'react';
 import { render } from 'ink';
 import type { ProviderProfileConfig } from '@heapcode/core';
-import { ConfigStore } from './config/store.js';
-import { SecretsStore } from './config/secrets.js';
+import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { Setup } from './ink/Setup.js';
 
 /**

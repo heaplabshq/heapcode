@@ -14,16 +14,22 @@ import {
   type Conversation,
   type PermissionMode,
 } from '@heapcode/core';
-import { ConfigStore } from './config/store.js';
-import { SecretsStore } from './config/secrets.js';
-import { JsonConversationStore } from './history/store.js';
-import { canonicalize, auditFile, conversationsFile, permissionsFile } from './paths.js';
+import {
+  ConfigStore,
+  JsonConversationStore,
+  PermissionEngine,
+  SecretsStore,
+  auditFile,
+  buildAgentSession,
+  canonicalize,
+  conversationsFile,
+  loadIgnoreMatcher,
+  permissionsFile,
+  profileContextWindow,
+} from '@heapcode/host';
 import { profileAdd, profileList, profileRemove, profileUse } from './profileCli.js';
-import { profileContextWindow } from './provider/resolve.js';
 import { runHeadless } from './headless.js';
-import { loadIgnoreMatcher } from './agent/ignoreFiles.js';
-import { PermissionEngine } from './agent/permissions.js';
-import { buildAgentSession } from './agentSession.js';
+import { runWeb } from './webCli.js';
 import { AuditLog } from './audit.js';
 import { checkForUpdate } from './updateCheck.js';
 import { App } from './ink/App.js';
@@ -76,6 +82,24 @@ async function main(): Promise<void> {
   if (argv[0] === 'audit') {
     const audit = new AuditLog(auditFile());
     console.log(formatAuditDashboard(await audit.history()));
+    return;
+  }
+
+  if (argv[0] === 'web') {
+    const portFlag = argv.findIndex((a) => a === '--port');
+    const hostFlag = argv.findIndex((a) => a === '--host');
+    const port = portFlag >= 0 ? Number(argv[portFlag + 1]) : undefined;
+    if (port !== undefined && !Number.isInteger(port)) {
+      console.error('--port takes a number, e.g. `heapcode web --port 7412`');
+      process.exitCode = 1;
+      return;
+    }
+    process.exitCode = await runWeb({
+      port,
+      // `--host` with no value is the common way to mean "expose it"; 0.0.0.0
+      // is what that has to mean, and runWeb warns loudly about it.
+      host: hostFlag >= 0 ? (argv[hostFlag + 1] ?? '0.0.0.0') : undefined,
+    });
     return;
   }
 
@@ -212,7 +236,12 @@ async function main(): Promise<void> {
   // indexers, MCP) is built by the same shared path headless.ts uses — see
   // agentSession.ts's own comment on why (guardrail #8: headless is a
   // first-class peer of the interactive UI, not a bolted-on shortcut).
-  const { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config, secrets);
+  const { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(
+    root,
+    config,
+    secrets,
+    cliVersion(),
+  );
 
   // Tracks the active conversation id across /new and /resume so it can be
   // printed on exit — App owns the actual conversation object (including
@@ -303,6 +332,7 @@ Usage:
 
   heapcode profile <add|list|use|remove>   Scriptable profile management (all of it is also available in-session via /profile)
   heapcode audit                            Local usage/audit dashboard — event names + coarse metadata only, never code/prompts/paths; nothing leaves this machine
+  heapcode web [--port N] [--host H]        Serve the browser UI for this workspace on 127.0.0.1 (--host exposes it to your network — see the warning it prints)
 
 Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text

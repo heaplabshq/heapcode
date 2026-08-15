@@ -69,19 +69,24 @@ import {
   type ToolExecuteParams,
   type ToolResult,
 } from '@heapcode/core';
-import type { ConfigStore } from '../config/store.js';
-import type { SecretsStore } from '../config/secrets.js';
-import type { JsonConversationStore } from '../history/store.js';
-import type { WorkspaceToolExecutor } from '../agent/workspaceTools.js';
-import type { SessionCheckpoint } from '../agent/checkpoint.js';
-import { listPermissionGrants, type PermissionEngine } from '../agent/permissions.js';
-import type { ShadowGit } from '../agent/shadowGit.js';
-import { listSkillsFormatted } from '../agent/skills.js';
-import { trimHistoryForAgent } from '../agent/historyWindow.js';
+import {
+  DELEGATE_TASK_TOOL,
+  configFile,
+  listPermissionGrants,
+  listSkillsFormatted,
+  permissionsFile,
+  secretsFile,
+  trimHistoryForAgent,
+  type ConfigStore,
+  type JsonConversationStore,
+  type PermissionEngine,
+  type RepoMapIndexer,
+  type SecretsStore,
+  type SessionCheckpoint,
+  type ShadowGit,
+  type WorkspaceToolExecutor,
+} from '@heapcode/host';
 import { loadProjectInstructions } from '../memory.js';
-import { configFile, permissionsFile, secretsFile } from '../paths.js';
-import type { RepoMapIndexer } from '../rag/repoMapIndexer.js';
-import { DELEGATE_TASK_TOOL } from '../agent/delegate.js';
 import { connectToServer, type ConnectOptions, type ServerConnection } from '../server/client.js';
 import { Composer, type SlashCommand } from './Composer.js';
 import { FilterableList } from './FilterableList.js';

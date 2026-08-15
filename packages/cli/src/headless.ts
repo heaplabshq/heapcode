@@ -29,15 +29,19 @@ import {
   type ToolExecuteParams,
   type ToolResult,
 } from '@heapcode/core';
-import { ConfigStore } from './config/store.js';
-import { SecretsStore } from './config/secrets.js';
-import { JsonConversationStore } from './history/store.js';
-import { canonicalize, auditFile, conversationsFile } from './paths.js';
-import { buildAgentSession } from './agentSession.js';
-import { trimHistoryForAgent } from './agent/historyWindow.js';
+import {
+  ConfigStore,
+  DELEGATE_TASK_TOOL,
+  JsonConversationStore,
+  SecretsStore,
+  auditFile,
+  buildAgentSession,
+  canonicalize,
+  conversationsFile,
+  trimHistoryForAgent,
+} from '@heapcode/host';
 import { loadProjectInstructions } from './memory.js';
 import { AuditLog } from './audit.js';
-import { DELEGATE_TASK_TOOL } from './agent/delegate.js';
 import { connectToServer, type ConnectOptions } from './server/client.js';
 import { cliVersion } from './version.js';
 
@@ -158,7 +162,12 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     conversation ??= { id: randomUUID(), title: opts.prompt.slice(0, 60), updatedAt: Date.now(), messages: [] };
     const history = trimHistoryForAgent(conversation.messages);
 
-    const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config, secrets);
+    const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(
+      root,
+      config,
+      secrets,
+      cliVersion(),
+    );
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
     await Promise.all([repoMapIndexer.init(), mcpManager.ensureConnected()]);

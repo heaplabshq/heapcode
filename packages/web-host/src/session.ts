@@ -1,0 +1,1307 @@
+import { randomUUID } from 'node:crypto';
+import { basename, join } from 'node:path';
+import {
+  ASK_USER_NO_ANSWER,
+  BUILTIN_PERSONAS,
+  DEFAULT_PERMISSION_MODE,
+  INIT_TASK,
+  METHODS,
+  SEARCH_PRESETS,
+  WEB_SEARCH_SECRET_NAME,
+  applyModeToPersona,
+  askUserAnswerMessage,
+  askUserBlocksAction,
+  filterToolsForPersona,
+  getPersona,
+  isPermissionMode,
+  lineDiffStats,
+  providerPresets,
+  resolveCapabilities,
+  unifiedDiff,
+  type AgentEvent,
+  type AgentEventParams,
+  type AgentRunParams,
+  type AgentRunResult,
+  type Conversation,
+  type KeyRequestParams,
+  type KeyRequestResult,
+  type PermissionMode,
+  type PermissionRequestParams,
+  type PermissionRequestResult,
+  type ProviderProfileConfig,
+  type RpcPeer,
+  type ServerConnection,
+  type SnapshotBeforeParams,
+  type StoredMessage,
+  type ToolCall,
+  type ToolExecuteParams,
+  type ToolResult,
+} from '@heapcode/core';
+import {
+  DELEGATE_TASK_TOOL,
+  JsonConversationStore,
+  PermissionEngine,
+  buildAgentSession,
+  conversationsFile,
+  listPermissionGrants,
+  listSkillsFormatted,
+  permissionsFile,
+  projectStateDir,
+  profileContextWindow,
+  trimHistoryForAgent,
+  type ConfigStore,
+  type SecretsStore,
+} from '@heapcode/host';
+import {
+  UI_METHODS,
+  UI_PROTOCOL_VERSION,
+  type UiAskUserParams,
+  type UiAskUserResult,
+  type UiCancelParams,
+  type UiConversationMeta,
+  type UiEventParams,
+  type UiHelloParams,
+  type UiHelloResult,
+  type UiListModelsResult,
+  type UiMessage,
+  type UiOpenConversationParams,
+  type UiOpenConversationResult,
+  type UiPermissionRequestParams,
+  type UiPermissionRequestResult,
+  type UiNameParams,
+  type UiResetPermissionsResult,
+  type UiRunCommandParams,
+  type UiSaveProfileParams,
+  type UiSendMessageParams,
+  type UiSendMessageResult,
+  type UiSetModelParams,
+  type UiSetModeParams,
+  type UiSetPersonaParams,
+  type UiSetWebSearchParams,
+  type UiSettings,
+  type UiState,
+  type UiToggleParams,
+  type UiChangedFile,
+  type UiChangesResult,
+  type UiCheckpointsResult,
+  type UiDiffParams,
+  type UiDiffResult,
+  type UiFileTreeParams,
+  type UiFileTreeResult,
+  type UiMemoryResult,
+  type UiReadFileParams,
+  type UiReadFileResult,
+  type UiRestoreResult,
+  type UiRewindParams,
+  type UiSearchParams,
+  type UiSearchResult,
+  type UiSkillsResult,
+  type UiArtifactMeta,
+  type UiArtifactParams,
+  type UiArtifactResult,
+  type UiArtifactsResult,
+  type UiSaveArtifactParams,
+  type UiSaveArtifactResult,
+} from './protocol.js';
+import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
+import {
+  ARTIFACT_KINDS,
+  ArtifactStore,
+  CREATE_ARTIFACT_TOOL,
+  isArtifactKind,
+  type Artifact,
+} from './artifacts.js';
+
+/** Metadata only — the content is fetched per-version, so a list stays cheap. */
+function toArtifactMeta(a: Artifact): UiArtifactMeta {
+  return {
+    id: a.id,
+    title: a.title,
+    kind: a.kind,
+    language: a.language,
+    versions: a.versions.length,
+    updatedAt: a.versions.at(-1)?.createdAt ?? 0,
+  };
+}
+
+/**
+ * Slash commands that are really canned agent tasks.
+ *
+ * `INIT_TASK` comes from core, shared with the CLI and the extension, so a
+ * project initialized from any of the three gets the same HEAPCODE.md.
+ */
+const COMMAND_TASKS: Record<string, string> = {
+  '/init': INIT_TASK,
+};
+
+/** How many events to retain per run for replay after a browser refresh (§5.4). */
+const REPLAY_BUFFER = 2_000;
+
+/** What the session knows and the connector needs; the rest of HelloParams is the connector's. */
+export interface DaemonHello {
+  root: string;
+  profiles: ProviderProfileConfig[];
+  activeProfile: string;
+  keys: Record<string, string>;
+}
+
+export interface WebSessionDeps {
+  root: string;
+  config: ConfigStore;
+  secrets: SecretsStore;
+  /**
+   * Opens the daemon connection. Injected rather than called directly so tests
+   * can point at an in-process server, and so the CLI can supply the path to
+   * its own bundled `dist/daemon.js` (only a host knows where its bundle
+   * landed — see ConnectOptions.daemonEntry).
+   */
+  connect: (hello: DaemonHello) => Promise<ServerConnection>;
+  clientVersion?: string;
+  permissionMode?: PermissionMode;
+  personaId?: string;
+  subAgents?: boolean;
+  /**
+   * Native tool calls vs the text protocol. Real hosts probe the endpoint;
+   * until the web UI has a settings surface for it (W5) this is injected,
+   * and tests use it to drive the scripted text-protocol mock.
+   */
+  nativeToolCalls?: boolean;
+  /**
+   * Project instructions (HEAPCODE.md / memory.md) prepended to each task.
+   * Injected because `loadProjectInstructions` lives in the CLI's memory.ts,
+   * not in the shared host package — extracting it is a W5 tidy-up, not a
+   * reason to block the chat MVP.
+   */
+  loadInstructions?: (root: string) => Promise<string>;
+}
+
+/**
+ * One workspace's bridge between browsers and the daemon.
+ *
+ * Deliberately outlives any single browser connection: the host owns run
+ * state, a tab does not (§5.4). Closing the tab mid-run must not kill the
+ * agent, and reopening it must reattach — so the daemon connection, the
+ * executor, and the event buffer all live here, and `attach()` merely points
+ * a browser at them.
+ *
+ * The server→host handlers below are the same bodies as headless.ts:229-283,
+ * with two deliberate differences: permission decisions and `ask_user` are
+ * forwarded to a human instead of being auto-resolved. That is the whole
+ * behavioral difference between a headless host and an interactive one.
+ */
+export class WebSession {
+  private connection?: ServerConnection;
+  private session?: Awaited<ReturnType<typeof buildAgentSession>>;
+  private permissions?: PermissionEngine;
+  private profile?: ProviderProfileConfig;
+
+  /** The browser currently attached, if any. Null between tabs. */
+  private ui?: RpcPeer;
+  private mode: PermissionMode;
+
+  private activeRunId?: string;
+  private abort?: AbortController;
+  /** Per-run event log, for replay when a browser reattaches mid-run. */
+  private readonly buffers = new Map<string, UiEventParams[]>();
+
+  private history?: JsonConversationStore;
+  private conversation?: Conversation;
+  private lastText = '';
+  private deltaAcc = '';
+  /**
+   * The current run's transcript, in the order it happened: narration, plans
+   * and tool chips as well as the final reply.
+   *
+   * Persisting only the last assistant message — which is what this used to do
+   * — meant a browser reload came back to a conversation with every tool call,
+   * plan and intermediate note missing, because the live event stream was the
+   * only place they ever existed.
+   */
+  private turnEntries: StoredMessage[] = [];
+  /** Partial reasoning text, accumulated the same way `deltaAcc` accumulates prose. */
+  private reasoningAcc = '';
+  /**
+   * What the user typed for the run in flight, held until `persistTurn` writes
+   * it. A tab that reloads mid-run needs it to redraw the prompt it is watching
+   * the answer to — see `UiHelloResult.pending`.
+   */
+  private pendingDisplay?: string;
+  /** Overrides the profile's model for this session only, set by `ui/setModel`. */
+  private modelOverride?: string;
+
+  /**
+   * Persona and sub-agents start from `deps` but are session state, not
+   * config: the UI can change them mid-session, and the CLI treats them the
+   * same way (they are not persisted to config.json there either).
+   */
+  private personaId: string;
+  private subAgents: boolean;
+  private readonly artifacts: ArtifactStore;
+
+  constructor(private readonly deps: WebSessionDeps) {
+    this.mode = deps.permissionMode ?? DEFAULT_PERMISSION_MODE;
+    this.personaId = deps.personaId ?? 'agent';
+    this.subAgents = deps.subAgents ?? false;
+    // Under the project's state dir, not the workspace — see ArtifactStore.
+    this.artifacts = new ArtifactStore(join(projectStateDir(deps.root), 'artifacts'));
+  }
+
+  private get model(): string {
+    return this.modelOverride || this.profile?.agentModel || this.profile?.model || '';
+  }
+
+  // -------------------------------------------------------------------------
+  // lifecycle
+  // -------------------------------------------------------------------------
+
+  /** Connects to the daemon and builds the agent session. Idempotent. */
+  async start(): Promise<void> {
+    if (this.connection) return;
+
+    const { root, config, secrets, clientVersion } = this.deps;
+    const profile = await config.getActiveProfile();
+    if (!profile) {
+      throw new Error(
+        'No provider profile configured. Run `heapcode profile add` (or start the CLI once) before `heapcode web`.',
+      );
+    }
+    this.profile = profile;
+
+    this.history = new JsonConversationStore(conversationsFile(root));
+    // Launch default is a fresh conversation, matching `heapcode` itself; the
+    // sidebar is how you get back to an earlier one.
+    this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
+
+    this.session = buildAgentSession(root, config, secrets, clientVersion);
+    this.permissions = new PermissionEngine(
+      permissionsFile(root),
+      () => false,
+      () => {},
+      undefined,
+      () => this.mode,
+    );
+    // The browser is the only place to ask. With none attached the request
+    // fails closed, exactly as the CLI's does with no prompt attached.
+    this.permissions.attachRequester(async (req) => {
+      if (!this.ui) return undefined;
+      const result = await this.ui.request<UiPermissionRequestResult>(UI_METHODS.permissionRequest, {
+        runId: this.activeRunId ?? '',
+        description: req.description,
+        permission: req.permission,
+        allowPersist: req.allowPersist,
+      } satisfies UiPermissionRequestParams);
+      return result.choice;
+    });
+
+    await Promise.all([this.session.repoMapIndexer.init(), this.session.mcpManager.ensureConnected()]);
+
+    // Key material pushed once at hello and held only in the server's memory
+    // (custody note, Option A2); other profiles resolve lazily via key/request.
+    const apiKey = await secrets.getApiKey(profile.name);
+    this.connection = await this.deps.connect({
+      root,
+      profiles: [profile],
+      activeProfile: profile.name,
+      keys: apiKey ? { [profile.name]: apiKey } : {},
+    });
+    this.registerDaemonHandlers(this.connection.peer);
+  }
+
+  async close(): Promise<void> {
+    this.abort?.abort();
+    this.connection?.close();
+    this.connection = undefined;
+    this.session?.mcpManager.dispose();
+  }
+
+  // -------------------------------------------------------------------------
+  // browser side
+  // -------------------------------------------------------------------------
+
+  /** Points a browser connection at this session, replacing any previous one. */
+  attach(ui: RpcPeer): void {
+    this.ui = ui;
+
+    ui.onRequest(UI_METHODS.hello, async (raw): Promise<UiHelloResult> => {
+      // Connect on hello rather than at construction, so a configuration
+      // error surfaces as a readable message in the UI instead of a server
+      // that refused to start.
+      await this.start();
+      const params = (raw ?? {}) as UiHelloParams;
+      const replay =
+        params.resumeRunId && this.buffers.has(params.resumeRunId)
+          ? this.buffers.get(params.resumeRunId)
+          : this.activeRunId
+            ? this.buffers.get(this.activeRunId)
+            : undefined;
+      return {
+        protocolVersion: UI_PROTOCOL_VERSION,
+        state: await this.state(),
+        messages: toUiMessages(this.conversation?.messages ?? []),
+        activeRunId: this.activeRunId,
+        replay,
+        pending: this.activeRunId ? this.pendingTurn() : undefined,
+      };
+    });
+
+    ui.onRequest(UI_METHODS.state, async () => this.state());
+
+    ui.onRequest(UI_METHODS.sendMessage, async (raw): Promise<UiSendMessageResult> => {
+      const { text, runId } = raw as UiSendMessageParams;
+      return this.run(text, runId ?? randomUUID());
+    });
+
+    ui.onRequest(UI_METHODS.cancel, async (raw) => {
+      const { runId } = raw as UiCancelParams;
+      await this.cancel(runId);
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.conversations, async (): Promise<UiConversationMeta[]> => {
+      await this.start();
+      const list = await this.history!.list();
+      return list.map((c) => ({ ...c, active: c.id === this.conversation?.id }));
+    });
+
+    ui.onRequest(UI_METHODS.openConversation, async (raw): Promise<UiOpenConversationResult> => {
+      await this.start();
+      const { id } = raw as UiOpenConversationParams;
+      if (this.activeRunId) throw new Error('A run is in progress; cancel it before switching conversations.');
+      const found = await this.history!.get(id);
+      if (!found) throw new Error(`No conversation ${id}`);
+      this.conversation = found;
+      void this.pushState();
+      return { id: found.id, messages: toUiMessages(found.messages) };
+    });
+
+    ui.onRequest(UI_METHODS.newConversation, async (): Promise<UiOpenConversationResult> => {
+      await this.start();
+      if (this.activeRunId) throw new Error('A run is in progress; cancel it before starting a new chat.');
+      this.conversation = { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
+      void this.pushState();
+      return { id: this.conversation.id, messages: [] };
+    });
+
+    ui.onRequest(UI_METHODS.listModels, async (): Promise<UiListModelsResult> => {
+      await this.start();
+      const res = await this.connection!.peer.request<{ models: Array<{ id: string; contextLength?: number }> }>(
+        METHODS.listModels,
+        {},
+      );
+      return { models: res.models };
+    });
+
+    ui.onRequest(UI_METHODS.setModel, async (raw) => {
+      const { model } = raw as UiSetModelParams;
+      this.modelOverride = model;
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.setMode, async (raw) => {
+      const { mode } = raw as UiSetModeParams;
+      if (!isPermissionMode(mode)) throw new Error(`Unknown permission mode: ${mode}`);
+      this.mode = mode;
+      void this.pushState();
+      return null;
+    });
+
+    this.attachSettings(ui);
+    this.attachWorkspace(ui);
+  }
+
+  /** The workspace panel (§7.3): changes, diffs, files, checkpoints. */
+  private attachWorkspace(ui: RpcPeer): void {
+    ui.onRequest(UI_METHODS.changes, async (): Promise<UiChangesResult> => {
+      await this.start();
+      return { files: await this.changedFiles() };
+    });
+
+    ui.onRequest(UI_METHODS.diff, async (raw): Promise<UiDiffResult> => {
+      await this.start();
+      const { path } = raw as UiDiffParams;
+      const entry = this.session!.checkpoint.entryFor(path);
+      const before = entry?.original ? Buffer.from(entry.original).toString('utf8') : '';
+      const after = (await currentText(this.deps.root, path)) ?? '';
+      if (!entry) return { path, diff: '', added: 0, removed: 0, note: 'Not changed this session.' };
+      const stats = lineDiffStats(before, after);
+      return { path, diff: unifiedDiff(before, after), added: stats.added, removed: stats.removed };
+    });
+
+    ui.onRequest(UI_METHODS.fileTree, async (raw): Promise<UiFileTreeResult> => {
+      const { path } = (raw ?? {}) as UiFileTreeParams;
+      const rel = path ?? '';
+      return { path: rel, entries: await listDirectory(this.deps.root, rel) };
+    });
+
+    ui.onRequest(UI_METHODS.readFile, async (raw): Promise<UiReadFileResult> => {
+      const { path } = raw as UiReadFileParams;
+      const { content, note } = await readWorkspaceFile(this.deps.root, path);
+      return { path, content, note };
+    });
+
+    ui.onRequest(UI_METHODS.revertFile, async (raw): Promise<UiRestoreResult> => {
+      await this.start();
+      const { path } = raw as UiDiffParams;
+      const ok = await this.session!.checkpoint.revertFile(path);
+      void this.pushWorkspace();
+      return { files: ok ? [path] : [] };
+    });
+
+    ui.onRequest(UI_METHODS.revertAll, async (): Promise<UiRestoreResult> => {
+      await this.start();
+      const files = await this.session!.checkpoint.revertAll();
+      void this.pushWorkspace();
+      return { files };
+    });
+
+    ui.onRequest(UI_METHODS.keepAll, async (): Promise<UiRestoreResult> => {
+      await this.start();
+      const files = this.session!.checkpoint.keepAll();
+      void this.pushWorkspace();
+      return { files };
+    });
+
+    ui.onRequest(UI_METHODS.checkpoints, async (): Promise<UiCheckpointsResult> => {
+      await this.start();
+      return { checkpoints: await this.session!.shadowGit.history() };
+    });
+
+    ui.onRequest(UI_METHODS.rewind, async (raw): Promise<UiRestoreResult> => {
+      await this.start();
+      if (this.activeRunId) throw new Error('A run is in progress; cancel it before rewinding.');
+      const { hash } = raw as UiRewindParams;
+      const files = await this.session!.shadowGit.restore(hash);
+      if (!files) throw new Error('Could not restore that checkpoint.');
+      void this.pushWorkspace();
+      return { files };
+    });
+
+    ui.onRequest(UI_METHODS.search, async (raw): Promise<UiSearchResult> => {
+      await this.start();
+      const { query } = raw as UiSearchParams;
+      // Semantic when the server has an index, plain text otherwise — the
+      // same fallback the CLI's /search does, decided server-side.
+      const res = await this.connection!.peer.request<{ results?: string }>(METHODS.ragQuery, { query, k: 8 })
+        .catch(() => undefined);
+      if (res?.results) return { kind: 'semantic', results: res.results };
+      const fallback = await this.session!.executor.execute({
+        id: 'ui-search',
+        name: 'search',
+        args: { pattern: query },
+      });
+      return { kind: 'text', results: fallback.content };
+    });
+
+    ui.onRequest(UI_METHODS.reindex, async () => {
+      await this.start();
+      await Promise.all([
+        this.connection!.peer.request(METHODS.ragIndex, { full: true, contextualRetrieval: true }),
+        this.session!.repoMapIndexer.buildIndex(),
+      ]);
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.memory, async (): Promise<UiMemoryResult> => {
+      const instructions = (await this.deps.loadInstructions?.(this.deps.root).catch(() => '')) ?? '';
+      return { instructions };
+    });
+
+    ui.onRequest(UI_METHODS.skills, async (): Promise<UiSkillsResult> => {
+      return { skills: await listSkillsFormatted(this.deps.root) };
+    });
+
+    ui.onRequest(UI_METHODS.artifacts, async (): Promise<UiArtifactsResult> => {
+      return { artifacts: (await this.artifacts.list()).map(toArtifactMeta) };
+    });
+
+    ui.onRequest(UI_METHODS.artifact, async (raw): Promise<UiArtifactResult> => {
+      const { id, version } = raw as UiArtifactParams;
+      const artifact = await this.artifacts.get(id);
+      if (!artifact) throw new Error(`No artifact ${id}`);
+      const index = version ? version - 1 : artifact.versions.length - 1;
+      const chosen = artifact.versions[index];
+      if (!chosen) throw new Error(`No version ${version} of ${id}`);
+      return { ...toArtifactMeta(artifact), version: index + 1, content: chosen.content };
+    });
+
+    ui.onRequest(UI_METHODS.saveArtifact, async (raw): Promise<UiSaveArtifactResult> => {
+      const { id, path, version } = raw as UiSaveArtifactParams;
+      const artifact = await this.artifacts.get(id);
+      if (!artifact) throw new Error(`No artifact ${id}`);
+      const chosen = artifact.versions[version ? version - 1 : artifact.versions.length - 1];
+      if (!chosen) throw new Error('No such version');
+      // Root-jailed, and routed through the executor rather than writing
+      // directly: this is a real workspace edit, so it must get a checkpoint
+      // like any other, or "Revert all" would not cover it.
+      const result = await this.session!.executor.execute({
+        id: `save-artifact-${id}`,
+        name: 'write_file',
+        args: { path, content: chosen.content },
+      });
+      if (result.isError) throw new Error(result.content);
+      void this.pushWorkspace();
+      return { path };
+    });
+  }
+
+  /**
+   * The changed-file set, with per-file line stats.
+   *
+   * `captureFinals()` first: the checkpoint records originals as the agent
+   * touches files, but the *current* content is only sampled on demand, so
+   * without this the stats would describe the state at the last capture rather
+   * than now.
+   */
+  private async changedFiles(): Promise<UiChangedFile[]> {
+    const checkpoint = this.session!.checkpoint;
+    await checkpoint.captureFinals();
+    const out: UiChangedFile[] = [];
+    for (const file of checkpoint.changedFiles()) {
+      const entry = checkpoint.entryFor(file.path);
+      const before = entry?.original ? Buffer.from(entry.original).toString('utf8') : '';
+      const after = (await currentText(this.deps.root, file.path)) ?? '';
+      const stats = lineDiffStats(before, after);
+      out.push({
+        path: file.path,
+        added: stats.added,
+        removed: stats.removed,
+        reverted: file.reverted,
+        created: !entry?.original,
+        deleted: after === '' && before !== '',
+      });
+    }
+    return out;
+  }
+
+  /** Tells any attached tab the changed set moved; it refetches rather than guessing. */
+  private async pushWorkspace(): Promise<void> {
+    if (!this.ui) return;
+    this.ui.notify(UI_METHODS.workspaceChanged, { files: await this.changedFiles() } satisfies UiChangesResult);
+  }
+
+  /** The settings surface (§9's W5 rows). Split out only for readability. */
+  private attachSettings(ui: RpcPeer): void {
+    ui.onRequest(UI_METHODS.settings, async (): Promise<UiSettings> => {
+      await this.start();
+      const cfg = await this.deps.config.load();
+      const profiles = await Promise.all(
+        (cfg.profiles ?? []).map(async (p) => ({
+          name: p.name,
+          preset: p.preset,
+          baseUrl: p.baseUrl,
+          model: p.model,
+          agentModel: p.agentModel,
+          hasKey: Boolean(await this.deps.secrets.getApiKey(p.name)),
+          active: p.name === this.profile?.name,
+          nativeToolCalls: resolveCapabilities(p).nativeToolCalls,
+          contextWindow: p.contextWindow,
+          effectiveContextWindow: profileContextWindow(p),
+          maxTokens: p.maxTokens,
+        })),
+      );
+      const connected = new Set(this.session!.mcpManager.connectedServerNames());
+      return {
+        personas: BUILTIN_PERSONAS.map((p) => ({ id: p.id, label: p.label, description: p.description })),
+        persona: this.personaId,
+        permissionMode: this.mode,
+        subAgents: Boolean(this.subAgents),
+        nativeToolCalls: this.profile ? resolveCapabilities(this.profile).nativeToolCalls : true,
+        profiles,
+        webSearch: {
+          providers: [...SEARCH_PRESETS],
+          provider: cfg.webSearch?.provider,
+          enabled: cfg.webSearch?.enabled ?? Boolean(cfg.webSearch?.provider),
+          hasKey: Boolean(await this.deps.secrets.getApiKey(WEB_SEARCH_SECRET_NAME)),
+        },
+        mcpServers: Object.keys(cfg.mcpServers ?? {}).map((name) => ({
+          name,
+          connected: connected.has(name),
+          tools: this.session!.mcpManager.getToolDefinitions()
+            .map((t) => t.name)
+            .filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
+        })),
+        permissionGrants: await listPermissionGrants(permissionsFile(this.deps.root)),
+      };
+    });
+
+    ui.onRequest(UI_METHODS.setPersona, async (raw) => {
+      const { persona } = raw as UiSetPersonaParams;
+      this.personaId = persona;
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.setSubAgents, async (raw) => {
+      this.subAgents = (raw as UiToggleParams).enabled;
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.setNativeTools, async (raw) => {
+      await this.start();
+      const { enabled } = raw as UiToggleParams;
+      // Stored on the profile, since it is a fact about that endpoint rather
+      // than a session preference — the CLI's /nativetools does the same.
+      const next = { ...this.profile!, capabilities: { ...this.profile!.capabilities, nativeToolCalls: enabled } };
+      await this.deps.config.saveProfile(next);
+      this.profile = next;
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.setWebSearch, async (raw) => {
+      const { provider, enabled, apiKey } = raw as UiSetWebSearchParams;
+      if (apiKey !== undefined) await this.deps.secrets.setApiKey(WEB_SEARCH_SECRET_NAME, apiKey);
+      const patch: Record<string, unknown> = {};
+      if (provider !== undefined) patch.provider = provider;
+      if (enabled !== undefined) patch.enabled = enabled;
+      if (Object.keys(patch).length) await this.deps.config.saveWebSearch(patch);
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.resetPermissions, async (): Promise<UiResetPermissionsResult> => {
+      await this.start();
+      return { cleared: await this.permissions!.reset() };
+    });
+
+    ui.onRequest(UI_METHODS.saveProfile, async (raw) => {
+      const { profile, apiKey } = raw as UiSaveProfileParams;
+      const next = mergeProfile(await this.deps.config.getProfile(profile.name), {
+        ...profile,
+        contextWindow: tokenCount(profile.contextWindow, 'Context window'),
+        maxTokens: tokenCount(profile.maxTokens, 'Max output tokens'),
+      });
+      await this.deps.config.saveProfile(next);
+      if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
+      if (profile.name === this.profile?.name) {
+        this.profile = await this.deps.config.getProfile(profile.name);
+        // contextWindow and maxTokens are read off the profile at run time
+        // (see `run`), so the next turn picks them up without a reconnect.
+      }
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.deleteProfile, async (raw) => {
+      const { name } = raw as UiNameParams;
+      if (name === this.profile?.name) throw new Error('Cannot delete the profile currently in use.');
+      await this.deps.config.deleteProfile(name);
+      await this.deps.secrets.deleteApiKey(name);
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.useProfile, async (raw) => {
+      const { name } = raw as UiNameParams;
+      if (this.activeRunId) throw new Error('A run is in progress; cancel it before switching profiles.');
+      const target = await this.deps.config.getProfile(name);
+      if (!target) throw new Error(`No profile named "${name}"`);
+      await this.deps.config.setActiveProfile(name);
+      this.profile = target;
+      this.modelOverride = undefined;
+      // The daemon session carries the old profile and key, so it has to be
+      // rebuilt — pushing a new profile mid-session is not part of the
+      // protocol, and pretending otherwise would silently keep using the old
+      // endpoint.
+      await this.reconnect();
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.runCommand, async (raw): Promise<UiSendMessageResult> => {
+      const { command, runId } = raw as UiRunCommandParams;
+      const task = COMMAND_TASKS[command];
+      if (!task) throw new Error(`Unknown command: ${command}`);
+      return this.run(task, runId ?? randomUUID());
+    });
+  }
+
+  /** Tears down and re-opens the daemon session — used when the profile changes. */
+  private async reconnect(): Promise<void> {
+    this.connection?.close();
+    this.connection = undefined;
+    const profile = this.profile!;
+    const apiKey = await this.deps.secrets.getApiKey(profile.name);
+    this.connection = await this.deps.connect({
+      root: this.deps.root,
+      profiles: [profile],
+      activeProfile: profile.name,
+      keys: apiKey ? { [profile.name]: apiKey } : {},
+    });
+    this.registerDaemonHandlers(this.connection.peer);
+  }
+
+  /** Fire-and-forget state push, so switchers update every attached tab. */
+  private async pushState(): Promise<void> {
+    if (!this.ui) return;
+    this.ui.notify(UI_METHODS.stateChanged, await this.state());
+  }
+
+  /** Called when a browser disconnects. The run deliberately keeps going. */
+  detach(ui: RpcPeer): void {
+    if (this.ui === ui) this.ui = undefined;
+  }
+
+  async state(): Promise<UiState> {
+    const cfg = await this.deps.config.load();
+    const profiles = await Promise.all(
+      (cfg.profiles ?? []).map(async (p) => ({
+        name: p.name,
+        model: p.model,
+        // Never the key itself (§6.1) — only whether one exists.
+        hasKey: Boolean(await this.deps.secrets.getApiKey(p.name)),
+      })),
+    );
+    return {
+      root: this.deps.root,
+      workspaceName: basename(this.deps.root),
+      profile: this.profile?.name ?? '',
+      // `this.model`, not the profile's — otherwise `ui/setModel` changed which
+      // model actually ran while every picker and header in the UI went on
+      // naming the profile's, so switching models looked like it had failed.
+      model: this.model,
+      persona: this.personaId ?? 'agent',
+      permissionMode: this.mode,
+      // The meter's denominator before any run has reported usage — otherwise
+      // the window is invisible until the first turn, which is exactly when
+      // someone wants to check it.
+      contextWindow: this.profile ? profileContextWindow(this.profile) : undefined,
+      profiles,
+      daemon: this.connection ? 'up' : 'down',
+      runId: this.activeRunId,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // running
+  // -------------------------------------------------------------------------
+
+  async run(task: string, runId: string): Promise<UiSendMessageResult> {
+    await this.start();
+    const { peer } = this.connection!;
+    const session = this.session!;
+    const profile = this.profile!;
+
+    if (this.activeRunId) throw new Error('A run is already in progress; cancel it first.');
+    this.activeRunId = runId;
+    this.abort = new AbortController();
+    this.buffers.set(runId, []);
+
+    const persona = applyModeToPersona(getPersona(this.personaId), this.mode);
+    // CREATE_ARTIFACT_TOOL is added HERE, by this host only — the CLI and the
+    // extension never see it, because neither can render one (artifacts.ts).
+    const offeredTools = filterToolsForPersona(
+      [...session.tools, DELEGATE_TASK_TOOL, CREATE_ARTIFACT_TOOL, ...session.mcpManager.getToolDefinitions()],
+      persona,
+    );
+
+    // The conversation as it stood BEFORE this turn — the agent gets prior
+    // context, not the message it is currently answering.
+    const history = trimHistoryForAgent(this.conversation!.messages);
+
+    // Same preamble shape as headless and the Ink UI: persona constraints and
+    // project instructions, then the task.
+    const instructions = await this.deps.loadInstructions?.(this.deps.root).catch(() => '') ?? '';
+    const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
+    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+
+    // Multiple assistant messages can occur in one run (narration, then a
+    // summary). `lastText` tracks the most recently COMPLETED one, mirroring
+    // headless.ts:294-317, so a streamed turn isn't concatenated onto an
+    // earlier one; `turnEntries` keeps all of them, in order, with the tool
+    // chips and plans between them.
+    this.lastText = '';
+    this.deltaAcc = '';
+    this.reasoningAcc = '';
+    this.turnEntries = [];
+    this.pendingDisplay = task;
+    // Announce the run at its START, not only when it ends. `state.runId` is
+    // how a reattached tab knows a run is still going and — more importantly —
+    // how it learns the run finished: a browser that reloaded mid-run has no
+    // `agent/run` promise of its own to settle on, so without this push its
+    // composer stayed stuck on "Running — Esc to stop" forever.
+    void this.pushState();
+
+    try {
+      const { outcome } = await peer.request<AgentRunResult>(
+        METHODS.agentRun,
+        {
+          runId,
+          profileName: profile.name,
+          model: this.model,
+          task: fullTask,
+          history,
+          workspaceName: basename(this.deps.root),
+          tools: offeredTools,
+          // Resolved from the PROFILE, like the CLI (App.tsx:1659) and
+          // headless (headless.ts:335) — not hardcoded. Hardcoding `true` sent
+          // native tool definitions to endpoints that reject them, so the model
+          // narrated what it would do instead of calling anything: no tool
+          // chips, no edits. `deps` stays as an override for tests only.
+          nativeToolCalls: this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls,
+          contextWindow: profileContextWindow(profile),
+          // Was missing entirely, so a profile's maxTokens was honoured by the
+          // CLI (App.tsx) and ignored here — replies got truncated at the
+          // provider default with no way to raise it from the browser.
+          maxTokens: profile.maxTokens,
+          subAgents: this.subAgents,
+          persona,
+        } satisfies AgentRunParams,
+        this.abort.signal,
+      );
+      await this.persistTurn(task);
+      return { runId, outcome };
+    } finally {
+      this.activeRunId = undefined;
+      this.abort = undefined;
+      this.pendingDisplay = undefined;
+      void this.pushState();
+    }
+  }
+
+  /**
+   * The in-flight turn as UI messages: the prompt, then everything recorded so
+   * far, then whatever is still streaming.
+   *
+   * Built from `turnEntries` — the same list `persistTurn` writes — rather than
+   * from the event buffer, so what a mid-run reload draws is exactly what the
+   * finished conversation will contain, minus the part that hasn't happened.
+   */
+  private pendingTurn(): UiMessage[] {
+    const out: UiMessage[] = [];
+    if (this.pendingDisplay) out.push({ role: 'user', content: this.pendingDisplay });
+    out.push(...toUiMessages(this.turnEntries, { live: true }));
+    // The tail: text or reasoning mid-stream. Marked `streaming` so the
+    // browser's reducer appends the next delta to it instead of opening a
+    // second block beside it.
+    if (this.reasoningAcc.trim())
+      out.push({ role: 'assistant', content: this.reasoningAcc, ui: { reasoning: true, streaming: true } });
+    if (this.deltaAcc.trim()) out.push({ role: 'assistant', content: this.deltaAcc, ui: { streaming: true } });
+    return out;
+  }
+
+
+  /**
+   * Records the turn. `display` is what the user typed; `content` is what the
+   * model saw — the preamble-expanded task. Keeping both is why the sidebar
+   * can show a readable transcript while the agent still gets full context
+   * on the next turn (history/types.ts:7-10).
+   */
+  private async persistTurn(display: string): Promise<void> {
+    const convo = this.conversation!;
+    // A run that ends mid-thought (cancelled, or a provider that never sends
+    // `reasoning_end`) still has thinking worth keeping.
+    if (this.reasoningAcc.trim()) {
+      this.turnEntries.push({
+        role: 'assistant',
+        content: this.reasoningAcc,
+        ui: { reasoning: true },
+      } as StoredMessage);
+      this.reasoningAcc = '';
+    }
+    // An empty turn still gets an assistant message: a conversation whose last
+    // entry is a user message reads as unanswered when it is reloaded. A turn
+    // of nothing but thinking counts as empty here — reasoning never becomes
+    // context, so a reasoning-only turn would leave the model with a dangling
+    // question on the next one.
+    const answered = this.turnEntries.some((m) => !m.ui?.reasoning);
+    const entries = answered
+      ? this.turnEntries
+      : [...this.turnEntries, { role: 'assistant', content: this.lastText } as StoredMessage];
+    convo.messages.push({ role: 'user', content: display, display } as StoredMessage, ...entries);
+    if (convo.title === 'New chat') convo.title = display.slice(0, 60);
+    convo.updatedAt = Date.now();
+    await this.history!.save(convo);
+  }
+
+  async cancel(_runId?: string): Promise<void> {
+    // Cancels whatever is actually running, ignoring the id the caller named.
+    // Matching on it was wrong: a browser that reconnected mid-run, or a
+    // command whose id was assigned host-side, would send an id that never
+    // matched and the click would silently do nothing. There is only ever one
+    // run per session, so "the active one" is unambiguous.
+    const target = this.activeRunId;
+    if (!target) return;
+
+    // A NOTIFICATION, not a request — the daemon registers `agent/cancel` on
+    // its notification channel (server.ts:361). Sending it as a request got
+    // `methodNotFound` back, which a `.catch()` then swallowed, so Stop looked
+    // wired up and did nothing. Every other host uses notify here
+    // (App.tsx:1309, serverLink.ts:265).
+    this.connection?.peer.notify(METHODS.agentCancel, { runId: target });
+
+    // Also abort locally, so `agent/run` settles even if the daemon is wedged.
+    this.abort?.abort();
+  }
+
+  // -------------------------------------------------------------------------
+  // daemon side — the four server→host requests, plus events
+  // -------------------------------------------------------------------------
+
+  private registerDaemonHandlers(peer: RpcPeer): void {
+    const session = this.session!;
+
+    peer.onRequest(METHODS.toolExecute, async (raw, signal): Promise<ToolResult> => {
+      const { call } = raw as ToolExecuteParams;
+      // The signal MUST be threaded through. Cancelling a run fires
+      // `$/cancelRequest` for the outstanding tool/execute, and that is what
+      // `runCommand` listens to in order to kill the child process group
+      // (workspaceTools.ts:566). Dropping it — as this did — meant Stop ended
+      // the loop but left `npm test` running to completion, so the request
+      // never settled and the agent looked like it had ignored the click.
+      // The CLI threads it the same way (App.tsx:609-612).
+      return this.executeTool(call, signal);
+    });
+
+    peer.onRequest(METHODS.permissionRequest, async (raw): Promise<PermissionRequestResult> => {
+      const { call, permission } = raw as PermissionRequestParams;
+      // Sub-agent delegation resolves to an informative error server-side; a
+      // generic denial here would hide from the model WHY it can't delegate.
+      if (call.name === 'delegate_task' && !this.subAgents) return { granted: true };
+      const tool = { name: call.name, description: '', parameters: {}, permission };
+      const description = session.executor.describe(call);
+      const granted = await this.permissions!.request(call, tool, description);
+      return { granted };
+    });
+
+    peer.onRequest(METHODS.snapshotBefore, async (raw) => {
+      const { call } = raw as SnapshotBeforeParams;
+      await session.shadowGit.snapshot(`${call.name}: ${session.executor.describe(call).slice(0, 80)}`);
+      return null;
+    });
+
+    peer.onRequest(METHODS.keyRequest, async (raw): Promise<KeyRequestResult> => {
+      const { profileName } = raw as KeyRequestParams;
+      const target = await this.deps.config.getProfile(profileName);
+      if (!target) return {};
+      return { profile: target, apiKey: await this.deps.secrets.getApiKey(profileName) };
+    });
+
+    peer.onNotification(METHODS.agentEvent, (raw) => {
+      const params = raw as AgentEventParams;
+      this.recordForHistory(params.event);
+      const buffer = this.buffers.get(params.runId);
+      if (buffer) {
+        buffer.push(params);
+        // Bounded: a long run must not grow the host's memory without limit.
+        if (buffer.length > REPLAY_BUFFER) buffer.splice(0, buffer.length - REPLAY_BUFFER);
+      }
+      // A detached browser is not an error — the run continues and the buffer
+      // is what the next tab replays.
+      this.ui?.notify(UI_METHODS.event, params satisfies UiEventParams);
+    });
+  }
+
+  /**
+   * Folds one live event into the turn that will be written to history.
+   *
+   * The browser rebuilds its view from `transcript.ts`'s reducer while a run is
+   * streaming; this is the durable half of the same story, so a reload lands on
+   * the same transcript rather than on prose with the tool calls cut out.
+   *
+   * Reasoning is recorded too, as a `ui.reasoning` entry. It used to be dropped
+   * on the grounds that the UI collapses it anyway — but collapsed is not gone,
+   * and a reloaded conversation lost every thinking block it had shown. It is
+   * transcript furniture like a tool chip: drawn, never fed back as context
+   * (`trimHistoryForAgent` filters it out on the way to the model).
+   */
+  private recordForHistory(event: AgentEvent): void {
+    switch (event.type) {
+      case 'text':
+        this.lastText = event.text;
+        this.turnEntries.push({ role: 'assistant', content: event.text } as StoredMessage);
+        return;
+      case 'text_delta':
+        this.deltaAcc += event.text;
+        return;
+      case 'text_end':
+        if (this.deltaAcc.trim()) {
+          this.lastText = this.deltaAcc;
+          this.turnEntries.push({ role: 'assistant', content: this.deltaAcc } as StoredMessage);
+        }
+        this.deltaAcc = '';
+        return;
+      case 'reasoning_delta':
+        this.reasoningAcc += event.text;
+        return;
+      case 'reasoning_end':
+        if (this.reasoningAcc.trim())
+          this.turnEntries.push({
+            role: 'assistant',
+            content: this.reasoningAcc,
+            ui: { reasoning: true },
+          } as StoredMessage);
+        this.reasoningAcc = '';
+        return;
+      case 'plan':
+        this.turnEntries.push({ role: 'assistant', content: event.text, ui: { plan: true } } as StoredMessage);
+        return;
+      case 'tool_call':
+        this.turnEntries.push({
+          role: 'assistant',
+          content: '',
+          ui: {
+            tool: {
+              id: event.id,
+              name: event.name,
+              // `description` is what the CLI and the extension render; the web
+              // UI renders from `args`. Both are stored so neither host has to
+              // reconstruct the other's.
+              description: describeCall(event.name, event.args),
+              args: clipArgs(event.args),
+              ok: true,
+            },
+          },
+        } as StoredMessage);
+        return;
+      case 'tool_result': {
+        // Search backwards: the matching call is almost always the last one.
+        for (let i = this.turnEntries.length - 1; i >= 0; i--) {
+          const tool = this.turnEntries[i]!.ui?.tool;
+          if (tool && tool.id === event.id) {
+            tool.ok = !event.isError;
+            tool.summary = event.content.slice(0, TOOL_SUMMARY_CHARS);
+            return;
+          }
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  private async executeTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
+    const session = this.session!;
+
+    if (call.name === 'ask_user') {
+      const answer = await this.askUser(call, signal);
+      return { id: call.id, name: call.name, content: answer };
+    }
+
+    if (call.name === CREATE_ARTIFACT_TOOL.name) return this.createArtifact(call);
+
+    if (session.mcpManager.isMcpTool(call.name)) {
+      // MCP stays host-side, as in the other hosts.
+      try {
+        return { id: call.id, name: call.name, content: await session.mcpManager.call(call.name, call.args) };
+      } catch (err) {
+        return {
+          id: call.id,
+          name: call.name,
+          content: err instanceof Error ? err.message : String(err),
+          isError: true,
+        };
+      }
+    }
+
+    return session.executor.execute(call, signal);
+  }
+
+  /**
+   * `create_artifact`. Validation is strict and errors are returned to the
+   * model rather than thrown: a bad `kind` is something it can correct on the
+   * next turn, whereas an exception would surface as a tool failure with no
+   * hint about what to fix.
+   */
+  private async createArtifact(call: ToolCall): Promise<ToolResult> {
+    const args = call.args as { id?: string; title?: string; kind?: string; content?: string; language?: string };
+    const fail = (message: string): ToolResult => ({ id: call.id, name: call.name, content: message, isError: true });
+
+    if (!isArtifactKind(args.kind)) {
+      return fail(`Unknown artifact kind "${String(args.kind)}". Use one of: ${ARTIFACT_KINDS.join(', ')}.`);
+    }
+    if (typeof args.content !== 'string' || !args.content.trim()) return fail('An artifact needs content.');
+    if (typeof args.title !== 'string' || !args.title.trim()) return fail('An artifact needs a title.');
+
+    try {
+      const artifact = await this.artifacts.put({
+        id: args.id,
+        title: args.title,
+        kind: args.kind,
+        content: args.content,
+        language: args.language,
+      });
+      this.ui?.notify(UI_METHODS.artifactChanged, toArtifactMeta(artifact));
+      return {
+        id: call.id,
+        name: call.name,
+        content:
+          `Artifact "${artifact.title}" (id: ${artifact.id}, v${artifact.versions.length}) is now showing in the ` +
+          `user's Preview panel. Do not repeat its content in your reply — they can see it.`,
+      };
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async askUser(call: ToolCall, signal?: AbortSignal): Promise<string> {
+    // No browser attached → the same "proceed with best judgment" fallback
+    // headless uses. Blocking forever on a closed tab would wedge the run.
+    if (!this.ui) return ASK_USER_NO_ANSWER;
+    const args = call.args as { question?: string; options?: string[] };
+    try {
+      // Signal passed on: Stop must also abandon a question the user never
+      // answered, or the run hangs on a card nobody is looking at.
+      const { answer } = await this.ui.request<UiAskUserResult>(
+        UI_METHODS.askUser,
+        {
+          runId: this.activeRunId ?? '',
+          callId: call.id,
+          question: String(args.question ?? ''),
+          options: args.options,
+          blocksAction: askUserBlocksAction(call.args),
+        } satisfies UiAskUserParams,
+        signal,
+      );
+      return answer.trim() ? askUserAnswerMessage(answer) : ASK_USER_NO_ANSWER;
+    } catch {
+      // The tab went away mid-question.
+      return ASK_USER_NO_ANSWER;
+    }
+  }
+}
+
+/** Same cap the extension uses for a persisted chip body (controller.ts:829). */
+const TOOL_SUMMARY_CHARS = 5_000;
+
+/** Long enough to identify a call, short enough that a written file's contents
+ *  never land in conversations.json — the chip shows ~80 characters. */
+const ARG_CHARS = 200;
+
+/**
+ * The stored arguments for a tool chip, with every long string clipped.
+ *
+ * Without this a single `write_file` would persist the entire file body into
+ * the conversation, once per call, forever.
+ */
+export function clipArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string') out[key] = value.length > ARG_CHARS ? `${value.slice(0, ARG_CHARS)}…` : value;
+    else if (value === null || ['number', 'boolean'].includes(typeof value)) out[key] = value;
+    // Objects and arrays (multi_edit's edit list, for one) are dropped rather
+    // than walked: nothing renders them, and their size is unbounded.
+  }
+  return out;
+}
+
+/**
+ * A one-line rendering of a call for hosts that display `description`.
+ *
+ * Deliberately dumb — the real `executor.describe` is per-executor and this
+ * runs for MCP and artifact tools too, where there is no executor to ask.
+ */
+export function describeCall(name: string, args: Record<string, unknown>): string {
+  const first = Object.values(clipArgs(args)).find((v) => typeof v === 'string' && v.trim()) as string | undefined;
+  return first ? `${name}: ${first.slice(0, 80)}` : name;
+}
+
+/**
+ * A token budget from the browser: a positive integer, `null` to clear, or
+ * `undefined` to leave alone. Rejecting rather than coercing, because a
+ * silently-clamped context window would misreport the meter and compact at a
+ * size the user never chose.
+ */
+function tokenCount(value: number | null | undefined, label: string): number | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`${label} must be a positive whole number of tokens.`);
+  return value;
+}
+
+/**
+ * Applies the browser's patch to a stored profile.
+ *
+ * The browser edits four or five fields; a profile has twenty. Replacing the
+ * whole object with what came over the wire is how `temperature`, `headers`,
+ * `timeoutMs` and the per-role model overrides used to disappear the first
+ * time someone pressed "Save changes" in the web settings.
+ *
+ * `null` is the explicit "clear it" signal — distinct from `undefined`, which
+ * means the browser had nothing to say about that field. That distinction is
+ * what lets a numeric box be emptied back to the inherited default.
+ */
+export function mergeProfile(
+  existing: ProviderProfileConfig | undefined,
+  patch: UiSaveProfileParams['profile'],
+): ProviderProfileConfig {
+  const next: ProviderProfileConfig = {
+    ...(existing ?? { name: patch.name, preset: 'custom', baseUrl: '', model: '' }),
+    name: patch.name,
+  };
+  if (patch.preset !== undefined) {
+    // Validated rather than cast: `getPreset` silently falls back to "custom"
+    // for an unknown id, so a typo would quietly change the endpoint's
+    // capabilities instead of failing the save.
+    const preset = providerPresets.find((p) => p.id === patch.preset);
+    if (!preset) throw new Error(`Unknown provider preset "${patch.preset}".`);
+    next.preset = preset.id;
+  }
+  if (patch.baseUrl !== undefined) next.baseUrl = patch.baseUrl;
+  if (patch.model !== undefined) next.model = patch.model;
+  if (patch.agentModel !== undefined) next.agentModel = patch.agentModel || undefined;
+  // `?? undefined` is the clear: JSON.stringify drops the key on persist, so
+  // the profile goes back to inheriting the preset's value.
+  if (patch.contextWindow !== undefined) next.contextWindow = patch.contextWindow ?? undefined;
+  if (patch.maxTokens !== undefined) next.maxTokens = patch.maxTokens ?? undefined;
+  return next;
+}
+
+/**
+ * Stored transcript → what the browser renders.
+ *
+ * Prefers `display` over `content`: the stored `content` is the
+ * preamble-expanded task the model saw, and showing a user their own three-word
+ * prompt wrapped in project instructions is not what they asked to see
+ * (history/types.ts:7-10).
+ *
+ * Tool chips, plans and reasoning blocks come back too. They used to be
+ * filtered out here on the grounds that the live event stream would supply them
+ * — true only for the tab that watched the run happen. Reload it, or open the
+ * conversation tomorrow, and the events are long gone: the transcript came back
+ * as bare prose with every command, edit, plan and thought missing from the
+ * middle of it.
+ *
+ * Status markers stay dropped: they are a CLI spinner's state, with nothing to
+ * draw here.
+ *
+ * `live` marks a turn still in flight (`pendingTurn`), where a tool chip with
+ * no result yet is a call still running rather than one that returned nothing.
+ */
+export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean }): UiMessage[] {
+  const out: UiMessage[] = [];
+  for (const m of messages) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue;
+    if (m.ui?.status) continue;
+
+    const tool = m.ui?.tool;
+    if (tool) {
+      out.push({
+        role: 'assistant',
+        content: '',
+        ui: {
+          tool: {
+            id: tool.id,
+            name: tool.name,
+            description: tool.description,
+            args: tool.args,
+            result: tool.summary,
+            isError: tool.ok === false,
+            // `summary` is written by `tool_result` and only by it, so its
+            // absence mid-run is exactly "hasn't come back yet".
+            done: opts?.live ? tool.summary !== undefined : true,
+          },
+        },
+      });
+      continue;
+    }
+
+    const content = m.display ?? m.content ?? '';
+    if (!content.trim()) continue;
+    if (m.ui?.reasoning) {
+      out.push({ role: 'assistant', content, ui: { reasoning: true } });
+      continue;
+    }
+    out.push({ role: m.role, content, ...(m.ui?.plan ? { ui: { plan: true } } : {}) });
+  }
+  return out;
+}

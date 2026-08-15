@@ -45,15 +45,28 @@ describe('the working indicator', () => {
     expect(screen.getByRole('status').textContent).toContain('Working…');
   });
 
-  it('names what is happening while it happens', () => {
+  it('covers the other invisible stretch: a call being written', () => {
+    // Arguments stream before the tool_call event exists, so there is no chip
+    // yet — a large edit is a long silence with nothing on screen.
     const writing = fold([{ type: 'tool_stream', chars: 4_200 }]);
     render(<MessageList transcript={writing} busy runStartedAt={Date.now()} />);
     expect(screen.getByRole('status').textContent).toContain('Writing a tool call… 4k');
-    cleanup();
+  });
 
-    const running = fold([{ type: 'tool_call', id: 'c', name: 'run_command', args: { command: 'npm test' } }]);
-    render(<MessageList transcript={running} busy runStartedAt={Date.now()} />);
-    expect(screen.getByRole('status').textContent).toContain('Running run_command…');
+  it('stays out of the way when the transcript is already showing the answer', () => {
+    // Narrating "Running run_command…" beside a chip that says so, or
+    // "Thinking…" above an open reasoning block, is telling the user what they
+    // are looking at. The CLI makes the same call (ink/App.tsx:1787-1796).
+    const cases: AgentEvent[][] = [
+      [{ type: 'tool_call', id: 'c', name: 'run_command', args: { command: 'npm test' } }],
+      [{ type: 'reasoning_delta', text: 'hmm' }],
+      [{ type: 'text_delta', text: 'Here is' }],
+    ];
+    for (const events of cases) {
+      render(<MessageList transcript={fold(events)} busy runStartedAt={Date.now()} />);
+      expect(screen.queryByRole('status')).toBeNull();
+      cleanup();
+    }
   });
 
   it('is gone the moment the run is not', () => {

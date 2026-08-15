@@ -8,52 +8,54 @@ export interface WorkingIndicatorProps {
 }
 
 /**
- * The "it is still working" line, shown for the whole duration of a run.
+ * The "it is still working" line — shown only when nothing else is.
  *
  * The gap this fills is the one between visible steps: after a tool returns and
  * before the next token arrives, nothing was on screen at all — no spinner, no
  * text, no chip — and a model taking twenty seconds to decide its next move was
- * indistinguishable from a hung page. The CLI never had that problem because
- * its status line is always up (Ink's `Spinner`); this is the browser's version
- * of the same guarantee: while `busy`, something is always moving.
+ * indistinguishable from a hung page.
  *
- * Elapsed time is the other half of it. "Working…" alone still leaves you
- * guessing whether it has been five seconds or five minutes, which is the
- * actual question behind "is this stuck".
+ * That is the *whole* job, so it renders for exactly the two phases that have
+ * no representation of their own and nothing otherwise. Thinking already shows
+ * an open reasoning block, a reply already shows streaming text and a caret,
+ * and a running tool already shows its chip on `◌` — announcing those a second
+ * time in a status line is narration of something the user is looking at. The
+ * CLI draws the same distinction (ink/App.tsx:1787-1796): its spinner appears
+ * only when there is no live text and no live tool.
  *
- * Informational only — no Stop button. The composer sits directly below this
- * with one already, and Escape does the same thing; a third control an inch
- * from the other two would be clutter, not reassurance.
+ * Rendered as a plain dim line rather than a card, matching the extension's
+ * `.working-row`. A bordered full-width box gave a transient one-line status
+ * the visual weight of a message, so the quietest thing in the transcript was
+ * drawn as one of the loudest.
  */
-export function WorkingIndicator({ activity, startedAt }: WorkingIndicatorProps): JSX.Element {
+export function WorkingIndicator({ activity, startedAt }: WorkingIndicatorProps): JSX.Element | null {
   const elapsed = useElapsed(startedAt);
+  const text = label(activity);
+  if (!text) return null;
 
   return (
     <div className="working" role="status" aria-live="polite">
       <span className="working-spinner" aria-hidden="true" />
-      <span className="working-label">{label(activity)}</span>
+      <span>{text}</span>
       {elapsed !== undefined && <span className="working-elapsed">{formatElapsed(elapsed)}</span>}
     </div>
   );
 }
 
-function label(activity: Activity): string {
+/** The label, or null for the phases that already show themselves. */
+function label(activity: Activity): string | null {
   switch (activity.phase) {
-    case 'thinking':
-      return 'Thinking…';
-    case 'responding':
-      return 'Responding…';
     case 'writing-call':
       // Arguments streaming out of the model — a large edit is written as one
-      // long JSON string, so this is the phase where a long silence otherwise
-      // looks like a stall. The extension says "Generating changes…" for the
-      // same event; this names what it actually is, since the call may equally
-      // be a command or a search.
+      // long JSON string, and nothing is on screen until the call is complete,
+      // so this is the phase where silence most looks like a stall.
       return `Writing a tool call… ${activity.writingCallK}k`;
-    case 'tool':
-      return `Running ${activity.tool}…`;
-    default:
+    case 'working':
       return 'Working…';
+    // thinking → the reasoning block is open; responding → text is streaming;
+    // tool → the chip is spinning. All three speak for themselves.
+    default:
+      return null;
   }
 }
 

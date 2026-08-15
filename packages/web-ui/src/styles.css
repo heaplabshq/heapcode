@@ -315,22 +315,21 @@ body {
 }
 
 /* ---------- working indicator ----------
-   Shown for the whole of a run, including the stretches between visible steps
-   where nothing else is on screen. See components/WorkingIndicator.tsx. */
+   Only for the stretches where nothing else is on screen; see
+   components/WorkingIndicator.tsx. A plain dim line, not a card — this is the
+   quietest thing in the transcript and a bordered full-width box gave it the
+   weight of a message. Inline-flex so it is as wide as its text. */
 .working {
-  display: flex; align-items: center; gap: 8px;
-  margin: 2px 0 14px; padding: 6px 10px;
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--bg-raised);
+  display: inline-flex; align-items: center; gap: 7px;
+  margin: 2px 0 14px;
   color: var(--text-dim); font-size: 12.5px;
 }
 .working-spinner {
-  flex: 0 0 auto; width: 11px; height: 11px; border-radius: 50%;
-  border: 2px solid var(--border); border-top-color: var(--accent);
+  flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--text-dim);
   animation: spin 0.8s linear infinite;
 }
-.working-label { color: var(--text); }
-.working-elapsed { margin-left: auto; font-variant-numeric: tabular-nums; }
+.working-elapsed { font-variant-numeric: tabular-nums; opacity: 0.75; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 

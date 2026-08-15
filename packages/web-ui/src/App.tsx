@@ -25,6 +25,9 @@ import {
   type UiSendMessageResult,
   type UiSettings,
   type UiState,
+  type UiBrowseFoldersResult,
+  type UiSetWorkspaceResult,
+  type UiWorkspacesResult,
 } from '@heapcode/web-host/protocol';
 import { Panel, type PanelTab } from './components/Panel.js';
 import { terminalEntries } from './terminal.js';
@@ -34,10 +37,10 @@ import { Settings, type UiProfileDraft } from './components/Settings.js';
 import { RpcClient } from './rpc.js';
 import { AskUserCard, PermissionCard, type PendingAsk, type PendingPermission } from './components/Cards.js';
 import { Composer } from './components/Composer.js';
-import { Header } from './components/Header.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { MessageList } from './components/MessageList.js';
 import { Sidebar } from './components/Sidebar.js';
+import { WorkspacePicker } from './components/WorkspacePicker.js';
 import {
   concat,
   emptyTranscript,
@@ -68,7 +71,12 @@ export function App(): JSX.Element {
   const [state, setState] = useState<UiState>();
   const [transcript, setTranscript] = useState<Transcript>(emptyTranscript);
   const [conversations, setConversations] = useState<UiConversationMeta[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // The rail is always present now; this is only whether it shows labels.
+  // Remembered, because it is a preference about screen width, and re-making
+  // that choice on every reload is the kind of small friction that adds up.
+  const [railCollapsed, setRailCollapsed] = useState(
+    () => localStorage.getItem('heapcode.rail') === 'collapsed',
+  );
   const [permission, setPermission] = useState<PendingPermission>();
   const [ask, setAsk] = useState<PendingAsk>();
   const [runId, setRunId] = useState<string>();
@@ -343,7 +351,9 @@ export function App(): JSX.Element {
           newConversationRef.current?.();
           return;
         case '/resume':
-          setSidebarOpen(true);
+          // The list is always in the rail now; all this can do is make sure
+          // the rail is not collapsed to icons.
+          setRailCollapsed(false);
           return;
 
         // ---- workspace panel (W6) ----
@@ -471,7 +481,6 @@ export function App(): JSX.Element {
         .request<UiOpenConversationResult>(UI_METHODS.openConversation, { id })
         .then((res) => {
           setTranscript(fromMessages(res.messages));
-          setSidebarOpen(false);
           refreshConversations();
         })
         .catch((err: Error) => setError(err.message));
@@ -479,12 +488,42 @@ export function App(): JSX.Element {
     [rpc, refreshConversations],
   );
 
+  /**
+   * Point the session at another folder.
+   *
+   * Everything on screen belongs to the old workspace, so this resets the view
+   * wholesale rather than letting the panel, the artifacts and the transcript
+   * refresh at their own pace — a half-swapped UI showing this repo's diff
+   * beside that repo's conversation is worse than a blank one.
+   *
+   * The promise is returned, not swallowed: the picker keeps its popup open
+   * and shows the reason when a folder cannot be opened.
+   */
+  const switchWorkspace = useCallback(
+    (path: string) =>
+      rpc.request<UiSetWorkspaceResult>(UI_METHODS.setWorkspace, { path }).then((res) => {
+        setState(res.state);
+        setHostRunId(res.state.runId);
+        setTranscript(fromMessages(res.messages));
+        setError(undefined);
+        setChanges([]);
+        setCheckpoints([]);
+        setArtifacts([]);
+        setSelectedArtifact(undefined);
+        setOpenPath(undefined);
+        setNotice(`Now working in ${res.state.workspaceName}.`);
+        refreshConversations();
+        refreshWorkspace();
+        refreshArtifacts();
+      }),
+    [rpc, refreshConversations, refreshWorkspace, refreshArtifacts],
+  );
+
   const newConversation = useCallback(() => {
     void rpc
       .request<UiOpenConversationResult>(UI_METHODS.newConversation)
       .then(() => {
         setTranscript(emptyTranscript);
-        setSidebarOpen(false);
         refreshConversations();
       })
       .catch((err: Error) => setError(err.message));
@@ -506,32 +545,48 @@ export function App(): JSX.Element {
 
   return (
     <div className="app">
-      <Header
-        state={state}
-        status={status}
-        usedTokens={transcript.usedTokens}
-        windowTokens={transcript.windowTokens}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
-        onNewChat={newConversation}
-        onOpenSettings={openSettings}
-        onOpenPalette={() => setPaletteOpen(true)}
-        onTogglePanel={() => setPanelOpen((v) => !v)}
-        onOpenArtifacts={() => {
-          setPanelOpen(true);
-          setPanelTab('preview');
-          refreshArtifacts();
-        }}
-        panelOpen={panelOpen}
-        changeCount={changes.length}
-      />
-
       <div className="body">
         <Sidebar
-          open={sidebarOpen}
+          collapsed={railCollapsed}
+          onToggleCollapsed={() =>
+            setRailCollapsed((v) => {
+              localStorage.setItem('heapcode.rail', v ? 'expanded' : 'collapsed');
+              return !v;
+            })
+          }
           conversations={conversations}
           onOpen={openConversation}
           onNew={newConversation}
           busy={busy}
+          state={state}
+          status={status}
+          changeCount={changes.length}
+          panelOpen={panelOpen}
+          usedTokens={transcript.usedTokens}
+          windowTokens={transcript.windowTokens}
+          onOpenArtifacts={() => {
+            setPanelOpen(true);
+            setPanelTab('preview');
+            refreshArtifacts();
+          }}
+          onOpenChanges={() => {
+            // Second click on an already-open Changes tab closes the panel —
+            // the same toggle the header button used to be.
+            if (panelOpen && panelTab === 'changes') return setPanelOpen(false);
+            setPanelOpen(true);
+            setPanelTab('changes');
+            refreshWorkspace();
+          }}
+          onOpenFiles={() => {
+            setPanelOpen(true);
+            setPanelTab('files');
+          }}
+          onOpenTerminal={() => {
+            setPanelOpen(true);
+            setPanelTab('terminal');
+          }}
+          onOpenSettings={openSettings}
+          onOpenPalette={() => setPaletteOpen(true)}
         />
 
         <main className="chat">
@@ -560,6 +615,18 @@ export function App(): JSX.Element {
             disabled={status !== 'open'}
             footer={
               <>
+                {/* Which folder, then how much freedom, then which model —
+                    left to right, widest scope first. All three describe the
+                    message you are about to send, which is why they live on
+                    the composer rather than in the rail. */}
+                <WorkspacePicker
+                  current={state?.root ?? ''}
+                  busy={busy}
+                  loadWorkspaces={() => rpc.request<UiWorkspacesResult>(UI_METHODS.workspaces)}
+                  browse={(path) => rpc.request<UiBrowseFoldersResult>(UI_METHODS.browseFolders, { path })}
+                  onPick={switchWorkspace}
+                />
+
                 <select
                   className="bar-select"
                   value={state?.permissionMode ?? 'default'}
@@ -575,11 +642,6 @@ export function App(): JSX.Element {
                 </select>
 
                 <div className="composer-bar-right">
-                  {state?.profile && (
-                    <span className="profile-chip" title="Active profile — change it in Settings">
-                      {state.profile}
-                    </span>
-                  )}
                   <ModelPicker
                     current={state?.model ?? ''}
                     placement="up"

@@ -18,4 +18,5 @@ export * from './session.js';
 export * from './static.js';
 export * from './artifacts.js';
 export * from './workspace.js';
+export * from './workspaces.js';
 export * from './wsDuplex.js';

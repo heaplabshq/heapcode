@@ -15,6 +15,7 @@ import {
 import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { startWebHost, type RunningWebHost } from '../src/server.js';
 import { clipArgs } from '../src/session.js';
+import { WorkspaceStore } from '../src/workspaces.js';
 import {
   UI_METHODS,
   UI_PROTOCOL_VERSION,
@@ -32,8 +33,10 @@ import {
   type UiPermissionRequestParams,
   type UiPermissionRequestResult,
   type UiSendMessageResult,
+  type UiSetWorkspaceResult,
   type UiSettings,
   type UiState,
+  type UiWorkspacesResult,
 } from '../src/protocol.js';
 import { webSocketDuplex } from '../src/wsDuplex.js';
 
@@ -101,6 +104,8 @@ async function boot(
     root,
     config: new ConfigStore(configPath),
     secrets: new SecretsStore(join(home, 'secrets.json')),
+    // Under the test's HEAPCODE_HOME, so the recent list stays hermetic.
+    workspaces: new WorkspaceStore(join(home, 'workspaces.json')),
     nativeToolCalls: false, // the mock speaks the text protocol
     port: 0, // ephemeral, so parallel test files never collide
     token: 'test-token',
@@ -1149,6 +1154,108 @@ describe('web host — reasoning survives a reload', () => {
     const sent = JSON.stringify(mock!.requests.at(-1)?.body);
     expect(sent).not.toContain('weighing the options');
     browser.close();
+  });
+});
+
+describe('web host — switching workspace', () => {
+  it('repoints the session, and the agent then edits the NEW folder', async () => {
+    // The whole risk of switching roots is a half-moved session: an executor
+    // still jailed to the old workspace while the UI says it moved. The only
+    // test that settles it is making the agent write a file afterwards and
+    // checking which folder it landed in.
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    const other = realpathSync(await mkdtemp(join(tmpdir(), 'hcw2-')));
+    await writeFile(join(root, 'greeting.txt'), 'first workspace\n', 'utf8');
+    await writeFile(join(other, 'greeting.txt'), 'second workspace\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const res = await browser.peer.request<UiSetWorkspaceResult>(UI_METHODS.setWorkspace, { path: other });
+    expect(res.state.root).toBe(other);
+    expect(res.state.workspaceName).toBe(basenameOf(other));
+    // A conversation belongs to the folder it happened in.
+    expect(res.messages).toEqual([]);
+
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'rewrite it' });
+    expect(await readFile(join(other, 'greeting.txt'), 'utf8')).toBe('goodbye world\n');
+    expect(await readFile(join(root, 'greeting.txt'), 'utf8')).toBe('first workspace\n');
+
+    browser.close();
+    await rm(other, { recursive: true, force: true });
+  });
+
+  it('has the recent list up to date the moment the switch resolves', async () => {
+    // The picker refetches immediately after switching, so a fire-and-forget
+    // write lost the race and the list came back ordered by the previous one.
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    const other = realpathSync(await mkdtemp(join(tmpdir(), 'hcw4-')));
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.setWorkspace, { path: other });
+    await browser.peer.request(UI_METHODS.setWorkspace, { path: root });
+
+    const list = await browser.peer.request<UiWorkspacesResult>(UI_METHODS.workspaces);
+    expect(list.recent.map((w) => w.path)).toEqual([root, other]);
+    browser.close();
+    await rm(other, { recursive: true, force: true });
+  });
+
+  it('lists the current folder as recent even before anything was recorded', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const list = await browser.peer.request<UiWorkspacesResult>(UI_METHODS.workspaces);
+    expect(list.current).toBe(root);
+    expect(list.recent.map((w) => w.path)).toContain(root);
+    browser.close();
+  });
+
+  it('refuses a path that is not a folder rather than half-switching', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'a-file.txt'), 'x', 'utf8');
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await expect(
+      browser.peer.request(UI_METHODS.setWorkspace, { path: join(root, 'a-file.txt') }),
+    ).rejects.toThrow(/Not a folder/);
+    await expect(
+      browser.peer.request(UI_METHODS.setWorkspace, { path: join(root, 'nope') }),
+    ).rejects.toThrow(/Not a folder/);
+
+    // Still where it started.
+    const state = await browser.peer.request<UiState>(UI_METHODS.state);
+    expect(state.root).toBe(root);
+    browser.close();
+  });
+
+  it('refuses to move the ground under a run in flight', async () => {
+    const gate = deferred();
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    const other = realpathSync(await mkdtemp(join(tmpdir(), 'hcw3-')));
+    await writeFile(join(root, 'greeting.txt'), 'hello\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    browser.peer.onRequest(UI_METHODS.permissionRequest, async () => {
+      gate.resolve();
+      await never();
+      return { choice: 'allow' };
+    });
+    const running = browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'rewrite it' });
+    void running.catch(() => {});
+    await gate.promise;
+
+    await expect(browser.peer.request(UI_METHODS.setWorkspace, { path: other })).rejects.toThrow(
+      /run is in progress/i,
+    );
+
+    await browser.peer.request(UI_METHODS.cancel, { runId: 'whatever' });
+    browser.close();
+    await rm(other, { recursive: true, force: true });
   });
 });
 

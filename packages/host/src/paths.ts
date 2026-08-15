@@ -80,6 +80,17 @@ export function auditFile(): string {
   return join(globalDir(), 'audit.json');
 }
 
+/**
+ * Folders opened recently, for the web UI's workspace picker.
+ *
+ * Cross-project, so it belongs beside config.json rather than under any one
+ * project's state dir — the whole point of the list is to get you from one
+ * project to another.
+ */
+export function workspacesFile(): string {
+  return join(globalDir(), 'workspaces.json');
+}
+
 export function conversationsFile(root?: string): string {
   return join(projectStateDir(root), 'conversations.json');
 }

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import {
   ASK_USER_NO_ANSWER,
@@ -42,6 +44,7 @@ import {
   JsonConversationStore,
   PermissionEngine,
   buildAgentSession,
+  canonicalize,
   conversationsFile,
   listPermissionGrants,
   listSkillsFormatted,
@@ -102,8 +105,14 @@ import {
   type UiArtifactsResult,
   type UiSaveArtifactParams,
   type UiSaveArtifactResult,
+  type UiBrowseFoldersParams,
+  type UiBrowseFoldersResult,
+  type UiSetWorkspaceParams,
+  type UiSetWorkspaceResult,
+  type UiWorkspacesResult,
 } from './protocol.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
+import { listFolders, type WorkspaceStore } from './workspaces.js';
 import {
   ARTIFACT_KINDS,
   ArtifactStore,
@@ -173,6 +182,12 @@ export interface WebSessionDeps {
    * reason to block the chat MVP.
    */
   loadInstructions?: (root: string) => Promise<string>;
+  /**
+   * Recently opened folders, for the workspace picker. Optional so a host
+   * that does not offer switching (or a test) simply has no list — the picker
+   * then shows the current folder and nothing else, which is the truth.
+   */
+  workspaces?: WorkspaceStore;
 }
 
 /**
@@ -190,6 +205,17 @@ export interface WebSessionDeps {
  * behavioral difference between a headless host and an interactive one.
  */
 export class WebSession {
+  /**
+   * The workspace this session is pointed at.
+   *
+   * A field rather than `deps.root` because the browser can move it
+   * (`ui/setWorkspace`). Everything derived from it — conversation history,
+   * permission grants, shadow-git, the semantic index, the daemon's own view
+   * of the workspace — is rebuilt by `start()`, so switching is "tear down,
+   * repoint, start again" rather than a set of individual updates that could
+   * fall out of step with each other.
+   */
+  private root: string;
   private connection?: ServerConnection;
   private session?: Awaited<ReturnType<typeof buildAgentSession>>;
   private permissions?: PermissionEngine;
@@ -236,9 +262,11 @@ export class WebSession {
    */
   private personaId: string;
   private subAgents: boolean;
-  private readonly artifacts: ArtifactStore;
+  /** Rebuilt on a workspace switch — artifacts live under the project's state dir. */
+  private artifacts: ArtifactStore;
 
   constructor(private readonly deps: WebSessionDeps) {
+    this.root = deps.root;
     this.mode = deps.permissionMode ?? DEFAULT_PERMISSION_MODE;
     this.personaId = deps.personaId ?? 'agent';
     this.subAgents = deps.subAgents ?? false;
@@ -258,7 +286,8 @@ export class WebSession {
   async start(): Promise<void> {
     if (this.connection) return;
 
-    const { root, config, secrets, clientVersion } = this.deps;
+    const { config, secrets, clientVersion } = this.deps;
+    const root = this.root;
     const profile = await config.getActiveProfile();
     if (!profile) {
       throw new Error(
@@ -305,6 +334,15 @@ export class WebSession {
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
+    // Recorded once the folder has actually opened, not when it was asked
+    // for: a path that fails to start is not somewhere to offer going back to.
+    //
+    // Awaited, not fire-and-forget. `ui/workspaces` can be requested the
+    // instant a switch resolves — the picker refetches on exactly that — and
+    // an unawaited write lost that race, so the list came back still ordered
+    // by the *previous* switch. The store swallows its own write errors, so
+    // awaiting cannot fail an otherwise-good open.
+    await this.deps.workspaces?.record(root);
   }
 
   async close(): Promise<void> {
@@ -312,6 +350,58 @@ export class WebSession {
     this.connection?.close();
     this.connection = undefined;
     this.session?.mcpManager.dispose();
+  }
+
+  /**
+   * Repoint this session at another folder.
+   *
+   * Everything a session holds is derived from the root — the daemon's own
+   * view of the workspace, the tool executor's jail, permission grants,
+   * shadow-git, the semantic index, conversation history, artifacts — so this
+   * tears the whole lot down and lets `start()` rebuild it, rather than
+   * updating each piece in place. Individually-updated state is state that can
+   * fall out of step: an executor still jailed to the old root while the
+   * conversation store has already moved is a worse failure than a slow
+   * switch.
+   *
+   * Refused mid-run for the same reason `openConversation` is: the agent is
+   * holding files in the old workspace, and moving the ground under it would
+   * turn its next edit into an edit of the wrong repo.
+   */
+  async setWorkspace(root: string): Promise<void> {
+    if (this.activeRunId) throw new Error('A run is in progress; cancel it before switching workspace.');
+    const target = canonicalize(root);
+    const info = await stat(target).catch(() => undefined);
+    if (!info?.isDirectory()) throw new Error(`Not a folder: ${root}`);
+    if (target === this.root) return;
+
+    this.connection?.close();
+    this.connection = undefined;
+    this.session?.mcpManager.dispose();
+    this.session = undefined;
+    this.permissions = undefined;
+
+    this.root = target;
+    // A conversation belongs to the workspace it happened in — carrying one
+    // across would file this repo's turns under the other one's history.
+    this.conversation = undefined;
+    this.history = undefined;
+    this.turnEntries = [];
+    this.lastText = '';
+    this.deltaAcc = '';
+    this.reasoningAcc = '';
+    this.buffers.clear();
+    this.artifacts = new ArtifactStore(join(projectStateDir(target), 'artifacts'));
+
+    // `start()` records the folder as recent once it actually opens.
+    await this.start();
+    void this.pushState();
+    void this.pushWorkspace();
+  }
+
+  /** The folder this session is pointed at, canonicalized. */
+  get workspaceRoot(): string {
+    return this.root;
   }
 
   // -------------------------------------------------------------------------
@@ -406,8 +496,37 @@ export class WebSession {
       return null;
     });
 
+    this.attachWorkspaceSwitching(ui);
     this.attachSettings(ui);
     this.attachWorkspace(ui);
+  }
+
+  /** The folder picker: which folders exist, and which one this session uses. */
+  private attachWorkspaceSwitching(ui: RpcPeer): void {
+    ui.onRequest(UI_METHODS.workspaces, async (): Promise<UiWorkspacesResult> => {
+      const recent = (await this.deps.workspaces?.list()) ?? [];
+      return {
+        current: this.root,
+        // The current folder is always offered, even on a first run where
+        // nothing has been recorded yet — a picker whose list excludes where
+        // you already are reads as broken.
+        recent: recent.some((r) => r.path === this.root)
+          ? recent
+          : [{ path: this.root, name: basename(this.root) || this.root, lastOpened: Date.now() }, ...recent],
+        home: homedir(),
+      };
+    });
+
+    ui.onRequest(UI_METHODS.browseFolders, async (raw): Promise<UiBrowseFoldersResult> => {
+      const { path } = (raw ?? {}) as UiBrowseFoldersParams;
+      return listFolders(path);
+    });
+
+    ui.onRequest(UI_METHODS.setWorkspace, async (raw): Promise<UiSetWorkspaceResult> => {
+      const { path } = raw as UiSetWorkspaceParams;
+      await this.setWorkspace(path);
+      return { state: await this.state(), messages: toUiMessages(this.conversation?.messages ?? []) };
+    });
   }
 
   /** The workspace panel (§7.3): changes, diffs, files, checkpoints. */
@@ -422,7 +541,7 @@ export class WebSession {
       const { path } = raw as UiDiffParams;
       const entry = this.session!.checkpoint.entryFor(path);
       const before = entry?.original ? Buffer.from(entry.original).toString('utf8') : '';
-      const after = (await currentText(this.deps.root, path)) ?? '';
+      const after = (await currentText(this.root, path)) ?? '';
       if (!entry) return { path, diff: '', added: 0, removed: 0, note: 'Not changed this session.' };
       const stats = lineDiffStats(before, after);
       return { path, diff: unifiedDiff(before, after), added: stats.added, removed: stats.removed };
@@ -431,12 +550,12 @@ export class WebSession {
     ui.onRequest(UI_METHODS.fileTree, async (raw): Promise<UiFileTreeResult> => {
       const { path } = (raw ?? {}) as UiFileTreeParams;
       const rel = path ?? '';
-      return { path: rel, entries: await listDirectory(this.deps.root, rel) };
+      return { path: rel, entries: await listDirectory(this.root, rel) };
     });
 
     ui.onRequest(UI_METHODS.readFile, async (raw): Promise<UiReadFileResult> => {
       const { path } = raw as UiReadFileParams;
-      const { content, note } = await readWorkspaceFile(this.deps.root, path);
+      const { content, note } = await readWorkspaceFile(this.root, path);
       return { path, content, note };
     });
 
@@ -503,12 +622,12 @@ export class WebSession {
     });
 
     ui.onRequest(UI_METHODS.memory, async (): Promise<UiMemoryResult> => {
-      const instructions = (await this.deps.loadInstructions?.(this.deps.root).catch(() => '')) ?? '';
+      const instructions = (await this.deps.loadInstructions?.(this.root).catch(() => '')) ?? '';
       return { instructions };
     });
 
     ui.onRequest(UI_METHODS.skills, async (): Promise<UiSkillsResult> => {
-      return { skills: await listSkillsFormatted(this.deps.root) };
+      return { skills: await listSkillsFormatted(this.root) };
     });
 
     ui.onRequest(UI_METHODS.artifacts, async (): Promise<UiArtifactsResult> => {
@@ -560,7 +679,7 @@ export class WebSession {
     for (const file of checkpoint.changedFiles()) {
       const entry = checkpoint.entryFor(file.path);
       const before = entry?.original ? Buffer.from(entry.original).toString('utf8') : '';
-      const after = (await currentText(this.deps.root, file.path)) ?? '';
+      const after = (await currentText(this.root, file.path)) ?? '';
       const stats = lineDiffStats(before, after);
       out.push({
         path: file.path,
@@ -621,7 +740,7 @@ export class WebSession {
             .map((t) => t.name)
             .filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
         })),
-        permissionGrants: await listPermissionGrants(permissionsFile(this.deps.root)),
+        permissionGrants: await listPermissionGrants(permissionsFile(this.root)),
       };
     });
 
@@ -722,7 +841,7 @@ export class WebSession {
     const profile = this.profile!;
     const apiKey = await this.deps.secrets.getApiKey(profile.name);
     this.connection = await this.deps.connect({
-      root: this.deps.root,
+      root: this.root,
       profiles: [profile],
       activeProfile: profile.name,
       keys: apiKey ? { [profile.name]: apiKey } : {},
@@ -752,8 +871,8 @@ export class WebSession {
       })),
     );
     return {
-      root: this.deps.root,
-      workspaceName: basename(this.deps.root),
+      root: this.root,
+      workspaceName: basename(this.root),
       profile: this.profile?.name ?? '',
       // `this.model`, not the profile's — otherwise `ui/setModel` changed which
       // model actually ran while every picker and header in the UI went on
@@ -800,7 +919,7 @@ export class WebSession {
 
     // Same preamble shape as headless and the Ink UI: persona constraints and
     // project instructions, then the task.
-    const instructions = await this.deps.loadInstructions?.(this.deps.root).catch(() => '') ?? '';
+    const instructions = await this.deps.loadInstructions?.(this.root).catch(() => '') ?? '';
     const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
     const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
 
@@ -830,7 +949,7 @@ export class WebSession {
           model: this.model,
           task: fullTask,
           history,
-          workspaceName: basename(this.deps.root),
+          workspaceName: basename(this.root),
           tools: offeredTools,
           // Resolved from the PROFILE, like the CLI (App.tsx:1659) and
           // headless (headless.ts:335) — not hardcoded. Hardcoding `true` sent

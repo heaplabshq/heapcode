@@ -72,6 +72,11 @@ export const UI_METHODS = {
   artifact: 'ui/artifact',
   saveArtifact: 'ui/saveArtifact',
 
+  // workspace switching
+  workspaces: 'ui/workspaces',
+  browseFolders: 'ui/browseFolders',
+  setWorkspace: 'ui/setWorkspace',
+
   // host → browser (requests — the host waits for an answer)
   permissionRequest: 'ui/permissionRequest',
   askUser: 'ui/askUser',
@@ -196,6 +201,58 @@ export interface UiSetModelParams {
 
 export interface UiSetModeParams {
   mode: string;
+}
+
+// ---------------------------------------------------------------------------
+// workspace switching
+// ---------------------------------------------------------------------------
+
+/** A folder opened before, for the picker's "Recent" list. */
+export interface UiRecentWorkspace {
+  path: string;
+  name: string;
+  lastOpened: number;
+}
+
+export interface UiWorkspacesResult {
+  /** The folder this session is pointed at right now. */
+  current: string;
+  recent: UiRecentWorkspace[];
+  /** Where "Browse" starts when nothing else is known. */
+  home: string;
+}
+
+export interface UiBrowseFoldersParams {
+  /** Absolute, `~`-prefixed, or omitted for the home directory. */
+  path?: string;
+}
+
+/** A sub-directory of the folder being browsed. Never a file — see `listFolders`. */
+export interface UiFolderEntry {
+  name: string;
+  path: string;
+}
+
+export interface UiBrowseFoldersResult {
+  /** The directory actually listed, resolved to an absolute path. */
+  path: string;
+  /** Its parent, absent at the filesystem root so "up" can be hidden. */
+  parent?: string;
+  entries: UiFolderEntry[];
+}
+
+export interface UiSetWorkspaceParams {
+  path: string;
+}
+
+/**
+ * Switching workspace replaces the whole session, so the browser is handed a
+ * fresh view rather than being left to reconcile: the new state, and the new
+ * (empty) conversation. A conversation belongs to the folder it happened in.
+ */
+export interface UiSetWorkspaceResult {
+  state: UiState;
+  messages: UiMessage[];
 }
 
 // ---------------------------------------------------------------------------

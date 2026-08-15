@@ -1,7 +1,14 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalize, configFile, secretsFile, ConfigStore, SecretsStore } from '@heapcode/host';
-import { DEFAULT_PORT, isLoopback, startWebHost } from '@heapcode/web-host';
+import {
+  canonicalize,
+  configFile,
+  secretsFile,
+  workspacesFile,
+  ConfigStore,
+  SecretsStore,
+} from '@heapcode/host';
+import { DEFAULT_PORT, WorkspaceStore, isLoopback, startWebHost } from '@heapcode/web-host';
 import { loadProjectInstructions } from './memory.js';
 import { connectToServer } from './server/client.js';
 import { cliVersion } from './version.js';
@@ -54,6 +61,10 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
       port,
       config,
       secrets,
+      // The folder picker's "Recent" list. Supplied by the CLI rather than
+      // defaulted inside the host, so a host that does not offer switching
+      // never quietly starts writing a file the user did not ask for.
+      workspaces: new WorkspaceStore(workspacesFile()),
       staticDir,
       clientVersion: cliVersion(),
       loadInstructions: loadProjectInstructions,

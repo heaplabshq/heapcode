@@ -66,7 +66,18 @@ function Row({ item, onOpenPath }: { item: Item; onOpenPath?(path: string): void
             // page holds the socket that runs commands.
             dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }}
           />
-          {item.streaming && <span className="caret" aria-hidden="true" />}
+          {/* Three pulsing dots, not a text caret. A blinking accent-coloured
+              block is the shape of an editor cursor, which in a read-only
+              transcript reads as "type here" — and it borrowed the accent
+              colour, so the quietest thing on screen was drawn in the loudest
+              one. Dots say "more is coming" and nothing else. */}
+          {item.streaming && (
+            <span className="typing" aria-label="still writing">
+              <i />
+              <i />
+              <i />
+            </span>
+          )}
         </div>
       );
     case 'tool':

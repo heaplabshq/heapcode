@@ -76,6 +76,26 @@ describe('the working indicator', () => {
   });
 });
 
+describe('the still-writing marker', () => {
+  it('is dots, not a text caret, and only on the message being written', () => {
+    // A blinking accent-blue block is an editor cursor; in a read-only
+    // transcript it reads as "type here".
+    const t = fold([{ type: 'text_delta', text: 'Working on it' }]);
+    const { container } = render(<MessageList transcript={t} busy />);
+    expect(container.querySelector('.typing')).not.toBeNull();
+    expect(container.querySelector('.caret')).toBeNull();
+  });
+
+  it('goes away the moment the model starts doing something else', () => {
+    const t = fold([
+      { type: 'text_delta', text: 'Let me check' },
+      { type: 'tool_call', id: 'c', name: 'read_file', args: { path: 'a.ts' } },
+    ]);
+    const { container } = render(<MessageList transcript={t} busy />);
+    expect(container.querySelector('.typing')).toBeNull();
+  });
+});
+
 describe('tool chips', () => {
   it('colourises an edit’s diff and shows its line counts', () => {
     const t = fold([

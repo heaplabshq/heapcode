@@ -8,6 +8,7 @@ import {
   reduce,
   settle,
   type ToolItem,
+  type Transcript,
 } from '../src/transcript.js';
 
 /**
@@ -289,5 +290,48 @@ describe('activityOf — what the working indicator says', () => {
     ]);
     expect(activityOf(t).phase).toBe('working');
     expect(activityOf(emptyTranscript).phase).toBe('working');
+  });
+});
+
+describe('an open message is closed by whatever comes next', () => {
+  // `text_end` is only emitted when the loop actually streamed deltas
+  // (agent/loop.ts:362), and a model that narrates then calls a tool never
+  // ends the message at all — so the "still writing" marker sat beside
+  // finished prose for the whole duration of the tool call.
+  const streaming = (t: Transcript) => (t.items[0] as { streaming?: boolean }).streaming;
+
+  it('a tool call closes it', () => {
+    const t = fold([
+      { type: 'text_delta', text: 'Let me check…' },
+      { type: 'tool_call', id: 'c', name: 'read_file', args: {} },
+    ]);
+    expect(streaming(t)).toBe(false);
+    expect(t.items.map((i) => i.kind)).toEqual(['text', 'tool']);
+  });
+
+  it('a plan closes it', () => {
+    const t = fold([
+      { type: 'text_delta', text: 'Here is what I will do' },
+      { type: 'plan', text: '1. thing' },
+    ]);
+    expect(streaming(t)).toBe(false);
+  });
+
+  it('thinking closes it', () => {
+    const t = fold([
+      { type: 'text_delta', text: 'Hmm' },
+      { type: 'reasoning_delta', text: 'weighing options' },
+    ]);
+    expect(streaming(t)).toBe(false);
+    expect(t.items[1]).toMatchObject({ kind: 'reasoning', streaming: true });
+  });
+
+  it('but more text keeps it open', () => {
+    const t = fold([
+      { type: 'text_delta', text: 'still ' },
+      { type: 'text_delta', text: 'going' },
+    ]);
+    expect(streaming(t)).toBe(true);
+    expect((t.items[0] as { text: string }).text).toBe('still going');
   });
 });

@@ -15,7 +15,7 @@ export interface TextItem {
   id: string;
   role: 'user' | 'assistant';
   text: string;
-  /** Still streaming — the caret renders on this one. */
+  /** Still arriving — this one gets the "still writing" marker. */
   streaming?: boolean;
 }
 
@@ -135,6 +135,25 @@ export function withUserMessage(t: Transcript, text: string): Transcript {
 }
 
 /**
+ * Closes a message that is still marked as streaming.
+ *
+ * `text_end` is the normal way that happens, but the loop only emits it when
+ * it actually streamed text deltas (agent/loop.ts:362) — and even then, a
+ * model that narrates and then calls a tool moves on without ever ending the
+ * message. So anything that starts a *new* kind of entry closes the prose
+ * before it: whatever the model is doing now, it is no longer typing that.
+ *
+ * Left open, the message kept its "still arriving" marker for the entire
+ * duration of the tool call, which is exactly where a caret blinking beside
+ * finished text came from.
+ */
+function closeOpenText(t: Transcript): Transcript {
+  const last = t.items[t.items.length - 1];
+  if (last?.kind !== 'text' || !last.streaming) return t;
+  return { ...t, items: [...t.items.slice(0, -1), { ...last, streaming: false }] };
+}
+
+/**
  * Fold one event into the transcript.
  *
  * Returns the same object when nothing changed, so React can skip re-rendering
@@ -171,15 +190,21 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       return { ...t, items: [...t.items, { kind: 'text', id: `a${seq}`, role: 'assistant', text: event.text }] };
     }
 
-    case 'plan':
-      return { ...t, items: [...t.items, { kind: 'plan', id: `p${seq}`, text: event.text }] };
+    case 'plan': {
+      const base = closeOpenText(t);
+      return { ...base, items: [...base.items, { kind: 'plan', id: `p${seq}`, text: event.text }] };
+    }
 
     case 'reasoning_delta': {
       const last = t.items[t.items.length - 1];
       if (last?.kind === 'reasoning' && last.streaming) {
         return { ...t, items: [...t.items.slice(0, -1), { ...last, text: last.text + event.text }] };
       }
-      return { ...t, items: [...t.items, { kind: 'reasoning', id: `r${seq}`, text: event.text, streaming: true }] };
+      const base = closeOpenText(t);
+      return {
+        ...base,
+        items: [...base.items, { kind: 'reasoning', id: `r${seq}`, text: event.text, streaming: true }],
+      };
     }
 
     case 'reasoning_end': {
@@ -189,14 +214,15 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       return { ...t, items: [...t.items.slice(0, -1), { ...last, streaming: false }] };
     }
 
-    case 'tool_call':
+    case 'tool_call': {
+      const base = closeOpenText(t);
       return {
-        ...t,
+        ...base,
         // The call is written; the counter that was tracking it writing has
         // nothing left to describe.
         writingCallK: undefined,
         items: [
-          ...t.items,
+          ...base.items,
           {
             kind: 'tool',
             id: event.id,
@@ -207,6 +233,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
           },
         ],
       };
+    }
 
     case 'tool_stream': {
       // The model is writing a tool call's arguments. See

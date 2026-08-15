@@ -36,8 +36,36 @@ function probeFile(base: string, knownPaths: ReadonlySet<string>, extensions: st
   return undefined;
 }
 
+/**
+ * TypeScript's ESM rule: a specifier names the *emitted* file, so `./x.js` is
+ * written in source that actually lives in `./x.ts`.
+ *
+ * Without this the import graph was almost empty on any modern TS/ESM project
+ * — `probeFile` only ever *appends* extensions, so `./x.js` was probed as
+ * `x.js`, then `x.js.ts`, `x.js.tsx`, … and resolved to nothing. This repo
+ * scored 2 edges across 337 files. That is not a cosmetic loss: the repo map
+ * ranks files by import centrality, so with no edges the ordering collapses to
+ * alphabetical and the map the agent gets is arbitrary rather than
+ * most-depended-upon first.
+ */
+const JS_TO_TS: Record<string, string[]> = {
+  '.js': ['.ts', '.tsx'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+  '.jsx': ['.tsx'],
+};
+
 function resolveRelativeJs(fromPath: string, spec: string, knownPaths: ReadonlySet<string>): string | undefined {
-  return probeFile(joinPosix(dirname(fromPath), spec), knownPaths, JS_EXTENSIONS);
+  const base = joinPosix(dirname(fromPath), spec);
+
+  const dot = base.lastIndexOf('.');
+  const ext = dot > base.lastIndexOf('/') ? base.slice(dot) : '';
+  for (const candidate of JS_TO_TS[ext] ?? []) {
+    const rewritten = base.slice(0, dot) + candidate;
+    if (knownPaths.has(rewritten)) return rewritten;
+  }
+
+  return probeFile(base, knownPaths, JS_EXTENSIONS);
 }
 
 /**

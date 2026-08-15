@@ -3,6 +3,8 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { chmod, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { buildCommitMessages, normalizeCommitMessage } from '../prompts/edit.js';
+import { buildApplyMessages, extractUpdatedCode } from '../prompts/apply.js';
+import { extractFirstCodeBlock } from '../edit/codeBlocks.js';
 import { runAgentForSession, type RunHost } from './agentRun.js';
 import { runChatForSession, type ChatHost } from './chatSend.js';
 import { runReviewForSession, type ReviewHost } from './review.js';
@@ -18,6 +20,8 @@ import {
   type AgentEvent,
   type AgentRunParams,
   type ChatSendParams,
+  type ApplyMergeParams,
+  type ApplyMergeResult,
   type CommitMessageParams,
   type CommitMessageResult,
   type HelloParams,
@@ -308,6 +312,48 @@ export class HeapcodeServer {
         signal,
       });
       return { message: normalizeCommitMessage(res.content) } satisfies CommitMessageResult;
+    });
+
+    /**
+     * `edit_file`'s fast-apply fallback: search/replace failed to match, so
+     * hand the whole file and the intended change to a small merge model and
+     * let it place the edit.
+     *
+     * Server-side for the same reason `git/commitMessage` is — a single call
+     * on a role that can point at a different profile entirely, which the host
+     * has no provider to make for itself.
+     *
+     * An unconfigured `applyModel` returns `{}`, not an error. Nothing is
+     * broken when a profile has no merge model; the caller simply reports the
+     * edit that did not apply, exactly as it did before this existed. Same for
+     * a model that answers with something other than a merged file: a bad
+     * rescue attempt must never be louder than the original failure.
+     */
+    peer.onRequest(METHODS.applyMerge, async (raw, signal) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      const { original, snippet, profileName } = (raw ?? {}) as ApplyMergeParams;
+      if (!original || !snippet?.trim()) return {} satisfies ApplyMergeResult;
+
+      const resolved = await session.providerForRole('applyModel', requestKey, profileName);
+      if (!resolved?.profile.applyModel) return {} satisfies ApplyMergeResult;
+
+      try {
+        const res = await resolved.provider.chat({
+          model: resolved.profile.applyModel,
+          messages: buildApplyMessages(original, snippet),
+          temperature: 0,
+          // The model re-emits the whole file, so the cap has to scale with
+          // the input rather than sit at some fixed number of tokens.
+          maxTokens: Math.max(4096, Math.ceil(original.length / 2)),
+          signal,
+        });
+        const merged = extractUpdatedCode(res.content) ?? extractFirstCodeBlock(res.content);
+        return { merged } satisfies ApplyMergeResult;
+      } catch {
+        // A merge model that is down, slow or wrong is a fallback that did not
+        // fire. The edit failure it was trying to rescue is the real result.
+        return {} satisfies ApplyMergeResult;
+      }
     });
 
     /**

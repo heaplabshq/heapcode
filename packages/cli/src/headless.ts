@@ -167,6 +167,23 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       config,
       secrets,
       cliVersion(),
+      // Reaches for `connection` at call time — it is assigned below, after
+      // this session is built. edit_file's fast-apply fallback; see
+      // agentSession.ts.
+      async (original, snippet) => {
+        if (!connection) return undefined;
+        try {
+          const res = await connection.peer.request<{ merged?: string }>(METHODS.applyMerge, {
+            original,
+            snippet,
+            profileName: profile.name,
+          });
+          return res.merged;
+        } catch {
+          // The edit failure this was rescuing is the real result.
+          return undefined;
+        }
+      },
     );
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);

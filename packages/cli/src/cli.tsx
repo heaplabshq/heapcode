@@ -27,7 +27,15 @@ import {
   permissionsFile,
   profileContextWindow,
 } from '@heapcode/host';
-import { profileAdd, profileList, profileRemove, profileUse } from './profileCli.js';
+import {
+  PROFILE_FIELDS,
+  isProfileField,
+  profileAdd,
+  profileList,
+  profileRemove,
+  profileSet,
+  profileUse,
+} from './profileCli.js';
 import { runHeadless } from './headless.js';
 import { runWeb } from './webCli.js';
 import { AuditLog } from './audit.js';
@@ -74,7 +82,19 @@ async function main(): Promise<void> {
     if (sub === 'list') return profileList();
     if (sub === 'use' && arg) return profileUse(arg);
     if (sub === 'remove' && arg) return profileRemove(arg);
-    console.log('Usage: heapcode profile <add|list|use NAME|remove NAME>');
+    if (sub === 'set') {
+      const [, , name, field, ...rest] = argv;
+      if (!name || !field || !isProfileField(field)) {
+        console.log('Usage: heapcode profile set NAME FIELD [VALUE]   (omit VALUE to clear)');
+        console.log(`Fields: ${PROFILE_FIELDS.join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
+      // Joined rather than taking one token: a base URL or a model id with
+      // spaces should not be silently truncated to its first word.
+      return profileSet(name, field, rest.join(' ') || undefined);
+    }
+    console.log('Usage: heapcode profile <add|list|use NAME|remove NAME|set NAME FIELD [VALUE]>');
     process.exitCode = 1;
     return;
   }

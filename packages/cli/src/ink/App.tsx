@@ -606,6 +606,23 @@ export function App({
     connectedProfile.current = active.profile.name;
     const { peer } = connection;
 
+    // edit_file's fast-apply fallback, now that there is something to call it
+    // with. Rebound on every reconnect so it follows a profile switch — the
+    // apply model belongs to the profile, not to the session.
+    executor.setApplyMerge(async (original, snippet) => {
+      try {
+        const res = await peer.request<{ merged?: string }>(METHODS.applyMerge, {
+          original,
+          snippet,
+          profileName: active.profile.name,
+        });
+        return res.merged;
+      } catch {
+        // The edit failure this was rescuing is the real result.
+        return undefined;
+      }
+    });
+
     peer.onRequest(METHODS.toolExecute, async (raw, signal) => {
       const { call } = raw as ToolExecuteParams;
       return executeTool(call, signal);

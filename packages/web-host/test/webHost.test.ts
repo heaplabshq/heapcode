@@ -79,9 +79,14 @@ afterEach(async () => {
 
 /** Boots daemon + web host wired to a scripted model. */
 async function boot(
-  // `sse-raw` as well as `sse`: some turns need a delta shape the convenience
-  // helper can't express, notably `reasoning_content`.
-  responses: Array<{ kind: 'sse'; chunks: string[] } | { kind: 'sse-raw'; events: string[] }>,
+  // `sse` covers a streamed chat turn; `sse-raw` covers delta shapes the
+  // helper cannot express (`reasoning_content`); `json` covers the
+  // non-streaming calls a turn can make on the way past — apply/merge is one.
+  responses: Array<
+    | { kind: 'sse'; chunks: string[] }
+    | { kind: 'sse-raw'; events: string[] }
+    | { kind: 'json'; status: number; body: unknown }
+  >,
   /** Extra profile fields, for the ones only the CLI can normally set. */
   profileExtras: Record<string, unknown> = {},
 ): Promise<{
@@ -1388,6 +1393,58 @@ describe('web host — listing models', () => {
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
     const res = await browser.peer.request<UiListModelsResult>(UI_METHODS.listModels);
     expect(res.models.map((m) => m.id)).toContain('mock-model');
+    browser.close();
+  });
+});
+
+describe('web host — edit_file fast-apply fallback', () => {
+  const EDIT_THEN_FINISH = (search: string) => [
+    {
+      kind: 'sse' as const,
+      chunks: [`<tool name="edit_file">\n{"path":"a.ts","search":${JSON.stringify(search)},"replace":"const a = 2;"}\n</tool>`],
+    },
+    { kind: 'sse' as const, chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+  ];
+
+  it('reports the failure when no apply model is configured', async () => {
+    // The behaviour every profile has today: no fallback, so a search that
+    // does not match is simply a failed edit.
+    const { root, host } = await boot(EDIT_THEN_FINISH('const NOPE = 9;'));
+    await writeFile(join(root, 'a.ts'), 'const a = 1;\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'edit it' });
+
+    const failed = browser.events.find(
+      (e) => e.type === 'tool_result' && e.name === 'edit_file' && e.isError,
+    );
+    expect(failed).toBeTruthy();
+    expect(await readFile(join(root, 'a.ts'), 'utf8')).toBe('const a = 1;\n');
+    browser.close();
+  });
+
+  it('rescues the edit through the apply model when one is set', async () => {
+    // Same mismatched search, but the profile now names an apply model — the
+    // third scripted response is what that model returns.
+    const { root, host } = await boot(
+      [
+        ...EDIT_THEN_FINISH('const NOPE = 9;').slice(0, 1),
+        { kind: 'json' as const, status: 200, body: { choices: [{ message: { content: '<updated-code>\nconst a = 2;\n</updated-code>' } }] } },
+        { kind: 'sse' as const, chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+      ],
+      { applyModel: 'fast-apply' },
+    );
+    await writeFile(join(root, 'a.ts'), 'const a = 1;\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'edit it' });
+
+    // The edit landed even though the search text never matched.
+    expect(await readFile(join(root, 'a.ts'), 'utf8')).toBe('const a = 2;');
+    const result = browser.events.find((e) => e.type === 'tool_result' && e.name === 'edit_file');
+    expect(result && 'isError' in result ? result.isError : undefined).toBeFalsy();
     browser.close();
   });
 });

@@ -35,6 +35,20 @@ export function buildAgentSession(
   config: ConfigStore,
   secrets?: SecretsStore,
   clientVersion?: string,
+  /**
+   * `edit_file`'s fast-apply fallback: when search/replace does not match,
+   * hand the file and the intended change to the `applyModel` role and take
+   * the merged result.
+   *
+   * Injected rather than built here because the call needs a provider, and a
+   * host has none — it goes through the daemon's `apply/merge`. Callers pass a
+   * closure that reaches for their connection at call time, since the session
+   * is constructed before the connection exists.
+   *
+   * Optional, and returning undefined is a normal answer: with no apply model
+   * configured the executor reports the failed edit exactly as it always has.
+   */
+  applyMerge?: (original: string, snippet: string) => Promise<string | undefined>,
 ): AgentSession {
   const checkpoint = new SessionCheckpoint(root);
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
@@ -53,7 +67,7 @@ export function buildAgentSession(
     60_000,
     undefined,
     (pathPrefix) => (repoMapIndexer.ready ? repoMapIndexer.format(pathPrefix) : ''),
-    undefined,
+    applyMerge,
     // Resolved per call rather than captured: turning search on with
     // /websearch has to affect the run in progress, not just the next one.
     async () => ({

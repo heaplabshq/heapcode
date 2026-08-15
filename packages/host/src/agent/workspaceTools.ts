@@ -140,11 +140,23 @@ export class WorkspaceToolExecutor {
     private readonly semanticSearch?: (query: string) => Promise<string>,
     private readonly repoMap?: (pathPrefix?: string) => string,
     /** Fast-apply merge (applyModel/applyProfile role) — edit_file's fallback when exact search/replace fails to match. */
-    private readonly applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
+    private applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
     /** Resolves web-search config + key at call time, so enabling it mid-session takes effect. */
     private readonly webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>,
   ) {
     this.cwd = root;
+  }
+
+  /**
+   * Late-binds the fast-apply fallback.
+   *
+   * The interactive CLI builds this executor before it has a daemon
+   * connection, and reconnects when the profile changes — so it hands the
+   * merge function over once there is something to call, rather than the
+   * constructor pretending to have one.
+   */
+  setApplyMerge(fn?: (original: string, updateSnippet: string) => Promise<string | undefined>): void {
+    this.applyMerge = fn;
   }
 
   /** Human-readable "what will happen", shown in permission prompts and tool chips. */

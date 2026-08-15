@@ -317,7 +317,11 @@ export class WebSession {
     // sidebar is how you get back to an earlier one.
     this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
 
-    this.session = buildAgentSession(root, config, secrets, clientVersion);
+    this.session = buildAgentSession(root, config, secrets, clientVersion, (original, snippet) =>
+      // Reaches for the connection at call time, not now: the session is built
+      // before the daemon link exists, and a switched workspace replaces both.
+      this.applyMerge(original, snippet),
+    );
     this.permissions = new PermissionEngine(
       permissionsFile(root),
       () => false,
@@ -1011,6 +1015,28 @@ export class WebSession {
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
+  }
+
+  /**
+   * `edit_file`'s fast-apply fallback, routed to the daemon.
+   *
+   * Swallows everything. This runs only after a search/replace has already
+   * failed, so any error here means the rescue did not happen — and the edit
+   * failure it was rescuing is the result the model needs to see, not a second
+   * error about the merge model.
+   */
+  private async applyMerge(original: string, snippet: string): Promise<string | undefined> {
+    if (!this.connection) return undefined;
+    try {
+      const res = await this.connection.peer.request<{ merged?: string }>(METHODS.applyMerge, {
+        original,
+        snippet,
+        profileName: this.profile?.name,
+      });
+      return res.merged;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Both indexes, side by side — see `UiIndexStatus` for why both. */

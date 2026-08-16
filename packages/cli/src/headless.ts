@@ -29,15 +29,19 @@ import {
   type ToolExecuteParams,
   type ToolResult,
 } from '@heapcode/core';
-import { ConfigStore } from './config/store.js';
-import { SecretsStore } from './config/secrets.js';
-import { JsonConversationStore } from './history/store.js';
-import { canonicalize, auditFile, conversationsFile } from './paths.js';
-import { buildAgentSession } from './agentSession.js';
-import { trimHistoryForAgent } from './agent/historyWindow.js';
+import {
+  ConfigStore,
+  DELEGATE_TASK_TOOL,
+  JsonConversationStore,
+  SecretsStore,
+  auditFile,
+  buildAgentSession,
+  canonicalize,
+  conversationsFile,
+  trimHistoryForAgent,
+} from '@heapcode/host';
 import { loadProjectInstructions } from './memory.js';
 import { AuditLog } from './audit.js';
-import { DELEGATE_TASK_TOOL } from './agent/delegate.js';
 import { connectToServer, type ConnectOptions } from './server/client.js';
 import { cliVersion } from './version.js';
 
@@ -158,7 +162,29 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     conversation ??= { id: randomUUID(), title: opts.prompt.slice(0, 60), updatedAt: Date.now(), messages: [] };
     const history = trimHistoryForAgent(conversation.messages);
 
-    const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(root, config, secrets);
+    const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(
+      root,
+      config,
+      secrets,
+      cliVersion(),
+      // Reaches for `connection` at call time — it is assigned below, after
+      // this session is built. edit_file's fast-apply fallback; see
+      // agentSession.ts.
+      async (original, snippet) => {
+        if (!connection) return undefined;
+        try {
+          const res = await connection.peer.request<{ merged?: string }>(METHODS.applyMerge, {
+            original,
+            snippet,
+            profileName: profile.name,
+          });
+          return res.merged;
+        } catch {
+          // The edit failure this was rescuing is the real result.
+          return undefined;
+        }
+      },
+    );
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
     await Promise.all([repoMapIndexer.init(), mcpManager.ensureConnected()]);

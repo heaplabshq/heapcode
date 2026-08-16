@@ -8,15 +8,15 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ChatResponse, Conversation, McpManager, Provider, ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
 import { HeapcodeServer, INIT_TASK } from '@heapcode/core';
-import { SecretsStore } from '../src/config/secrets.js';
-import { ConfigStore } from '../src/config/store.js';
-import { JsonConversationStore } from '../src/history/store.js';
-import { WorkspaceToolExecutor } from '../src/agent/workspaceTools.js';
-import { SessionCheckpoint } from '../src/agent/checkpoint.js';
-import { PermissionEngine } from '../src/agent/permissions.js';
-import type { ShadowGit } from '../src/agent/shadowGit.js';
+import { SecretsStore } from '@heapcode/host';
+import { ConfigStore } from '@heapcode/host';
+import { JsonConversationStore } from '@heapcode/host';
+import { WorkspaceToolExecutor } from '@heapcode/host';
+import { SessionCheckpoint } from '@heapcode/host';
+import { PermissionEngine } from '@heapcode/host';
+import type { ShadowGit } from '@heapcode/host';
 import { App } from '../src/ink/App.js';
-import type { RepoMapIndexer } from '../src/rag/repoMapIndexer.js';
+import type { RepoMapIndexer } from '@heapcode/host';
 
 function stubRepoMap(overrides: Record<string, unknown> = {}): RepoMapIndexer {
   return {
@@ -1713,7 +1713,7 @@ exit 0
   });
 
   it('/checkpoints and /rewind survive /new — they read shadow-git history, not the in-memory transcript', async () => {
-    const { ShadowGit } = await import('../src/agent/shadowGit.js');
+    const { ShadowGit } = await import('@heapcode/host');
     const shadowGit = new ShadowGit(root, join(root, '.heapcode', 'shadow-git'));
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;

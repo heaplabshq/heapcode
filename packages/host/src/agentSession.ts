@@ -7,7 +7,6 @@ import { ShadowGit } from './agent/shadowGit.js';
 import { loadMcpServers } from './agent/mcpConfig.js';
 import { createRepoMapIndexer, type RepoMapIndexer } from './rag/repoMapIndexer.js';
 import { projectStateDir, shadowGitDir } from './paths.js';
-import { cliVersion } from './version.js';
 
 export interface AgentSession {
   checkpoint: SessionCheckpoint;
@@ -24,8 +23,33 @@ export interface AgentSession {
  * mode (headless.ts), so the two can't silently drift apart (guardrail #8:
  * headless is a first-class peer of the interactive UI, not a bolted-on
  * shortcut). `root` must already be canonicalized (see paths.ts).
+ *
+ * `clientVersion` is passed in rather than read here: it is the *host's* own
+ * version (reported to MCP servers in the initialize handshake), and each host
+ * reads it from its own package.json relative to its own bundle — see
+ * packages/cli/src/version.ts. A shared package resolving that for itself
+ * would report this package's version to every host, which is exactly wrong.
  */
-export function buildAgentSession(root: string, config: ConfigStore, secrets?: SecretsStore): AgentSession {
+export function buildAgentSession(
+  root: string,
+  config: ConfigStore,
+  secrets?: SecretsStore,
+  clientVersion?: string,
+  /**
+   * `edit_file`'s fast-apply fallback: when search/replace does not match,
+   * hand the file and the intended change to the `applyModel` role and take
+   * the merged result.
+   *
+   * Injected rather than built here because the call needs a provider, and a
+   * host has none — it goes through the daemon's `apply/merge`. Callers pass a
+   * closure that reaches for their connection at call time, since the session
+   * is constructed before the connection exists.
+   *
+   * Optional, and returning undefined is a normal answer: with no apply model
+   * configured the executor reports the failed edit exactly as it always has.
+   */
+  applyMerge?: (original: string, snippet: string) => Promise<string | undefined>,
+): AgentSession {
   const checkpoint = new SessionCheckpoint(root);
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
 
@@ -43,7 +67,7 @@ export function buildAgentSession(root: string, config: ConfigStore, secrets?: S
     60_000,
     undefined,
     (pathPrefix) => (repoMapIndexer.ready ? repoMapIndexer.format(pathPrefix) : ''),
-    undefined,
+    applyMerge,
     // Resolved per call rather than captured: turning search on with
     // /websearch has to affect the run in progress, not just the next one.
     async () => ({
@@ -55,7 +79,7 @@ export function buildAgentSession(root: string, config: ConfigStore, secrets?: S
   // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with
   // project-scoped (<cwd>/.heapcode/mcp.json), project wins name collisions.
   // Reconnected (idempotent) at the start of every task by the caller.
-  const mcpManager = new McpManager(() => loadMcpServers(root, config), undefined, cliVersion());
+  const mcpManager = new McpManager(() => loadMcpServers(root, config), undefined, clientVersion);
 
   return { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools: agentToolDefinitions };
 }

@@ -1,7 +1,8 @@
 import esbuild from 'esbuild';
 import { createRequire } from 'node:module';
-import { chmodSync, copyFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const watch = process.argv.includes('--watch');
 const require = createRequire(import.meta.url);
@@ -26,6 +27,25 @@ function copyWasmAssets() {
 }
 copyWasmAssets();
 
+/**
+ * The web UI's built bundle, copied to dist/web so `heapcode web` can serve it
+ * from beside its own bundle. Same reasoning as the wasm assets: read by
+ * filesystem path at runtime, never imported, so esbuild cannot see them.
+ *
+ * Absent when @heapcode/web-ui hasn't been built — `heapcode web` then serves
+ * the API only and says so, rather than failing the CLI build over a UI that
+ * an npm consumer of the CLI alone does not need.
+ */
+function copyWebUi() {
+  const from = fileURLToPath(new URL('../web-ui/dist', import.meta.url));
+  if (!existsSync(from)) {
+    console.warn('[build] packages/web-ui/dist not found — `heapcode web` will serve the API only.');
+    return;
+  }
+  cpSync(from, 'dist/web', { recursive: true });
+}
+copyWebUi();
+
 const ctx = await esbuild.context({
   // dist/daemon.js is the core server's entry point — the CLI autostarts it
   // detached when nothing is listening (docs/phase3-protocol-design.md §6).
@@ -45,7 +65,12 @@ const ctx = await esbuild.context({
   // fsevents: optional native/binary dep some transitive packages probe for
   // at require-time; keeping it external matches guardrail #5 (no
   // native-module dependency the CLI can't run without).
-  external: ['fsevents'],
+  //
+  // bufferutil / utf-8-validate: `ws` (the web host's WebSocket server) probes
+  // for these two native accelerators inside a try/catch and falls back to its
+  // pure-JS paths when they're absent. Same reasoning as fsevents — bundling
+  // them would make the CLI depend on a native build it does not need.
+  external: ['fsevents', 'bufferutil', 'utf-8-validate'],
   // react-devtools-core: Ink's optional DEV-mode devtools hook statically
   // imports it; esbuild's ESM output hoists that import to top-level
   // regardless of the runtime DEV-env-var guard around it, so `external`

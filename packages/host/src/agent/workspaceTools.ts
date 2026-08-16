@@ -4,7 +4,9 @@ import * as path from 'node:path';
 import fg from 'fast-glob';
 import {
   applySearchReplace,
+  applySearchReplaceAll,
   buildEditSnippet,
+  describeAmbiguity,
   checkPackageExists,
   checkSyntax,
   CWD_MARKER,
@@ -28,6 +30,7 @@ import {
   sharedAgentTools as T,
   truncate,
   unifiedDiff,
+  wantsReplaceAll,
   webSearch,
   WEB_SEARCH_DISABLED_NOTICE,
   type ToolCall,
@@ -140,11 +143,23 @@ export class WorkspaceToolExecutor {
     private readonly semanticSearch?: (query: string) => Promise<string>,
     private readonly repoMap?: (pathPrefix?: string) => string,
     /** Fast-apply merge (applyModel/applyProfile role) — edit_file's fallback when exact search/replace fails to match. */
-    private readonly applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
+    private applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
     /** Resolves web-search config + key at call time, so enabling it mid-session takes effect. */
     private readonly webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>,
   ) {
     this.cwd = root;
+  }
+
+  /**
+   * Late-binds the fast-apply fallback.
+   *
+   * The interactive CLI builds this executor before it has a daemon
+   * connection, and reconnects when the profile changes — so it hands the
+   * merge function over once there is something to call, rather than the
+   * constructor pretending to have one.
+   */
+  setApplyMerge(fn?: (original: string, updateSnippet: string) => Promise<string | undefined>): void {
+    this.applyMerge = fn;
   }
 
   /** Human-readable "what will happen", shown in permission prompts and tool chips. */
@@ -288,14 +303,20 @@ export class WorkspaceToolExecutor {
         const search = String(a.search ?? '');
         const replace = String(a.replace ?? '');
         const match = findBestMatch(current, search);
-        if (match?.ambiguous) {
-          return fail(
-            `The "search" text matches ${match.occurrences} different places in ${a.path} — refusing to guess ` +
-              'which one. Include more surrounding lines so the search text is unique to the intended location.',
-          );
+        const all = wantsReplaceAll(call.args.replace_all);
+        let replacedCount = 0;
+        let next: string | undefined;
+        if (all) {
+          const result = applySearchReplaceAll(current, search, replace);
+          next = result?.text;
+          replacedCount = result?.count ?? 0;
+        } else {
+          next = applySearchReplace(current, search, replace);
         }
-        let next = applySearchReplace(current, search, replace);
         let viaApplyModel = false;
+        // The ambiguity refusal deliberately sits *after* the fast-apply attempt:
+        // failing early skipped the one model that gets both the before and the
+        // after text, and so is best placed to resolve exactly this case.
         if (next === undefined && this.applyMerge && current.length <= MAX_APPLY_MERGE_CHARS) {
           const merged = await this.applyMerge(current, buildEditSnippet(search, replace));
           if (merged !== undefined && merged.trim() && merged !== current) {
@@ -304,6 +325,7 @@ export class WorkspaceToolExecutor {
           }
         }
         if (next === undefined) {
+          if (match?.ambiguous) return fail(describeAmbiguity(match, String(a.path)));
           return fail(
             `The "search" text was not found in ${a.path}. ${nearbyHint(current, search)}` +
               'Provide the exact existing code (copy it from read_file output, without the line numbers).',
@@ -321,7 +343,7 @@ export class WorkspaceToolExecutor {
         await writeFile(abs, next, 'utf8');
         const diff = unifiedDiff(current, next);
         return ok(
-          `Edited ${a.path}.${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}${diff ? `\n\n${diff}` : ''}`,
+          `Edited ${a.path}.${all && !viaApplyModel ? ` (replaced ${replacedCount} occurrences)` : ''}${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}${diff ? `\n\n${diff}` : ''}`,
         );
       }
       case 'rename_file': {
@@ -405,21 +427,26 @@ export class WorkspaceToolExecutor {
       }
       case 'multi_edit': {
         const abs = this.resolve(a.path);
-        const edits = Array.isArray(call.args.edits) ? (call.args.edits as Array<{ search?: unknown; replace?: unknown }>) : [];
+        const edits = Array.isArray(call.args.edits)
+          ? (call.args.edits as Array<{ search?: unknown; replace?: unknown; replace_all?: unknown }>)
+          : [];
         if (edits.length === 0) return fail('No edits given.');
         const original = await readFile(abs, 'utf8');
         let text = original;
         for (let i = 0; i < edits.length; i++) {
           const search = String(edits[i]!.search ?? '');
+          const replacement = String(edits[i]!.replace ?? '');
           const match = findBestMatch(text, search);
-          if (match?.ambiguous) {
+          const next =
+            wantsReplaceAll(edits[i]!.replace_all)
+              ? applySearchReplaceAll(text, search, replacement)?.text
+              : applySearchReplace(text, search, replacement);
+          if (next === undefined && match?.ambiguous) {
             return fail(
-              `Edit ${i + 1}/${edits.length}: "search" matches ${match.occurrences} different places in ` +
-                `${a.path} (earlier edits were NOT applied) — refusing to guess which one. Include more ` +
-                'surrounding lines so the search text is unique to the intended location.',
+              describeAmbiguity(match, String(a.path), `Edit ${i + 1}/${edits.length}: "search"`) +
+                ' Earlier edits were NOT applied.',
             );
           }
-          const next = applySearchReplace(text, search, String(edits[i]!.replace ?? ''));
           if (next === undefined) {
             return fail(
               `Edit ${i + 1}/${edits.length}: "search" not found in ${a.path} (earlier edits were NOT applied). ` +

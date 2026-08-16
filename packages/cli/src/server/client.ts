@@ -6,7 +6,7 @@ import {
   type HelloParams,
   type ServerConnection,
 } from '@heapcode/core';
-import { globalDir } from '../paths.js';
+import { globalDir } from '@heapcode/host';
 
 export type { ServerConnection } from '@heapcode/core';
 

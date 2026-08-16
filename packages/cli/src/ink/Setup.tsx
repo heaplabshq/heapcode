@@ -3,8 +3,7 @@ import { Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
 import Spinner from 'ink-spinner';
 import { createProvider, providerPresets, type ProviderPreset, type ProviderProfileConfig } from '@heapcode/core';
-import { ConfigStore } from '../config/store.js';
-import { SecretsStore } from '../config/secrets.js';
+import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { FilterableList } from './FilterableList.js';
 import { TextInput } from './TextInput.js';
 
@@ -198,6 +197,7 @@ export function Setup({ onComplete, banner = true, configStore, secretsStore }: 
       {step.kind === 'apiKey' && (
         <Box flexDirection="column">
           <StepLabel step="apiKey" title="API key (stored locally, chmod 600)" />
+          {step.preset.apiKeyUrl && <Text dimColor>Get one at {step.preset.apiKeyUrl}</Text>}
           <TextInput
             label="API key"
             mask

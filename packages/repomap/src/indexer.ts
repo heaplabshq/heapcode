@@ -230,4 +230,30 @@ export class RepoMapIndexer {
       : { recentFiles: this.recentFiles };
     return { paths: [...this.entries.keys()], edges, boost };
   }
+
+  /**
+   * The map as data, in the same centrality order `format()` prints it.
+   *
+   * `format()` already renders this for the *model*, under a character budget
+   * and as flat text. A UI showing a human the same map needs it structured —
+   * symbols to list, imports to link, and no budget, because the reader
+   * scrolls and filters rather than reading it in one prompt. Reparsing the
+   * formatted text to recover that would be inventing a second, lossier
+   * representation of something this class already holds.
+   *
+   * Files with no symbols are kept here, unlike in `format()`: a file that
+   * parsed to nothing is a fact worth being able to see when you are asking
+   * why the map looks thin.
+   */
+  snapshot(): Array<{ path: string; symbols: RepoSymbol[]; imports: string[] }> {
+    const { paths, edges, boost } = this.rankingInputs();
+    const order = new Map(rankByCentrality(paths, edges, boost).map((p, i) => [p, i]));
+    return [...this.entries.entries()]
+      .map(([path, e]) => ({ path, symbols: e.symbols, imports: e.imports }))
+      .sort((a, b) => {
+        const ra = order.get(a.path) ?? Number.MAX_SAFE_INTEGER;
+        const rb = order.get(b.path) ?? Number.MAX_SAFE_INTEGER;
+        return ra === rb ? a.path.localeCompare(b.path) : ra - rb;
+      });
+  }
 }

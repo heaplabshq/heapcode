@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HeapcodeServer } from '@heapcode/core';
 import { startMockServer, type MockBehavior, type MockServer } from '../../core/test/mockServer.js';
-import { ConfigStore } from '../src/config/store.js';
-import { conversationsFile } from '../src/paths.js';
+import { ConfigStore } from '@heapcode/host';
+import { conversationsFile } from '@heapcode/host';
 import { runHeadless, type HeadlessEvent } from '../src/headless.js';
 
 /**

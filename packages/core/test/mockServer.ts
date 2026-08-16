@@ -22,6 +22,8 @@ export type MockBehavior =
 /** Minimal OpenAI-compatible fake for offline, deterministic tests. */
 export async function startMockServer(behavior: MockBehavior): Promise<MockServer> {
   const requests: MockServer['requests'] = [];
+  /** Chat completions served so far — what `sequence` steps through. */
+  let chatCalls = 0;
 
   const server: Server = createServer((req, res) => {
     let raw = '';
@@ -33,9 +35,26 @@ export async function startMockServer(behavior: MockBehavior): Promise<MockServe
         headers: req.headers,
       });
 
+      // `GET /models` gets a stock list ONLY when the scripted behavior is a
+      // chat script (`sse`/`sse-raw`/`sequence`), which describes completions
+      // and has nothing to say about models. Without this, listing models
+      // replied with an SSE chat body and the client died parsing `data: {…}`
+      // as JSON. A test that scripts `json` for /models on purpose still gets
+      // exactly what it asked for — that is how the listModels tests drive
+      // their success and failure cases.
+      const chatScript = behavior.kind === 'sse' || behavior.kind === 'sse-raw' || behavior.kind === 'sequence';
+      if (chatScript && (req.url ?? '').includes('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'mock-model' }, { id: 'other-model' }] }));
+        return;
+      }
+
       let active = behavior;
       if (active.kind === 'sequence') {
-        const index = Math.min(requests.length - 1, active.responses.length - 1);
+        // Counted over chat calls only. Indexing on `requests.length` meant a
+        // `/models` fetch consumed a scripted turn, so the agent's first
+        // request got the second script.
+        const index = Math.min(chatCalls++, active.responses.length - 1);
         active = active.responses[index]!;
       }
 

@@ -332,6 +332,33 @@ export interface CommitMessageParams {
   profileName?: string;
 }
 
+/**
+ * `apply/merge` — hand a whole file and an intended change to the `applyModel`
+ * role and get the merged file back.
+ *
+ * This is `edit_file`'s fallback when search/replace does not match. It lives
+ * on the server for the same reason `git/commitMessage` does: it is a single
+ * model call on a role that can redirect to another profile entirely, and the
+ * host has no provider of its own to make it with.
+ */
+export interface ApplyMergeParams {
+  /** The file as it stands. Hosts cap this before sending; large files are not worth a round trip. */
+  original: string;
+  /** The change to merge in, in whatever shape the caller has — a search/replace pair, a diff, a snippet. */
+  snippet: string;
+  /** Defaults to the session's active profile; the `applyProfile` redirect is applied server-side. */
+  profileName?: string;
+}
+
+export interface ApplyMergeResult {
+  /**
+   * The merged file, or absent when no apply model is configured or the model
+   * returned nothing usable. Absent is a normal answer, not an error: the
+   * caller falls back to reporting the failed edit.
+   */
+  merged?: string;
+}
+
 export interface CommitMessageResult {
   /** Fence- and quote-stripped, ready to drop into a commit box. Empty when the model said nothing usable. */
   message: string;
@@ -522,6 +549,7 @@ export const METHODS = {
   chatSend: 'chat/send',
   listModels: 'provider/listModels',
   commitMessage: 'git/commitMessage',
+  applyMerge: 'apply/merge',
   reviewRun: 'review/run',
   reviewEvent: 'review/event',
   reviewConfirm: 'review/confirm',

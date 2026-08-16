@@ -436,6 +436,48 @@
   .terminal .out { color: var(--ink-dim); }
   .terminal .out-accent { color: var(--cyan); }
 
+  /* The browser UI's mock. Same shell as .terminal — the two sit in adjacent
+     sections and should read as one family — with the command line swapped for
+     an address bar, because that is the whole difference being illustrated. */
+  .browser-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid var(--line-dim);
+    padding: 8px 12px;
+  }
+
+  .browser-dots { display: flex; gap: 5px; flex: 0 0 auto; }
+  .browser-dots i {
+    width: 9px; height: 9px; border-radius: 999px;
+    background: var(--line-dim); display: block;
+  }
+
+  .browser-url {
+    flex: 1 1 auto;
+    border: 1px solid var(--line-dim);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 11.5px;
+    color: var(--ink-dim);
+    /* A long token would otherwise widen the whole card. */
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .browser-body { padding: 14px; display: grid; gap: 10px; }
+
+  .browser-row { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; }
+  .browser-row .who { color: var(--copper); flex: 0 0 auto; }
+  .browser-row .what { color: var(--ink-dim); }
+  .browser-chip {
+    border: 1px solid var(--line-dim);
+    border-radius: 5px;
+    padding: 5px 9px;
+    font-size: 12px;
+    color: var(--cyan);
+  }
+  .browser-chip .path { color: var(--ink-dim); }
+
   .cli-points { margin: 0; padding: 0; list-style: none; }
 
   .cli-points li {
@@ -528,6 +570,7 @@
     </a>
     <div class="nav-links">
       <a href="#cli">CLI</a>
+      <a href="#web">Web</a>
       <a href="#spec">Spec sheet</a>
       <a href="#works-with">Works with</a>
       <a href="#features">Features</a>
@@ -538,7 +581,7 @@
 
 <div class="titleblock">
   <span>DWG NO. <b>HC-0.6.0</b></span>
-  <span>CLI REV. <b>0.3.0</b></span>
+  <span>CLI REV. <b>0.4.0</b></span>
   <span>SCALE <b>LOCAL = CLOUD</b></span>
   <span>LICENSE <b>PolyForm Noncommercial 1.0</b></span>
   <span>TELEMETRY <b>ANONYMOUS, OPT-OUT</b></span>
@@ -550,17 +593,18 @@
       <div>
         <h1>Your code doesn&rsquo;t<br />leave <span class="accent">the building.</span></h1>
         <p class="lede">
-          Heap Code is a <b>model-agnostic</b> AI coding assistant for <b>VS Code and your
-          terminal</b> &mdash; chat, completions, inline edit, an autonomous agent, and AI PR
-          review. Point it at Ollama on your own machine, or bring your own key to OpenAI,
-          Groq, or any OpenAI-compatible endpoint. <b>No account. No proprietary backend.</b>
+          Heap Code is a <b>model-agnostic</b> AI coding assistant for <b>VS Code, your
+          terminal, and your browser</b> &mdash; chat, completions, inline edit, an autonomous
+          agent, and AI PR review. Point it at Ollama on your own machine, or bring your own key
+          to OpenAI, Groq, or any OpenAI-compatible endpoint. <b>No account. No proprietary
+          backend.</b>
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
           <a class="btn btn-ghost" href="#cli">Install the CLI →</a>
           <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">Source</a>
         </div>
-        <p class="fine">Extension v0.6.0 &middot; CLI v0.3.0 &middot; free for personal, internal &amp; noncommercial use</p>
+        <p class="fine">Extension v0.6.0 &middot; CLI v0.4.0 &middot; free for personal, internal &amp; noncommercial use</p>
       </div>
 
       <div class="diagram-card">
@@ -610,7 +654,7 @@
   </section>
 
   <section class="panel wrap" id="cli">
-    <p class="eyebrow">New &mdash; the terminal CLI</p>
+    <p class="eyebrow">The terminal CLI</p>
     <div class="cli-grid">
       <div>
         <div class="terminal">
@@ -643,6 +687,37 @@
     </div>
   </section>
 
+  <section class="panel wrap" id="web">
+    <p class="eyebrow">New &mdash; the browser UI</p>
+    <div class="cli-grid">
+      <div>
+        <div class="terminal">
+          <div class="browser-bar">
+            <span class="browser-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="browser-url">127.0.0.1:7411</span>
+          </div>
+          <div class="browser-body">
+            <div class="browser-row"><span class="who">you</span><span class="what">why is the upload route timing out?</span></div>
+            <div class="browser-chip">⏺ semantic_search <span class="path">upload timeout</span></div>
+            <div class="browser-chip">⏺ read_file <span class="path">src/routes/upload.ts</span></div>
+            <div class="browser-chip">⏺ edit_file <span class="path">src/routes/upload.ts &nbsp;+12 &minus;3</span></div>
+            <div class="browser-row"><span class="what">The multipart parser had no size cap, so a large file&hellip;</span></div>
+          </div>
+        </div>
+        <p class="fine">Runs on your machine &middot; localhost by default &middot; no account, no hosted service</p>
+      </div>
+      <div>
+        <ul class="cli-points">
+          <li><b>One command.</b> <b>heapcode web</b> in any folder opens a browser tab pointed at that workspace &mdash; same agent, same permissions, same checkpoints as the CLI and the extension.</li>
+          <li><b>A real workspace panel.</b> Per-file diffs, one-click revert, a checkpoint timeline to rewind to, the file tree, streamed command output, and what the agent has actually indexed about your code.</li>
+          <li><b>Things a terminal can&rsquo;t do.</b> Paste a screenshot straight into the message box. Get a desktop notification when a long run finishes in a background tab. Read rendered diagrams and HTML the agent built for you.</li>
+          <li><b>Close the tab, keep the run.</b> The server owns the work, not the browser &mdash; reopening reattaches to whatever is still going.</li>
+          <li><b>Localhost by design.</b> A fresh token per launch, never left in the address bar. <b>--host</b> opts in to reaching it from your phone, and says so loudly. Your API keys stay on the server and never reach the page.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
   <section class="panel wrap" id="spec">
     <p class="eyebrow">Spec sheet</p>
     <table class="spec-table">
@@ -664,7 +739,7 @@
       </tr>
       <tr>
         <td>Surfaces</td>
-        <td>VS Code extension and a standalone terminal CLI (<span class="spec-yes">heapcode</span>) &mdash; one shared engine, so behaviour matches.</td>
+        <td>VS Code extension, a standalone terminal CLI (<span class="spec-yes">heapcode</span>), and a local browser UI (<span class="spec-yes">heapcode web</span>) &mdash; one shared engine, so behaviour matches.</td>
       </tr>
       <tr>
         <td>API key storage</td>
@@ -776,7 +851,7 @@
 
 <footer>
   <div class="wrap footer-row">
-    <span class="mono">HEAP CODE &middot; HC-0.6.0 &middot; CLI 0.3.0 &middot; POLYFORM-NC-1.0</span>
+    <span class="mono">HEAP CODE &middot; HC-0.6.0 &middot; CLI 0.4.0 &middot; POLYFORM-NC-1.0</span>
     <div class="cta-row" style="margin:0;">
       <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
       <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">GitHub</a>

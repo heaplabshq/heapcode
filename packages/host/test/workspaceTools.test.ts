@@ -139,6 +139,71 @@ describe('WorkspaceToolExecutor — file operations', () => {
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe(original);
   });
 
+  it('edit_file names the lines it matched, so the retry is not blind', async () => {
+    await writeFile(join(root, 'a.txt'), 'a();\n});\nb();\n});\nc();\n});');
+    const result = await executor.execute(call('edit_file', { path: 'a.txt', search: '});', replace: 'DONE;' }));
+    expect(result.content).toMatch(/lines 2, 4, 6/);
+  });
+
+  it('edit_file replace_all changes every occurrence — the escape hatch when the sites are genuinely identical', async () => {
+    await writeFile(join(root, 'a.txt'), 'a();\n});\nb();\n});\nc();\n});');
+    const result = await executor.execute(
+      call('edit_file', { path: 'a.txt', search: '});', replace: 'DONE;', replace_all: true }),
+    );
+    expect(result.isError).toBeFalsy();
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('a();\nDONE;\nb();\nDONE;\nc();\nDONE;');
+  });
+
+  it('edit_file accepts a stringified replace_all, which smaller models emit', async () => {
+    await writeFile(join(root, 'a.txt'), 'x();\nx();');
+    const result = await executor.execute(
+      call('edit_file', { path: 'a.txt', search: 'x();', replace: 'y();', replace_all: 'true' }),
+    );
+    expect(result.isError).toBeFalsy();
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('y();\ny();');
+  });
+
+  it('edit_file resolves same-code-different-depth by indentation instead of refusing (the nemotron/App.jsx case)', async () => {
+    const original = [
+      'function run(a, b) {',
+      '  if (a) {',
+      '    setLoading(true);',
+      '  }',
+      '  while (b) {',
+      '      setLoading(true);',
+      '  }',
+      '}',
+    ].join('\n');
+    await writeFile(join(root, 'a.js'), original);
+    // Three spaces, not four — a near miss, so the exact pass cannot resolve it
+    // and the trimmed fuzzy pass sees two identical candidates.
+    const result = await executor.execute(
+      call('edit_file', { path: 'a.js', search: '   setLoading(true);', replace: '   setLoading(false);' }),
+    );
+    expect(result.isError).toBeFalsy();
+    // The shallower site — the one the needle's indentation pointed at — and
+    // only it. The rewritten line carries the model's own indentation, which is
+    // how every fuzzy (non-exact) replacement already behaves.
+    expect(await readFile(join(root, 'a.js'), 'utf8')).toBe(
+      original.replace('    setLoading(true);', '   setLoading(false);'),
+    );
+  });
+
+  it('multi_edit supports replace_all per edit', async () => {
+    await writeFile(join(root, 'a.txt'), 'x();\nx();\nz();');
+    const result = await executor.execute(
+      call('multi_edit', {
+        path: 'a.txt',
+        edits: [
+          { search: 'x();', replace: 'y();', replace_all: true },
+          { search: 'z();', replace: 'w();' },
+        ],
+      }),
+    );
+    expect(result.isError).toBeFalsy();
+    expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('y();\ny();\nw();');
+  });
+
   it('multi_edit applies all edits atomically — none written if one fails', async () => {
     await writeFile(join(root, 'a.txt'), 'one\ntwo\nthree');
     const result = await executor.execute(

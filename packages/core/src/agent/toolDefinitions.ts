@@ -68,13 +68,17 @@ export const sharedAgentTools = {
   edit_file: {
     name: 'edit_file',
     description:
-      'Replace an exact section of a file. "search" must match existing content (whitespace-tolerant); provide enough surrounding lines to be unique.',
+      'Replace an exact section of a file. "search" must match existing content (whitespace-tolerant); provide enough surrounding lines to be unique. If the intended sites are genuinely identical, set "replace_all" instead of adding context.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string' },
         search: { type: 'string', description: 'Existing code to replace' },
         replace: { type: 'string', description: 'New code' },
+        replace_all: {
+          type: 'boolean',
+          description: 'Replace every occurrence rather than requiring "search" to be unique. Default false.',
+        },
       },
       required: ['path', 'search', 'replace'],
     },
@@ -192,7 +196,14 @@ export const sharedAgentTools = {
           type: 'array',
           items: {
             type: 'object',
-            properties: { search: { type: 'string', description: 'Existing code to replace' }, replace: { type: 'string', description: 'New code' } },
+            properties: {
+              search: { type: 'string', description: 'Existing code to replace' },
+              replace: { type: 'string', description: 'New code' },
+              replace_all: {
+                type: 'boolean',
+                description: 'Replace every occurrence rather than requiring "search" to be unique. Default false.',
+              },
+            },
             required: ['search', 'replace'],
           },
         },

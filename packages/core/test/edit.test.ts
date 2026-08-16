@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { extractFirstCodeBlock } from '../src/edit/codeBlocks.js';
 import { unifiedDiff } from '../src/edit/diff.js';
-import { applySearchReplace, findBestMatch } from '../src/edit/fuzzyMatch.js';
+import { applySearchReplace, applySearchReplaceAll, describeAmbiguity, findBestMatch } from '../src/edit/fuzzyMatch.js';
 import { minIndent, reindent } from '../src/edit/indent.js';
 import { buildInlineEditMessages } from '../src/prompts/edit.js';
 
@@ -125,6 +125,114 @@ describe('findBestMatch', () => {
     const m = findBestMatch(file, 'return "hello";');
     expect(m?.ambiguous).toBe(false);
     expect(m?.occurrences).toBeUndefined();
+  });
+
+  describe('indentation disambiguation', () => {
+    // The same two statements at three nesting depths. Indentation is the only
+    // thing telling them apart, and the fuzzy pass compares lines trimmed.
+    const depths = [
+      'function run(a, b) {',
+      '  if (a) {',
+      '    setLoading(true);',
+      '    fetchData();',
+      '  }',
+      '  while (b) {',
+      '      setLoading(true);',
+      '      fetchData();',
+      '  }',
+      '}',
+    ].join('\n');
+
+    it('picks the candidate whose indentation is closest when the exact pass misses', () => {
+      // Three spaces, not four — a near miss, so the exact pass can't help.
+      const m = findBestMatch(depths, '   setLoading(true);\n   fetchData();');
+      expect(m?.exact).toBe(false);
+      expect(m?.ambiguous).toBe(false);
+      expect(depths.slice(m!.start, m!.end)).toBe('    setLoading(true);\n    fetchData();');
+    });
+
+    it('picks the deeper one when the needle is quoted at the deeper indentation', () => {
+      const m = findBestMatch(depths, '       setLoading(true);\n       fetchData();');
+      expect(m?.ambiguous).toBe(false);
+      expect(depths.slice(m!.start, m!.end)).toBe('      setLoading(true);\n      fetchData();');
+    });
+
+    it('stays ambiguous when the needle sits equidistant between two depths', () => {
+      // Five spaces is exactly one column from the 4-space site and one from
+      // the 6-space one. Nothing here says which was meant, so it refuses.
+      const m = findBestMatch(depths, '     setLoading(true);\n     fetchData();');
+      expect(m?.ambiguous).toBe(true);
+      expect(m?.occurrences).toBe(2);
+    });
+
+    it('stays ambiguous when the candidates sit at the same depth — indentation cannot break that tie', () => {
+      const twice = ['if (x) {', '  go();', '}', 'if (y) {', '  go();', '}'].join('\n');
+      const m = findBestMatch(twice, 'go();\n');
+      expect(m?.ambiguous).toBe(true);
+      expect(m?.occurrences).toBe(2);
+    });
+
+    it('survives a CRLF file, which defeats the exact pass on every needle', () => {
+      const crlf = depths.replace(/\n/g, '\r\n');
+      const m = findBestMatch(crlf, '    setLoading(true);\n    fetchData();');
+      expect(m?.exact).toBe(false);
+      expect(m?.ambiguous).toBe(false);
+      // The span runs to the end of the matched line, trailing \r included.
+      expect(crlf.slice(m!.start, m!.end)).toBe('    setLoading(true);\r\n    fetchData();\r');
+    });
+  });
+
+  it('reports the 1-based line of every match, so the refusal can say where they are', () => {
+    const m = findBestMatch('a();\n});\nb();\n});\nc();\n});', '});');
+    expect(m?.lines).toEqual([2, 4, 6]);
+  });
+});
+
+describe('describeAmbiguity', () => {
+  it('names the lines and points at replace_all', () => {
+    const m = findBestMatch('a();\n});\nb();\n});\nc();\n});', '});')!;
+    const message = describeAmbiguity(m, 'src/App.jsx');
+    expect(message).toContain('matches 3 different places in src/App.jsx');
+    expect(message).toContain('lines 2, 4, 6');
+    expect(message).toContain('replace_all');
+  });
+
+  it('caps the list rather than printing hundreds of line numbers', () => {
+    const many = Array.from({ length: 25 }, () => 'x();').join('\n');
+    const message = describeAmbiguity(findBestMatch(many, 'x();')!, 'a.js');
+    expect(message).toContain('… (15 more)');
+  });
+});
+
+describe('applySearchReplaceAll', () => {
+  it('replaces every occurrence — the answer to an ambiguity no context can resolve', () => {
+    const src = 'a();\n});\nb();\n});\nc();\n});';
+    const result = applySearchReplaceAll(src, '});', 'DONE;');
+    expect(result?.count).toBe(3);
+    expect(result?.text).toBe('a();\nDONE;\nb();\nDONE;\nc();\nDONE;');
+  });
+
+  it('leaves each site’s indentation alone, rather than restating whole lines', () => {
+    const src = ['if (x) {', '  go();', '}', 'if (y) {', '    go();', '}'].join('\n');
+    const result = applySearchReplaceAll(src, 'go();', 'stop();');
+    expect(result?.count).toBe(2);
+    expect(result?.text).toBe(['if (x) {', '  stop();', '}', 'if (y) {', '    stop();', '}'].join('\n'));
+  });
+
+  it('falls back to the fuzzy pass when the search text is nowhere literal', () => {
+    const src = ['if (x) {', '  go();', '}', 'if (y) {', '  go();', '}'].join('\n');
+    // Mangled indentation on a multi-line needle — no literal occurrence.
+    const result = applySearchReplaceAll(src, 'if (x) {\ngo();\n}', 'run();');
+    expect(result?.count).toBe(1);
+    expect(result?.text).toBe(['run();', 'if (y) {', '  go();', '}'].join('\n'));
+  });
+
+  it('returns undefined when nothing matched, so "no match" stays distinguishable', () => {
+    expect(applySearchReplaceAll('a();', 'nope();', 'x')).toBeUndefined();
+  });
+
+  it('does not corrupt the file with a self-overlapping needle', () => {
+    expect(applySearchReplaceAll('aaa', 'aa', 'b')?.text).toBe('ba');
   });
 });
 

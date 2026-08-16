@@ -3,6 +3,8 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   applySearchReplace,
+  applySearchReplaceAll,
+  describeAmbiguity,
   buildEditSnippet,
   checkPackageExists,
   checkSyntax,
@@ -29,6 +31,7 @@ import {
   sharedAgentTools as T,
   truncate,
   unifiedDiff,
+  wantsReplaceAll,
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
@@ -454,18 +457,22 @@ export class WorkspaceToolExecutor {
         const search = String(a.search ?? '');
         const replace = String(a.replace ?? '');
         const match = findBestMatch(current, search);
-        if (match?.ambiguous) {
-          return fail(
-            `The "search" text matches ${match.occurrences} different places in ${a.path} — refusing to guess ` +
-              'which one. Include more surrounding lines so the search text is unique to the intended location.',
-          );
+        const all = wantsReplaceAll(call.args.replace_all);
+        let replacedCount = 0;
+        let next: string | undefined;
+        if (all) {
+          const result = applySearchReplaceAll(current, search, replace);
+          next = result?.text;
+          replacedCount = result?.count ?? 0;
+        } else {
+          next = applySearchReplace(current, search, replace);
         }
-        let next = applySearchReplace(current, search, replace);
         let viaApplyModel = false;
         // The exact/fuzzy matcher didn't find "search" — before failing outright (which
         // costs a full agent-model retry round-trip), try the fast-apply model: it gets
         // both what should disappear and what should appear, so it can often place the
         // change even when the agent's search text has drifted slightly from the file.
+        // The ambiguity refusal sits after this for the same reason.
         if (next === undefined && this.applyMerge && current.length <= MAX_APPLY_MERGE_CHARS) {
           const merged = await this.applyMerge(current, buildEditSnippet(search, replace));
           if (merged !== undefined && merged.trim() && merged !== current) {
@@ -474,6 +481,7 @@ export class WorkspaceToolExecutor {
           }
         }
         if (next === undefined) {
+          if (match?.ambiguous) return fail(describeAmbiguity(match, String(a.path)));
           return fail(
             `The "search" text was not found in ${a.path}. ${nearbyHint(current, search)}` +
               'Provide the exact existing code (copy it from read_file output, without the line numbers).',
@@ -491,7 +499,7 @@ export class WorkspaceToolExecutor {
         await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(next));
         const diff = unifiedDiff(current, next);
         return ok(
-          `Edited ${a.path}.${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}${diff ? `\n\n${diff}` : ''}`,
+          `Edited ${a.path}.${all && !viaApplyModel ? ` (replaced ${replacedCount} occurrences)` : ''}${viaApplyModel ? ' (search text did not match exactly — merged via the fast-apply model instead)' : ''}${diff ? `\n\n${diff}` : ''}`,
         );
       }
       case 'rename_file': {
@@ -596,7 +604,7 @@ export class WorkspaceToolExecutor {
       case 'multi_edit': {
         const uri = this.resolve(a.path);
         const edits = Array.isArray(call.args.edits)
-          ? (call.args.edits as Array<{ search?: unknown; replace?: unknown }>)
+          ? (call.args.edits as Array<{ search?: unknown; replace?: unknown; replace_all?: unknown }>)
           : [];
         if (edits.length === 0) return fail('No edits given.');
         const original = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
@@ -604,15 +612,18 @@ export class WorkspaceToolExecutor {
         // Apply all in memory first — nothing is written unless every edit lands.
         for (let i = 0; i < edits.length; i++) {
           const search = String(edits[i]!.search ?? '');
+          const replacement = String(edits[i]!.replace ?? '');
           const match = findBestMatch(text, search);
-          if (match?.ambiguous) {
+          const next =
+            wantsReplaceAll(edits[i]!.replace_all)
+              ? applySearchReplaceAll(text, search, replacement)?.text
+              : applySearchReplace(text, search, replacement);
+          if (next === undefined && match?.ambiguous) {
             return fail(
-              `Edit ${i + 1}/${edits.length}: "search" matches ${match.occurrences} different places in ` +
-                `${a.path} (earlier edits were NOT applied) — refusing to guess which one. Include more ` +
-                'surrounding lines so the search text is unique to the intended location.',
+              describeAmbiguity(match, String(a.path), `Edit ${i + 1}/${edits.length}: "search"`) +
+                ' Earlier edits were NOT applied.',
             );
           }
-          const next = applySearchReplace(text, search, String(edits[i]!.replace ?? ''));
           if (next === undefined) {
             return fail(
               `Edit ${i + 1}/${edits.length}: "search" not found in ${a.path} (earlier edits were NOT applied). ` +

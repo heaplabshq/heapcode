@@ -133,8 +133,28 @@ export function App(): JSX.Element {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   /** Text the global `/` shortcut hands to the composer; cleared once used. */
   const [seed, setSeed] = useState<string>();
-  const [panelOpen, setPanelOpen] = useState(true);
+  /**
+   * The workspace panel, closed until asked for.
+   *
+   * It opened by default, which meant every new session started with half the
+   * window given to a diff list that is empty until the agent has done
+   * something — the conversation, which is the thing you came to have, was
+   * squeezed into what was left. The changed-file count on the Workspace
+   * button is the affordance that says when there is something in there.
+   *
+   * Remembered afterwards, like the rail: opening it is a statement about how
+   * you want to work, and re-making that choice on every reload is exactly the
+   * small friction this is meant to remove.
+   */
+  const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem('heapcode.panel') === 'open');
   const [panelTab, setPanelTab] = useState<PanelTab>('changes');
+
+  // One effect rather than a write at each of the eight places that open the
+  // panel — including the ones the app opens for you, like a new artifact or a
+  // clicked path. Whatever state you were left in is the one to come back to.
+  useEffect(() => {
+    localStorage.setItem('heapcode.panel', panelOpen ? 'open' : 'closed');
+  }, [panelOpen]);
   const [changes, setChanges] = useState<UiChangedFile[]>([]);
   const [checkpoints, setCheckpoints] = useState<UiCheckpoint[]>([]);
   const [openPath, setOpenPath] = useState<string>();

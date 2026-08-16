@@ -197,6 +197,7 @@ export function Setup({ onComplete, banner = true, configStore, secretsStore }: 
       {step.kind === 'apiKey' && (
         <Box flexDirection="column">
           <StepLabel step="apiKey" title="API key (stored locally, chmod 600)" />
+          {step.preset.apiKeyUrl && <Text dimColor>Get one at {step.preset.apiKeyUrl}</Text>}
           <TextInput
             label="API key"
             mask

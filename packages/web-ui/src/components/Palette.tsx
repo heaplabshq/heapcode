@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { matchCommands, type Command } from '../commands.js';
+import { useModal } from '../modal.js';
 
 export interface PaletteProps {
   onClose(): void;
@@ -10,24 +11,36 @@ export interface PaletteProps {
 export function Palette({ onClose, onPick }: PaletteProps): JSX.Element {
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
-  const input = useRef<HTMLInputElement>(null);
+  const dialog = useRef<HTMLDivElement>(null);
   const results = matchCommands(query);
 
-  useEffect(() => input.current?.focus(), []);
+  useModal(dialog, onClose);
   useEffect(() => setIndex(0), [query]);
 
   return (
     <div className="modal-scrim" onClick={onClose}>
-      <div className="palette" role="dialog" aria-label="Command palette" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="palette"
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        onClick={(e) => e.stopPropagation()}
+      >
         <input
-          ref={input}
+          data-autofocus
           className="palette-input"
           value={query}
           placeholder="Type a command…"
           aria-label="Command"
+          // The list is the thing being navigated, so the input owns it via
+          // aria-activedescendant rather than moving real focus row to row.
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="palette-list"
+          aria-activedescendant={results[index] ? `palette-${results[index].name.slice(1)}` : undefined}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') return onClose();
             if (e.key === 'ArrowDown') {
               e.preventDefault();
               setIndex((i) => Math.min(i + 1, results.length - 1));
@@ -43,12 +56,13 @@ export function Palette({ onClose, onPick }: PaletteProps): JSX.Element {
             }
           }}
         />
-        <ul className="palette-list">
+        <ul className="palette-list" id="palette-list" role="listbox" aria-label="Commands">
           {results.length === 0 && <li className="palette-empty">No matching command</li>}
           {results.map((c, i) => (
-            <li key={c.name}>
+            <li key={c.name} role="option" id={`palette-${c.name.slice(1)}`} aria-selected={i === index}>
               <button
                 className={`palette-item ${i === index ? 'palette-item-active' : ''}`}
+                tabIndex={-1}
                 onMouseEnter={() => setIndex(i)}
                 onClick={() => onPick(c)}
               >

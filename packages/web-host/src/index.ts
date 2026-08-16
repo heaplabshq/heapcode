@@ -12,6 +12,7 @@
  * with no change to either (§11).
  */
 
+export * from './authLimit.js';
 export * from './protocol.js';
 export * from './server.js';
 export * from './session.js';

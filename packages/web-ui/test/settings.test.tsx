@@ -30,6 +30,17 @@ const SETTINGS: UiSettings = {
       effectiveContextWindow: 32_000,
     },
   ],
+  presets: [
+    { id: 'ollama', label: 'Ollama', defaultBaseUrl: 'http://localhost:11434/v1', requiresApiKey: false, local: true },
+    {
+      id: 'ollama-cloud',
+      label: 'Ollama Cloud',
+      defaultBaseUrl: 'https://ollama.com/v1',
+      requiresApiKey: true,
+      local: false,
+      apiKeyUrl: 'https://ollama.com/settings/keys',
+    },
+  ],
   webSearch: { provider: 'brave', providers: ['brave'], enabled: false, hasKey: false },
   mcpServers: [],
   permissionGrants: [],
@@ -75,6 +86,113 @@ describe('the settings dialog', () => {
     render(<Settings {...props({ focus: 'context' })} />);
     expect(screen.getByRole('heading', { name: 'Providers' })).toBeTruthy();
     expect(screen.getByText('Context window (tokens)')).toBeTruthy();
+  });
+
+  describe('the provider list', () => {
+    /** Opens Providers → Add profile and returns the preset dropdown + URL field. */
+    function openAddProfile() {
+      render(<Settings {...props()} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      return {
+        preset: screen.getAllByRole('combobox').find((el) => el.querySelector('option[value="ollama-cloud"]'))!,
+        baseUrl: screen.getByPlaceholderText('http://localhost:11434/v1') as HTMLInputElement,
+      };
+    }
+
+    it('lists what the host actually supports, under its real label', () => {
+      // The browser bundle used to restate this list itself and went stale:
+      // a preset added in core never showed up here.
+      const { preset } = openAddProfile();
+      expect(screen.getByRole('option', { name: 'Ollama Cloud' })).toBeTruthy();
+      expect(preset.querySelectorAll('option')).toHaveLength(2);
+    });
+
+    it('fills in the endpoint when a provider is picked, instead of leaving it blank', () => {
+      const { preset, baseUrl } = openAddProfile();
+      expect(baseUrl.value).toBe('http://localhost:11434/v1'); // the default preset's own URL
+      fireEvent.change(preset, { target: { value: 'ollama-cloud' } });
+      expect(baseUrl.value).toBe('https://ollama.com/v1');
+    });
+
+    it('does not clobber a base URL the user typed', () => {
+      const { preset } = openAddProfile();
+      const url = screen.getByPlaceholderText('http://localhost:11434/v1');
+      fireEvent.change(url, { target: { value: 'http://my-box.lan:11434/v1' } });
+      fireEvent.change(preset, { target: { value: 'ollama-cloud' } });
+      expect(screen.getByDisplayValue('http://my-box.lan:11434/v1')).toBeTruthy();
+    });
+
+    it('tests the connection and turns the answer into a model dropdown', async () => {
+      const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-oss:120b', 'kimi-k3'] });
+      render(<Settings {...props({ probeProvider })} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+      await waitFor(() => expect(screen.getByText('connected')).toBeTruthy());
+      expect(probeProvider).toHaveBeenCalledWith({
+        preset: 'ollama',
+        baseUrl: 'http://localhost:11434/v1',
+        apiKey: undefined,
+      });
+      expect(screen.getByText('2 models available.')).toBeTruthy();
+
+      // The models it found are now selectable, not something to remember.
+      fireEvent.focus(screen.getByLabelText('Model'));
+      // mousedown, not click — the list is torn down by blur before a click lands.
+      fireEvent.mouseDown(screen.getByRole('option', { name: 'kimi-k3' }));
+      expect((screen.getByLabelText('Model') as HTMLInputElement).value).toBe('kimi-k3');
+    });
+
+    it('surfaces why a connection failed instead of just not listing models', async () => {
+      const probeProvider = vi.fn().mockResolvedValue({ ok: false, models: [], error: 'HTTP 401 Unauthorized' });
+      render(<Settings {...props({ probeProvider })} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+      await waitFor(() => expect(screen.getByText('failed')).toBeTruthy());
+      expect(screen.getByText('HTTP 401 Unauthorized')).toBeTruthy();
+    });
+
+    it('drops a stale result when the endpoint is edited', async () => {
+      const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: ['a'] });
+      render(<Settings {...props({ probeProvider })} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+      await waitFor(() => expect(screen.getByText('connected')).toBeTruthy());
+      // A "connected" badge next to a URL that was never tested is a lie.
+      fireEvent.change(screen.getByPlaceholderText('http://localhost:11434/v1'), {
+        target: { value: 'http://elsewhere:1234/v1' },
+      });
+      expect(screen.queryByText('connected')).toBeNull();
+    });
+
+    it('sends the typed key when testing, so a new provider can be verified before saving', async () => {
+      const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: [] });
+      render(<Settings {...props({ probeProvider })} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      const preset = screen.getAllByRole('combobox').find((el) => el.querySelector('option[value="ollama-cloud"]'))!;
+      fireEvent.change(preset, { target: { value: 'ollama-cloud' } });
+      fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-test' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+      await waitFor(() =>
+        expect(probeProvider).toHaveBeenCalledWith({
+          preset: 'ollama-cloud',
+          baseUrl: 'https://ollama.com/v1',
+          apiKey: 'sk-test',
+        }),
+      );
+    });
+
+    it('says where to get a key for the providers that need one', () => {
+      const { preset } = openAddProfile();
+      fireEvent.change(preset, { target: { value: 'ollama-cloud' } });
+      const link = screen.getByRole('link', { name: 'https://ollama.com/settings/keys' });
+      expect(link.getAttribute('href')).toBe('https://ollama.com/settings/keys');
+    });
   });
 
   it('searches by what a page is for, not just its title', () => {

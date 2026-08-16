@@ -22,6 +22,12 @@ export interface Command {
   kind: CommandKind;
   /** For 'pending': which milestone brings it. */
   milestone?: string;
+  /**
+   * Placeholder for what follows the name, e.g. `<query>`. Its presence is
+   * what tells the composer's menu to complete to `/search ` and wait, rather
+   * than firing a command that can only answer "usage: …".
+   */
+  args?: string;
 }
 
 export const COMMANDS: Command[] = [
@@ -44,15 +50,18 @@ export const COMMANDS: Command[] = [
 
   { name: '/memory', description: 'Show the project instructions & memory the agent sees', kind: 'ui' },
   { name: '/skills', description: 'List available Skills', kind: 'ui' },
-  { name: '/search', description: 'Search the workspace (semantic if indexed, text otherwise)', kind: 'ui' },
+  { name: '/search', description: 'Search the workspace (semantic if indexed, text otherwise)', kind: 'ui', args: '<query>' },
   { name: '/index', description: 'Rebuild the semantic search + repo map indexes', kind: 'ui' },
   { name: '/rewind', description: 'Jump back to a checkpoint', kind: 'ui' },
   { name: '/revert', description: 'Restore every file this session touched', kind: 'ui' },
   { name: '/checkpoints', description: 'List recent checkpoints for this project', kind: 'ui' },
 
-  // W6 leaves this one: the review runs server-side and streams its own event
-  // shape (review/event), which needs a rendering surface of its own.
-  { name: '/pr-review', description: "Review the current branch's PR", kind: 'pending', milestone: 'W8' },
+  {
+    name: '/pr-review',
+    description: "Review the current branch's PR — add \"deep\" for the verification pass",
+    kind: 'ui',
+    args: '[deep]',
+  },
 ];
 
 /** Case-insensitive prefix/substring match, exact-prefix first. */

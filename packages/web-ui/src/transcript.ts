@@ -17,6 +17,14 @@ export interface TextItem {
   text: string;
   /** Still arriving — this one gets the "still writing" marker. */
   streaming?: boolean;
+  /**
+   * Attached images, as data URLs, on a user turn.
+   *
+   * Live-only: the host records that images were attached but not the bytes
+   * (`persistTurn`), so these are gone after a reload. That is deliberate — a
+   * screenshot is megabytes of base64, and conversations.json is read whole.
+   */
+  images?: string[];
 }
 
 export interface ToolItem {
@@ -130,8 +138,11 @@ export function withAssistantNote(t: Transcript, text: string): Transcript {
 }
 
 /** Appends a user turn immediately, so the UI never feels like it dropped input. */
-export function withUserMessage(t: Transcript, text: string): Transcript {
-  return { ...t, items: [...t.items, { kind: 'text', id: `u${t.items.length}`, role: 'user', text }] };
+export function withUserMessage(t: Transcript, text: string, images?: string[]): Transcript {
+  return {
+    ...t,
+    items: [...t.items, { kind: 'text', id: `u${t.items.length}`, role: 'user', text, images }],
+  };
 }
 
 /**

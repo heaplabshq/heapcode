@@ -10,6 +10,7 @@ export interface ProviderCapabilities {
 export type PresetId =
   | 'openai'
   | 'ollama'
+  | 'ollama-cloud'
   | 'azure-openai'
   | 'openrouter'
   | 'together'
@@ -26,6 +27,12 @@ export interface ProviderPreset {
   defaultBaseUrl: string;
   requiresApiKey: boolean;
   local: boolean;
+  /**
+   * Where the user goes to mint a key. Shown at the API-key step of setup —
+   * "paste your API key" is only easy if you already know which of the
+   * provider's several dashboards issues one.
+   */
+  apiKeyUrl?: string;
   /**
    * Sensible defaults for the preset. Real support varies by model —
    * users can override per profile (`capabilities` on the profile).
@@ -50,6 +57,7 @@ export const providerPresets: readonly ProviderPreset[] = [
     defaultBaseUrl: 'https://api.openai.com/v1',
     requiresApiKey: true,
     local: false,
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
     capabilities: caps({ vision: true, maxContext: 128_000 }),
   },
   {
@@ -59,6 +67,18 @@ export const providerPresets: readonly ProviderPreset[] = [
     requiresApiKey: false,
     local: true,
     capabilities: caps({ vision: true }),
+  },
+  {
+    id: 'ollama-cloud',
+    label: 'Ollama Cloud',
+    defaultBaseUrl: 'https://ollama.com/v1',
+    requiresApiKey: true,
+    local: false,
+    apiKeyUrl: 'https://ollama.com/settings/keys',
+    // Same OpenAI-compatible surface as local Ollama, but the hosted catalogue
+    // is chat-only — there is no embedding model behind ollama.com/v1, so
+    // semantic search still needs a local Ollama (or another) profile.
+    capabilities: caps({ vision: true, embeddings: false, maxContext: 128_000 }),
   },
   {
     id: 'azure-openai',
@@ -74,6 +94,7 @@ export const providerPresets: readonly ProviderPreset[] = [
     defaultBaseUrl: 'https://openrouter.ai/api/v1',
     requiresApiKey: true,
     local: false,
+    apiKeyUrl: 'https://openrouter.ai/keys',
     capabilities: caps({ vision: true, maxContext: 128_000 }),
   },
   {
@@ -82,6 +103,7 @@ export const providerPresets: readonly ProviderPreset[] = [
     defaultBaseUrl: 'https://api.together.xyz/v1',
     requiresApiKey: true,
     local: false,
+    apiKeyUrl: 'https://api.together.xyz/settings/api-keys',
     capabilities: caps(),
   },
   {
@@ -90,6 +112,7 @@ export const providerPresets: readonly ProviderPreset[] = [
     defaultBaseUrl: 'https://api.groq.com/openai/v1',
     requiresApiKey: true,
     local: false,
+    apiKeyUrl: 'https://console.groq.com/keys',
     capabilities: caps({ embeddings: false, maxContext: 128_000 }),
   },
   {

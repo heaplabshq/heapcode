@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useModal } from '../modal.js';
 import {
   UI_MODEL_ROLES,
+  type UiPreset,
+  type UiProbeProviderParams,
+  type UiProbeProviderResult,
   type UiProfile,
   type UiSaveProfileParams,
   type UiSettings,
@@ -22,6 +26,8 @@ export interface SettingsProps {
   onSaveProfile(profile: UiSaveProfileParams['profile'], apiKey?: string): void;
   /** Models a given profile's endpoint serves, for the role fields' type-ahead. */
   listModels?(profileName: string): Promise<string[]>;
+  /** Tests an endpoint that isn't a saved profile yet, and reports what it serves. */
+  probeProvider?(params: UiProbeProviderParams): Promise<UiProbeProviderResult>;
   /** Lazy, because both read files: only fetched when their page is opened. */
   loadSkills?(): Promise<string>;
   loadMemory?(): Promise<string>;
@@ -75,12 +81,22 @@ export function Settings(props: SettingsProps): JSX.Element {
     ? PAGES.filter((p) => `${p.label} ${p.keywords}`.toLowerCase().includes(q))
     : PAGES;
   const groups = ['Settings', 'Customize'] as const;
+  const dialog = useRef<HTMLDivElement>(null);
+  useModal(dialog, props.onClose);
 
   return (
     <div className="modal-scrim" onClick={props.onClose}>
-      <div className="modal modal-wide" role="dialog" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal modal-wide"
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        onClick={(e) => e.stopPropagation()}
+      >
         <nav className="settings-nav" aria-label="Settings sections">
           <input
+            data-autofocus
             className="settings-search"
             value={query}
             placeholder="Search"
@@ -115,7 +131,14 @@ export function Settings(props: SettingsProps): JSX.Element {
           </button>
 
           {!s ? (
-            <div className="modal-body">Loading…</div>
+            // Placeholder fields rather than the word "Loading": the dialog is
+            // a fixed height, so an empty pane reads as a broken settings
+            // screen for however long the round trip takes.
+            <div className="modal-body skeleton" aria-hidden="true">
+              {[70, 45, 85, 60, 50].map((w, i) => (
+                <div className="skeleton-line" key={i} style={{ width: `${w}%` }} />
+              ))}
+            </div>
           ) : (
             <div className="modal-body">
               {page === 'general' && (
@@ -153,6 +176,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                       <ProfileRow
                         key={p.name}
                         profile={p}
+                        presets={s.presets?.length ? s.presets : FALLBACK_PRESETS}
                         otherProfiles={s.profiles.map((o) => o.name).filter((n) => n !== p.name)}
                         startOpen={props.focus === 'context' && p.active}
                         onUse={() => props.onUseProfile(p.name)}
@@ -165,10 +189,15 @@ export function Settings(props: SettingsProps): JSX.Element {
                         }
                         onSaveProfile={(patch) => props.onSaveProfile(patch)}
                         listModels={props.listModels}
+                        probeProvider={props.probeProvider}
                       />
                     ))}
                   </ul>
-                  <AddProfile onAdd={props.onSaveProfile} />
+                  <AddProfile
+                    presets={s.presets?.length ? s.presets : FALLBACK_PRESETS}
+                    probeProvider={props.probeProvider}
+                    onAdd={props.onSaveProfile}
+                  />
                 </Section>
               )}
 
@@ -420,6 +449,7 @@ function SecretField({
 
 function ProfileRow({
   profile,
+  presets,
   otherProfiles,
   startOpen,
   onUse,
@@ -427,8 +457,10 @@ function ProfileRow({
   onSaveKey,
   onSaveProfile,
   listModels,
+  probeProvider,
 }: {
   profile: UiProfile;
+  presets: UiPreset[];
   /** Sibling profile names, for "run this role on another provider". */
   otherProfiles: string[];
   startOpen?: boolean;
@@ -437,8 +469,10 @@ function ProfileRow({
   onSaveKey(key: string): void;
   onSaveProfile(p: UiSaveProfileParams['profile']): void;
   listModels?(profileName: string): Promise<string[]>;
+  probeProvider?: SettingsProps['probeProvider'];
 }): JSX.Element {
   const [editing, setEditing] = useState(Boolean(startOpen));
+  const probe = useProbe(probeProvider);
   const [draft, setDraft] = useState<UiProfileDraft>({
     name: profile.name,
     preset: profile.preset,
@@ -485,14 +519,27 @@ function ProfileRow({
             <input
               className="card-input"
               value={draft.baseUrl}
-              onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+              onChange={(e) => {
+                probe.reset();
+                setDraft({ ...draft, baseUrl: e.target.value });
+              }}
             />
           </Field>
+          {probeProvider && (
+            <ProbeButton
+              probe={probe}
+              disabled={!draft.baseUrl.trim()}
+              params={{ preset: draft.preset, baseUrl: draft.baseUrl, useStoredKeyFor: profile.name }}
+            />
+          )}
           <Field label="Model">
             <ModelInput
               value={draft.model}
               aria-label="Model"
               onChange={(model) => setDraft({ ...draft, model })}
+              // Untested: fall back to listing through the saved profile, which
+              // is what this field has always done.
+              models={probe.state === 'idle' ? undefined : probe.models}
               listModels={() => listModels?.(profile.name) ?? Promise.resolve([])}
             />
           </Field>
@@ -500,11 +547,20 @@ function ProfileRow({
             <select
               className="select"
               value={draft.preset}
-              onChange={(e) => setDraft({ ...draft, preset: e.target.value })}
+              onChange={(e) => {
+                const next = presets.find((p) => p.id === e.target.value);
+                if (!next) return;
+                const current = presets.find((p) => p.id === draft.preset);
+                // Only follow the new preset's endpoint if the old one was still
+                // its preset's default — never overwrite a URL the user set.
+                const untouched = !draft.baseUrl || draft.baseUrl === current?.defaultBaseUrl;
+                setDraft({ ...draft, preset: next.id, baseUrl: untouched ? next.defaultBaseUrl : draft.baseUrl });
+              }}
             >
-              {PRESETS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                  {p.local ? ' (local)' : ''}
                 </option>
               ))}
             </select>
@@ -569,32 +625,100 @@ function fmtTokens(n: number): string {
 }
 
 /**
- * Must match core's `PresetId` exactly — the host rejects anything else, and
- * "azure" (the real id is `azure-openai`) used to be silently downgraded to
- * the "custom" preset's capabilities.
+ * Only the fallback for a host too old to send its own list. The hardcoded
+ * copy that used to live here had to match core's `PresetId` exactly and
+ * silently drifted from it — a preset added in core simply never appeared in
+ * the browser. `settings.presets` is the real source now.
  */
-const PRESETS = [
-  'openai',
-  'ollama',
-  'azure-openai',
-  'openrouter',
-  'together',
-  'groq',
-  'nvidia-nim',
-  'lmstudio',
-  'vllm',
-  'localai',
-  'custom',
+const FALLBACK_PRESETS: UiPreset[] = [
+  { id: 'custom', label: 'Custom OpenAI-compatible endpoint', defaultBaseUrl: '', requiresApiKey: false, local: false },
 ];
 
+/**
+ * "Test connection", and the model list that comes back from it.
+ *
+ * Kept as one piece of state because they are one action: the answer to "does
+ * this endpoint work" is the list of what it serves, and asking twice (once to
+ * verify, once to populate the dropdown) would be two round-trips for one
+ * question. The list is handed to ModelInput so picking a model is a choice
+ * rather than a recall test — while still leaving it typeable, since endpoints
+ * that serve models they refuse to enumerate are common.
+ */
+function useProbe(probe: SettingsProps['probeProvider']): {
+  state: 'idle' | 'testing' | 'ok' | 'failed';
+  models: string[];
+  note?: string;
+  run(params: UiProbeProviderParams): void;
+  reset(): void;
+} {
+  const [state, setState] = useState<'idle' | 'testing' | 'ok' | 'failed'>('idle');
+  const [models, setModels] = useState<string[]>([]);
+  const [note, setNote] = useState<string>();
+
+  return {
+    state,
+    models,
+    note,
+    reset: () => {
+      setState('idle');
+      setModels([]);
+      setNote(undefined);
+    },
+    run: (params) => {
+      if (!probe) return;
+      setState('testing');
+      setNote(undefined);
+      void probe(params)
+        .then((r) => {
+          setModels(r.models);
+          setState(r.ok ? 'ok' : 'failed');
+          setNote(r.error ?? (r.ok ? `${r.models.length} models available.` : undefined));
+        })
+        .catch((err: Error) => {
+          setState('failed');
+          setNote(err.message);
+        });
+    },
+  };
+}
+
+function ProbeButton({
+  probe,
+  params,
+  disabled,
+}: {
+  probe: ReturnType<typeof useProbe>;
+  params: UiProbeProviderParams;
+  disabled?: boolean;
+}): JSX.Element {
+  return (
+    <div className="field-row probe-row">
+      <button className="btn" disabled={disabled || probe.state === 'testing'} onClick={() => probe.run(params)}>
+        {probe.state === 'testing' ? 'Testing…' : 'Test connection'}
+      </button>
+      {probe.state === 'ok' && <span className="badge badge-ok">connected</span>}
+      {probe.state === 'failed' && <span className="badge badge-off">failed</span>}
+      {probe.note && <span className="hint probe-note">{probe.note}</span>}
+    </div>
+  );
+}
+
 function AddProfile({
+  presets,
+  probeProvider,
   onAdd,
 }: {
+  presets: UiPreset[];
+  probeProvider?: SettingsProps['probeProvider'];
   onAdd(p: UiSaveProfileParams['profile'], key?: string): void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<UiProfileDraft>({ name: '', preset: 'openai', baseUrl: '', model: '' });
+  const first = presets[0]!;
+  const blank = (): UiProfileDraft => ({ name: '', preset: first.id, baseUrl: first.defaultBaseUrl, model: '' });
+  const [draft, setDraft] = useState<UiProfileDraft>(blank);
   const [key, setKey] = useState('');
+  const preset = presets.find((p) => p.id === draft.preset);
+  const probe = useProbe(probeProvider);
 
   if (!open) {
     return (
@@ -612,10 +736,21 @@ function AddProfile({
         <input className="card-input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
       </Field>
       <Field label="Preset">
-        <select className="select" value={draft.preset} onChange={(e) => setDraft({ ...draft, preset: e.target.value })}>
-          {PRESETS.map((p) => (
-            <option key={p} value={p}>
-              {p}
+        <select
+          className="select"
+          value={draft.preset}
+          onChange={(e) => {
+            const next = presets.find((p) => p.id === e.target.value);
+            if (!next) return;
+            // Follow the new preset's endpoint unless the user typed their own.
+            const untouched = !draft.baseUrl || draft.baseUrl === preset?.defaultBaseUrl;
+            setDraft({ ...draft, preset: next.id, baseUrl: untouched ? next.defaultBaseUrl : draft.baseUrl });
+          }}
+        >
+          {presets.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+              {p.local ? ' (local)' : ''}
             </option>
           ))}
         </select>
@@ -624,12 +759,50 @@ function AddProfile({
         <input
           className="card-input"
           value={draft.baseUrl}
-          placeholder="http://localhost:11434/v1"
-          onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+          placeholder={preset?.defaultBaseUrl || 'http://localhost:11434/v1'}
+          onChange={(e) => {
+            probe.reset(); // a result for the previous endpoint is worse than none
+            setDraft({ ...draft, baseUrl: e.target.value });
+          }}
         />
       </Field>
+      <Field label={preset?.requiresApiKey ? 'API key' : 'API key (optional)'}>
+        <input
+          className="card-input"
+          type="password"
+          value={key}
+          onChange={(e) => {
+            probe.reset();
+            setKey(e.target.value);
+          }}
+          autoComplete="off"
+        />
+      </Field>
+      {preset?.apiKeyUrl && (
+        <div className="hint">
+          Get a key at{' '}
+          <a href={preset.apiKeyUrl} target="_blank" rel="noreferrer noopener">
+            {preset.apiKeyUrl}
+          </a>
+        </div>
+      )}
+      {probeProvider && (
+        <ProbeButton
+          probe={probe}
+          disabled={!draft.baseUrl.trim()}
+          params={{ preset: draft.preset, baseUrl: draft.baseUrl, apiKey: key || undefined }}
+        />
+      )}
       <Field label="Model">
-        <input className="card-input" value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} />
+        <ModelInput
+          value={draft.model}
+          aria-label="Model"
+          placeholder={probe.models.length ? 'Pick or type a model id' : 'Test the connection to list models'}
+          onChange={(model) => setDraft({ ...draft, model })}
+          // Already fetched by the test above — hand it straight over rather
+          // than making the field ask the endpoint a second time.
+          models={probe.models}
+        />
       </Field>
       <NumberField
         label="Context window (tokens, optional)"
@@ -643,16 +816,13 @@ function AddProfile({
         placeholder="provider default"
         onChange={(maxTokens) => setDraft({ ...draft, maxTokens })}
       />
-      <Field label="API key (optional)">
-        <input className="card-input" type="password" value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" />
-      </Field>
       <div className="field-row">
         <button
           className="btn btn-primary"
           disabled={!valid}
           onClick={() => {
             onAdd(toSaveParams(draft), key || undefined);
-            setDraft({ name: '', preset: 'openai', baseUrl: '', model: '' });
+            setDraft(blank());
             setKey('');
             setOpen(false);
           }}

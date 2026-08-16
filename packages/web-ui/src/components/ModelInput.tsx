@@ -10,7 +10,14 @@ export interface ModelInputProps {
    * never on mount — a profile editor with seven role fields would otherwise
    * fire seven provider round-trips just by being opened.
    */
-  listModels(): Promise<string[]>;
+  listModels?(): Promise<string[]>;
+  /**
+   * Models already in hand, for callers that just fetched them (the "test
+   * connection" flow). Takes precedence over `listModels`, and unlike it is
+   * re-read as it changes — the lazy path caches its first answer, so a field
+   * focused before the test would otherwise be stuck on the empty list.
+   */
+  models?: string[];
 }
 
 /**
@@ -32,9 +39,10 @@ export function ModelInput({
   onChange,
   placeholder,
   listModels,
+  models: given,
   'aria-label': label,
 }: ModelInputProps): JSX.Element {
-  const [models, setModels] = useState<string[]>();
+  const [fetched, setFetched] = useState<string[]>();
   const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -51,11 +59,11 @@ export function ModelInput({
   }, [open]);
 
   const load = (): void => {
-    if (models || state === 'loading') return;
+    if (given || fetched || state === 'loading' || !listModels) return;
     setState('loading');
     void listModels()
       .then((list) => {
-        setModels(list);
+        setFetched(list);
         setState('idle');
       })
       .catch(() => setState('failed'));
@@ -63,6 +71,7 @@ export function ModelInput({
 
   // Filtered by what is typed, so the field narrows as you go. An exact match
   // is not filtered away — it is simply the only thing left.
+  const models = given ?? fetched;
   const matches = (models ?? []).filter((m) => m.toLowerCase().includes(value.trim().toLowerCase()));
   const showList = open && matches.length > 0;
 

@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { UiAskUserParams, UiPermissionRequestParams } from '@heapcode/web-host/protocol';
+import type {
+  UiAskUserParams,
+  UiPermissionRequestParams,
+  UiReviewConfirmParams,
+} from '@heapcode/web-host/protocol';
+import { renderMarkdown } from '../markdown.js';
 
 export interface PendingPermission extends UiPermissionRequestParams {
   resolve(choice: 'allow' | 'session' | 'always' | 'deny'): void;
@@ -7,6 +12,10 @@ export interface PendingPermission extends UiPermissionRequestParams {
 
 export interface PendingAsk extends UiAskUserParams {
   resolve(answer: string): void;
+}
+
+export interface PendingReview extends UiReviewConfirmParams {
+  resolve(ok: boolean): void;
 }
 
 /**
@@ -43,6 +52,54 @@ export function PermissionCard({ pending }: { pending: PendingPermission }): JSX
         <button className="btn btn-danger" onClick={() => pending.resolve('deny')}>
           Deny
         </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The PR review gate.
+ *
+ * The full preview is rendered, not summarized, and the destructive-looking
+ * button is the one that publishes — because that is the direction that cannot
+ * be undone. "Don't post" takes the initial focus for the same reason: an
+ * absent-minded Enter should discard the review, not comment on a colleague's
+ * PR under the user's name.
+ */
+export function ReviewCard({ pending }: { pending: PendingReview }): JSX.Element {
+  const cancel = useRef<HTMLButtonElement>(null);
+  useEffect(() => cancel.current?.focus(), []);
+
+  const { pr, findingCount, inlineCount, plainText } = pending;
+
+  return (
+    <div className="card card-review" role="alertdialog" aria-label="Post this review?">
+      <div className="card-title">
+        <span className="card-badge">public</span>
+        Post this review on PR #{pr.number}?
+      </div>
+      <div className="card-note">
+        {plainText
+          ? 'The model produced no structured findings — this posts as one plain comment.'
+          : `${findingCount} finding${findingCount === 1 ? '' : 's'}, ${inlineCount} as inline comment${inlineCount === 1 ? '' : 's'}.`}{' '}
+        Posts publicly on GitHub as you.
+      </div>
+      <div
+        className="card-preview markdown"
+        // Sanitized in renderMarkdown — this is model output, and it is about to
+        // be shown at full length rather than as a one-line description.
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(pending.preview) }}
+      />
+      <div className="card-actions">
+        <button ref={cancel} className="btn" onClick={() => pending.resolve(false)}>
+          Don&apos;t post
+        </button>
+        <button className="btn btn-danger" onClick={() => pending.resolve(true)}>
+          {plainText ? 'Post comment' : 'Post review'}
+        </button>
+        <a className="card-link" href={pr.url} target="_blank" rel="noreferrer noopener">
+          Open PR ↗
+        </a>
       </div>
     </div>
   );

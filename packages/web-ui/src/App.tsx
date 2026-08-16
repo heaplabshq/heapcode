@@ -8,6 +8,8 @@ import {
   type UiEventParams,
   type UiHelloResult,
   type UiListModelsResult,
+  type UiProbeProviderParams,
+  type UiProbeProviderResult,
   type UiOpenConversationResult,
   type UiPermissionRequestParams,
   type UiArtifactMeta,
@@ -21,6 +23,9 @@ import {
   type UiFileTreeResult,
   type UiReadFileResult,
   type UiResetPermissionsResult,
+  type UiReviewConfirmParams,
+  type UiReviewEventParams,
+  type UiReviewResult,
   type UiSearchResult,
   type UiSendMessageResult,
   type UiSettings,
@@ -36,9 +41,17 @@ import { Panel, type PanelTab } from './components/Panel.js';
 import { terminalEntries } from './terminal.js';
 import { findCommand, type Command } from './commands.js';
 import { Palette } from './components/Palette.js';
+import { Shortcuts } from './components/Shortcuts.js';
 import { Settings, type UiProfileDraft } from './components/Settings.js';
 import { RpcClient } from './rpc.js';
-import { AskUserCard, PermissionCard, type PendingAsk, type PendingPermission } from './components/Cards.js';
+import {
+  AskUserCard,
+  PermissionCard,
+  ReviewCard,
+  type PendingAsk,
+  type PendingPermission,
+  type PendingReview,
+} from './components/Cards.js';
 import { Composer } from './components/Composer.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { MessageList } from './components/MessageList.js';
@@ -46,7 +59,10 @@ import { Sidebar } from './components/Sidebar.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { ChatTools } from './components/ChatTools.js';
+import { Announcer } from './components/Announcer.js';
+import { useFinishNotification } from './notify.js';
 import {
+  activityOf,
   concat,
   emptyTranscript,
   fromMessages,
@@ -56,6 +72,15 @@ import {
   withUserMessage,
   type Transcript,
 } from './transcript.js';
+
+/** The last thing the agent said, for the screen-reader announcement on finish. */
+function lastReplyOf(t: Transcript): string | undefined {
+  for (let i = t.items.length - 1; i >= 0; i--) {
+    const item = t.items[i]!;
+    if (item.kind === 'text' && item.role === 'assistant') return item.text;
+  }
+  return undefined;
+}
 
 /** Permission modes, least to most autonomous — same order the CLI lists them. */
 const MODES = ['plan', 'default', 'auto-edit', 'full-auto'];
@@ -84,6 +109,7 @@ export function App(): JSX.Element {
   );
   const [permission, setPermission] = useState<PendingPermission>();
   const [ask, setAsk] = useState<PendingAsk>();
+  const [review, setReview] = useState<PendingReview>();
   const [runId, setRunId] = useState<string>();
   /**
    * The run the *host* says is active, which is not always one this tab
@@ -104,6 +130,9 @@ export function App(): JSX.Element {
   /** Which part of Settings the user was reaching for, if they said. */
   const [settingsFocus, setSettingsFocus] = useState<'context'>();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  /** Text the global `/` shortcut hands to the composer; cleared once used. */
+  const [seed, setSeed] = useState<string>();
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelTab, setPanelTab] = useState<PanelTab>('changes');
   const [changes, setChanges] = useState<UiChangedFile[]>([]);
@@ -225,6 +254,28 @@ export function App(): JSX.Element {
       });
     });
 
+    // The review's own progress stream. Rendered as transcript notes rather
+    // than as a banner: a review takes minutes and emits a dozen of these, and
+    // a banner that replaces itself shows only the last one.
+    rpc.onNotification(UI_METHODS.reviewEvent, (raw) => {
+      const { kind, message } = raw as UiReviewEventParams;
+      if (kind === 'error') setError(message);
+      else setTranscript((t) => withAssistantNote(t, `**PR review** — ${message}`));
+    });
+
+    rpc.onRequest(UI_METHODS.reviewConfirm, (raw) => {
+      const params = raw as UiReviewConfirmParams;
+      return new Promise((resolve) => {
+        setReview({
+          ...params,
+          resolve: (ok) => {
+            setReview(undefined);
+            resolve({ ok });
+          },
+        });
+      });
+    });
+
     rpc.onRequest(UI_METHODS.askUser, (raw) => {
       const params = raw as UiAskUserParams;
       return new Promise((resolve) => {
@@ -326,6 +377,11 @@ export function App(): JSX.Element {
     [rpc],
   );
 
+  const probeProvider = useCallback(
+    (params: UiProbeProviderParams) => rpc.request<UiProbeProviderResult>(UI_METHODS.probeProvider, params),
+    [rpc],
+  );
+
   const loadSkills = useCallback(
     () => rpc.request<{ skills: string }>(UI_METHODS.skills).then((r) => r.skills),
     [rpc],
@@ -336,28 +392,15 @@ export function App(): JSX.Element {
     [rpc],
   );
 
+  /** Stable identity: the composer's seed effect depends on it. */
+  const clearSeed = useCallback(() => setSeed(undefined), []);
+
   const refreshSettings = useCallback(() => {
     void rpc
       .request<UiSettings>(UI_METHODS.settings)
       .then(setSettings)
       .catch((err: Error) => setError(err.message));
   }, [rpc]);
-
-  // ⌘K / Ctrl+K anywhere opens the palette; Escape closes whatever is on top.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setPaletteOpen((v) => !v);
-      }
-      if (e.key === 'Escape') {
-        setPaletteOpen(false);
-        setSettingsOpen(false);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   const openSettings = useCallback(
     (focus?: 'context') => {
@@ -368,12 +411,74 @@ export function App(): JSX.Element {
     [refreshSettings],
   );
 
+  /**
+   * The global keyboard map (`components/Shortcuts.tsx` is the written form).
+   *
+   * Two rules keep this from stealing keys people are trying to type:
+   * unmodified shortcuts (`?`, `/`) only fire when focus is not in a text
+   * field, and modified ones fire anywhere, because ⌘K in a textarea still
+   * means ⌘K. Escape is handled per-layer by `useModal`, so it is not here —
+   * one dialog closing must not close the three behind it at the same time.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable === true;
+
+      if (e.metaKey || e.ctrlKey) {
+        const key = e.key.toLowerCase();
+        if (key === 'k') {
+          e.preventDefault();
+          setPaletteOpen((v) => !v);
+        } else if (key === ',') {
+          e.preventDefault();
+          openSettings();
+        } else if (key === 'b') {
+          e.preventDefault();
+          setPanelOpen((v) => {
+            if (!v) refreshWorkspace();
+            return !v;
+          });
+        } else if (key === '\\') {
+          e.preventDefault();
+          setRailCollapsed((v) => {
+            localStorage.setItem('heapcode.rail', v ? 'expanded' : 'collapsed');
+            return !v;
+          });
+        } else if (e.shiftKey && key === 'n') {
+          e.preventDefault();
+          newConversationRef.current?.();
+        }
+        return;
+      }
+
+      if (typing) return;
+      if (e.key === '?') {
+        e.preventDefault();
+        setShortcutsOpen((v) => !v);
+      } else if (e.key === '/') {
+        // Focus the composer *with the slash in it*, so the menu opens. The
+        // default has to be prevented (`/` is quick-find in some browsers),
+        // which means the character has to be placed deliberately — focusing
+        // alone would leave an empty box and swallow the keystroke.
+        e.preventDefault();
+        setSeed('/');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openSettings, refreshWorkspace]);
+
   const runCommand = useCallback(
     (command: Command) => {
       setPaletteOpen(false);
       switch (command.name) {
         case '/help':
-          setPaletteOpen(true);
+          // The palette IS the command list, so /help re-opening it would be a
+          // no-op from inside it. The other half of "how do I use this" is the
+          // keyboard map, which nothing else surfaced.
+          setShortcutsOpen(true);
           return;
         case '/context':
           // The token budgets live on the profile, so land the user in its
@@ -445,6 +550,40 @@ export function App(): JSX.Element {
             .then((r) => setTranscript((t) => withAssistantNote(t, r.skills.trim() || 'No skills available.')))
             .catch((err: Error) => setError(err.message));
           return;
+        case '/pr-review': {
+          const arg = pendingArgs.current.trim().toLowerCase();
+          if (arg && arg !== 'deep' && arg !== 'fast') {
+            setNotice('Usage: /pr-review [deep] — reviews the current branch\'s PR (needs the "gh" CLI).');
+            return;
+          }
+          // A real id, like a task command: the review takes the run slot, so
+          // Stop has to be able to name it.
+          const id = crypto.randomUUID();
+          setRunId(id);
+          setError(undefined);
+          setTranscript((t) =>
+            withUserMessage(t, arg === 'deep' ? '/pr-review deep' : '/pr-review'),
+          );
+          void rpc
+            .request<UiReviewResult>(UI_METHODS.review, { deep: arg === 'deep', runId: id })
+            .then((res) => {
+              const note =
+                res.status === 'posted'
+                  ? `**PR review** — posted on PR #${res.pr?.number} — ${res.pr?.url}`
+                  : res.status === 'cancelled'
+                    ? '**PR review** — nothing was posted.'
+                    : '**PR review** — stopped before producing a review.';
+              setTranscript((t) => withAssistantNote(t, note));
+            })
+            .catch((err: Error) => {
+              if (!/cancel|abort/i.test(err.message)) setError(err.message);
+            })
+            .finally(() => {
+              setRunId(undefined);
+              setTranscript(settle);
+            });
+          return;
+        }
         case '/search': {
           const query = pendingArgs.current.trim();
           if (!query) {
@@ -485,7 +624,7 @@ export function App(): JSX.Element {
   );
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, images?: string[]) => {
       // A slash command is a command, not a prompt — never send it to the model.
       if (text.startsWith('/')) {
         const command = findCommand(text);
@@ -499,9 +638,9 @@ export function App(): JSX.Element {
       const id = crypto.randomUUID();
       setRunId(id);
       setError(undefined);
-      setTranscript((t) => withUserMessage(t, text));
+      setTranscript((t) => withUserMessage(t, text, images));
       void rpc
-        .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text, runId: id })
+        .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text, runId: id, images })
         .catch((err: Error) => {
           // A cancelled run rejects here too; that is not an error worth a banner.
           if (!/cancel|abort/i.test(err.message)) setError(err.message);
@@ -596,6 +735,11 @@ export function App(): JSX.Element {
     setRunStartedAt(busy ? Date.now() : undefined);
   }, [busy]);
 
+  // A long run that ends while the tab is in the background gets a desktop
+  // notification — the whole reason to run this in a browser is to be able to
+  // go elsewhere while it works.
+  useFinishNotification(busy, runStartedAt, state?.workspaceName ?? 'your workspace');
+
   return (
     <div className="app">
       <div className="body">
@@ -633,6 +777,15 @@ export function App(): JSX.Element {
             }}
           />
 
+          {state?.lan && (
+            <div className="banner banner-warn" role="alert">
+              <strong>Exposed to your network.</strong>
+              <span>
+                Anyone who can reach this address and holds the launch token can run commands on{' '}
+                {state.workspaceName || 'this machine'} as you.
+              </span>
+            </div>
+          )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
           {error && <div className="banner banner-error">{error}</div>}
           {notice && (
@@ -648,12 +801,18 @@ export function App(): JSX.Element {
             runStartedAt={runStartedAt}
           />
 
+          <Announcer busy={busy} activity={activityOf(transcript)} lastReply={lastReplyOf(transcript)} />
+
           {permission && <PermissionCard pending={permission} />}
           {ask && <AskUserCard pending={ask} />}
+          {review && <ReviewCard pending={review} />}
 
           <Composer
             onSend={send}
             onCancel={cancel}
+            onReject={setNotice}
+            seed={seed}
+            onSeedUsed={clearSeed}
             busy={busy}
             disabled={status !== 'open'}
             footer={
@@ -755,6 +914,8 @@ export function App(): JSX.Element {
 
       {paletteOpen && <Palette onClose={() => setPaletteOpen(false)} onPick={runCommand} />}
 
+      {shortcutsOpen && <Shortcuts onClose={() => setShortcutsOpen(false)} />}
+
       {settingsOpen && (
         <Settings
           settings={settings}
@@ -772,6 +933,7 @@ export function App(): JSX.Element {
           loadSkills={loadSkills}
           loadMemory={loadMemory}
           listModels={listProfileModels}
+          probeProvider={probeProvider}
           onResetPermissions={() => {
             void rpc
               .request<UiResetPermissionsResult>(UI_METHODS.resetPermissions)

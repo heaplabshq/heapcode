@@ -36,7 +36,8 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "dev": "node esbuild.mjs && node dist/cli.js"
+    "dev": "node esbuild.mjs && node dist/cli.js",
+    "prepublishOnly": "node prepublish-check.mjs"
   },
   "devDependencies": {
     "@heapcode/core": "workspace:*",
@@ -59,8 +60,5 @@
     "tree-sitter-wasms": "^0.1.12",
     "typescript": "^5.5.4",
     "web-tree-sitter": "^0.25.6"
-  },
-  "dependencies": {
-    "@heaplabs/heapcode-cli": "link:"
   }
 }

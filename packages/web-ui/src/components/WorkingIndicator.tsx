@@ -37,7 +37,15 @@ export function WorkingIndicator({ activity, startedAt }: WorkingIndicatorProps)
     <div className="working" role="status" aria-live="polite">
       <span className="working-spinner" aria-hidden="true" />
       <span>{text}</span>
-      {elapsed !== undefined && <span className="working-elapsed">{formatElapsed(elapsed)}</span>}
+      {/* Hidden from the live region, not from the screen: this ticks once a
+          second, and a polite region containing it re-announces the whole line
+          every tick — "Working 1s", "Working 2s", forever. The phase is the
+          news; the stopwatch is not. */}
+      {elapsed !== undefined && (
+        <span className="working-elapsed" aria-hidden="true">
+          {formatElapsed(elapsed)}
+        </span>
+      )}
     </div>
   );
 }

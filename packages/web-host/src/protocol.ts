@@ -37,6 +37,7 @@ export const UI_METHODS = {
   openConversation: 'ui/openConversation',
   newConversation: 'ui/newConversation',
   listModels: 'ui/listModels',
+  probeProvider: 'ui/probeProvider',
   setModel: 'ui/setModel',
   setMode: 'ui/setMode',
 
@@ -67,6 +68,9 @@ export const UI_METHODS = {
   memory: 'ui/memory',
   skills: 'ui/skills',
 
+  /** `/pr-review` — the same review the CLI and the extension run (W8). */
+  review: 'ui/review',
+
   // artifacts (W7)
   artifacts: 'ui/artifacts',
   artifact: 'ui/artifact',
@@ -87,6 +91,8 @@ export const UI_METHODS = {
   // host → browser (requests — the host waits for an answer)
   permissionRequest: 'ui/permissionRequest',
   askUser: 'ui/askUser',
+  /** The one gate before a review is posted publicly to GitHub. */
+  reviewConfirm: 'ui/reviewConfirm',
 
   // host → browser (notifications)
   event: 'ui/event',
@@ -97,6 +103,8 @@ export const UI_METHODS = {
   artifactChanged: 'ui/artifactChanged',
   /** Indexing progress and state, forwarded from the daemon's `rag/event`. */
   indexChanged: 'ui/indexChanged',
+  /** A review's progress and warnings, forwarded from the daemon's `review/event`. */
+  reviewEvent: 'ui/reviewEvent',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -142,6 +150,16 @@ export interface UiSendMessageParams {
   text: string;
   /** Client-supplied so the browser can correlate before the reply lands. */
   runId?: string;
+  /**
+   * Pasted or dropped images, as `data:` URLs — the shape providers want
+   * (`providers/types.ts:15`), so nothing has to re-encode on the way through.
+   *
+   * A browser can do this and a terminal cannot, which is the whole reason it
+   * is here. Bounded host-side (`MAX_IMAGES`, `MAX_IMAGE_BYTES`) rather than
+   * trusted from the page: the browser is untrusted, and an unbounded array of
+   * base64 is a cheap way to make the host allocate.
+   */
+  images?: string[];
 }
 
 export interface UiSendMessageResult {
@@ -211,6 +229,27 @@ export interface UiListModelsParams {
 
 export interface UiListModelsResult {
   models: Array<{ id: string; contextLength?: number }>;
+}
+
+/**
+ * "Does this endpoint answer, and what does it serve?" — for a profile the user
+ * is still typing, which `listModels` cannot reach because it resolves a
+ * *saved* profile by name.
+ */
+export interface UiProbeProviderParams {
+  preset: string;
+  baseUrl: string;
+  /** Omit to fall back to the stored key named by `useStoredKeyFor`. */
+  apiKey?: string;
+  /** Existing profile whose saved key to use when the user did not retype it. */
+  useStoredKeyFor?: string;
+}
+
+export interface UiProbeProviderResult {
+  ok: boolean;
+  models: string[];
+  /** Why it failed, phrased for the user. Absent when `ok`. */
+  error?: string;
 }
 
 export interface UiSetModelParams {
@@ -399,6 +438,13 @@ export interface UiState {
   profiles: Array<{ name: string; model: string; hasKey: boolean }>;
   daemon: 'up' | 'down';
   runId?: string;
+  /**
+   * The host is bound to a non-loopback address, so this page is reachable from
+   * the network and anyone holding the token can run commands on that machine.
+   * The terminal prints the same warning, but only whoever launched it sees
+   * that — and LAN mode exists precisely so other devices open this page (§6.1).
+   */
+  lan?: boolean;
 }
 
 export interface UiEventParams {
@@ -512,6 +558,16 @@ export interface UiMcpServer {
   tools: string[];
 }
 
+/** A provider preset as the settings UI needs it — core's, minus capabilities. */
+export interface UiPreset {
+  id: string;
+  label: string;
+  defaultBaseUrl: string;
+  requiresApiKey: boolean;
+  local: boolean;
+  apiKeyUrl?: string;
+}
+
 export interface UiSettings {
   personas: Array<{ id: string; label: string; description: string }>;
   persona: string;
@@ -519,6 +575,12 @@ export interface UiSettings {
   subAgents: boolean;
   nativeToolCalls: boolean;
   profiles: UiProfile[];
+  /**
+   * Sent from the host rather than restated in the UI: the browser bundle's own
+   * copy of this list silently went stale (it is also what makes "pick a
+   * provider" fill in the endpoint instead of leaving the user to know it).
+   */
+  presets: UiPreset[];
   webSearch: {
     providers: string[];
     provider?: string;
@@ -682,6 +744,65 @@ export interface UiMemoryResult {
 
 export interface UiSkillsResult {
   skills: string;
+}
+
+// ---------------------------------------------------------------------------
+// PR review (W8)
+// ---------------------------------------------------------------------------
+
+/**
+ * `ui/review` — run a PR review on the current branch.
+ *
+ * Deliberately not folded into `ui/runCommand`. A review is not an agent task:
+ * it has its own loop, its own termination policy and — the part that matters
+ * here — a confirmation gate before it posts publicly to GitHub. Giving it its
+ * own method keeps that gate a first-class thing the browser must answer,
+ * rather than something buried in a transcript.
+ */
+export interface UiReviewParams {
+  /** The verification pass — roughly double the wall time and model cost. */
+  deep?: boolean;
+  /** Client-supplied so Stop can name the run it started. */
+  runId?: string;
+}
+
+export interface UiReviewResult {
+  /** Core's `PrReviewResult.status`, verbatim. */
+  status: 'posted' | 'cancelled' | 'skipped';
+  /** Set only when posted, for an "open the PR" link. */
+  pr?: { number: number; url: string };
+}
+
+/** `ui/reviewEvent` — progress and warnings while a review runs. */
+export interface UiReviewEventParams {
+  runId: string;
+  /** `log` is dropped host-side; only what a user should read gets here. */
+  kind: 'warn' | 'error' | 'progress';
+  message: string;
+}
+
+/**
+ * `ui/reviewConfirm` — host→browser **request**, and the only thing standing
+ * between the model's output and a public comment on someone's PR.
+ *
+ * No timeout: the user is reading a full review preview and may take minutes,
+ * exactly as `ui/permissionRequest` has none. Every failure path — a closed
+ * tab, a cancelled run, a dropped socket — resolves to "not posted", because
+ * the rejection direction is the safe one.
+ */
+export interface UiReviewConfirmParams {
+  runId: string;
+  pr: { number: number; url: string; title?: string };
+  /** The full markdown the user must be shown before deciding. */
+  preview: string;
+  findingCount: number;
+  inlineCount: number;
+  /** The model produced no structured output; this posts as one plain comment. */
+  plainText: boolean;
+}
+
+export interface UiReviewConfirmResult {
+  ok: boolean;
 }
 
 // ---------------------------------------------------------------------------

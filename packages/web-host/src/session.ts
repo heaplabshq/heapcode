@@ -22,6 +22,7 @@ import {
   getPersona,
   isPermissionMode,
   lineDiffStats,
+  createProvider,
   providerPresets,
   resolveCapabilities,
   unifiedDiff,
@@ -36,6 +37,12 @@ import {
   type PermissionRequestParams,
   type PermissionRequestResult,
   type ProviderProfileConfig,
+  type ReviewClient,
+  type ReviewConfirmParams,
+  type ReviewConfirmResult,
+  type ReviewEventParams,
+  type ReviewRunParams,
+  type ReviewRunResult,
   type RpcPeer,
   type ServerConnection,
   type SnapshotBeforeParams,
@@ -72,6 +79,8 @@ import {
   type UiHelloParams,
   type UiHelloResult,
   type UiListModelsParams,
+  type UiProbeProviderParams,
+  type UiProbeProviderResult,
   type UiListModelsResult,
   type UiMessage,
   type UiOpenConversationParams,
@@ -102,6 +111,11 @@ import {
   type UiReadFileParams,
   type UiReadFileResult,
   type UiRestoreResult,
+  type UiReviewConfirmParams,
+  type UiReviewConfirmResult,
+  type UiReviewEventParams,
+  type UiReviewParams,
+  type UiReviewResult,
   type UiRewindParams,
   type UiSearchParams,
   type UiSearchResult,
@@ -160,6 +174,38 @@ const COMMAND_TASKS: Record<string, string> = {
 /** How many events to retain per run for replay after a browser refresh (§5.4). */
 const REPLAY_BUFFER = 2_000;
 
+/** Attachments per message, and the cap on each. The browser is not trusted to bound these. */
+export const MAX_IMAGES = 8;
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Filter an incoming attachment list down to things that are actually images.
+ *
+ * Data URLs only, and only image media types. `data:text/html;base64,…` is
+ * still a valid data URL, and passing one straight through to a provider —
+ * or, worse, back into a page — is the kind of hole that opens because nobody
+ * asked what the string was. Anything unrecognised is dropped silently rather
+ * than failing the send: the message itself is still worth running.
+ */
+export function acceptImages(images: unknown): string[] | undefined {
+  if (!Array.isArray(images)) return undefined;
+  const out: string[] = [];
+  for (const value of images) {
+    if (typeof value !== 'string') continue;
+    if (!/^data:image\/(png|jpeg|jpg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(value)) continue;
+    if (value.length > MAX_IMAGE_BYTES) continue;
+    out.push(value);
+    if (out.length >= MAX_IMAGES) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** How a review posted from the browser identifies itself on the PR. */
+const WEB_REVIEW_CLIENT: ReviewClient = {
+  attribution: 'Heap Code Web',
+  deepHint: 'run "/pr-review deep"',
+};
+
 /** What the session knows and the connector needs; the rest of HelloParams is the connector's. */
 export interface DaemonHello {
   root: string;
@@ -202,6 +248,11 @@ export interface WebSessionDeps {
    * then shows the current folder and nothing else, which is the truth.
    */
   workspaces?: WorkspaceStore;
+  /**
+   * Bound to a non-loopback address. Passed down rather than inferred, because
+   * the session never sees the bind address — only `startWebHost` does.
+   */
+  lan?: boolean;
 }
 
 /**
@@ -270,6 +321,13 @@ export class WebSession {
   private modelOverride?: string;
   /** Live embed progress while a rebuild runs; cleared when the state settles. */
   private indexProgress?: { embedded: number; total: number };
+  /**
+   * The review in flight, if any. Its own field rather than a flag on
+   * `activeRunId`: the daemon's `review/event` and `review/confirm` both carry
+   * a runId, and answering a confirmation for a review this session did not
+   * start is exactly the mistake that ends with something posted to GitHub.
+   */
+  private activeReview?: string;
 
   /**
    * Persona and sub-agents start from `deps` but are session state, not
@@ -457,8 +515,8 @@ export class WebSession {
     ui.onRequest(UI_METHODS.state, async () => this.state());
 
     ui.onRequest(UI_METHODS.sendMessage, async (raw): Promise<UiSendMessageResult> => {
-      const { text, runId } = raw as UiSendMessageParams;
-      return this.run(text, runId ?? randomUUID());
+      const { text, runId, images } = raw as UiSendMessageParams;
+      return this.run(text, runId ?? randomUUID(), acceptImages(images));
     });
 
     ui.onRequest(UI_METHODS.cancel, async (raw) => {
@@ -503,6 +561,30 @@ export class WebSession {
         { profileName },
       );
       return { models: res.models };
+    });
+
+    ui.onRequest(UI_METHODS.probeProvider, async (raw): Promise<UiProbeProviderResult> => {
+      const { preset, baseUrl, apiKey, useStoredKeyFor } = (raw ?? {}) as UiProbeProviderParams;
+      if (!baseUrl?.trim()) return { ok: false, models: [], error: 'Enter a base URL first.' };
+      // Deliberately not routed through the daemon: it resolves saved profiles
+      // by name, and the whole point here is a profile that does not exist yet.
+      const known = providerPresets.find((p) => p.id === preset);
+      const key = apiKey || (useStoredKeyFor ? await this.deps.secrets.getApiKey(useStoredKeyFor) : undefined);
+      try {
+        const provider = createProvider(
+          { name: 'probe', preset: (known?.id ?? 'custom') as ProviderProfileConfig['preset'], baseUrl, model: '' },
+          key,
+        );
+        const models = await provider.listModels();
+        if (models.length === 0) {
+          // Reached it, but it lists nothing — a real setup (some proxies serve
+          // models they refuse to enumerate), so this is not an error.
+          return { ok: true, models: [], error: 'Connected, but the endpoint lists no models — type the id yourself.' };
+        }
+        return { ok: true, models: models.map((m) => m.id) };
+      } catch (err) {
+        return { ok: false, models: [], error: err instanceof Error ? err.message : String(err) };
+      }
     });
 
     ui.onRequest(UI_METHODS.setModel, async (raw) => {
@@ -797,6 +879,11 @@ export class WebSession {
       return { skills: await listSkillsFormatted(this.root) };
     });
 
+    ui.onRequest(UI_METHODS.review, async (raw): Promise<UiReviewResult> => {
+      const { deep, runId } = (raw ?? {}) as UiReviewParams;
+      return this.review(Boolean(deep), runId ?? randomUUID());
+    });
+
     ui.onRequest(UI_METHODS.artifacts, async (): Promise<UiArtifactsResult> => {
       return { artifacts: (await this.artifacts.list()).map(toArtifactMeta) };
     });
@@ -895,6 +982,14 @@ export class WebSession {
         subAgents: Boolean(this.subAgents),
         nativeToolCalls: this.profile ? resolveCapabilities(this.profile).nativeToolCalls : true,
         profiles,
+        presets: providerPresets.map((p) => ({
+          id: p.id,
+          label: p.label,
+          defaultBaseUrl: p.defaultBaseUrl,
+          requiresApiKey: p.requiresApiKey,
+          local: p.local,
+          apiKeyUrl: p.apiKeyUrl,
+        })),
         webSearch: {
           providers: [...SEARCH_PRESETS],
           provider: cfg.webSearch?.provider,
@@ -1112,6 +1207,7 @@ export class WebSession {
       profiles,
       daemon: this.connection ? 'up' : 'down',
       runId: this.activeRunId,
+      lan: this.deps.lan,
     };
   }
 
@@ -1119,7 +1215,7 @@ export class WebSession {
   // running
   // -------------------------------------------------------------------------
 
-  async run(task: string, runId: string): Promise<UiSendMessageResult> {
+  async run(task: string, runId: string, images?: string[]): Promise<UiSendMessageResult> {
     await this.start();
     const { peer } = this.connection!;
     const session = this.session!;
@@ -1189,15 +1285,73 @@ export class WebSession {
           maxTokens: profile.maxTokens,
           subAgents: this.subAgents,
           persona,
+          images,
         } satisfies AgentRunParams,
         this.abort.signal,
       );
-      await this.persistTurn(task);
+      await this.persistTurn(task, images?.length);
       return { runId, outcome };
     } finally {
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
+      void this.pushState();
+    }
+  }
+
+  /**
+   * `/pr-review` — the same review the CLI and the extension run, against the
+   * same server-side `review/run`.
+   *
+   * This is only the browser adapter: progress and warnings become
+   * `ui/reviewEvent` notifications, the confirmation becomes a
+   * `ui/reviewConfirm` request the user answers with a click, and the outcome
+   * comes back as a note in the transcript. `log` events are dropped, as they
+   * are in the CLI — per-tool-call noise buries a transcript, and the progress
+   * lines already say what is happening.
+   *
+   * It takes the run slot (`activeRunId`) rather than running alongside a chat
+   * turn. One thing at a time per workspace is the rule everywhere else here
+   * (§12 Q10), and a review shares the same Stop button and the same busy
+   * composer — `agent/cancel` stops a review too.
+   */
+  async review(deep: boolean, runId: string): Promise<UiReviewResult> {
+    await this.start();
+    const { peer } = this.connection!;
+    const session = this.session!;
+    const profile = this.profile!;
+
+    if (this.activeRunId) throw new Error('A run is already in progress; cancel it first.');
+    this.activeRunId = runId;
+    this.abort = new AbortController();
+    this.activeReview = runId;
+    void this.pushState();
+
+    try {
+      const result = await peer.request<ReviewRunResult>(
+        METHODS.reviewRun,
+        {
+          runId,
+          profileName: profile.name,
+          model: this.model,
+          temperature: profile.temperature,
+          maxTokens: profile.maxTokens,
+          contextWindow: profileContextWindow(profile),
+          // The review filters this to the read-only tools itself
+          // (prReview.ts:457); handing it the full list is what every host does.
+          tools: [...session.tools, ...session.mcpManager.getToolDefinitions()],
+          client: WEB_REVIEW_CLIENT,
+          deep,
+        } satisfies ReviewRunParams,
+        this.abort.signal,
+      );
+      return result.status === 'posted'
+        ? { status: 'posted', pr: { number: result.pr.number, url: result.pr.url } }
+        : { status: result.status };
+    } finally {
+      this.activeReview = undefined;
+      this.activeRunId = undefined;
+      this.abort = undefined;
       void this.pushState();
     }
   }
@@ -1230,8 +1384,15 @@ export class WebSession {
    * can show a readable transcript while the agent still gets full context
    * on the next turn (history/types.ts:7-10).
    */
-  private async persistTurn(display: string): Promise<void> {
+  private async persistTurn(display: string, imageCount?: number): Promise<void> {
     const convo = this.conversation!;
+    // Attachments are noted, not stored. A screenshot is a couple of megabytes
+    // of base64, and conversations.json is read whole on every load — the same
+    // reason `clipArgs` exists. The model saw them on the turn they were sent;
+    // a reload gets the note, which is the honest record of what happened.
+    const line = imageCount
+      ? `${display}\n\n_(${imageCount} image${imageCount === 1 ? '' : 's'} attached)_`
+      : display;
     // A run that ends mid-thought (cancelled, or a provider that never sends
     // `reasoning_end`) still has thinking worth keeping.
     if (this.reasoningAcc.trim()) {
@@ -1251,7 +1412,7 @@ export class WebSession {
     const entries = answered
       ? this.turnEntries
       : [...this.turnEntries, { role: 'assistant', content: this.lastText } as StoredMessage];
-    convo.messages.push({ role: 'user', content: display, display } as StoredMessage, ...entries);
+    convo.messages.push({ role: 'user', content: display, display: line } as StoredMessage, ...entries);
     if (convo.title === 'New chat') convo.title = display.slice(0, 60);
     convo.updatedAt = Date.now();
     await this.history!.save(convo);
@@ -1318,6 +1479,41 @@ export class WebSession {
       const target = await this.deps.config.getProfile(profileName);
       if (!target) return {};
       return { profile: target, apiKey: await this.deps.secrets.getApiKey(profileName) };
+    });
+
+    // ---- PR review ----
+    //
+    // The confirmation is the one place a model's output becomes a public
+    // comment on someone's PR, so it is gated three ways: it must belong to the
+    // review THIS session started, a browser must be attached to answer it, and
+    // the user must click. Any of those missing is a "no" — never a default
+    // yes, and never a silent post while nobody is looking.
+    peer.onRequest(METHODS.reviewConfirm, async (raw): Promise<ReviewConfirmResult> => {
+      const { runId, confirmation } = raw as ReviewConfirmParams;
+      if (!this.activeReview || this.activeReview !== runId) return { ok: false };
+      if (!this.ui) return { ok: false };
+      const answer = await this.ui.request<UiReviewConfirmResult>(UI_METHODS.reviewConfirm, {
+        runId,
+        pr: { number: confirmation.pr.number, url: confirmation.pr.url, title: confirmation.pr.title },
+        preview: confirmation.preview,
+        findingCount: confirmation.findingCount,
+        inlineCount: confirmation.inlineCount,
+        plainText: confirmation.plainText,
+      } satisfies UiReviewConfirmParams);
+      return { ok: Boolean(answer?.ok) };
+    });
+
+    peer.onNotification(METHODS.reviewEvent, (raw) => {
+      const { runId, event } = raw as ReviewEventParams;
+      if (this.activeReview !== runId) return;
+      // `log` is diagnostic — the CLI drops it for the same reason: it is one
+      // line per tool call, and it would bury the transcript it lands in.
+      if (event.kind === 'log') return;
+      this.ui?.notify(UI_METHODS.reviewEvent, {
+        runId,
+        kind: event.kind,
+        message: event.message,
+      } satisfies UiReviewEventParams);
     });
 
     // Indexing progress. The daemon streams it; the panel renders it — the

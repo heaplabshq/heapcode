@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
@@ -13,8 +13,9 @@ import {
   type ServerConnection,
 } from '@heapcode/core';
 import { ConfigStore, SecretsStore } from '@heapcode/host';
+import { AuthLimiter } from '../src/authLimit.js';
 import { startWebHost, type RunningWebHost } from '../src/server.js';
-import { clipArgs } from '../src/session.js';
+import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs } from '../src/session.js';
 import { WorkspaceStore } from '../src/workspaces.js';
 import {
   UI_METHODS,
@@ -37,6 +38,7 @@ import {
   type UiPermissionRequestParams,
   type UiPermissionRequestResult,
   type UiSendMessageResult,
+  type UiProbeProviderResult,
   type UiSetWorkspaceResult,
   type UiSettings,
   type UiState,
@@ -89,6 +91,8 @@ async function boot(
   >,
   /** Extra profile fields, for the ones only the CLI can normally set. */
   profileExtras: Record<string, unknown> = {},
+  /** Host options the auth and LAN tests need to vary. */
+  hostExtras: { limiter?: AuthLimiter; host?: string } = {},
 ): Promise<{
   root: string;
   host: RunningWebHost;
@@ -118,6 +122,7 @@ async function boot(
     nativeToolCalls: false, // the mock speaks the text protocol
     port: 0, // ephemeral, so parallel test files never collide
     token: 'test-token',
+    ...hostExtras,
     connect: (hello): Promise<ServerConnection> =>
       connectToServer(
         { client: { name: 'web-host-test' }, ...hello },
@@ -267,6 +272,199 @@ describe('web host — auth', () => {
       protocolVersion: UI_PROTOCOL_VERSION,
     });
     expect(hello.protocolVersion).toBe(UI_PROTOCOL_VERSION);
+    browser.close();
+  });
+
+  /**
+   * W3.5, end to end rather than only at the unit level: what matters is that
+   * the limiter is actually *wired into* both auth paths, which a test of the
+   * class alone cannot show.
+   */
+  it('stops answering after repeated bad tokens, and the right token no longer helps', async () => {
+    const limiter = new AuthLimiter(3, 60_000, 60_000);
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { limiter });
+
+    for (let i = 0; i < 3; i++) {
+      const res = await fetch(`http://127.0.0.1:${host.port}/`, {
+        headers: { cookie: 'heapcode_token=wrong' },
+      });
+      expect(res.status).toBe(401);
+    }
+
+    // Blocked now — and the block is on the peer, not on the credential, so
+    // even a correct token gets the door shut in its face.
+    const blocked = await fetch(`http://127.0.0.1:${host.port}/`, {
+      headers: { cookie: `heapcode_token=${host.token}` },
+    });
+    expect(blocked.status).toBe(429);
+
+    // And the WS upgrade is closed to it too, or the limit would only cover
+    // the half of the surface that cannot run commands.
+    await expect(openBrowser(host)).rejects.toThrow(/429|Too Many/);
+  });
+
+  it('a good token before the limit is reached clears the count', async () => {
+    const limiter = new AuthLimiter(3, 60_000, 60_000);
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { limiter });
+
+    for (let i = 0; i < 2; i++) {
+      await fetch(`http://127.0.0.1:${host.port}/`, { headers: { cookie: 'heapcode_token=wrong' } });
+    }
+    const ok = await fetch(`http://127.0.0.1:${host.port}/`, {
+      headers: { cookie: `heapcode_token=${host.token}` },
+    });
+    expect(ok.status).not.toBe(429);
+
+    // Two more failures would have crossed the old count; they must not now.
+    for (let i = 0; i < 2; i++) {
+      await fetch(`http://127.0.0.1:${host.port}/`, { headers: { cookie: 'heapcode_token=wrong' } });
+    }
+    const still = await fetch(`http://127.0.0.1:${host.port}/`, {
+      headers: { cookie: `heapcode_token=${host.token}` },
+    });
+    expect(still.status).not.toBe(429);
+  });
+});
+
+describe('web host — LAN mode', () => {
+  it('tells the browser when it is bound to a non-loopback address', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { host: '0.0.0.0' });
+    const browser = await openBrowser(host);
+    const hello = await browser.peer.request<UiHelloResult>(UI_METHODS.hello, {
+      protocolVersion: UI_PROTOCOL_VERSION,
+    });
+    expect(hello.state.lan).toBe(true);
+    browser.close();
+  });
+
+  /**
+   * The bug the security review turned up: bound to `0.0.0.0`, the allowlist
+   * added nothing, so every real LAN browser — presenting the address it
+   * actually typed — was refused with 403. Fail-closed, so not a vulnerability,
+   * but it meant LAN mode had never worked from a browser at all.
+   */
+  it('accepts the machine\'s own LAN address as an origin when bound to 0.0.0.0', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { host: '0.0.0.0' });
+
+    const lanAddress = Object.values(networkInterfaces())
+      .flatMap((list) => list ?? [])
+      .find((info) => !info.internal && info.family === 'IPv4')?.address;
+    if (!lanAddress) return; // no network on this machine; nothing to assert
+
+    const browser = await openBrowser(host, { origin: `http://${lanAddress}:${host.port}` });
+    const hello = await browser.peer.request<UiHelloResult>(UI_METHODS.hello, {
+      protocolVersion: UI_PROTOCOL_VERSION,
+    });
+    expect(hello.protocolVersion).toBe(UI_PROTOCOL_VERSION);
+    browser.close();
+  });
+
+  /**
+   * And the reason this stayed an allowlist rather than becoming "does Origin
+   * match Host". DNS rebinding makes those two agree perfectly, so the check
+   * that looks correct is the one that lets `evil.example` in.
+   */
+  it('still refuses a rebound hostname in LAN mode', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { host: '0.0.0.0' });
+    await expect(openBrowser(host, { origin: `http://evil.example:${host.port}` })).rejects.toThrow(
+      /403|Forbidden/,
+    );
+  });
+
+  it('an explicit --host allows that address and nothing else', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { host: '127.0.0.1' });
+    // Loopback bind: the LAN address of this machine is not a legitimate origin.
+    await expect(openBrowser(host, { origin: 'http://192.0.2.7:1234' })).rejects.toThrow(/403|Forbidden/);
+  });
+
+  it('does not claim LAN exposure on loopback', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    const hello = await browser.peer.request<UiHelloResult>(UI_METHODS.hello, {
+      protocolVersion: UI_PROTOCOL_VERSION,
+    });
+    expect(hello.state.lan).toBe(false);
+    browser.close();
+  });
+});
+
+describe('acceptImages', () => {
+  it('keeps real image data URLs', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo=';
+    expect(acceptImages([png])).toEqual([png]);
+  });
+
+  /**
+   * The one that matters: `data:text/html;base64,…` is a perfectly valid data
+   * URL, and a browser — or anything that has taken one over — could put one
+   * here. Passing it through to a provider as "an image" is the kind of hole
+   * that opens because nobody asked what the string was.
+   */
+  it('drops non-image data URLs and anything that is not one at all', () => {
+    expect(acceptImages(['data:text/html;base64,PHNjcmlwdD4='])).toBeUndefined();
+    expect(acceptImages(['javascript:alert(1)'])).toBeUndefined();
+    expect(acceptImages(['https://example.com/cat.png'])).toBeUndefined();
+    expect(acceptImages(['data:image/svg+xml;base64,PHN2Zz4='])).toBeUndefined();
+    expect(acceptImages([42, null, {}])).toBeUndefined();
+    expect(acceptImages('not an array')).toBeUndefined();
+  });
+
+  it('caps the count, so an unbounded array cannot make the host allocate', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo=';
+    expect(acceptImages(Array.from({ length: 50 }, () => png))).toHaveLength(MAX_IMAGES);
+  });
+
+  it('drops an oversized image rather than the whole message', () => {
+    const png = 'data:image/png;base64,iVBORw0KGgo=';
+    const huge = `data:image/png;base64,${'A'.repeat(MAX_IMAGE_BYTES)}`;
+    expect(acceptImages([huge, png])).toEqual([png]);
+  });
+});
+
+describe('web host — testing a provider before saving it', () => {
+  it('lists what an unsaved endpoint serves, which listModels cannot do', async () => {
+    // listModels resolves a *saved* profile by name; the add-profile form has
+    // no profile yet, which is the whole reason this method exists.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const result = await browser.peer.request<UiProbeProviderResult>(UI_METHODS.probeProvider, {
+      preset: 'custom',
+      baseUrl: mock!.baseUrl,
+      apiKey: 'sk-test',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.models).toEqual(['mock-model', 'other-model']);
+    browser.close();
+  });
+
+  it('reports why an unreachable endpoint failed rather than throwing', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const result = await browser.peer.request<UiProbeProviderResult>(UI_METHODS.probeProvider, {
+      preset: 'custom',
+      baseUrl: 'http://127.0.0.1:1/v1', // nothing listens here
+    });
+    expect(result.ok).toBe(false);
+    expect(result.models).toEqual([]);
+    expect(result.error).toBeTruthy();
+    browser.close();
+  });
+
+  it('refuses an empty base URL instead of probing nothing', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const result = await browser.peer.request<UiProbeProviderResult>(UI_METHODS.probeProvider, {
+      preset: 'ollama',
+      baseUrl: '   ',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/base URL/i);
     browser.close();
   });
 });

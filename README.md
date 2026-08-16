@@ -2,12 +2,13 @@
 
 **Model-agnostic AI coding assistant for VS Code and the terminal.** Chat, ghost-text completions, inline edits, an autonomous agent, AI PR review, and semantic codebase search — with **any OpenAI-compatible API**, local or cloud.
 
-Two surfaces over one shared engine:
+Three surfaces over one shared engine:
 
 | | Install |
 |---|---|
 | **VS Code extension** | [Marketplace](https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code) |
 | **Terminal CLI** | `npm install -g @heaplabs/heapcode-cli` — see [packages/cli/README.md](packages/cli/README.md) |
+| **Browser UI** | `heapcode web` in any workspace — see [Browser UI](#browser-ui) below |
 
 ## Privacy first
 
@@ -19,7 +20,7 @@ Heap Code does send anonymous usage telemetry by default (which features get use
 
 | Local | Cloud |
 |---|---|
-| Ollama, LM Studio, vLLM, LocalAI | OpenAI, Azure OpenAI, OpenRouter, Groq, Together AI, NVIDIA NIM |
+| Ollama, LM Studio, vLLM, LocalAI | Ollama Cloud, OpenAI, Azure OpenAI, OpenRouter, Groq, Together AI, NVIDIA NIM |
 
 …plus any custom OpenAI-spec endpoint. Providers are **named profiles** — switch from the status bar, with separate model roles for **chat / edit / apply / completion / agent / embeddings / rerank** per profile. Any role can also run on a *different* profile entirely (Settings → Model roles & tuning → "run on profile") — e.g. embeddings on a local Ollama profile while chat/agent use a cloud profile.
 
@@ -36,6 +37,7 @@ Heap Code does send anonymous usage telemetry by default (which features get use
 - **Skills** — model-invoked capabilities from `.claude/skills/<name>/SKILL.md` (project) or `~/.claude/skills/<name>/SKILL.md` (personal) — the same convention Claude Code uses, so Skills are shared with zero setup. The agent calls `list_skills` (name + description only, cheap) then `load_skill` on whichever matches the task, including bundled reference files
 - **AI PR review** — reviews the current branch's pull request file by file (never a blind truncation of a large diff), then posts a real GitHub review with line-anchored inline comments and one-click suggestions, always after an explicit confirmation. Deep mode adds an independent verification pass that re-reads the code and drops false positives first. Uses your existing `gh auth login` session. Available as `/pr-review [deep]` in the CLI and as the *Review Current PR* commands in VS Code — same engine, same result
 - **Terminal CLI** — the same agent, permissions, checkpoints, RAG, and MCP in a standalone `heapcode` binary, plus a headless `-p "task"` mode (`--json` events, four permission modes, non-zero exit on failure) for CI
+- **Browser UI** — `heapcode web` serves the same agent as a local web app: streaming chat with tool chips, a workspace panel (diffs, checkpoints, file tree, command output, the repo index), rendered artifacts, and image paste. See below
 - **Git** — commit-message generation from the staged diff (✨ button in Source Control)
 
 ## Quick start
@@ -51,12 +53,57 @@ Heap Code does send anonymous usage telemetry by default (which features get use
 
 API keys are stored in the OS keychain via VS Code SecretStorage — never in settings files. The CLI has no keychain dependency (so headless and CI machines work): it uses a `chmod 600` file under `~/.heapcode`.
 
+## Browser UI
+
+```bash
+cd your-project
+heapcode web                    # http://127.0.0.1:7411, opens with a one-time token
+heapcode web --port 8080
+heapcode web --host 0.0.0.0     # reachable from your phone/tablet — read the warning it prints
+```
+
+Same engine as the CLI and the extension, in a browser tab: streaming chat with
+collapsible tool chips, inline permission cards, a conversation sidebar, and a
+workspace panel with **Changes** (per-file diffs, per-file and session-wide
+revert, a checkpoint timeline to rewind to), **Files**, **Index** (semantic
+index + repo map status, with a rebuild), **Terminal** (what the agent ran and
+what it printed), and **Preview** (artifacts the agent renders — HTML in a
+sandboxed frame, Mermaid, Markdown, SVG, code).
+
+Things the terminal can't do: paste or drag a screenshot straight into the
+composer, and get a desktop notification when a long run finishes in a
+background tab.
+
+**Keyboard:** `⌘/Ctrl+K` command palette · `?` shortcut list · `⌘/Ctrl+B`
+workspace panel · `⌘/Ctrl+,` settings · `⌘/Ctrl+Shift+N` new chat · `/` focus
+the composer · `Esc` stop the run.
+
+**Security.** The web host runs shell commands as you, by design — treat it as
+the terminal you launched it from:
+
+- Binds `127.0.0.1` unless you pass `--host`, which prints a warning and shows a
+  banner in the page.
+- A fresh 32-byte token per launch, delivered once in the URL and immediately
+  exchanged for an `HttpOnly` cookie, so it stops living in the address bar.
+- Origin allowlist on the WebSocket upgrade (CSRF defense), constant-time token
+  comparison, and every workspace read root-jailed to the folder you opened.
+- Ten failed tokens from one address and that address is refused for fifteen
+  minutes.
+- **API keys never reach the browser.** Settings sends keys up and the host
+  returns only whether one exists.
+
+Closing the tab does not stop a run — the host owns run state, so reopening
+reattaches to whatever is still going.
+
 ## Repository layout
 
 ```
 packages/core        IDE-agnostic engine: providers, agent loop, tools, RAG, prompts
+packages/host        Shared host runtime: config, secrets, tools, checkpoints, permissions
 packages/vscode      VS Code extension (thin adapter over core)
 packages/cli         Terminal CLI over core — published as @heaplabs/heapcode-cli
+packages/web-host    Local server behind `heapcode web`: WS protocol, sessions, artifacts
+packages/web-ui      React SPA the web host serves
 packages/webview-ui  React chat UI
 docs/PRD.md          Product requirements (source of truth)
 docs/PLAN.md         VS Code extension milestone tracker + decisions log

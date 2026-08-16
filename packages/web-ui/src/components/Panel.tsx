@@ -110,14 +110,21 @@ export function Panel(props: PanelProps): JSX.Element {
 function Changes(props: PanelProps): JSX.Element {
   const [selected, setSelected] = useState<string>();
   const [diff, setDiff] = useState<UiDiffResult>();
+  const [diffError, setDiffError] = useState<string>();
 
   const { loadDiff, changes } = props;
   useEffect(() => {
+    setDiffError(undefined);
     if (!selected) return setDiff(undefined);
     let live = true;
+    setDiff(undefined);
     // `changes` is a dependency on purpose: after a revert the diff on screen
     // is stale, and refetching is cheaper than reasoning about which files moved.
-    void loadDiff(selected).then((d) => live && setDiff(d));
+    void loadDiff(selected)
+      .then((d) => live && setDiff(d))
+      // A failure here used to be an unhandled rejection and a row that stayed
+      // on "Loading…" forever — indistinguishable from a slow diff.
+      .catch((err: Error) => live && setDiffError(err.message));
     return () => {
       live = false;
     };
@@ -179,7 +186,15 @@ function Changes(props: PanelProps): JSX.Element {
             </button>
             {selected === f.path && (
               <div className="file-detail">
-                {diff?.note ? <p className="hint">{diff.note}</p> : diff ? <DiffView diff={diff.diff} /> : <p className="hint">Loading…</p>}
+                {diffError ? (
+                  <p className="panel-error">Could not load the diff — {diffError}</p>
+                ) : diff?.note ? (
+                  <p className="hint">{diff.note}</p>
+                ) : diff ? (
+                  <DiffView diff={diff.diff} />
+                ) : (
+                  <Skeleton lines={5} />
+                )}
                 <button className="link-btn link-btn-danger" onClick={() => props.onRevertFile(f.path)} disabled={props.busy}>
                   Revert this file
                 </button>
@@ -261,26 +276,48 @@ function Checkpoints(props: PanelProps): JSX.Element | null {
 
 function Files({ loadTree, loadFile, openPath }: PanelProps): JSX.Element {
   const [dir, setDir] = useState('');
-  const [entries, setEntries] = useState<UiTreeEntry[]>([]);
+  const [entries, setEntries] = useState<UiTreeEntry[]>();
   const [file, setFile] = useState<UiReadFileResult>();
+  const [error, setError] = useState<string>();
+  const [opening, setOpening] = useState<string>();
 
+  // `entries` starts undefined and only becomes an array once a listing
+  // arrives, so "still loading" and "genuinely empty" are different states.
+  // They used to be the same one, which meant every slow or failed listing
+  // rendered the word "Empty."
   const load = useCallback(
     (path: string) => {
       setDir(path);
       setFile(undefined);
-      void loadTree(path).then(setEntries);
+      setEntries(undefined);
+      setError(undefined);
+      void loadTree(path)
+        .then(setEntries)
+        .catch((err: Error) => setError(err.message));
     },
     [loadTree],
   );
 
+  const open = useCallback(
+    (path: string) => {
+      setOpening(path);
+      setError(undefined);
+      void loadFile(path)
+        .then(setFile)
+        .catch((err: Error) => setError(err.message))
+        .finally(() => setOpening(undefined));
+    },
+    [loadFile],
+  );
+
   useEffect(() => {
-    void loadTree('').then(setEntries);
-  }, [loadTree]);
+    load('');
+  }, [load]);
 
   // A path clicked in a tool chip opens here.
   useEffect(() => {
-    if (openPath) void loadFile(openPath).then(setFile);
-  }, [openPath, loadFile]);
+    if (openPath) open(openPath);
+  }, [openPath, open]);
 
   if (file) {
     return (
@@ -304,20 +341,47 @@ function Files({ loadTree, loadFile, openPath }: PanelProps): JSX.Element {
         </button>
         <code>{dir || '/'}</code>
       </div>
-      <ul className="file-list">
-        {entries.map((e) => (
-          <li key={e.path}>
-            <button
-              className="file-row"
-              onClick={() => (e.directory ? load(e.path) : void loadFile(e.path).then(setFile))}
-            >
-              <span className="tree-icon">{e.directory ? '▸' : '·'}</span>
-              <span className="file-path">{e.name}</span>
-            </button>
-          </li>
-        ))}
-        {entries.length === 0 && <li className="hint">Empty.</li>}
-      </ul>
+      {error && (
+        <p className="panel-error">
+          {error}{' '}
+          <button className="link-btn" onClick={() => load(dir)}>
+            Try again
+          </button>
+        </p>
+      )}
+      {opening && <Skeleton lines={6} />}
+      {!opening && entries === undefined && !error && <Skeleton lines={8} />}
+      {entries !== undefined && (
+        <ul className="file-list">
+          {entries.map((e) => (
+            <li key={e.path}>
+              <button className="file-row" onClick={() => (e.directory ? load(e.path) : open(e.path))}>
+                <span className="tree-icon">{e.directory ? '▸' : '·'}</span>
+                <span className="file-path">{e.name}</span>
+              </button>
+            </li>
+          ))}
+          {entries.length === 0 && <li className="hint">Nothing here — the folder is empty or entirely ignored.</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Placeholder rows while something loads.
+ *
+ * Preferred over the word "Loading…" for anything that replaces a list or a
+ * block of text: it holds the space the content will take, so the panel does
+ * not jump when it arrives, and it makes a stalled fetch look stalled rather
+ * than finished-and-empty.
+ */
+function Skeleton({ lines }: { lines: number }): JSX.Element {
+  return (
+    <div className="skeleton" aria-hidden="true">
+      {Array.from({ length: lines }, (_, i) => (
+        <div className="skeleton-line" key={i} style={{ width: `${90 - ((i * 13) % 45)}%` }} />
+      ))}
     </div>
   );
 }

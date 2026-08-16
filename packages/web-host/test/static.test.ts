@@ -78,4 +78,48 @@ describe('serveStatic', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
   });
+
+  /**
+   * The shell page holds the socket that runs commands, so the CSP is what is
+   * still true if DOMPurify is ever bypassed. `img-src` is the one that closes
+   * a channel open today: DOMPurify permits `<img>` with an arbitrary `src`,
+   * so model output could otherwise beacon out to any host.
+   */
+  describe('the shell CSP', () => {
+    const csp = async (): Promise<string> =>
+      (await fetch(`${base}/index.html`)).headers.get('content-security-policy') ?? '';
+
+    it('confines every default fetch and every connection to this origin', async () => {
+      const policy = await csp();
+      expect(policy).toContain("default-src 'self'");
+      expect(policy).toContain("connect-src 'self'");
+    });
+
+    it('permits no remote images, so injected markup cannot beacon out', async () => {
+      const policy = await csp();
+      const imgSrc = /img-src ([^;]+)/.exec(policy)?.[1] ?? '';
+      expect(imgSrc).toContain("'self'");
+      expect(imgSrc).toContain('data:'); // pasted attachments
+      expect(imgSrc).not.toMatch(/https?:|\*/);
+    });
+
+    it('cannot be framed, and cannot have its base or form targets hijacked', async () => {
+      const policy = await csp();
+      expect(policy).toContain("frame-ancestors 'none'");
+      expect(policy).toContain("base-uri 'none'");
+      expect(policy).toContain("form-action 'none'");
+      expect(policy).toContain("object-src 'none'");
+    });
+
+    /**
+     * Pinned deliberately. Measured in Chrome: a `srcdoc` iframe inherits this
+     * policy on top of its own, so dropping `'unsafe-inline'` here stops the
+     * scripts inside an HTML artifact from running — the Preview tab breaks
+     * while the diff looks like a tightening. Whoever removes it should be
+     * moving artifacts to an HTTP-served route in the same change.
+     */
+    it('still allows inline script, because artifacts inherit this policy', async () => {
+      expect(await csp()).toContain("script-src 'self' 'unsafe-inline'");
+    });
+  });
 });

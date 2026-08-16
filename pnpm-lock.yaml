@@ -37,10 +37,6 @@ importers:
         version: 2.1.9(@types/node@20.19.43)(jsdom@30.0.1)
 
   packages/cli:
-    dependencies:
-      '@heaplabs/heapcode-cli':
-        specifier: 'link:'
-        version: 'link:'
     devDependencies:
       '@heapcode/core':
         specifier: workspace:*

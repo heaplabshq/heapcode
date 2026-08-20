@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatResponse, Provider } from '../providers/types.js';
+import type { ChatMessage, ChatResponse, Provider, TokenUsage } from '../providers/types.js';
 import { isAbortError, isToolsUnsupported } from '../providers/errors.js';
 import {
   COMPACTION_THRESHOLD,
@@ -37,6 +37,13 @@ export interface AgentEvents {
   onContextUsage?(usedTokens: number, windowTokens: number): void;
   /** Older turns were summarized to stay inside the context window. */
   onCompaction?(beforeTokens: number, afterTokens: number): void;
+  /**
+   * Tokens one provider call cost, as the endpoint reported them — fired per
+   * model call, including the compaction summary and any sub-agent's turns,
+   * so a host that adds them up gets the run's true total. Never fires for an
+   * endpoint that reports nothing.
+   */
+  onUsage?(usage: TokenUsage): void;
   /**
    * A note the agent found worth remembering long-term (a convention,
    * constraint, or gotcha) — only fires when opts.proposeMemoryNote is set.
@@ -322,12 +329,18 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       return true;
     };
 
+    /** Every turn's response passes through here, so usage is counted in exactly one place. */
+    const counted = (response: ChatResponse): ChatResponse => {
+      if (response.usage) events.onUsage?.(response.usage);
+      return response;
+    };
+
     if (!provider.chatStreamed) {
       try {
-        return { response: await provider.chat(buildRequest(msgs, withTools)), streamed: false };
+        return { response: counted(await provider.chat(buildRequest(msgs, withTools))), streamed: false };
       } catch (err) {
         if (!recoverFromUnsupportedTools(err)) throw err;
-        return { response: await provider.chat(buildRequest(msgs, false)), streamed: false };
+        return { response: counted(await provider.chat(buildRequest(msgs, false))), streamed: false };
       }
     }
     let streamed = false;
@@ -360,7 +373,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     }
     if (reasoned) events.onReasoningEnd?.();
     if (streamed) events.onTextEnd?.();
-    return { response, streamed };
+    return { response: counted(response), streamed };
   };
   const systemPrompt = nativeToolCalls
     ? buildNativeAgentSystemPrompt(opts.workspaceName)
@@ -511,6 +524,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         temperature: 0,
         signal,
       });
+      if (res.usage) events.onUsage?.(res.usage);
       const summary = res.content.trim();
       if (!summary) return;
       messages.splice(2, tailStart - 2, {

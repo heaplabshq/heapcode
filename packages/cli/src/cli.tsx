@@ -377,6 +377,7 @@ Usage:
 Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text
   --verify "<command>"              Run this command once the agent thinks it's done; on failure, feed the output back and let it fix its own work (see below)
+                                    Point it at a target that REPAIRS then checks (e.g. "ruff format && ruff check" behind a make target) — a check-only command hands the model failures it cannot fix
   --verify-max <n>                  Cap how many times the verify command runs — so at most n-1 fix turns (default 3)
   --diff                            Include the run's unified diff in the result (the changed-file summary is always included)
   --persona NAME                    agent (default), architect (read-only), debug (no edits), reviewer
@@ -404,14 +405,24 @@ insertions, deletions) in the --json result event, and a "path | +n | -n" table 
 plain-text output. --diff adds the unified diff itself, so a caller can review a run without
 reopening the files.
 
+Every -p run also reports what it cost: a "usage" object (prompt/completion/total tokens, elapsed
+ms, agent model, profile) in the --json result, and one line on stderr in plain-text mode. The
+numbers are the endpoint's own — a field is null where it reported nothing, which is not the same
+as zero.
+
 --verify runs the project's own checks after the task and gives the model its failures back:
-  heapcode -p "add retries to client.ts" --permission-mode auto-edit --verify "make check"
+  heapcode -p "add retries to client.ts" --permission-mode auto-edit --verify "make verify"
 The result says whether it went green and how many attempts it took, with the last failure output
 when it never did; the exit code is non-zero while the checks are still red. The command is yours,
 not the model's — captured from this command line, run directly without a shell (so no pipes, &&,
 or redirection: put chains in a script or make target), never rebuilt from anything the model
 produced, and never offered to it as a tool. That is what makes it safe to pass --verify to a run
 whose permission mode denies run_command outright.
+
+Make that target REPAIR before it checks ("ruff format" then "ruff check", not "ruff check" alone).
+A check-only command reports things like "line is 102 characters, limit 100" — which asks the model
+to count characters rather than run the one-pass tool that fixes it, and in auto-edit mode it cannot
+run that tool itself. Whatever the command repairs still shows up in the run's change summary.
 
 In-session commands (type / for the autocomplete menu):
   /help                             Show available commands

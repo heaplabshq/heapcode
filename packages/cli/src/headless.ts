@@ -26,6 +26,7 @@ import {
   type RagIndexResult,
   type SnapshotBeforeParams,
   type StoredMessage,
+  type TokenUsage,
   type ToolCall,
   type ToolExecuteParams,
   type ToolResult,
@@ -137,7 +138,23 @@ export type HeadlessEvent =
       filesChanged: WorkspaceChange[];
       diff?: string;
       verify?: VerifyReport;
+      /** What the run cost, for a caller weighing this model against a more expensive one. */
+      usage: RunUsage;
     };
+
+/**
+ * The run's own bill. Token counts are summed over every model call the run
+ * made — agent turns, the compaction summary, sub-agents, and any `--verify`
+ * fix cycles — and are `null` when the endpoint reported nothing, which is
+ * deliberately different from 0: "not measured" and "free" are not the same
+ * answer to "did delegating this save anything?".
+ */
+export interface RunUsage extends TokenUsage {
+  /** Wall-clock for the whole run, including tool execution and verify cycles. */
+  elapsedMs: number;
+  model: string;
+  profile: string;
+}
 
 /** `--verify`'s outcome, for a caller that needs "green after 2 attempts" vs "still red, here's why" without running anything itself. */
 export interface VerifyReport {
@@ -190,6 +207,8 @@ function exitCodeFor(outcome: AgentOutcome): number {
  * events, same exit codes.
  */
 export async function runHeadless(opts: HeadlessOptions): Promise<number> {
+  /** Wall clock for the whole invocation — what a caller comparing two models against the same task actually waited. */
+  const startedAt = Date.now();
   /**
    * Parsed once, here, from the invoker's own string — before a profile is
    * even loaded, so a malformed command fails the invocation instead of
@@ -425,11 +444,18 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       }
     });
 
+    /**
+     * Summed over every `agent/run` this invocation makes — the task itself
+     * plus each `--verify` fix cycle — because the caller is billed for all of
+     * them and is asking one question: what did this run cost?
+     */
+    const usage: TokenUsage = { promptTokens: null, completionTokens: null, totalTokens: null };
+
     /** One `agent/run`, with its own run id so a verify fix cycle's events aren't filtered out as a stale run's. */
     const runAgentTurn = async (task: string, turnHistory: ChatMessage[]): Promise<AgentOutcome> => {
       runId = randomUUID();
       deltaAcc = '';
-      const { outcome } = await peer.request<AgentRunResult>(METHODS.agentRun, {
+      const result = await peer.request<AgentRunResult>(METHODS.agentRun, {
         runId,
         profileName: profile.name,
         model: profile.agentModel || profile.model,
@@ -442,8 +468,26 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         subAgents: opts.subAgents,
         persona,
       } satisfies AgentRunParams);
-      return outcome;
+      for (const key of ['promptTokens', 'completionTokens', 'totalTokens'] as const) {
+        const reported = result.usage?.[key];
+        if (reported !== null && reported !== undefined) usage[key] = (usage[key] ?? 0) + reported;
+      }
+      return result.outcome;
     };
+
+    /**
+     * With `--verify`, the baseline is taken up front instead of being
+     * inherited from the agent's first snapshot.
+     *
+     * The check a caller should point this at is one that REPAIRS and then
+     * checks (`ruff format && ruff check` behind a make target), and a repair
+     * step edits files without any tool call of the agent's having done it.
+     * Waiting for the agent's first snapshot would miss those edits entirely
+     * whenever the agent itself changed nothing — reporting a clean tree that
+     * the formatter had in fact rewritten. Paying for one `git add -A` here is
+     * cheap next to the command this run is about to execute anyway.
+     */
+    if (verifyArgv) baseline = await shadowGit.snapshot('headless: before task');
 
     let outcome = await runAgentTurn(fullTask, history);
 
@@ -500,6 +544,16 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     const changes = baseline ? await shadowGit.changesSince(baseline, opts.diff) : { files: [], diff: opts.diff ? '' : undefined };
     const diff = changes.diff === undefined ? undefined : clampDiff(changes.diff);
 
+    // The agent model, not profile.model — that is what actually consumed the
+    // tokens when a profile routes agent turns to a different model. The
+    // long-standing `model` field above keeps reporting profile.model.
+    const runUsage: RunUsage = {
+      ...usage,
+      elapsedMs: Date.now() - startedAt,
+      model: profile.agentModel || profile.model,
+      profile: profile.name,
+    };
+
     emit({
       type: 'result',
       outcome,
@@ -510,13 +564,20 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       filesChanged: changes.files,
       diff,
       verify,
+      usage: runUsage,
     });
     if (!opts.json) {
       // Plain-text mode prints the final response exactly once — tool
       // activity and streamed deltas are headless-JSON-only concerns.
       process.stdout.write(`${lastText}\n`);
       process.stdout.write(formatFooter(changes.files, diff, verify));
-      // Same discoverability as the interactive exit line — stderr so it never pollutes a piped stdout.
+      // Both of these are about the RUN, not about the work — so they go where
+      // the session line has always gone: stderr, never polluting a piped
+      // stdout. `heapcode -p "explain this" > answer.txt` still writes exactly
+      // the answer. The change table above is the opposite case: it IS the
+      // work product, and a caller reviewing the run wants it in the same
+      // stream as the summary.
+      process.stderr.write(`Usage: ${formatUsage(runUsage)}\n`);
       process.stderr.write(`Session: ${conversation.id.slice(0, 8)}  (--resume ${conversation.id.slice(0, 8)} to continue this later)\n`);
     }
     const code = exitCodeFor(outcome);
@@ -567,6 +628,21 @@ async function syncIndexesAfterTool(
     default:
       return;
   }
+}
+
+/**
+ * One line for stderr. "not reported" rather than zeros, because an
+ * endpoint that sends no `usage` block and a turn that genuinely cost nothing
+ * are different facts and only one of them is plausible.
+ */
+function formatUsage(usage: RunUsage): string {
+  const seconds = `${(usage.elapsedMs / 1000).toFixed(1)}s`;
+  const where = `${usage.model} (profile: ${usage.profile})`;
+  if (usage.totalTokens === null && usage.promptTokens === null && usage.completionTokens === null) {
+    return `tokens not reported by this endpoint · ${seconds} · ${where}`;
+  }
+  const n = (v: number | null): string => (v === null ? '?' : v.toLocaleString('en-US'));
+  return `${n(usage.promptTokens)} prompt + ${n(usage.completionTokens)} completion = ${n(usage.totalTokens)} tokens · ${seconds} · ${where}`;
 }
 
 /** Truncated with a marker rather than silently: a caller reviewing a diff has to be able to tell it is not the whole one. */

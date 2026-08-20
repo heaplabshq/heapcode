@@ -8,7 +8,7 @@ import {
   type AgentPersona,
 } from './personas.js';
 import type { ToolCall, ToolDefinition, ToolResult } from './tools.js';
-import type { Provider } from '../providers/types.js';
+import type { Provider, TokenUsage } from '../providers/types.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
 
 // Sub-agents get the same tools as the parent (minus delegate_task itself)
@@ -55,6 +55,8 @@ export interface SubAgentContext {
   events?: {
     onSubToolCall?(call: ToolCall): void;
     onSubToolResult?(result: ToolResult): void;
+    /** A sub-agent's turns are billed to the same account as its parent's, so they are reported the same way. */
+    onUsage?(usage: TokenUsage): void;
   };
 }
 
@@ -146,6 +148,7 @@ export async function runSubAgent(call: ToolCall, ctx: SubAgentContext): Promise
         ctx.events?.onSubToolCall?.(subCall);
       },
       onToolResult: (result) => ctx.events?.onSubToolResult?.(result),
+      onUsage: (usage) => ctx.events?.onUsage?.(usage),
     },
     contextWindow: ctx.contextWindow,
     signal: ctx.signal,

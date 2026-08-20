@@ -65,8 +65,45 @@ function parseNdjson(write: { mock: { calls: unknown[][] } }): HeadlessEvent[] {
 
 type SingleBehavior = Exclude<MockBehavior, { kind: 'sequence' }>;
 const sse = (content: string): SingleBehavior => ({ kind: 'sse', chunks: [content] });
+/** Like sse(), but the endpoint also reports what the turn cost. */
+const sseCosting = (content: string, prompt: number, completion: number): SingleBehavior => ({
+  kind: 'sse',
+  chunks: [content],
+  usage: { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion },
+});
 const toolBlock = (name: string, args: Record<string, unknown>) => `<tool name="${name}">\n${JSON.stringify(args)}\n</tool>`;
 const finishBlock = (summary: string) => toolBlock('finish', { summary });
+
+/**
+ * A stand-in for "the project's own checks": records the exact argv it was
+ * given (outside the project, so it never shows up in the change summary)
+ * and fails its first `failures` invocations.
+ */
+async function checkScript(failures: number): Promise<{ command: string; invocations: () => string[][] }> {
+  const script = join(home, 'check.cjs');
+  const log = join(home, 'invocations.jsonl');
+  await writeFile(
+    script,
+    `const fs = require('node:fs');
+const log = process.argv[2];
+const failures = Number(process.argv[3]);
+const prior = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).length : 0;
+fs.appendFileSync(log, JSON.stringify(process.argv.slice(1)) + '\\n');
+if (prior < failures) { console.error('E501 line too long (106 > 100)'); process.exit(1); }
+console.log('all checks passed');
+`,
+  );
+  return {
+    command: `"${process.execPath}" "${script}" "${log}" ${failures}`,
+    invocations: () =>
+      existsSync(log)
+        ? readFileSync(log, 'utf8')
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => JSON.parse(l) as string[])
+        : [],
+  };
+}
 
 describe('runHeadless — chat-only parity (no tools used)', () => {
   it('returns valid JSON events ending in a result, and persists history', async () => {
@@ -364,7 +401,7 @@ describe('runHeadless — the result event stays backward compatible', () => {
     // Order matters as much as presence: a consumer diffing the raw line
     // should see its six fields first and unchanged, then whatever is new.
     expect(Object.keys(result).slice(0, 6)).toEqual(['type', 'outcome', 'response', 'model', 'profile', 'sessionId']);
-    expect(Object.keys(result)).toEqual([...Object.keys(result).slice(0, 6), 'filesChanged']);
+    expect(Object.keys(result)).toEqual([...Object.keys(result).slice(0, 6), 'filesChanged', 'usage']);
     // Opt-in fields stay absent when their flags weren't passed.
     expect(result).not.toHaveProperty('diff');
     expect(result).not.toHaveProperty('verify');
@@ -463,37 +500,6 @@ describe('runHeadless — change summary and --diff', () => {
  * spawned argv-style with no shell, and nothing the model emits can reach it.
  */
 describe('runHeadless — --verify', () => {
-  /**
-   * A stand-in for "the project's own checks": records the exact argv it was
-   * given (outside the project, so it never shows up in the change summary)
-   * and fails its first `failures` invocations.
-   */
-  async function checkScript(failures: number): Promise<{ command: string; invocations: () => string[][] }> {
-    const script = join(home, 'check.cjs');
-    const log = join(home, 'invocations.jsonl');
-    await writeFile(
-      script,
-      `const fs = require('node:fs');
-const log = process.argv[2];
-const failures = Number(process.argv[3]);
-const prior = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).length : 0;
-fs.appendFileSync(log, JSON.stringify(process.argv.slice(1)) + '\\n');
-if (prior < failures) { console.error('E501 line too long (106 > 100)'); process.exit(1); }
-console.log('all checks passed');
-`,
-    );
-    return {
-      command: `"${process.execPath}" "${script}" "${log}" ${failures}`,
-      invocations: () =>
-        existsSync(log)
-          ? readFileSync(log, 'utf8')
-              .split('\n')
-              .filter(Boolean)
-              .map((l) => JSON.parse(l) as string[])
-          : [],
-    };
-  }
-
   it('runs the check once and reports it green when the work was already fine', async () => {
     const check = await checkScript(0);
     await configureProfile(sse(finishBlock('Nothing needed changing.')));
@@ -655,6 +661,34 @@ console.log('all checks passed');
     write.mockRestore();
   });
 
+  it("counts the verify command's OWN edits as changes — a repair step's work must not vanish from the diff", async () => {
+    // The recommended shape for --verify is a target that REPAIRS and then
+    // checks (ruff format && ruff check). The repair rewrites files with no
+    // tool call of the agent's behind it, so the change summary has to be
+    // based on the tree as it stood before the whole run, not on the agent's
+    // first snapshot — which may never happen at all.
+    const script = join(home, 'repair.cjs');
+    await writeFile(script, `require('node:fs').writeFileSync(process.argv[2], 'reformatted\\n');\n`);
+    await writeFile(join(project, 'messy.py'), 'x   =    1\n');
+    await configureProfile(sse(finishBlock('Nothing for me to do.')));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({
+      prompt: 'tidy up',
+      json: true,
+      cwd: project,
+      diff: true,
+      verify: `"${process.execPath}" "${script}" "${join(project, 'messy.py')}"`,
+      server: serverOpts,
+    });
+
+    expect(code).toBe(0);
+    const result = parseNdjson(write).find((e) => e.type === 'result') as { filesChanged: unknown[]; diff: string };
+    expect(result.filesChanged).toEqual([{ path: 'messy.py', status: 'modified', insertions: 1, deletions: 1 }]);
+    expect(result.diff).toContain('+reformatted');
+    write.mockRestore();
+  });
+
   it('plain-text mode says whether it went green and after how many attempts', async () => {
     const check = await checkScript(99);
     await configureProfile(sse(finishBlock('Done.')));
@@ -666,5 +700,75 @@ console.log('all checks passed');
     expect(printed).toContain('Verify: FAILED after 1 attempt');
     expect(printed).toContain('E501 line too long');
     write.mockRestore();
+  });
+});
+
+describe('runHeadless — usage accounting', () => {
+  it('reports what the run cost, summed over every model call it made', async () => {
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sseCosting(toolBlock('read_file', { path: 'x' }), 1_000, 40), sseCosting(finishBlock('Done.'), 1_400, 60)],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'look at something', json: true, cwd: project, server: serverOpts });
+
+    const usage = (parseNdjson(write).find((e) => e.type === 'result') as unknown as { usage: Record<string, unknown> }).usage;
+    expect(usage).toMatchObject({
+      promptTokens: 2_400,
+      completionTokens: 100,
+      totalTokens: 2_500,
+      model: 'mock-model',
+      profile: 'test',
+    });
+    expect(usage.elapsedMs).toBeTypeOf('number');
+    write.mockRestore();
+  });
+
+  it('says "not reported" with nulls, rather than zero, for an endpoint that reports nothing', async () => {
+    await configureProfile(sse('Hello!'));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'hi', json: true, cwd: project, server: serverOpts });
+
+    expect((parseNdjson(write).find((e) => e.type === 'result') as { usage: unknown }).usage).toMatchObject({
+      promptTokens: null,
+      completionTokens: null,
+      totalTokens: null,
+    });
+    write.mockRestore();
+  });
+
+  it("counts a --verify fix cycle's turns too — the caller is billed for those as well", async () => {
+    const check = await checkScript(1);
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sseCosting(finishBlock('Done.'), 100, 10), sseCosting(finishBlock('Fixed.'), 200, 20)],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'do something', json: true, cwd: project, verify: check.command, server: serverOpts });
+
+    expect((parseNdjson(write).find((e) => e.type === 'result') as { usage: unknown }).usage).toMatchObject({
+      promptTokens: 300,
+      completionTokens: 30,
+      totalTokens: 330,
+    });
+    write.mockRestore();
+  });
+
+  it('prints one usage line in plain-text mode — on stderr, so a piped stdout stays exactly the answer', async () => {
+    await configureProfile({ kind: 'sequence', responses: [sseCosting(finishBlock('Hello!'), 1_234, 56)] });
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'hi', json: false, cwd: project, server: serverOpts });
+
+    expect(out.mock.calls.map((c) => c[0]).join('')).toBe('Hello!\n');
+    const printed = err.mock.calls.map((c) => c[0]).join('');
+    expect(printed).toContain('Usage: 1,234 prompt + 56 completion = 1,290 tokens');
+    expect(printed).toContain('mock-model (profile: test)');
+    out.mockRestore();
+    err.mockRestore();
   });
 });

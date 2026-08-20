@@ -2,6 +2,7 @@ import { runAgent } from '../agent/loop.js';
 import { filesystemMutatingBlockedMessage, getPersona, looksFilesystemMutating } from '../agent/personas.js';
 import { runSubAgent } from '../agent/subAgent.js';
 import type { ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
+import type { TokenUsage } from '../providers/types.js';
 import type { Session } from './session.js';
 import { METHODS, type AgentEvent, type AgentRunParams, type AgentRunResult } from './protocol.js';
 
@@ -97,6 +98,9 @@ export async function runAgentForSession(
               isError: result.isError,
               parent: call.id,
             }),
+          // Delegated turns are billed to the same account as the parent's, so
+          // they land in the same total rather than disappearing from it.
+          onUsage: addUsage,
         },
       });
     }
@@ -127,6 +131,20 @@ export async function runAgentForSession(
     }
 
     return host.executeTool(call);
+  };
+
+  /**
+   * Summed across every model call this run made — the agent's own turns, the
+   * compaction summary, and any sub-agent's turns, all billed to the same
+   * account. A field stays null until some call reports it, so "this endpoint
+   * doesn't report usage" never reads as a run that cost nothing.
+   */
+  const usage: TokenUsage = { promptTokens: null, completionTokens: null, totalTokens: null };
+  const addUsage = (one: TokenUsage): void => {
+    for (const key of ['promptTokens', 'completionTokens', 'totalTokens'] as const) {
+      if (one[key] === null) continue;
+      usage[key] = (usage[key] ?? 0) + one[key]!;
+    }
   };
 
   const outcome = await runAgent({
@@ -165,10 +183,11 @@ export async function runAgentForSession(
       onContextUsage: (usedTokens, windowTokens) => host.emit({ type: 'context_usage', usedTokens, windowTokens }),
       onCompaction: (beforeTokens, afterTokens) => host.emit({ type: 'compaction', beforeTokens, afterTokens }),
       onMemoryCandidate: (note) => host.emit({ type: 'memory_candidate', note }),
+      onUsage: addUsage,
     },
   });
 
-  return { outcome };
+  return { outcome, usage };
 }
 
 export const AGENT_EVENT_METHOD = METHODS.agentEvent;

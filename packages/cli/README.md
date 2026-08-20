@@ -113,6 +113,21 @@ Every `-p` run says what it changed, so a caller — a script, or another agent 
 
 `status` is `added`, `modified`, or `deleted`; a binary file reports as changed with zero line counts. The summary comes from the same shadow-git history that backs `/rewind` and `/checkpoints`, so it covers everything the run touched — including files a `--verify` command reformatted.
 
+#### What a run cost
+
+Every result also carries `usage`, so the trade in delegating work to a cheaper model is measurable on both sides instead of on neither:
+
+```json
+"usage": {"promptTokens":48210,"completionTokens":3155,"totalTokens":51365,
+          "elapsedMs":94120,"model":"glm-5.2","profile":"ollama-cloud"}
+```
+
+Token counts are summed over every model call the run made — agent turns, the context-compaction summary, sub-agents, and any `--verify` fix cycles. `model` is the *agent* model (the one that did the work), which can differ from the long-standing `model` field if the profile routes agent turns elsewhere.
+
+The numbers are the endpoint's own; heapcode estimates nothing. A field is `null` when the endpoint reported nothing, which is deliberately not the same as `0` — "not measured" and "free" are different answers. Streamed calls ask for usage with `stream_options: {include_usage: true}`; if a server rejects that, the turn is repeated without it and the run continues with counts unreported rather than failing.
+
+In plain-text mode this prints as one line on **stderr**, next to the session line, so a piped stdout is still exactly the answer.
+
 #### `--verify` — self-checking runs
 
 A model that never learns it failed the project's lint can't fix it; the caller pays for that round trip instead. `--verify` closes the loop:
@@ -133,6 +148,17 @@ The command runs once the agent believes it's finished. If it fails, its output 
 **The command is yours, not the model's.** It's captured from your command line, parsed once, and spawned directly — no shell, ever. Nothing the model produces is interpolated into it, it isn't offered as a tool, and it can't be read, changed, or disabled from inside the run. That's what makes `--verify "make check"` safe to hand to a run whose permission mode denies `run_command` outright.
 
 The no-shell rule is the load-bearing part, so it's enforced rather than assumed: `&&`, `|`, `;`, redirection and `$(…)` are rejected up front instead of being passed through as literal arguments. Put chains in a script or a make target and point `--verify` at that. Quoting works as you'd expect (`--verify "pytest -k 'not slow'"`), and a check that hangs is killed after 10 minutes.
+
+**Point it at a command that repairs, then checks.** This is the single biggest factor in whether the loop succeeds. A check-only command hands the model failures it is structurally bad at fixing — "line is 102 characters, limit is 100" asks it to count characters, which is close to the worst thing you can ask an LLM to do, and it will burn every cycle failing at it. The formatter fixes that in one pass:
+
+```make
+verify:                 # not just `ruff check`
+	ruff format .
+	ruff check .
+	pytest -q
+```
+
+This matters most in `--permission-mode auto-edit`, where the model can't run the formatter itself because `run_command` is denied. Anything the verify command repairs is picked up in `filesChanged` and the diff — the summary is taken after the checks run, against the tree as it stood before the task started.
 
 Permission modes (headless has no one to prompt, so every mode resolves on its own):
 

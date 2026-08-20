@@ -1,6 +1,8 @@
 import {
   describeErrorBody,
   describeHttpError,
+  isContextOverflow,
+  isToolsUnsupported,
   ProviderBodyError,
   ProviderError,
   type ProviderErrorBody,
@@ -17,6 +19,7 @@ import type {
   ModelInfo,
   Provider,
   ProviderConfig,
+  TokenUsage,
 } from './types.js';
 
 interface OpenAIStreamToolCall {
@@ -55,8 +58,36 @@ function isRetryableBodyError(err: unknown): boolean {
   return TRANSIENT_MESSAGE.test(err.message);
 }
 
+/** The wire shape of an OpenAI-style `usage` block; every field is optional because plenty of servers send a partial one. */
+interface OpenAIUsage {
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+}
+
+/**
+ * `usage` → TokenUsage, keeping "not reported" (null) distinct from zero.
+ * Returns undefined when the block is missing entirely, so a caller can tell
+ * an endpoint that reports nothing from one that reported an empty count.
+ */
+function parseUsage(usage: OpenAIUsage | undefined | null): TokenUsage | undefined {
+  if (!usage) return undefined;
+  const num = (v: number | null | undefined): number | null => (typeof v === 'number' ? v : null);
+  const prompt = num(usage.prompt_tokens);
+  const completion = num(usage.completion_tokens);
+  const total = num(usage.total_tokens);
+  return {
+    promptTokens: prompt,
+    completionTokens: completion,
+    // Several servers send the two halves and omit the sum; adding them is
+    // arithmetic on numbers the endpoint itself reported, not a guess.
+    totalTokens: total ?? (prompt !== null && completion !== null ? prompt + completion : null),
+  };
+}
+
 interface OpenAIChatCompletionChunk {
   error?: ProviderErrorBody;
+  usage?: OpenAIUsage | null;
   choices?: Array<{
     delta?: {
       content?: string | null;
@@ -77,6 +108,7 @@ interface OpenAIToolCall {
 
 interface OpenAIChatCompletion {
   error?: ProviderErrorBody;
+  usage?: OpenAIUsage | null;
   choices?: Array<{
     message?: { content?: string | null; tool_calls?: OpenAIToolCall[] };
     finish_reason?: string | null;
@@ -113,6 +145,15 @@ const DEFAULT_TIMEOUT_MS = 300_000;
  * Provider-specific quirks (Azure auth/URLs, etc.) belong in thin subclasses.
  */
 export class OpenAICompatibleProvider implements Provider {
+  /**
+   * Whether this endpoint accepts `stream_options: {include_usage: true}`.
+   * Assumed yes — it is standard and almost every server ignores unknown
+   * fields — and flipped to false for the rest of the session the first time
+   * one answers a streamed call with 400. Usage reporting is a nicety; a
+   * refused agent turn is not, so the field gives way rather than the run.
+   */
+  private streamUsageSupported = true;
+
   constructor(protected readonly config: ProviderConfig) {
     if (!config.baseUrl) {
       throw new ProviderError('No base URL configured.');
@@ -169,6 +210,13 @@ export class OpenAICompatibleProvider implements Provider {
         ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}),
       })),
       stream,
+      // OpenAI and the routers built like it report token usage on a streamed
+      // call only when asked, and an agent turn is always streamed — so
+      // without this, the one number a caller needs to judge whether
+      // delegating work is actually cheaper is never sent. Dropped for the
+      // rest of the session if the endpoint turns out to reject it
+      // (`streamUsageSupported` below).
+      ...(stream && this.streamUsageSupported ? { stream_options: { include_usage: true } } : {}),
       ...(req.tools && req.tools.length > 0
         ? {
             tools: req.tools.map((t) => ({
@@ -293,6 +341,7 @@ export class OpenAICompatibleProvider implements Provider {
       content: choice?.message?.content ?? '',
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: choice?.finish_reason ?? undefined,
+      usage: parseUsage(json.usage),
     };
   }
 
@@ -383,9 +432,34 @@ export class OpenAICompatibleProvider implements Provider {
     };
     return this.retryingBodyErrors(
       req.signal,
-      () => this.chatStreamedOnce(req, track),
+      async () => {
+        try {
+          return await this.chatStreamedOnce(req, track);
+        } catch (err) {
+          // A 400 is the endpoint saying "you sent something I don't accept",
+          // and the only thing we send that it might not know is
+          // stream_options. Drop it and repeat the turn once — same shape as
+          // the tool-protocol fallback in the agent loop. Safe to replay
+          // because a 400 arrives before any byte of the stream does, and the
+          // guard says so rather than assuming it.
+          if (replayable || !this.retryWithoutStreamUsage(err)) throw err;
+          return await this.chatStreamedOnce(req, track);
+        }
+      },
       () => !replayable,
     );
+  }
+
+  /** True once, per endpoint: a 400 that isn't already explained by something else disables usage reporting. */
+  private retryWithoutStreamUsage(err: unknown): boolean {
+    if (!this.streamUsageSupported) return false;
+    if (!(err instanceof ProviderError) || err.status !== 400) return false;
+    // A 400 the codebase can already name means something else entirely;
+    // retrying without stream_options would only cost a request and report
+    // the same failure a beat later.
+    if (isContextOverflow(err.message) || isToolsUnsupported(err.message)) return false;
+    this.streamUsageSupported = false;
+    return true;
   }
 
   private async chatStreamedOnce(
@@ -422,6 +496,13 @@ export class OpenAICompatibleProvider implements Provider {
 
     let content = '';
     let finishReason: string | undefined;
+    /**
+     * Usually the last chunk before [DONE], which carries `usage` and an EMPTY
+     * `choices` array — so it is read off the chunk itself, never off a
+     * choice. Some servers instead repeat a running total on every chunk;
+     * last-one-wins is right either way.
+     */
+    let usage: TokenUsage | undefined;
     const toolSlots = new Map<number, { id?: string; name: string; args: string }>();
 
     for await (const data of sseEvents(res.body)) {
@@ -433,6 +514,7 @@ export class OpenAICompatibleProvider implements Provider {
         continue;
       }
       throwIfBodyError(chunk);
+      usage = parseUsage(chunk.usage) ?? usage;
       const choice = chunk.choices?.[0];
       const reasoning = choice?.delta?.reasoning_content ?? choice?.delta?.reasoning;
       if (reasoning) onDelta(reasoning, 'reasoning');
@@ -471,6 +553,7 @@ export class OpenAICompatibleProvider implements Provider {
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason,
+      usage,
     };
   }
 

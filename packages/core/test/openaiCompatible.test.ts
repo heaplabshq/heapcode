@@ -565,3 +565,78 @@ describe('a local server whose context window is smaller than heapcode assumes',
     expect(server.requests).toHaveLength(1);
   });
 });
+
+/**
+ * Usage reporting exists so a caller can answer "did delegating this to a
+ * cheaper model actually save anything?" — which means the numbers have to be
+ * the endpoint's own, and "not reported" has to stay distinguishable from zero.
+ */
+describe('OpenAICompatibleProvider — token usage', () => {
+  it('asks for usage on a streamed call, and reads it off the final chunk', async () => {
+    server = await startMockServer({
+      kind: 'sse',
+      chunks: ['done'],
+      usage: { prompt_tokens: 1_200, completion_tokens: 80, total_tokens: 1_280 },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+
+    const res = await provider.chatStreamed({ model: 'm', messages: [{ role: 'user', content: 'hi' }] });
+
+    expect(res.usage).toEqual({ promptTokens: 1_200, completionTokens: 80, totalTokens: 1_280 });
+    expect(server.requests[0]!.body).toMatchObject({ stream_options: { include_usage: true } });
+  });
+
+  it('never asks for it on a non-streamed call, but reads it when the body carries one', async () => {
+    server = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { choices: [{ message: { content: 'hi' } }], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 } },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+
+    const res = await provider.chat({ model: 'm', messages: [] });
+
+    expect(res.usage).toEqual({ promptTokens: 10, completionTokens: 4, totalTokens: 14 });
+    expect(server.requests[0]!.body).not.toHaveProperty('stream_options');
+  });
+
+  it('adds up the halves when a server reports them without the sum', async () => {
+    server = await startMockServer({ kind: 'sse', chunks: ['x'], usage: { prompt_tokens: 30, completion_tokens: 12 } });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+
+    expect((await provider.chatStreamed({ model: 'm', messages: [] })).usage).toEqual({
+      promptTokens: 30,
+      completionTokens: 12,
+      totalTokens: 42,
+    });
+  });
+
+  it('reports nothing at all — rather than zeros — when the endpoint sends no usage block', async () => {
+    server = await startMockServer({ kind: 'sse', chunks: ['x'] });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+
+    expect((await provider.chatStreamed({ model: 'm', messages: [] })).usage).toBeUndefined();
+  });
+
+  it('drops stream_options and repeats the turn when an endpoint rejects it, then stops asking', async () => {
+    // A strict server 400s the unknown field; the turn must survive that,
+    // because a refused agent run is a far worse outcome than a missing count.
+    server = await startMockServer({
+      kind: 'sequence',
+      responses: [
+        { kind: 'json', status: 400, body: { error: { message: 'unrecognized request argument: stream_options' } } },
+        { kind: 'sse', chunks: ['recovered'] },
+        { kind: 'sse', chunks: ['second turn'] },
+      ],
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+
+    expect((await provider.chatStreamed({ model: 'm', messages: [] })).content).toBe('recovered');
+    expect(server.requests[0]!.body).toMatchObject({ stream_options: { include_usage: true } });
+    expect(server.requests[1]!.body).not.toHaveProperty('stream_options');
+
+    // The endpoint said no once; asking again every turn would burn a request each time.
+    expect((await provider.chatStreamed({ model: 'm', messages: [] })).content).toBe('second turn');
+    expect(server.requests[2]!.body).not.toHaveProperty('stream_options');
+  });
+});

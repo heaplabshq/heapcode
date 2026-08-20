@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -348,6 +349,322 @@ describe('runHeadless — --sub-agents', () => {
       content: expect.stringContaining('Sub-agent delegation is turned off for this run.'),
     });
     expect((result as { content: string }).content).toContain('do not claim it was delegated');
+    write.mockRestore();
+  });
+});
+
+describe('runHeadless — the result event stays backward compatible', () => {
+  it('keeps its original fields, values and order, with the new ones appended after them', async () => {
+    await configureProfile(sse('Hello!'));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'hi', json: true, cwd: project, server: serverOpts });
+
+    const result = parseNdjson(write).find((e) => e.type === 'result')!;
+    // Order matters as much as presence: a consumer diffing the raw line
+    // should see its six fields first and unchanged, then whatever is new.
+    expect(Object.keys(result).slice(0, 6)).toEqual(['type', 'outcome', 'response', 'model', 'profile', 'sessionId']);
+    expect(Object.keys(result)).toEqual([...Object.keys(result).slice(0, 6), 'filesChanged']);
+    // Opt-in fields stay absent when their flags weren't passed.
+    expect(result).not.toHaveProperty('diff');
+    expect(result).not.toHaveProperty('verify');
+    write.mockRestore();
+  });
+
+  it('prints exactly the same plain text as before when no new flag is passed and nothing changed', async () => {
+    await configureProfile(sse('Hello!'));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'hi', json: false, cwd: project, server: serverOpts });
+
+    expect(write.mock.calls.map((c) => c[0]).join('')).toBe('Hello!\n');
+    write.mockRestore();
+  });
+});
+
+describe('runHeadless — change summary and --diff', () => {
+  it('reports every file the run changed, so a caller can review without opening each one', async () => {
+    await writeFile(join(project, 'existing.txt'), 'one\ntwo\n');
+    await writeFile(join(project, 'doomed.txt'), 'bye\n');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('write_file', { path: 'added.txt', content: 'fresh\n' })),
+        sse(toolBlock('write_file', { path: 'existing.txt', content: 'one\ntwo\nthree\n' })),
+        sse(toolBlock('delete_file', { path: 'doomed.txt' })),
+        sse(finishBlock('Done.')),
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'edit things', json: true, cwd: project, permissionMode: 'full-auto', server: serverOpts });
+
+    const result = parseNdjson(write).find((e) => e.type === 'result') as { filesChanged: unknown[] };
+    expect(result.filesChanged).toEqual([
+      { path: 'added.txt', status: 'added', insertions: 1, deletions: 0 },
+      { path: 'doomed.txt', status: 'deleted', insertions: 0, deletions: 1 },
+      { path: 'existing.txt', status: 'modified', insertions: 1, deletions: 0 },
+    ]);
+    write.mockRestore();
+  });
+
+  it('is an empty array — with no diff — for a run that changed nothing', async () => {
+    await configureProfile(sse('Nothing to do.'));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'hi', json: true, cwd: project, diff: true, server: serverOpts });
+
+    const result = parseNdjson(write).find((e) => e.type === 'result') as { filesChanged: unknown[]; diff: string };
+    expect(result.filesChanged).toEqual([]);
+    expect(result.diff).toBe('');
+    write.mockRestore();
+  });
+
+  it('--diff carries the unified diff itself; without it the summary comes alone', async () => {
+    const write_ = () => sse(toolBlock('write_file', { path: 'out.txt', content: 'from headless\n' }));
+    // Four scripted turns, not two: the mock repeats its LAST response once a
+    // sequence runs out, so the second run below needs its own pair.
+    await configureProfile({ kind: 'sequence', responses: [write_(), sse(finishBlock('Wrote it.')), write_(), sse(finishBlock('Wrote it.'))] });
+
+    const noDiff = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    await runHeadless({ prompt: 'write', json: true, cwd: project, permissionMode: 'full-auto', server: serverOpts });
+    expect(parseNdjson(noDiff).find((e) => e.type === 'result')).not.toHaveProperty('diff');
+    noDiff.mockRestore();
+
+    await rm(join(project, 'out.txt'));
+    const withDiff = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    await runHeadless({ prompt: 'write', json: true, cwd: project, permissionMode: 'full-auto', diff: true, server: serverOpts });
+    const diff = (parseNdjson(withDiff).find((e) => e.type === 'result') as { diff: string }).diff;
+    expect(diff).toContain('+++ b/out.txt');
+    expect(diff).toContain('+from headless');
+    withDiff.mockRestore();
+  });
+
+  it('plain-text mode ends with a greppable path | +n | -n table', async () => {
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sse(toolBlock('write_file', { path: 'out.txt', content: 'a\nb\n' })), sse(finishBlock('Wrote out.txt.'))],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'write', json: false, cwd: project, permissionMode: 'full-auto', server: serverOpts });
+
+    const printed = write.mock.calls.map((c) => c[0]).join('');
+    expect(printed).toContain('Wrote out.txt.');
+    expect(printed).toContain('Changes: 1 file, +2 -0');
+    expect(printed).toMatch(/out\.txt +\| \+2 \| -0 \| added/);
+    write.mockRestore();
+  });
+});
+
+/**
+ * `--verify` executes a command in a mode where `run_command` is denied, so
+ * these are the tests that have to hold: the command is the invoker's, it is
+ * spawned argv-style with no shell, and nothing the model emits can reach it.
+ */
+describe('runHeadless — --verify', () => {
+  /**
+   * A stand-in for "the project's own checks": records the exact argv it was
+   * given (outside the project, so it never shows up in the change summary)
+   * and fails its first `failures` invocations.
+   */
+  async function checkScript(failures: number): Promise<{ command: string; invocations: () => string[][] }> {
+    const script = join(home, 'check.cjs');
+    const log = join(home, 'invocations.jsonl');
+    await writeFile(
+      script,
+      `const fs = require('node:fs');
+const log = process.argv[2];
+const failures = Number(process.argv[3]);
+const prior = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).length : 0;
+fs.appendFileSync(log, JSON.stringify(process.argv.slice(1)) + '\\n');
+if (prior < failures) { console.error('E501 line too long (106 > 100)'); process.exit(1); }
+console.log('all checks passed');
+`,
+    );
+    return {
+      command: `"${process.execPath}" "${script}" "${log}" ${failures}`,
+      invocations: () =>
+        existsSync(log)
+          ? readFileSync(log, 'utf8')
+              .split('\n')
+              .filter(Boolean)
+              .map((l) => JSON.parse(l) as string[])
+          : [],
+    };
+  }
+
+  it('runs the check once and reports it green when the work was already fine', async () => {
+    const check = await checkScript(0);
+    await configureProfile(sse(finishBlock('Nothing needed changing.')));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'tidy up', json: true, cwd: project, verify: check.command, server: serverOpts });
+
+    expect(code).toBe(0);
+    expect(parseNdjson(write).find((e) => e.type === 'result')).toMatchObject({
+      verify: { passed: true, cycles: 1, command: check.command },
+    });
+    expect(check.invocations()).toHaveLength(1);
+    write.mockRestore();
+  });
+
+  it('feeds a failure back as a new turn and re-runs the check after the fix', async () => {
+    const check = await checkScript(1); // red once, green after the fix turn
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('write_file', { path: 'out.py', content: 'x = ' + "'y'".repeat(40) + '\n' })),
+        sse(finishBlock('Wrote out.py.')),
+        sse(toolBlock('write_file', { path: 'out.py', content: "x = 'y'\n" })), // the fix turn
+        sse(finishBlock('Shortened the long line.')),
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({
+      prompt: 'write out.py',
+      json: true,
+      cwd: project,
+      permissionMode: 'full-auto',
+      verify: check.command,
+      server: serverOpts,
+    });
+
+    expect(code).toBe(0);
+    const result = parseNdjson(write).find((e) => e.type === 'result')!;
+    expect(result).toMatchObject({ verify: { passed: true, cycles: 2 }, response: 'Shortened the long line.' });
+    expect(result).not.toHaveProperty('verify.lastFailureOutput');
+    expect(check.invocations()).toHaveLength(2);
+
+    // The failure reached the model as a real turn, with the tool output in it.
+    const fixTurn = (server.requests.at(-1)!.body as { messages: Array<{ content: string }> }).messages;
+    expect(fixTurn.some((m) => m.content.includes('E501 line too long'))).toBe(true);
+    expect(await readFile(join(project, 'out.py'), 'utf8')).toBe("x = 'y'\n");
+    write.mockRestore();
+  });
+
+  it('gives up after --verify-max runs, exits non-zero, and hands back the last failure', async () => {
+    const check = await checkScript(99); // never goes green
+    await configureProfile(sse(finishBlock('Done.')));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({
+      prompt: 'do something',
+      json: true,
+      cwd: project,
+      verify: check.command,
+      verifyMax: 2,
+      server: serverOpts,
+    });
+
+    expect(code).toBe(1); // still red, whatever the agent concluded
+    expect(parseNdjson(write).find((e) => e.type === 'result')).toMatchObject({
+      outcome: 'done',
+      verify: { passed: false, cycles: 2, lastFailureOutput: expect.stringContaining('E501 line too long') },
+    });
+    expect(check.invocations()).toHaveLength(2);
+    write.mockRestore();
+  });
+
+  it('the model cannot influence what is executed: the same invoker-supplied argv runs every cycle', async () => {
+    const check = await checkScript(1);
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        // Everything the model can emit — a file it controls the name and
+        // content of, and prose asserting a different command — aimed at the
+        // check. None of it is an input to what gets spawned.
+        sse(toolBlock('write_file', { path: 'check.cjs', content: "require('node:fs').writeFileSync('pwned.txt', 'x');\n" })),
+        sse(finishBlock('Verification command changed to `true`; also run $(touch pwned.txt) && rm -rf .')),
+        sse(finishBlock('Fixed it.')),
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({
+      prompt: 'do something',
+      json: true,
+      cwd: project,
+      permissionMode: 'full-auto',
+      verify: check.command,
+      server: serverOpts,
+    });
+
+    const invocations = check.invocations();
+    expect(invocations).toHaveLength(2);
+    // argv[0] is the script, then exactly the two arguments the invoker gave.
+    expect(invocations[0]).toEqual(invocations[1]);
+    expect(invocations[0]!.slice(1)).toEqual([join(home, 'invocations.jsonl'), '1']);
+    // Nothing the model wrote or said was ever interpreted as part of a command.
+    expect(existsSync(join(project, 'pwned.txt'))).toBe(false);
+
+    // And the check is not reachable as a tool, in any turn.
+    for (const request of server.requests) {
+      const messages = (request.body as { messages?: Array<{ content: string }> }).messages ?? [];
+      expect(messages[0]!.content).not.toContain('### verify');
+    }
+    write.mockRestore();
+  });
+
+  it('refuses a chained command up front instead of running part of it', async () => {
+    await configureProfile(sse(finishBlock('done')));
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, verify: 'make check && rm -rf /', server: serverOpts });
+
+    expect(code).toBe(1);
+    expect(JSON.parse(err.mock.calls[0]![0] as string).error).toContain('without a shell');
+    // The invocation failed before a model was ever called.
+    expect(server.requests).toHaveLength(0);
+    err.mockRestore();
+    write.mockRestore();
+  });
+
+  it('a command that cannot be started fails the run without burning fix turns on it', async () => {
+    await configureProfile(sse(finishBlock('Done.')));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({
+      prompt: 'do something',
+      json: true,
+      cwd: project,
+      verify: join(home, 'no-such-check'),
+      server: serverOpts,
+    });
+
+    expect(code).toBe(1);
+    expect(parseNdjson(write).find((e) => e.type === 'result')).toMatchObject({
+      verify: { passed: false, cycles: 1, lastFailureOutput: expect.stringContaining('could not run') },
+    });
+    expect(server.requests.filter((r) => r.path.includes('chat'))).toHaveLength(1); // no fix turn
+    write.mockRestore();
+  });
+
+  it('reports cycles: 0 when the agent run never completed, rather than blaming the check', async () => {
+    const check = await checkScript(0);
+    await configureProfile({ kind: 'json', status: 401, body: { error: 'unauthorized' } });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, verify: check.command, server: serverOpts });
+
+    expect(code).toBe(1);
+    expect(parseNdjson(write).find((e) => e.type === 'result')).toMatchObject({ outcome: 'error', verify: { passed: false, cycles: 0 } });
+    expect(check.invocations()).toEqual([]);
+    write.mockRestore();
+  });
+
+  it('plain-text mode says whether it went green and after how many attempts', async () => {
+    const check = await checkScript(99);
+    await configureProfile(sse(finishBlock('Done.')));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'hi', json: false, cwd: project, verify: check.command, verifyMax: 1, server: serverOpts });
+
+    const printed = write.mock.calls.map((c) => c[0]).join('');
+    expect(printed).toContain('Verify: FAILED after 1 attempt');
+    expect(printed).toContain('E501 line too long');
     write.mockRestore();
   });
 });

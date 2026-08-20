@@ -16,6 +16,15 @@ const DEFAULT_EXCLUDES = [
   '.heapcode/',
 ];
 
+/** One file's worth of `changesSince()`. Shaped for machine consumers (headless `filesChanged`). */
+export interface WorkspaceChange {
+  path: string;
+  status: 'added' | 'modified' | 'deleted';
+  /** 0 for a binary file, which git reports as a change with no line counts. */
+  insertions: number;
+  deletions: number;
+}
+
 /**
  * Node-native port of packages/vscode/src/agent/shadowGit.ts — workspace
  * checkpoints via a shadow git repository (a separate git-dir whose
@@ -128,6 +137,65 @@ export class ShadowGit {
       this.log(`[checkpoint] restore failed: ${err instanceof Error ? err.message : err}`);
       return undefined;
     }
+  }
+
+  /**
+   * What changed between `hash` and the CURRENT working tree, as a flat list
+   * plus (optionally) the unified diff.
+   *
+   * `git add -A` first, then diff the index rather than the work-tree, so a
+   * file the agent CREATED counts as `added` instead of being invisible the
+   * way an untracked file is to a plain `git diff`. That mirrors what
+   * snapshot() already does to the index, so this leaves the shadow repo in
+   * the state the next snapshot expects — and unlike snapshot(), it records
+   * no commit, so reading the summary never adds a checkpoint of its own.
+   *
+   * `--no-renames` keeps the status alphabet to exactly A/M/D: a rename
+   * reported as `R100 old new` would need a fourth status that callers (and
+   * the headless `filesChanged` schema) don't have. Rename detection is a
+   * presentation nicety; a delete plus an add is not wrong.
+   */
+  async changesSince(hash: string, includeDiff = false): Promise<{ files: WorkspaceChange[]; diff?: string }> {
+    if (!(await this.ensure())) return { files: [] };
+    try {
+      await this.git(['add', '-A']);
+      const [numstat, nameStatus] = await Promise.all([
+        this.diff(['--numstat', hash]),
+        this.diff(['--name-status', hash]),
+      ]);
+      const counts = new Map<string, { insertions: number; deletions: number }>();
+      for (const line of numstat.split('\n')) {
+        const [ins, del, ...rest] = line.split('\t');
+        const path = rest.join('\t');
+        if (!path) continue;
+        // Binary files come through as "-\t-\t<path>" — a real change with
+        // no line counts, not a parse failure.
+        counts.set(path, { insertions: Number(ins) || 0, deletions: Number(del) || 0 });
+      }
+      const files: WorkspaceChange[] = [];
+      for (const line of nameStatus.split('\n')) {
+        const [code, ...rest] = line.split('\t');
+        const path = rest.join('\t');
+        if (!code || !path) continue;
+        const status = code.startsWith('A') ? 'added' : code.startsWith('D') ? 'deleted' : 'modified';
+        const { insertions, deletions } = counts.get(path) ?? { insertions: 0, deletions: 0 };
+        files.push({ path, status, insertions, deletions });
+      }
+      files.sort((a, b) => a.path.localeCompare(b.path));
+      return { files, diff: includeDiff ? await this.diff([hash]) : undefined };
+    } catch (err) {
+      this.log(`[checkpoint] diff failed: ${err instanceof Error ? err.message : err}`);
+      return { files: [] };
+    }
+  }
+
+  /**
+   * `core.quotePath=false` so a path with a space or a non-ASCII character
+   * comes back as itself rather than git's octal-escaped `"src/caf\303\251.ts"`
+   * form — these paths are consumed by machines, not printed to a terminal.
+   */
+  private diff(args: string[]): Promise<string> {
+    return this.git(['-c', 'core.quotePath=false', 'diff', '--cached', '--no-renames', ...args]);
   }
 
   /**

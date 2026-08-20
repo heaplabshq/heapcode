@@ -162,12 +162,29 @@ async function main(): Promise<void> {
   if (promptIndex >= 0) {
     const prompt = argv[promptIndex + 1];
     if (!prompt) {
-      console.error('Usage: heapcode -p "<task>" [--json] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--reindex] [--continue | --resume <id>]');
+      console.error('Usage: heapcode -p "<task>" [--json] [--diff] [--verify "<command>"] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--reindex] [--continue | --resume <id>]');
       process.exitCode = 1;
       return;
     }
     const personaFlagIndex = argv.findIndex((a) => a === '--persona');
     const personaId = personaFlagIndex >= 0 ? argv[personaFlagIndex + 1] : undefined;
+    // Captured here, from the invoker's own argv, and passed through
+    // untouched — headless.ts parses it exactly once and spawns it without a
+    // shell (see verify.ts for why that is the property that matters).
+    const verifyFlagIndex = argv.findIndex((a) => a === '--verify');
+    const verify = verifyFlagIndex >= 0 ? argv[verifyFlagIndex + 1] : undefined;
+    if (verifyFlagIndex >= 0 && !verify) {
+      console.error('Usage: heapcode -p "<task>" --verify "<command>"   (the command to run after the task, e.g. --verify "make check")');
+      process.exitCode = 1;
+      return;
+    }
+    const verifyMaxIndex = argv.findIndex((a) => a === '--verify-max');
+    const verifyMax = verifyMaxIndex >= 0 ? Number(argv[verifyMaxIndex + 1]) : undefined;
+    if (verifyMax !== undefined && (!Number.isInteger(verifyMax) || verifyMax < 1)) {
+      console.error('--verify-max takes a whole number of verify runs, 1 or more (default 3).');
+      process.exitCode = 1;
+      return;
+    }
     const code = await runHeadless({
       prompt,
       json: argv.includes('--json'),
@@ -179,6 +196,9 @@ async function main(): Promise<void> {
       subAgents: argv.includes('--sub-agents'),
       reindex: argv.includes('--reindex'),
       telemetryEnabled: telemetryFlag,
+      verify,
+      verifyMax,
+      diff: argv.includes('--diff'),
     });
     process.exitCode = code;
     return;
@@ -356,6 +376,9 @@ Usage:
 
 Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text
+  --verify "<command>"              Run this command once the agent thinks it's done; on failure, feed the output back and let it fix its own work (see below)
+  --verify-max <n>                  Cap how many times the verify command runs — so at most n-1 fix turns (default 3)
+  --diff                            Include the run's unified diff in the result (the changed-file summary is always included)
   --persona NAME                    agent (default), architect (read-only), debug (no edits), reviewer
   --permission-mode MODE            plan | default | auto-edit | full-auto — see below; default: "default"
   --sub-agents                      Let delegate_task actually run (always visible to the model; without this flag calls return a "disabled" notice)
@@ -375,6 +398,20 @@ the current one shows bottom-left. Not persisted: every session starts at "defau
 Headless (-p) has no one to prompt, so it resolves each mode on its own: plan/default deny
 everything but reads, auto-edit allows writes, and full-auto — the mode meant to finish a task
 unattended in CI — allows everything, destructive actions included.
+
+Every -p run reports what it changed: a "filesChanged" array (path, added/modified/deleted,
+insertions, deletions) in the --json result event, and a "path | +n | -n" table at the end of the
+plain-text output. --diff adds the unified diff itself, so a caller can review a run without
+reopening the files.
+
+--verify runs the project's own checks after the task and gives the model its failures back:
+  heapcode -p "add retries to client.ts" --permission-mode auto-edit --verify "make check"
+The result says whether it went green and how many attempts it took, with the last failure output
+when it never did; the exit code is non-zero while the checks are still red. The command is yours,
+not the model's — captured from this command line, run directly without a shell (so no pipes, &&,
+or redirection: put chains in a script or make target), never rebuilt from anything the model
+produced, and never offered to it as a tool. That is what makes it safe to pass --verify to a run
+whose permission mode denies run_command outright.
 
 In-session commands (type / for the autocomplete menu):
   /help                             Show available commands

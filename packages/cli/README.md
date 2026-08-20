@@ -82,6 +82,9 @@ heapcode audit                            Local usage/audit dashboard
 | Flag | Effect |
 |---|---|
 | `--json` | Stream newline-delimited JSON events (`tool_call`, `tool_result`, `text_delta`, `plan`, `result`) instead of plain text |
+| `--verify "<command>"` | Run the project's own checks once the agent is done; on failure, feed the output back and let it fix its own work ([below](#--verify--self-checking-runs)) |
+| `--verify-max <n>` | Cap how many times the verify command runs — so at most `n - 1` fix turns (default 3) |
+| `--diff` | Include the run's unified diff in the result (the changed-file summary is always included) |
 | `--persona NAME` | `agent` (default), `architect`, `debug`, `reviewer` |
 | `--permission-mode MODE` | `plan` \| `default` \| `auto-edit` \| `full-auto` — see below; default `default` |
 | `--sub-agents` | Let `delegate_task` actually run |
@@ -89,6 +92,47 @@ heapcode audit                            Local usage/audit dashboard
 | `--continue` / `-c` | Continue this directory's most recent conversation |
 | `--resume <id>` | Continue a specific conversation by id or unambiguous prefix |
 | `--no-telemetry` | Skip the local audit-log entry for this run |
+
+#### What every run reports
+
+Every `-p` run says what it changed, so a caller — a script, or another agent supervising this one — can review the work without reopening each file:
+
+- `--json`: the existing `result` event gains `filesChanged` (always) and `diff` (with `--diff`). Existing fields are untouched, in the same order, so anything already parsing this stream keeps working.
+
+  ```json
+  {"type":"result","outcome":"done","response":"Added retries.","model":"…","profile":"…","sessionId":"…",
+   "filesChanged":[{"path":"src/client.ts","status":"modified","insertions":18,"deletions":2}]}
+  ```
+
+- plain text: the response, then a table (and the diff, with `--diff`):
+
+  ```
+  Changes: 1 file, +18 -2
+    src/client.ts | +18 | -2 | modified
+  ```
+
+`status` is `added`, `modified`, or `deleted`; a binary file reports as changed with zero line counts. The summary comes from the same shadow-git history that backs `/rewind` and `/checkpoints`, so it covers everything the run touched — including files a `--verify` command reformatted.
+
+#### `--verify` — self-checking runs
+
+A model that never learns it failed the project's lint can't fix it; the caller pays for that round trip instead. `--verify` closes the loop:
+
+```bash
+heapcode -p "add retries to src/client.ts" --permission-mode auto-edit --verify "make check"
+```
+
+The command runs once the agent believes it's finished. If it fails, its output comes back to the agent as a new turn, the agent fixes the code, and the command runs again — up to `--verify-max` runs (default 3). The result reports whether it went green and after how many attempts, with the last failure output when it never did, and **the exit code is non-zero while the checks are still red**:
+
+```json
+"verify": {"command":"make check","passed":true,"cycles":2}
+"verify": {"command":"make check","passed":false,"cycles":3,"lastFailureOutput":"E501 line too long (106 > 100)"}
+```
+
+`cycles: 0` means the command never ran because the agent run itself errored or was interrupted — nothing was checked.
+
+**The command is yours, not the model's.** It's captured from your command line, parsed once, and spawned directly — no shell, ever. Nothing the model produces is interpolated into it, it isn't offered as a tool, and it can't be read, changed, or disabled from inside the run. That's what makes `--verify "make check"` safe to hand to a run whose permission mode denies `run_command` outright.
+
+The no-shell rule is the load-bearing part, so it's enforced rather than assumed: `&&`, `|`, `;`, redirection and `$(…)` are rejected up front instead of being passed through as literal arguments. Put chains in a script or a make target and point `--verify` at that. Quoting works as you'd expect (`--verify "pytest -k 'not slow'"`), and a check that hangs is killed after 10 minutes.
 
 Permission modes (headless has no one to prompt, so every mode resolves on its own):
 

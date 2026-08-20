@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
+import { basename, relative, resolve } from 'node:path';
 import {
   ASK_USER_NO_ANSWER,
   DEFAULT_PERMISSION_MODE,
@@ -136,6 +136,8 @@ export type HeadlessEvent =
        * when `--diff` asked for it.
        */
       filesChanged: WorkspaceChange[];
+      /** Files the run opened, in the order it first opened them — see the recorder in runHeadless. */
+      filesRead: string[];
       diff?: string;
       verify?: VerifyReport;
       /** What the run cost, for a caller weighing this model against a more expensive one. */
@@ -309,6 +311,33 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     /** Shadow-git commit of the workspace before the run changed anything; see the snapshot/before handler below. */
     let baseline: string | undefined;
 
+    /**
+     * Files the run actually opened, in the order it first opened them.
+     *
+     * Recorded from the tool calls themselves as they execute — never from the
+     * model's own account of what it looked at, which is exactly the thing a
+     * supervising caller cannot trust. A brief that says "an equivalent guard
+     * already exists in X — follow that pattern" is checkable in one glance:
+     * either X is in this list or the instruction was ignored.
+     *
+     * A Set preserves insertion order, so this reads as the run's actual
+     * investigation sequence rather than an alphabetised inventory.
+     */
+    const filesRead = new Set<string>();
+    const noteFileRead = (call: ToolCall): void => {
+      // Only tools that open ONE named file. `search` and `semantic_search`
+      // return snippets from files the run never opened, and `list_dir` shows
+      // names and no content — counting either would turn "did it read X?"
+      // into a question this list cannot actually answer.
+      if (call.name !== 'read_file' && call.name !== 'get_symbols') return;
+      const path = typeof call.args.path === 'string' ? call.args.path : undefined;
+      if (!path) return;
+      // Workspace-relative, to match filesChanged — the model is asked for
+      // relative paths but nothing stops it sending an absolute one.
+      const rel = relative(root, resolve(root, path));
+      filesRead.add(!rel || rel.startsWith('..') ? path : rel.split('\\').join('/'));
+    };
+
     // Key material for this session, pushed once at hello and held in the
     // server's memory only (custody note, Option A2). Other profiles are
     // resolved lazily through `key/request` below.
@@ -401,7 +430,12 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         }
       }
       const result = await executor.execute(call);
-      if (!result.isError) await syncIndexesAfterTool(call.name, call.args, requestIndex, repoMapIndexer);
+      if (!result.isError) {
+        // Only a read that succeeded counts: a read_file on a path that does
+        // not exist is the opposite of evidence that the run consulted it.
+        noteFileRead(call);
+        await syncIndexesAfterTool(call.name, call.args, requestIndex, repoMapIndexer);
+      }
       return result;
     }
 
@@ -562,6 +596,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       profile: profile.name,
       sessionId: conversation.id,
       filesChanged: changes.files,
+      filesRead: [...filesRead],
       diff,
       verify,
       usage: runUsage,
@@ -577,6 +612,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       // the answer. The change table above is the opposite case: it IS the
       // work product, and a caller reviewing the run wants it in the same
       // stream as the summary.
+      if (filesRead.size > 0) process.stderr.write(formatFilesRead([...filesRead]));
       process.stderr.write(`Usage: ${formatUsage(runUsage)}\n`);
       process.stderr.write(`Session: ${conversation.id.slice(0, 8)}  (--resume ${conversation.id.slice(0, 8)} to continue this later)\n`);
     }
@@ -628,6 +664,19 @@ async function syncIndexesAfterTool(
     default:
       return;
   }
+}
+
+/** Capped for the terminal only — the --json array is never truncated. */
+const MAX_LISTED_READS = 20;
+
+/**
+ * What the run opened, for stderr. A caller checking whether a specific file
+ * was consulted greps this; the full list is always in --json.
+ */
+function formatFilesRead(paths: string[]): string {
+  const shown = paths.slice(0, MAX_LISTED_READS);
+  const rest = paths.length - shown.length;
+  return `Read ${paths.length} file${paths.length === 1 ? '' : 's'}: ${shown.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}\n`;
 }
 
 /**

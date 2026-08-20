@@ -97,11 +97,12 @@ heapcode audit                            Local usage/audit dashboard
 
 Every `-p` run says what it changed, so a caller — a script, or another agent supervising this one — can review the work without reopening each file:
 
-- `--json`: the existing `result` event gains `filesChanged` (always) and `diff` (with `--diff`). Existing fields are untouched, in the same order, so anything already parsing this stream keeps working.
+- `--json`: the existing `result` event gains `filesChanged` and `filesRead` (always) and `diff` (with `--diff`). Existing fields are untouched, in the same order, so anything already parsing this stream keeps working.
 
   ```json
   {"type":"result","outcome":"done","response":"Added retries.","model":"…","profile":"…","sessionId":"…",
-   "filesChanged":[{"path":"src/client.ts","status":"modified","insertions":18,"deletions":2}]}
+   "filesChanged":[{"path":"src/client.ts","status":"modified","insertions":18,"deletions":2}],
+   "filesRead":["src/client.ts","src/retry_reference.ts"]}
   ```
 
 - plain text: the response, then a table (and the diff, with `--diff`):
@@ -112,6 +113,10 @@ Every `-p` run says what it changed, so a caller — a script, or another agent 
   ```
 
 `status` is `added`, `modified`, or `deleted`; a binary file reports as changed with zero line counts. The summary comes from the same shadow-git history that backs `/rewind` and `/checkpoints`, so it covers everything the run touched — including files a `--verify` command reformatted.
+
+**`filesRead` is what the run actually opened**, in the order it first opened them, taken from the tool calls as they executed — never from the model's own account of itself, which is the thing that can't be trusted here. If your task said *"an equivalent guard already exists in `models/thesis.py` — follow that pattern"*, one look at this list tells you whether it was ever opened. Only tools that open a single named file count (`read_file`, `get_symbols`); a `search` hit or a directory listing does not, and neither does a read that failed. A sub-agent's reads are included — delegated work is still the run's work.
+
+**Where output goes**, in plain-text mode: stdout carries the work product — the response, the change table, the diff, the verify verdict. Everything about *how the run went* — files read, usage, the session id — goes to stderr. So `heapcode -p "explain this" > answer.txt` still writes exactly the answer, and nothing new appears on stdout unless the run changed something or you asked for it.
 
 #### What a run cost
 

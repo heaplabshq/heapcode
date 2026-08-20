@@ -403,7 +403,13 @@ unattended in CI — allows everything, destructive actions included.
 Every -p run reports what it changed: a "filesChanged" array (path, added/modified/deleted,
 insertions, deletions) in the --json result event, and a "path | +n | -n" table at the end of the
 plain-text output. --diff adds the unified diff itself, so a caller can review a run without
-reopening the files.
+reopening the files. It also reports "filesRead" — the files it actually opened, taken from the
+tool calls rather than from the model's own summary, so "follow the pattern in X" is checkable at
+a glance.
+
+In plain-text mode, stdout carries the work (response, change table, diff, verify verdict) and
+stderr carries how the run went (files read, token usage, session id) — so a piped stdout is still
+exactly the answer.
 
 Every -p run also reports what it cost: a "usage" object (prompt/completion/total tokens, elapsed
 ms, agent model, profile) in the --json result, and one line on stderr in plain-text mode. The

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HeapcodeServer } from '@heapcode/core';
 import { startMockServer, type MockBehavior, type MockServer } from '../../core/test/mockServer.js';
-import { ConfigStore } from '@heapcode/host';
+import { ConfigStore, canonicalize } from '@heapcode/host';
 import { conversationsFile } from '@heapcode/host';
 import { runHeadless, type HeadlessEvent } from '../src/headless.js';
 
@@ -401,7 +401,7 @@ describe('runHeadless — the result event stays backward compatible', () => {
     // Order matters as much as presence: a consumer diffing the raw line
     // should see its six fields first and unchanged, then whatever is new.
     expect(Object.keys(result).slice(0, 6)).toEqual(['type', 'outcome', 'response', 'model', 'profile', 'sessionId']);
-    expect(Object.keys(result)).toEqual([...Object.keys(result).slice(0, 6), 'filesChanged', 'usage']);
+    expect(Object.keys(result)).toEqual([...Object.keys(result).slice(0, 6), 'filesChanged', 'filesRead', 'usage']);
     // Opt-in fields stay absent when their flags weren't passed.
     expect(result).not.toHaveProperty('diff');
     expect(result).not.toHaveProperty('verify');
@@ -768,6 +768,125 @@ describe('runHeadless — usage accounting', () => {
     const printed = err.mock.calls.map((c) => c[0]).join('');
     expect(printed).toContain('Usage: 1,234 prompt + 56 completion = 1,290 tokens');
     expect(printed).toContain('mock-model (profile: test)');
+    out.mockRestore();
+    err.mockRestore();
+  });
+});
+
+/**
+ * The defence against silent instruction-drift: a brief that says "copy the
+ * pattern in X" is only checkable if the run declares what it actually opened,
+ * and that declaration has to come from the tool calls rather than from the
+ * model's own summary of itself.
+ */
+describe('runHeadless — filesRead', () => {
+  it('lists the files the run opened, in the order it first opened them, without repeats', async () => {
+    await writeFile(join(project, 'pattern.py'), 'def guard(): ...\n');
+    await writeFile(join(project, 'target.py'), 'x = 1\n');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('read_file', { path: 'target.py' })),
+        sse(toolBlock('read_file', { path: 'pattern.py' })),
+        sse(toolBlock('read_file', { path: 'target.py' })), // read twice; listed once
+        sse(finishBlock('Done.')),
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'follow the pattern', json: true, cwd: project, server: serverOpts });
+
+    expect((parseNdjson(write).find((e) => e.type === 'result') as { filesRead: string[] }).filesRead).toEqual([
+      'target.py',
+      'pattern.py',
+    ]);
+    write.mockRestore();
+  });
+
+  it('is empty when the run never opened anything — which is the whole signal', async () => {
+    await writeFile(join(project, 'pattern.py'), 'def guard(): ...\n');
+    await configureProfile({
+      kind: 'sequence',
+      // Told to follow pattern.py, writes its own thing without ever looking.
+      responses: [sse(toolBlock('write_file', { path: 'new.py', content: 'invented\n' })), sse(finishBlock('Followed the existing pattern.'))],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'copy the pattern in pattern.py', json: true, cwd: project, permissionMode: 'full-auto', server: serverOpts });
+
+    const result = parseNdjson(write).find((e) => e.type === 'result') as { filesRead: string[]; response: string };
+    expect(result.filesRead).toEqual([]); // the model's claim says otherwise; this does not
+    expect(result.response).toContain('Followed the existing pattern');
+    write.mockRestore();
+  });
+
+  it('does not count a read that failed, or a search that never opened a file', async () => {
+    await writeFile(join(project, 'real.py'), 'x = 1\n');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('read_file', { path: 'no-such-file.py' })),
+        sse(toolBlock('search', { pattern: 'x' })),
+        sse(finishBlock('Done.')),
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'look around', json: true, cwd: project, server: serverOpts });
+
+    expect((parseNdjson(write).find((e) => e.type === 'result') as { filesRead: string[] }).filesRead).toEqual([]);
+    write.mockRestore();
+  });
+
+  it("normalises an absolute path to the workspace-relative one, so it matches filesChanged", async () => {
+    await writeFile(join(project, 'abs.py'), 'x = 1\n');
+    await configureProfile({
+      kind: 'sequence',
+      // canonicalize() to match what runHeadless resolves the root to — on
+      // macOS a tmpdir path is a symlink, and the executor refuses a path that
+      // resolves outside the workspace.
+      responses: [sse(toolBlock('read_file', { path: join(canonicalize(project), 'abs.py') })), sse(finishBlock('Done.'))],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'read it', json: true, cwd: project, server: serverOpts });
+
+    expect((parseNdjson(write).find((e) => e.type === 'result') as { filesRead: string[] }).filesRead).toEqual(['abs.py']);
+    write.mockRestore();
+  });
+
+  it("includes a sub-agent's reads — delegated work is still this run's work", async () => {
+    await writeFile(join(project, 'delegated.py'), 'x = 1\n');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [
+        sse(toolBlock('delegate_task', { task: 'read delegated.py' })),
+        sse(toolBlock('read_file', { path: 'delegated.py' })), // the sub-agent's turn
+        sse(finishBlock('Read it.')),
+        sse(finishBlock('Delegated and done.')),
+      ],
+    });
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'delegate a read', json: true, cwd: project, subAgents: true, server: serverOpts });
+
+    expect((parseNdjson(write).find((e) => e.type === 'result') as { filesRead: string[] }).filesRead).toEqual(['delegated.py']);
+    write.mockRestore();
+  });
+
+  it('prints what it read to stderr, leaving stdout as exactly the answer', async () => {
+    await writeFile(join(project, 'a.py'), 'x = 1\n');
+    await configureProfile({
+      kind: 'sequence',
+      responses: [sse(toolBlock('read_file', { path: 'a.py' })), sse(finishBlock('It sets x.'))],
+    });
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'what does a.py do', json: false, cwd: project, server: serverOpts });
+
+    expect(out.mock.calls.map((c) => c[0]).join('')).toBe('It sets x.\n');
+    expect(err.mock.calls.map((c) => c[0]).join('')).toContain('Read 1 file: a.py');
     out.mockRestore();
     err.mockRestore();
   });

@@ -85,6 +85,7 @@ heapcode audit                            Local usage/audit dashboard
 | `--verify "<command>"` | Run the project's own checks once the agent is done; on failure, feed the output back and let it fix its own work ([below](#--verify--self-checking-runs)) |
 | `--verify-max <n>` | Cap how many times the verify command runs — so at most `n - 1` fix turns (default 3) |
 | `--diff` | Include the run's unified diff in the result (the changed-file summary is always included) |
+| `--max-iterations <n>` | Model turns this run may take before it is cut off with a progress summary (default 100; [below](#the-step-limit)) |
 | `--persona NAME` | `agent` (default), `architect`, `debug`, `reviewer` |
 | `--permission-mode MODE` | `plan` \| `default` \| `auto-edit` \| `full-auto` — see below; default `default` |
 | `--sub-agents` | Let `delegate_task` actually run |
@@ -174,6 +175,22 @@ Permission modes (headless has no one to prompt, so every mode resolves on its o
 | `auto-edit` | File edits auto-approved; shell commands still denied |
 | `full-auto` | Everything auto-approved — for CI automation that should finish the task unattended |
 
+#### The step limit
+
+One run takes at most 100 model turns — a turn being one reply, so a batch of
+parallel tool calls costs one and a read-then-edit-then-test cycle costs three.
+
+In a session, reaching it is a question: *"I've used all 100 steps and the task
+isn't finished. Keep going for another 100?"* A yes continues **inside the same
+run**, which matters more than it sounds — only the final summary is saved to
+the conversation, so answering a cut-off run with a new "continue" message
+restarts the model from a paragraph describing work it can no longer see.
+
+Headless there is nobody to ask, so the run stops, prints what it did and what
+remains, and exits non-zero. Raise the ceiling for one run with
+`--max-iterations N`, or for every run with `{ "maxIterations": N }` in
+`~/.heapcode/config.json`.
+
 ### In-session commands
 
 Type `/` for the full autocomplete menu; highlights:
@@ -215,6 +232,8 @@ Keys: `Esc` interrupts the running agent · `Ctrl+C` clears typed input, twice e
 ```
 
 Override the config directory with the `HEAPCODE_HOME` environment variable.
+
+`{ "maxIterations": N }` in the same file changes the per-run step ceiling — see [the step limit](#the-step-limit).
 
 A startup check against npm's own registry surfaces an available update as one dim line, never a blocking prompt — nothing else is contacted. Opt out with `--no-update-check` or `{ "updateCheckEnabled": false }` in `~/.heapcode/config.json`.
 

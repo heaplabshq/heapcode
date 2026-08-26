@@ -101,6 +101,7 @@ export interface AgentOptions {
    * No-op unless the tool list actually includes a `verifies` tool.
    */
   requireVerificationBeforeFinish?: boolean;
+  /** Model turns this run may take before it is cut off. Defaults to DEFAULT_MAX_ITERATIONS. */
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
@@ -268,13 +269,29 @@ const MEMORY_NOTE_PROMPT =
   'Reply with ONLY the note itself (1-3 sentences, plain text, no preamble), or reply ' +
   'with exactly "NONE" if there is nothing worth recording.';
 
+/**
+ * How many model turns one run may take before it is cut off.
+ *
+ * One iteration is one model turn, so a batch of parallel tool calls costs
+ * one and a read-then-edit-then-test cycle costs three. Real multi-file work
+ * spends them fast: a session that wrote ten test files, running the suite
+ * after each, blew through the old cap of 25 every time and ended on the
+ * iteration-limit summary below — which, being a list of what's done and what
+ * remains, reads exactly like the agent stopping to plan instead of working.
+ * That summary is the honest report of a cut-off run, so the fix is a ceiling
+ * high enough that reaching it means something really is looping, not that
+ * the task was merely large. It stays a ceiling: a user can lower it, the run
+ * still compacts on the way, and Esc still stops it.
+ */
+export const DEFAULT_MAX_ITERATIONS = 100;
+
 export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const {
     provider,
     model,
     tools,
     events,
-    maxIterations = 25,
+    maxIterations = DEFAULT_MAX_ITERATIONS,
     signal,
   } = opts;
 
@@ -816,7 +833,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       messages.push({ role: 'user', content: formatToolResult(result.name, result.content) });
     }
     await summarize(
-      'You hit the iteration limit. Summarize the progress so far, what remains, and suggested next steps. Do not call any tools.',
+      `You hit this run's ${maxIterations}-step limit and are being cut off mid-task — this is not a request to stop. ` +
+        'Say so in the first line, then summarize the progress so far, what remains, and the next step to take. ' +
+        'Do not call any tools.',
     );
     return 'max-iterations';
   } catch (err) {

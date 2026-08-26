@@ -1286,6 +1286,9 @@ export class WebSession {
           subAgents: this.subAgents,
           persona,
           images,
+          // Same config key the CLI reads, so one machine's runs share a
+          // ceiling no matter which host started them.
+          maxIterations: (await this.deps.config.load()).maxIterations,
         } satisfies AgentRunParams,
         this.abort.signal,
       );

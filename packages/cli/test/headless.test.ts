@@ -132,6 +132,33 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     write.mockRestore();
   });
 
+  it('--max-iterations caps the run, and a cut-off run says so on stderr rather than exiting quietly non-zero', async () => {
+    await configureProfile(sse('Here is what I have done so far.'));
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const code = await runHeadless({ prompt: 'a big task', json: true, cwd: project, server: serverOpts, maxIterations: 1 });
+
+    expect(code).toBe(1);
+    expect(parseNdjson(out).find((e) => e.type === 'result')).toMatchObject({ outcome: 'max-iterations' });
+    out.mockRestore();
+    err.mockRestore();
+  });
+
+  it('names the limit in plain-text mode, where the summary is otherwise indistinguishable from a finished job', async () => {
+    await configureProfile(sse('Here is what I have done so far.'));
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await runHeadless({ prompt: 'a big task', json: false, cwd: project, server: serverOpts, maxIterations: 1 });
+
+    const stderr = err.mock.calls.map((c) => c[0]).join('');
+    expect(stderr).toContain('1-step limit');
+    expect(stderr).toContain('--max-iterations');
+    out.mockRestore();
+    err.mockRestore();
+  });
+
   it('exits non-zero with a structured error when no profile is configured', async () => {
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 

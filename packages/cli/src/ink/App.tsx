@@ -9,6 +9,7 @@ import {
   BUILTIN_PERSONAS,
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODES,
+  DEFAULT_MAX_ITERATIONS,
   SEARCH_PRESETS,
   WEB_SEARCH_SECRET_NAME,
   describeWebSearchState,
@@ -219,6 +220,11 @@ export interface AppProps {
    * default) means the question waits indefinitely, exactly as before.
    */
   askUserIdleMs?: number;
+  /**
+   * Ceiling on model turns per run, from `maxIterations` in
+   * ~/.heapcode/config.json. Undefined means core's own default.
+   */
+  maxIterations?: number;
   /** Test seam: point at an already-running core server instead of autostarting one. */
   server?: ConnectOptions;
 }
@@ -251,6 +257,7 @@ export function App({
   onSessionChange,
   checkUpdate,
   askUserIdleMs,
+  maxIterations,
   server,
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
@@ -1677,8 +1684,17 @@ export function App({
         contextWindow: active.contextWindow,
         subAgents: subAgentsEnabled,
         persona: effectivePersona,
+        maxIterations,
       } satisfies AgentRunParams);
       if (outcome === 'stopped') pushSystem('Interrupted — send a new message to continue.');
+      else if (outcome === 'max-iterations')
+        // Without this the run's cut-off summary — done so far, what remains —
+        // is the only thing on screen, and it reads as the agent choosing to
+        // stop and plan rather than being cut off mid-task.
+        pushSystem(
+          `Stopped at the ${maxIterations ?? DEFAULT_MAX_ITERATIONS}-step limit for one run, mid-task — the summary above is not a finished job. ` +
+            'Say "continue" to carry on, or raise "maxIterations" in ~/.heapcode/config.json.',
+        );
       else if (outcome === 'incomplete')
         pushSystem(
           'The model kept replying without taking action and never confirmed a real completion — ' +

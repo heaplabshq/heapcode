@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { runAgent, type AgentOptions } from '../src/agent/loop.js';
+import { DEFAULT_MAX_ITERATIONS, runAgent, type AgentOptions } from '../src/agent/loop.js';
 import { parseToolBlocks } from '../src/agent/textProtocol.js';
 import type { ToolCall, ToolDefinition, ToolResult } from '../src/agent/tools.js';
 import type { ChatRequest, ChatResponse, Provider } from '../src/providers/types.js';
@@ -552,6 +552,28 @@ describe('runAgent — native tool calls', () => {
     });
     expect(outcome).toBe('max-iterations');
     expect(h.calls.length).toBe(3);
+  });
+
+  it('lets an unspecified run go far past a single-digit-file task (25 turns used to cut real work off mid-task)', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('max-iterations');
+    expect(h.calls.length).toBe(DEFAULT_MAX_ITERATIONS);
+    expect(DEFAULT_MAX_ITERATIONS).toBeGreaterThanOrEqual(100);
+  });
+
+  it('tells the model it is being cut off, so its summary cannot read as a finished job', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
+    ]);
+    const h = harness();
+    await runAgent({ ...h.options, provider, nativeToolCalls: true, maxIterations: 2 });
+    const lastPrompt = provider.requests.at(-1)!.messages.at(-1)!.content;
+    expect(lastPrompt).toContain('2-step limit');
+    expect(lastPrompt).toMatch(/not a request to stop/i);
   });
 
   it('compacts the transcript when it outgrows the context window', async () => {

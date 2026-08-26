@@ -5,6 +5,7 @@ import React from 'react';
 import { render } from 'ink';
 import fg from 'fast-glob';
 import {
+  DEFAULT_MAX_ITERATIONS,
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODES,
   configureAstChunker,
@@ -185,6 +186,15 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    // A supervising caller running a big batch job needs the ceiling to be
+    // its call, not a constant compiled into the binary it invoked.
+    const maxIterationsIndex = argv.findIndex((a) => a === '--max-iterations');
+    const maxIterations = maxIterationsIndex >= 0 ? Number(argv[maxIterationsIndex + 1]) : undefined;
+    if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations < 1)) {
+      console.error(`--max-iterations takes a whole number of model turns, 1 or more (default ${DEFAULT_MAX_ITERATIONS}).`);
+      process.exitCode = 1;
+      return;
+    }
     const code = await runHeadless({
       prompt,
       json: argv.includes('--json'),
@@ -198,6 +208,7 @@ async function main(): Promise<void> {
       telemetryEnabled: telemetryFlag,
       verify,
       verifyMax,
+      maxIterations,
       diff: argv.includes('--diff'),
     });
     process.exitCode = code;
@@ -256,6 +267,9 @@ async function main(): Promise<void> {
   const telemetryEnabled = telemetryFlag ?? (await config.load()).telemetryEnabled ?? true;
   // Unset by default, which means an ask_user question waits indefinitely.
   const askUserIdleMs = parseIdleTimeout((await config.load()).askUserQuestionTimeout);
+  // Unset means core's own default; only a user who wants a different ceiling
+  // (a long-running batch, or a short leash on a local model) sets it.
+  const maxIterations = (await config.load()).maxIterations;
   const audit = new AuditLog(auditFile(), () => telemetryEnabled);
   /**
    * Set by App once it renders, so the engine's auto-allow lines land in the
@@ -311,6 +325,7 @@ async function main(): Promise<void> {
       secretsStore={secrets}
       switchProvider={(p) => Promise.resolve({ contextWindow: profileContextWindow(p) })}
       askUserIdleMs={askUserIdleMs}
+      maxIterations={maxIterations}
       version={cliVersion()}
       checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heaplabs/heapcode-cli', cliVersion() ?? '0.0.0') : undefined}
       cwd={root}
@@ -379,6 +394,7 @@ Headless (-p) flags:
   --verify "<command>"              Run this command once the agent thinks it's done; on failure, feed the output back and let it fix its own work (see below)
                                     Point it at a target that REPAIRS then checks (e.g. "ruff format && ruff check" behind a make target) — a check-only command hands the model failures it cannot fix
   --verify-max <n>                  Cap how many times the verify command runs — so at most n-1 fix turns (default 3)
+  --max-iterations <n>              Cap the model turns this run may take before it is cut off with a progress summary (default 100; also settable as "maxIterations" in config)
   --diff                            Include the run's unified diff in the result (the changed-file summary is always included)
   --persona NAME                    agent (default), architect (read-only), debug (no edits), reviewer
   --permission-mode MODE            plan | default | auto-edit | full-auto — see below; default: "default"
@@ -466,6 +482,7 @@ Per-project CONFIG (meant to live alongside your code, safe to commit and share 
   <cwd>/.heapcode/{HEAPCODE.md, memory.md, instructions/*.md, mcp.json}
 Semantic search needs an embeddings model on the active profile (embeddingsModel, e.g. nomic-embed-text on Ollama) — /settings shows whether one is configured.
 MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.
+Step limit: one run takes at most 100 model turns before it is cut off with a summary of what it did and what remains — set { "maxIterations": N } in ~/.heapcode/config.json to change it for every run, or pass -p --max-iterations N for one.
 Update check: a one-line startup check against npm's registry for a newer published version — never phones anything else, never blocks. Opt out with --no-update-check or { "updateCheckEnabled": false } in ~/.heapcode/config.json.`);
 }
 

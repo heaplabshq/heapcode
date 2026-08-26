@@ -12,6 +12,7 @@ import {
   type RagIndexResult,
   connectToServer,
   applyModeToPersona,
+  DEFAULT_MAX_ITERATIONS,
   DEFAULT_PERMISSION_MODE,
   filterToolsForPersona,
   getPersona,
@@ -652,7 +653,7 @@ export class AgentController {
         resumePlan: opts?.resumePlanText,
         proposeMemoryNote: cfg.get<boolean>('memoryDistillation', true),
         requireVerificationBeforeFinish: cfg.get<boolean>('requireTestsBeforeFinish', false),
-        maxIterations: cfg.get<number>('maxIterations', 25),
+        maxIterations: cfg.get<number>('maxIterations', DEFAULT_MAX_ITERATIONS),
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
         // which truncates large write_file calls mid-generation. Capped at a
         // quarter of the window so small local models don't reject the request.

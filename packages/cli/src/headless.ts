@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, relative, resolve } from 'node:path';
 import {
   ASK_USER_NO_ANSWER,
+  DEFAULT_MAX_ITERATIONS,
   DEFAULT_PERMISSION_MODE,
   METHODS,
   applyModeToPersona,
@@ -100,6 +101,8 @@ export interface HeadlessOptions {
   verify?: string;
   /** Maximum number of times the verify command runs (so at most `verifyMax - 1` fix turns). Default 3. */
   verifyMax?: number;
+  /** Model turns the run may take before it is cut off, from `--max-iterations`. Unset means the config value, else core's default. */
+  maxIterations?: number;
   /** Include the run's unified diff in the result. The `filesChanged` summary is always included. */
   diff?: boolean;
   /** Test seam: point at an already-running server instead of autostarting one. */
@@ -281,6 +284,9 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       },
     );
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
+    // Flag beats config beats core's default — the same precedence every other
+    // headless setting uses.
+    const maxIterations = opts.maxIterations ?? (await config.load()).maxIterations;
     const audit = new AuditLog(auditFile(), () => telemetryEnabled);
     await Promise.all([repoMapIndexer.init(), mcpManager.ensureConnected()]);
 
@@ -501,6 +507,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         contextWindow,
         subAgents: opts.subAgents,
         persona,
+        maxIterations,
       } satisfies AgentRunParams);
       for (const key of ['promptTokens', 'completionTokens', 'totalTokens'] as const) {
         const reported = result.usage?.[key];
@@ -612,6 +619,14 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       // the answer. The change table above is the opposite case: it IS the
       // work product, and a caller reviewing the run wants it in the same
       // stream as the summary.
+      // A cut-off run exits non-zero, but a human reading the terminal sees
+      // only a summary of progress and next steps — which reads like a
+      // finished job that chose to stop. Name the ceiling that ended it.
+      if (outcome === 'max-iterations')
+        process.stderr.write(
+          `Cut off at the ${maxIterations ?? DEFAULT_MAX_ITERATIONS}-step limit — the task is unfinished. ` +
+            'Re-run with --max-iterations <n> (or --continue to carry on from here).\n',
+        );
       if (filesRead.size > 0) process.stderr.write(formatFilesRead([...filesRead]));
       process.stderr.write(`Usage: ${formatUsage(runUsage)}\n`);
       process.stderr.write(`Session: ${conversation.id.slice(0, 8)}  (--resume ${conversation.id.slice(0, 8)} to continue this later)\n`);

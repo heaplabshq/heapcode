@@ -53,7 +53,23 @@ export interface PlanItem {
   text: string;
 }
 
-export type Item = TextItem | ToolItem | ReasoningItem | PlanItem;
+/**
+ * Something the HOST has to say about the run — that it was cut off at the
+ * step limit, interrupted, or ended without ever really acting.
+ *
+ * Its own kind rather than an assistant note: these read as the model's own
+ * words when drawn in a reply bubble, and the whole reason this exists is that
+ * a cut-off run's summary already looks like a finished one.
+ */
+export interface NoticeItem {
+  kind: 'notice';
+  id: string;
+  text: string;
+  /** Draws attention (the run did not do what it looks like it did). */
+  warn?: boolean;
+}
+
+export type Item = TextItem | ToolItem | ReasoningItem | PlanItem | NoticeItem;
 
 export interface Transcript {
   items: Item[];
@@ -134,6 +150,14 @@ export function withAssistantNote(t: Transcript, text: string): Transcript {
   return {
     ...t,
     items: [...t.items, { kind: 'text', id: `n${t.items.length}`, role: 'assistant', text }],
+  };
+}
+
+/** Appends a host notice about the run that just ended — see NoticeItem. */
+export function withNotice(t: Transcript, text: string, warn = false): Transcript {
+  return {
+    ...t,
+    items: [...t.items, { kind: 'notice', id: `x${t.items.length}`, text, warn }],
   };
 }
 

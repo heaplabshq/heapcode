@@ -312,6 +312,9 @@ body {
   color: var(--text-dim); font-size: 12px;
   border-left: 2px solid var(--border); padding-left: 8px; margin: 10px 0;
 }
+/* A run that did not finish the job it appears to have finished — dim grey
+   would file it alongside "context compacted", which is housekeeping. */
+.notice-warn { color: var(--warn); border-left-color: var(--warn); }
 
 /* ---------- tool chips ---------- */
 .chip { margin: 0 0 6px; }

@@ -6,6 +6,7 @@ import {
   ASK_USER_NO_ANSWER,
   BUILTIN_PERSONAS,
   COMPACTION_THRESHOLD,
+  DEFAULT_MAX_ITERATIONS,
   DEFAULT_PERMISSION_MODE,
   INIT_TASK,
   METHODS,
@@ -1234,6 +1235,11 @@ export class WebSession {
       persona,
     );
 
+    // Same config key the CLI reads, so one machine's runs share a ceiling no
+    // matter which host started them. Resolved here rather than left undefined
+    // for core to default, because the browser is told which number applied.
+    const maxIterations = (await this.deps.config.load()).maxIterations ?? DEFAULT_MAX_ITERATIONS;
+
     // The conversation as it stood BEFORE this turn — the agent gets prior
     // context, not the message it is currently answering.
     const history = trimHistoryForAgent(this.conversation!.messages);
@@ -1286,14 +1292,12 @@ export class WebSession {
           subAgents: this.subAgents,
           persona,
           images,
-          // Same config key the CLI reads, so one machine's runs share a
-          // ceiling no matter which host started them.
-          maxIterations: (await this.deps.config.load()).maxIterations,
+          maxIterations,
         } satisfies AgentRunParams,
         this.abort.signal,
       );
       await this.persistTurn(task, images?.length);
-      return { runId, outcome };
+      return { runId, outcome, maxIterations };
     } finally {
       this.activeRunId = undefined;
       this.abort = undefined;

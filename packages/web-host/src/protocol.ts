@@ -165,6 +165,13 @@ export interface UiSendMessageParams {
 export interface UiSendMessageResult {
   runId: string;
   outcome: AgentOutcome;
+  /**
+   * The step ceiling this run was given. Sent with every result, not just a
+   * cut-off one, so the browser can name the limit that ended a run without
+   * having to read the config itself — the number is a host-side decision
+   * (config, then core's default) that the page has no other view of.
+   */
+  maxIterations: number;
 }
 
 export interface UiCancelParams {

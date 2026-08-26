@@ -69,6 +69,7 @@ import {
   reduce,
   settle,
   withAssistantNote,
+  withNotice,
   withUserMessage,
   type Transcript,
 } from './transcript.js';
@@ -80,6 +81,38 @@ function lastReplyOf(t: Transcript): string | undefined {
     if (item.kind === 'text' && item.role === 'assistant') return item.text;
   }
   return undefined;
+}
+
+/**
+ * What the transcript should say about a run that ended in something other
+ * than a finished job.
+ *
+ * The browser used to ignore `outcome` entirely — every run just stopped, and
+ * a run cut off at the step limit signed off with a summary of progress and
+ * next steps that is indistinguishable from a completed one. The CLI has said
+ * this for a while (App.tsx's pushSystem); this is the same wording.
+ */
+function outcomeNotice(res: UiSendMessageResult): { text: string; warn: boolean } | undefined {
+  switch (res.outcome) {
+    case 'max-iterations':
+      return {
+        text:
+          `Cut off at the ${res.maxIterations}-step limit for one run, mid-task — the summary above is not a finished job. ` +
+          'Send "continue" to carry on, or raise "maxIterations" in ~/.heapcode/config.json.',
+        warn: true,
+      };
+    case 'incomplete':
+      return {
+        text:
+          'The model kept replying without taking action and never confirmed a real completion — ' +
+          'treat its last reply with suspicion. Rephrase the request or try again.',
+        warn: true,
+      };
+    case 'stopped':
+      return { text: 'Interrupted — send a new message to continue.', warn: false };
+    default:
+      return undefined;
+  }
 }
 
 /** Permission modes, least to most autonomous — same order the CLI lists them. */
@@ -125,6 +158,11 @@ export function App(): JSX.Element {
   const [runStartedAt, setRunStartedAt] = useState<number>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  /**
+   * How the last run ended, when it ended badly — announced instead of the
+   * usual "Finished", then cleared when the next run starts.
+   */
+  const [ending, setEnding] = useState<string>();
   const [settings, setSettings] = useState<UiSettings>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** Which part of Settings the user was reaching for, if they said. */
@@ -490,6 +528,18 @@ export function App(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey);
   }, [openSettings, refreshWorkspace]);
 
+  /**
+   * Draws the line under a run that did not finish its job — in the transcript
+   * where it stays, and once through the announcer for a reader who is not
+   * looking at it.
+   */
+  const noteOutcome = useCallback((res: UiSendMessageResult) => {
+    const note = outcomeNotice(res);
+    if (!note) return;
+    setTranscript((t) => withNotice(t, note.text, note.warn));
+    setEnding(note.text);
+  }, []);
+
   const runCommand = useCallback(
     (command: Command) => {
       setPaletteOpen(false);
@@ -624,9 +674,13 @@ export function App(): JSX.Element {
         // A real id, not a placeholder: Stop has to be able to name this run.
         const id = crypto.randomUUID();
         setRunId(id);
+        // Last run's bad ending is history now — otherwise the announcer would
+        // read it out again when THIS run finishes cleanly.
+        setEnding(undefined);
         setTranscript((t) => withUserMessage(t, command.name));
         void rpc
           .request<UiSendMessageResult>(UI_METHODS.runCommand, { command: command.name, runId: id })
+          .then((res) => noteOutcome(res))
           .catch((err: Error) => {
             if (!/cancel|abort/i.test(err.message)) setError(err.message);
           })
@@ -658,9 +712,11 @@ export function App(): JSX.Element {
       const id = crypto.randomUUID();
       setRunId(id);
       setError(undefined);
+      setEnding(undefined);
       setTranscript((t) => withUserMessage(t, text, images));
       void rpc
         .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text, runId: id, images })
+        .then((res) => noteOutcome(res))
         .catch((err: Error) => {
           // A cancelled run rejects here too; that is not an error worth a banner.
           if (!/cancel|abort/i.test(err.message)) setError(err.message);
@@ -821,7 +877,7 @@ export function App(): JSX.Element {
             runStartedAt={runStartedAt}
           />
 
-          <Announcer busy={busy} activity={activityOf(transcript)} lastReply={lastReplyOf(transcript)} />
+          <Announcer busy={busy} activity={activityOf(transcript)} lastReply={lastReplyOf(transcript)} ending={ending} />
 
           {permission && <PermissionCard pending={permission} />}
           {ask && <AskUserCard pending={ask} />}

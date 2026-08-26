@@ -163,6 +163,7 @@ export async function runAgentForSession(
     proposeMemoryNote: params.proposeMemoryNote,
     requireVerificationBeforeFinish: params.requireVerificationBeforeFinish,
     maxIterations: params.maxIterations,
+    askToContinueAtLimit: params.askToContinueAtLimit,
     temperature: params.temperature,
     maxTokens: params.maxTokens,
     signal,

@@ -103,6 +103,12 @@ export interface AgentOptions {
   requireVerificationBeforeFinish?: boolean;
   /** Model turns this run may take before it is cut off. Defaults to DEFAULT_MAX_ITERATIONS. */
   maxIterations?: number;
+  /**
+   * At the step limit, ask the user (through `ask_user`) whether to keep going
+   * instead of just stopping. Set by hosts where a human is watching; leave off
+   * where nobody can answer, since an unanswered question just stops anyway.
+   */
+  askToContinueAtLimit?: boolean;
   temperature?: number;
   maxTokens?: number;
   /** Model context window in tokens; drives usage reporting and compaction. */
@@ -284,6 +290,30 @@ const MEMORY_NOTE_PROMPT =
  * still compacts on the way, and Esc still stops it.
  */
 export const DEFAULT_MAX_ITERATIONS = 100;
+
+/** The two answers offered at the step limit; the first one buys another budget. */
+export const KEEP_GOING_OPTION = 'Keep going';
+export const STOP_HERE_OPTION = 'Stop here';
+
+/**
+ * Whether an answer to the step-limit question means "keep going".
+ *
+ * Anything unrecognized is a no, because the cost of guessing wrong in that
+ * direction is another budget of model calls the user didn't ask for — and
+ * "no answer" (a headless run, a closed tab, an idle timeout) arrives here as
+ * unrecognized text too. Negations are checked FIRST: "don't continue" and "no,
+ * keep going with something else" both contain an affirmative word, and reading
+ * only for that word turns a refusal into consent.
+ */
+export function saidKeepGoing(answer: string): boolean {
+  const text = answer
+    .replace(/^user answered:/i, '')
+    .trim()
+    .toLowerCase();
+  if (!text) return false;
+  if (/^(no|nope|nah|stop|halt|abort|cancel|quit|don'?t|do not)\b/.test(text)) return false;
+  return /^(keep going|keep working|continue|carry on|go on|proceed|resume|yes|yep|yeah|y|ok|okay|sure)\b/.test(text);
+}
 
 export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const {
@@ -626,7 +656,62 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       }
     }
 
-    for (let iteration = 0; iteration < maxIterations; iteration++) {
+    /**
+     * Steps granted so far. Starts at `maxIterations` and grows by that much
+     * again each time the user says to keep going — every extension costs a
+     * human answer, which is what bounds it.
+     */
+    let budget = maxIterations;
+
+    /**
+     * At the limit, ask rather than just stop.
+     *
+     * Routed through `ask_user` so this needs no new protocol method and no
+     * new UI: every host already renders that question, already bounds the
+     * wait, and already answers it with "nobody is here" when nobody is (a
+     * headless run, a closed tab) — which lands as a no. Hosts that can't ask
+     * leave `askToContinueAtLimit` off and behave exactly as before.
+     *
+     * Why continuing IN the run matters, rather than leaving the user to send
+     * "continue" afterwards: only the summary survives into the conversation.
+     * The run's own transcript — every file read, every test result — is
+     * discarded when it returns, so a follow-up message starts the model over
+     * from a paragraph describing work it can no longer see.
+     */
+    const askForMoreSteps = async (used: number): Promise<boolean> => {
+      if (!opts.askToContinueAtLimit || !toolsByName.has('ask_user')) return false;
+      const result = await execTool({
+        id: `steps_${used}`,
+        name: 'ask_user',
+        args: {
+          question:
+            `I've used all ${used} steps allowed for this run and the task isn't finished yet. ` +
+            `Keep going for another ${maxIterations}?`,
+          options: [KEEP_GOING_OPTION, STOP_HERE_OPTION],
+          // Not a gate on an action: if the user has stepped away, the right
+          // outcome is the one that costs nothing — stop and report.
+          blocksAction: false,
+        },
+      });
+      if (result.isError || !saidKeepGoing(result.content)) return false;
+      // A plain user message, not a tool result: the model never made this
+      // call, and inventing a `tool_calls` entry to pair a result to is how
+      // strict providers start rejecting the whole transcript.
+      messages.push({
+        role: 'user',
+        content:
+          `You reached this run's step limit and I said to keep going — you have another ${maxIterations} steps. ` +
+          'Pick the CURRENT task up exactly where you left off: call the next tool now. ' +
+          'Do not start over, and do not summarize instead of working.',
+      });
+      return true;
+    };
+
+    for (let iteration = 0; ; iteration++) {
+      if (iteration >= budget) {
+        if (!(await askForMoreSteps(iteration))) break;
+        budget += maxIterations;
+      }
       if (signal?.aborted) return 'stopped';
       await compactIfNeeded();
 
@@ -832,8 +917,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       });
       messages.push({ role: 'user', content: formatToolResult(result.name, result.content) });
     }
+    if (signal?.aborted) return 'stopped';
     await summarize(
-      `You hit this run's ${maxIterations}-step limit and are being cut off mid-task — this is not a request to stop. ` +
+      `You hit this run's ${budget}-step limit and are being cut off mid-task — this is not a request to stop. ` +
         'Say so in the first line, then summarize the progress so far, what remains, and the next step to take. ' +
         'Do not call any tools.',
     );

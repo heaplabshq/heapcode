@@ -482,7 +482,8 @@ Per-project CONFIG (meant to live alongside your code, safe to commit and share 
   <cwd>/.heapcode/{HEAPCODE.md, memory.md, instructions/*.md, mcp.json}
 Semantic search needs an embeddings model on the active profile (embeddingsModel, e.g. nomic-embed-text on Ollama) — /settings shows whether one is configured.
 MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.
-Step limit: one run takes at most 100 model turns before it is cut off with a summary of what it did and what remains — set { "maxIterations": N } in ~/.heapcode/config.json to change it for every run, or pass -p --max-iterations N for one.
+Step limit: one run takes at most 100 model turns. In-session it then ASKS whether to keep going (another 100 per yes); headless, with nobody to ask, it stops with a summary of what it did and what remains.
+             Set { "maxIterations": N } in ~/.heapcode/config.json to change it for every run, or pass -p --max-iterations N for one.
 Update check: a one-line startup check against npm's registry for a newer published version — never phones anything else, never blocks. Opt out with --no-update-check or { "updateCheckEnabled": false } in ~/.heapcode/config.json.`);
 }
 

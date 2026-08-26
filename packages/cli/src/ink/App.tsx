@@ -1685,6 +1685,9 @@ export function App({
         subAgents: subAgentsEnabled,
         persona: effectivePersona,
         maxIterations,
+        // There is a human at this terminal, so the limit becomes a question
+        // ("keep going?") instead of a wall.
+        askToContinueAtLimit: true,
       } satisfies AgentRunParams);
       if (outcome === 'stopped') pushSystem('Interrupted — send a new message to continue.');
       else if (outcome === 'max-iterations')
@@ -1692,8 +1695,9 @@ export function App({
         // is the only thing on screen, and it reads as the agent choosing to
         // stop and plan rather than being cut off mid-task.
         pushSystem(
-          `Stopped at the ${maxIterations ?? DEFAULT_MAX_ITERATIONS}-step limit for one run, mid-task — the summary above is not a finished job. ` +
-            'Say "continue" to carry on, or raise "maxIterations" in ~/.heapcode/config.json.',
+          `Ended at the ${maxIterations ?? DEFAULT_MAX_ITERATIONS}-step limit, mid-task — the summary above is not a finished job. ` +
+            'A follow-up starts fresh from that summary (the run\'s own transcript is gone), so say where to pick up — ' +
+            'or raise "maxIterations" in ~/.heapcode/config.json.',
         );
       else if (outcome === 'incomplete')
         pushSystem(

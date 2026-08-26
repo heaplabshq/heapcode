@@ -150,6 +150,8 @@ export interface AgentRunParams {
   proposeMemoryNote?: boolean;
   requireVerificationBeforeFinish?: boolean;
   maxIterations?: number;
+  /** Ask the user whether to keep going when the run hits `maxIterations` — see the loop's askForMoreSteps. */
+  askToContinueAtLimit?: boolean;
   temperature?: number;
   maxTokens?: number;
   /**

@@ -97,8 +97,9 @@ function outcomeNotice(res: UiSendMessageResult): { text: string; warn: boolean 
     case 'max-iterations':
       return {
         text:
-          `Cut off at the ${res.maxIterations}-step limit for one run, mid-task — the summary above is not a finished job. ` +
-          'Send "continue" to carry on, or raise "maxIterations" in ~/.heapcode/config.json.',
+          `Ended at the ${res.maxIterations}-step limit, mid-task — the summary above is not a finished job. ` +
+          "A follow-up starts fresh from that summary (the run's own transcript is gone), so say where to pick up — " +
+          'or raise "maxIterations" in ~/.heapcode/config.json.',
         warn: true,
       };
     case 'incomplete':

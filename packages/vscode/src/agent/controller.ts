@@ -654,6 +654,9 @@ export class AgentController {
         proposeMemoryNote: cfg.get<boolean>('memoryDistillation', true),
         requireVerificationBeforeFinish: cfg.get<boolean>('requireTestsBeforeFinish', false),
         maxIterations: cfg.get<number>('maxIterations', DEFAULT_MAX_ITERATIONS),
+        // The chat renders ask_user as a question card, so the step limit can
+        // be a question here too.
+        askToContinueAtLimit: true,
         // Unset max_tokens defaults to ~1k on some providers (e.g. NVIDIA NIM),
         // which truncates large write_file calls mid-generation. Capped at a
         // quarter of the window so small local models don't reject the request.

@@ -1293,6 +1293,8 @@ export class WebSession {
           persona,
           images,
           maxIterations,
+          // The browser renders ask_user as a card, so it can answer this one.
+          askToContinueAtLimit: true,
         } satisfies AgentRunParams,
         this.abort.signal,
       );

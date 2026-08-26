@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { startMockServer, type MockServer } from '../../core/test/mockServer.js';
 import {
+  DEFAULT_MAX_ITERATIONS,
   HeapcodeServer,
   RpcPeer,
   connectToServer,
@@ -93,6 +94,8 @@ async function boot(
   profileExtras: Record<string, unknown> = {},
   /** Host options the auth and LAN tests need to vary. */
   hostExtras: { limiter?: AuthLimiter; host?: string } = {},
+  /** Top-level config.json keys — e.g. the step ceiling a run is given. */
+  configExtras: Record<string, unknown> = {},
 ): Promise<{
   root: string;
   host: RunningWebHost;
@@ -108,6 +111,7 @@ async function boot(
     JSON.stringify({
       activeProfile: 'mock',
       profiles: [{ name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model', ...profileExtras }],
+      ...configExtras,
     }),
     'utf8',
   );
@@ -200,6 +204,9 @@ describe('web host — driving a run from a browser', () => {
     });
 
     expect(result.outcome).toBe('done');
+    // The ceiling that applied, sent on every result — the browser has no other
+    // way to name it when a run ends on it.
+    expect(result.maxIterations).toBe(DEFAULT_MAX_ITERATIONS);
     expect(await readFile(join(root, 'greeting.txt'), 'utf8')).toBe('goodbye world\n');
 
     // The event stream the UI will render, forwarded verbatim from agent/event.
@@ -212,6 +219,20 @@ describe('web host — driving a run from a browser', () => {
     expect(browser.permissionsSeen[0]!.description).toContain('greeting.txt');
     expect(browser.permissionsSeen[0]!.permission).toBe('write');
 
+    browser.close();
+  });
+
+  it('tells the browser a run was cut off at the step limit, and which limit applied', async () => {
+    // One step, and a reply that calls nothing: the loop nudges, runs out of
+    // steps, and asks for the progress summary — the exact shape that used to
+    // reach the browser as an ordinary, finished-looking answer.
+    const { host } = await boot([{ kind: 'sse' as const, chunks: ['Here is what I have done so far.'] }], {}, {}, { maxIterations: 1 });
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    const result = await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'a big task' });
+
+    expect(result).toMatchObject({ outcome: 'max-iterations', maxIterations: 1 });
     browser.close();
   });
 

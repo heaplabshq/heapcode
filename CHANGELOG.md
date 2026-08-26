@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+- **An agent session gets 100 plan→act→observe iterations instead of 50, and reaching the limit now asks whether to keep going.** An iteration is one model turn, so a batch of parallel tool calls costs one and a read-then-edit-then-test cycle costs three — real multi-file work spent the old budget before finishing, and the session ended on a "what's done, what remains" summary that reads exactly like a completed job. Answering the question continues inside the same session, with the whole run's context intact; a follow-up message would have started the model over from that summary alone. `heapcode.agent.maxIterations` still sets the ceiling
+
 ## 0.6.0
 
 - **Permission modes in the chat composer, with Shift+Tab to cycle them** — Plan (read-only, only read tools are offered), Confirm (ask before every write, command, and destructive action), Auto-edit (edits apply silently, commands still ask), and Auto (edits and commands run freely). The chip shows the current mode and can be changed mid-run; the permission engine reads it per request. Auto still asks before anything destructive. The mode is in-memory only, so it resets to Confirm whenever the window reloads — a permissive mode is never inherited by tomorrow's session. Shared with the `heapcode` CLI, so both behave identically

@@ -6,6 +6,13 @@ export interface AnnouncerProps {
   activity: Activity;
   /** A run just ended; its closing message is what gets announced. */
   lastReply?: string;
+  /**
+   * The run ended in something other than a finished job (cut off at the step
+   * limit, interrupted, never really acted). Announced INSTEAD of the reply's
+   * opening: "Finished" plus a confident-sounding summary is exactly the
+   * wrong thing to hear about a run that was cut off mid-task.
+   */
+  ending?: string;
 }
 
 /**
@@ -21,7 +28,7 @@ export interface AnnouncerProps {
  *
  * So this announces transitions only, and never the same one twice.
  */
-export function Announcer({ busy, activity, lastReply }: AnnouncerProps): JSX.Element {
+export function Announcer({ busy, activity, lastReply, ending }: AnnouncerProps): JSX.Element {
   const [message, setMessage] = useState('');
   const wasBusy = useRef(false);
   const lastPhase = useRef<string>();
@@ -31,13 +38,17 @@ export function Announcer({ busy, activity, lastReply }: AnnouncerProps): JSX.El
       setMessage('Working.');
       lastPhase.current = undefined;
     } else if (!busy && wasBusy.current) {
-      // The reply's opening is the useful part: enough to know whether to go
-      // read it, short enough not to be a second recitation of the whole thing.
-      const opening = lastReply?.trim().slice(0, 160);
-      setMessage(opening ? `Finished. ${opening}` : 'Finished.');
+      if (ending) {
+        setMessage(ending);
+      } else {
+        // The reply's opening is the useful part: enough to know whether to go
+        // read it, short enough not to be a second recitation of the whole thing.
+        const opening = lastReply?.trim().slice(0, 160);
+        setMessage(opening ? `Finished. ${opening}` : 'Finished.');
+      }
     }
     wasBusy.current = busy;
-  }, [busy, lastReply]);
+  }, [busy, lastReply, ending]);
 
   // Tool starts are worth hearing — they are the run doing something to the
   // workspace — but only once per tool, not once per render.

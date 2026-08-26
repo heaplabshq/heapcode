@@ -1,7 +1,7 @@
 import type { AgentOutcome } from '../agent/loop.js';
 import type { IndexState } from '../rag/indexer.js';
 import type { HitMeta } from '../rag/keywordIndex.js';
-import type { ChatMessage, ModelInfo } from '../providers/types.js';
+import type { ChatMessage, ModelInfo, TokenUsage } from '../providers/types.js';
 import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
 import type { AgentPersona } from '../agent/personas.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
@@ -150,6 +150,8 @@ export interface AgentRunParams {
   proposeMemoryNote?: boolean;
   requireVerificationBeforeFinish?: boolean;
   maxIterations?: number;
+  /** Ask the user whether to keep going when the run hits `maxIterations` — see the loop's askForMoreSteps. */
+  askToContinueAtLimit?: boolean;
   temperature?: number;
   maxTokens?: number;
   /**
@@ -172,6 +174,12 @@ export interface AgentRunParams {
 
 export interface AgentRunResult {
   outcome: AgentOutcome;
+  /**
+   * What the run cost, summed over every model call it made. Each field is
+   * null when no call reported it — an endpoint that returns no `usage` block
+   * must not read as a run that consumed nothing.
+   */
+  usage?: TokenUsage;
 }
 
 export interface AgentCancelParams {

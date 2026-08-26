@@ -43,10 +43,27 @@ export interface ChatChunk {
   finishReason?: string;
 }
 
+/**
+ * What one provider call cost, as the endpoint itself reported it.
+ *
+ * `null` means "not reported" and is deliberately distinct from 0 — a caller
+ * deciding whether delegating work to a cheap model actually saves anything
+ * has to be able to tell a free turn from an unmeasured one. Not every
+ * OpenAI-compatible server returns a `usage` block, and several only do so
+ * when asked (see `stream_options` in openaiCompatible.ts).
+ */
+export interface TokenUsage {
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+}
+
 export interface ChatResponse {
   content: string;
   toolCalls?: ToolCallRequest[];
   finishReason?: string;
+  /** Absent when the endpoint reported nothing at all. */
+  usage?: TokenUsage;
 }
 
 export interface CompletionRequest {

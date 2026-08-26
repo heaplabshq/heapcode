@@ -306,6 +306,7 @@ function renderApp(overrides: {
   onSessionChange?(id: string): void;
   checkUpdate?(): Promise<{ current: string; latest: string } | undefined>;
   askUserIdleMs?: number;
+  maxIterations?: number;
   permissionMode?: React.ComponentProps<typeof App>['permissionMode'];
   onPermissionModeChange?: React.ComponentProps<typeof App>['onPermissionModeChange'];
   /** Overrides the harness's in-process server — used by the autostart test. */
@@ -337,6 +338,7 @@ function renderApp(overrides: {
       checkUpdate={overrides.checkUpdate}
       secretsStore={secretsStore}
       askUserIdleMs={overrides.askUserIdleMs}
+      maxIterations={overrides.maxIterations}
       permissionMode={overrides.permissionMode}
       onPermissionModeChange={overrides.onPermissionModeChange}
       server={overrides.server ?? serverOpts}
@@ -390,6 +392,23 @@ describe('App', () => {
     // Same pattern as every other assertion in this file.
     await vi.waitFor(() => expect(lastFrame()).toContain('Hello there'), { timeout: 2_000 });
     await vi.waitFor(() => expect(save).toHaveBeenCalled(), { timeout: 2_000 });
+  });
+
+  it('says so when a run is cut off at the step limit, instead of leaving a progress summary looking like a finished job', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+
+    const { stdin, lastFrame } = renderApp({
+      provider: fakeProvider('Done so far: nothing. Next: read the file.'),
+      conversation,
+      historyStore,
+      maxIterations: 1,
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('do a big task');
+    stdin.write('\r');
+    await vi.waitFor(() => expect(lastFrame()).toContain('1-step limit'), { timeout: 2_000 });
   });
 
   it('a tool call prompts for permission, and approving it (default "Allow once") runs the tool and shows its result', async () => {

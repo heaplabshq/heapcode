@@ -5,6 +5,7 @@ import React from 'react';
 import { render } from 'ink';
 import fg from 'fast-glob';
 import {
+  DEFAULT_MAX_ITERATIONS,
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODES,
   configureAstChunker,
@@ -162,12 +163,38 @@ async function main(): Promise<void> {
   if (promptIndex >= 0) {
     const prompt = argv[promptIndex + 1];
     if (!prompt) {
-      console.error('Usage: heapcode -p "<task>" [--json] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--reindex] [--continue | --resume <id>]');
+      console.error('Usage: heapcode -p "<task>" [--json] [--diff] [--verify "<command>"] [--profile NAME] [--persona NAME] [--permission-mode MODE] [--sub-agents] [--reindex] [--continue | --resume <id>]');
       process.exitCode = 1;
       return;
     }
     const personaFlagIndex = argv.findIndex((a) => a === '--persona');
     const personaId = personaFlagIndex >= 0 ? argv[personaFlagIndex + 1] : undefined;
+    // Captured here, from the invoker's own argv, and passed through
+    // untouched — headless.ts parses it exactly once and spawns it without a
+    // shell (see verify.ts for why that is the property that matters).
+    const verifyFlagIndex = argv.findIndex((a) => a === '--verify');
+    const verify = verifyFlagIndex >= 0 ? argv[verifyFlagIndex + 1] : undefined;
+    if (verifyFlagIndex >= 0 && !verify) {
+      console.error('Usage: heapcode -p "<task>" --verify "<command>"   (the command to run after the task, e.g. --verify "make check")');
+      process.exitCode = 1;
+      return;
+    }
+    const verifyMaxIndex = argv.findIndex((a) => a === '--verify-max');
+    const verifyMax = verifyMaxIndex >= 0 ? Number(argv[verifyMaxIndex + 1]) : undefined;
+    if (verifyMax !== undefined && (!Number.isInteger(verifyMax) || verifyMax < 1)) {
+      console.error('--verify-max takes a whole number of verify runs, 1 or more (default 3).');
+      process.exitCode = 1;
+      return;
+    }
+    // A supervising caller running a big batch job needs the ceiling to be
+    // its call, not a constant compiled into the binary it invoked.
+    const maxIterationsIndex = argv.findIndex((a) => a === '--max-iterations');
+    const maxIterations = maxIterationsIndex >= 0 ? Number(argv[maxIterationsIndex + 1]) : undefined;
+    if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations < 1)) {
+      console.error(`--max-iterations takes a whole number of model turns, 1 or more (default ${DEFAULT_MAX_ITERATIONS}).`);
+      process.exitCode = 1;
+      return;
+    }
     const code = await runHeadless({
       prompt,
       json: argv.includes('--json'),
@@ -179,6 +206,10 @@ async function main(): Promise<void> {
       subAgents: argv.includes('--sub-agents'),
       reindex: argv.includes('--reindex'),
       telemetryEnabled: telemetryFlag,
+      verify,
+      verifyMax,
+      maxIterations,
+      diff: argv.includes('--diff'),
     });
     process.exitCode = code;
     return;
@@ -236,6 +267,9 @@ async function main(): Promise<void> {
   const telemetryEnabled = telemetryFlag ?? (await config.load()).telemetryEnabled ?? true;
   // Unset by default, which means an ask_user question waits indefinitely.
   const askUserIdleMs = parseIdleTimeout((await config.load()).askUserQuestionTimeout);
+  // Unset means core's own default; only a user who wants a different ceiling
+  // (a long-running batch, or a short leash on a local model) sets it.
+  const maxIterations = (await config.load()).maxIterations;
   const audit = new AuditLog(auditFile(), () => telemetryEnabled);
   /**
    * Set by App once it renders, so the engine's auto-allow lines land in the
@@ -291,6 +325,7 @@ async function main(): Promise<void> {
       secretsStore={secrets}
       switchProvider={(p) => Promise.resolve({ contextWindow: profileContextWindow(p) })}
       askUserIdleMs={askUserIdleMs}
+      maxIterations={maxIterations}
       version={cliVersion()}
       checkUpdate={updateCheckEnabled ? () => checkForUpdate('@heaplabs/heapcode-cli', cliVersion() ?? '0.0.0') : undefined}
       cwd={root}
@@ -356,6 +391,11 @@ Usage:
 
 Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text
+  --verify "<command>"              Run this command once the agent thinks it's done; on failure, feed the output back and let it fix its own work (see below)
+                                    Point it at a target that REPAIRS then checks (e.g. "ruff format && ruff check" behind a make target) — a check-only command hands the model failures it cannot fix
+  --verify-max <n>                  Cap how many times the verify command runs — so at most n-1 fix turns (default 3)
+  --max-iterations <n>              Cap the model turns this run may take before it is cut off with a progress summary (default 100; also settable as "maxIterations" in config)
+  --diff                            Include the run's unified diff in the result (the changed-file summary is always included)
   --persona NAME                    agent (default), architect (read-only), debug (no edits), reviewer
   --permission-mode MODE            plan | default | auto-edit | full-auto — see below; default: "default"
   --sub-agents                      Let delegate_task actually run (always visible to the model; without this flag calls return a "disabled" notice)
@@ -375,6 +415,36 @@ the current one shows bottom-left. Not persisted: every session starts at "defau
 Headless (-p) has no one to prompt, so it resolves each mode on its own: plan/default deny
 everything but reads, auto-edit allows writes, and full-auto — the mode meant to finish a task
 unattended in CI — allows everything, destructive actions included.
+
+Every -p run reports what it changed: a "filesChanged" array (path, added/modified/deleted,
+insertions, deletions) in the --json result event, and a "path | +n | -n" table at the end of the
+plain-text output. --diff adds the unified diff itself, so a caller can review a run without
+reopening the files. It also reports "filesRead" — the files it actually opened, taken from the
+tool calls rather than from the model's own summary, so "follow the pattern in X" is checkable at
+a glance.
+
+In plain-text mode, stdout carries the work (response, change table, diff, verify verdict) and
+stderr carries how the run went (files read, token usage, session id) — so a piped stdout is still
+exactly the answer.
+
+Every -p run also reports what it cost: a "usage" object (prompt/completion/total tokens, elapsed
+ms, agent model, profile) in the --json result, and one line on stderr in plain-text mode. The
+numbers are the endpoint's own — a field is null where it reported nothing, which is not the same
+as zero.
+
+--verify runs the project's own checks after the task and gives the model its failures back:
+  heapcode -p "add retries to client.ts" --permission-mode auto-edit --verify "make verify"
+The result says whether it went green and how many attempts it took, with the last failure output
+when it never did; the exit code is non-zero while the checks are still red. The command is yours,
+not the model's — captured from this command line, run directly without a shell (so no pipes, &&,
+or redirection: put chains in a script or make target), never rebuilt from anything the model
+produced, and never offered to it as a tool. That is what makes it safe to pass --verify to a run
+whose permission mode denies run_command outright.
+
+Make that target REPAIR before it checks ("ruff format" then "ruff check", not "ruff check" alone).
+A check-only command reports things like "line is 102 characters, limit 100" — which asks the model
+to count characters rather than run the one-pass tool that fixes it, and in auto-edit mode it cannot
+run that tool itself. Whatever the command repairs still shows up in the run's change summary.
 
 In-session commands (type / for the autocomplete menu):
   /help                             Show available commands
@@ -412,6 +482,8 @@ Per-project CONFIG (meant to live alongside your code, safe to commit and share 
   <cwd>/.heapcode/{HEAPCODE.md, memory.md, instructions/*.md, mcp.json}
 Semantic search needs an embeddings model on the active profile (embeddingsModel, e.g. nomic-embed-text on Ollama) — /settings shows whether one is configured.
 MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.
+Step limit: one run takes at most 100 model turns. In-session it then ASKS whether to keep going (another 100 per yes); headless, with nobody to ask, it stops with a summary of what it did and what remains.
+             Set { "maxIterations": N } in ~/.heapcode/config.json to change it for every run, or pass -p --max-iterations N for one.
 Update check: a one-line startup check against npm's registry for a newer published version — never phones anything else, never blocks. Opt out with --no-update-check or { "updateCheckEnabled": false } in ~/.heapcode/config.json.`);
 }
 

@@ -23,6 +23,13 @@ export interface CliConfig {
    */
   askUserQuestionTimeout?: string;
   /**
+   * Model turns one agent run may take before it is cut off with a
+   * progress summary. Unset means core's DEFAULT_MAX_ITERATIONS. Raise it
+   * for habitually large tasks; lower it to keep a local model on a short
+   * leash. `--max-iterations` overrides it for a single headless run.
+   */
+  maxIterations?: number;
+  /**
    * Web search for the agent. Absent (the default) means the `web_search`
    * tool is refused — see core's webSearch.ts. The API key is NOT here: it
    * lives in secrets.json under WEB_SEARCH_SECRET_NAME, the same custody path

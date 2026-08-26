@@ -82,6 +82,10 @@ heapcode audit                            Local usage/audit dashboard
 | Flag | Effect |
 |---|---|
 | `--json` | Stream newline-delimited JSON events (`tool_call`, `tool_result`, `text_delta`, `plan`, `result`) instead of plain text |
+| `--verify "<command>"` | Run the project's own checks once the agent is done; on failure, feed the output back and let it fix its own work ([below](#--verify--self-checking-runs)) |
+| `--verify-max <n>` | Cap how many times the verify command runs — so at most `n - 1` fix turns (default 3) |
+| `--diff` | Include the run's unified diff in the result (the changed-file summary is always included) |
+| `--max-iterations <n>` | Model turns this run may take before it is cut off with a progress summary (default 100; [below](#the-step-limit)) |
 | `--persona NAME` | `agent` (default), `architect`, `debug`, `reviewer` |
 | `--permission-mode MODE` | `plan` \| `default` \| `auto-edit` \| `full-auto` — see below; default `default` |
 | `--sub-agents` | Let `delegate_task` actually run |
@@ -89,6 +93,78 @@ heapcode audit                            Local usage/audit dashboard
 | `--continue` / `-c` | Continue this directory's most recent conversation |
 | `--resume <id>` | Continue a specific conversation by id or unambiguous prefix |
 | `--no-telemetry` | Skip the local audit-log entry for this run |
+
+#### What every run reports
+
+Every `-p` run says what it changed, so a caller — a script, or another agent supervising this one — can review the work without reopening each file:
+
+- `--json`: the existing `result` event gains `filesChanged` and `filesRead` (always) and `diff` (with `--diff`). Existing fields are untouched, in the same order, so anything already parsing this stream keeps working.
+
+  ```json
+  {"type":"result","outcome":"done","response":"Added retries.","model":"…","profile":"…","sessionId":"…",
+   "filesChanged":[{"path":"src/client.ts","status":"modified","insertions":18,"deletions":2}],
+   "filesRead":["src/client.ts","src/retry_reference.ts"]}
+  ```
+
+- plain text: the response, then a table (and the diff, with `--diff`):
+
+  ```
+  Changes: 1 file, +18 -2
+    src/client.ts | +18 | -2 | modified
+  ```
+
+`status` is `added`, `modified`, or `deleted`; a binary file reports as changed with zero line counts. The summary comes from the same shadow-git history that backs `/rewind` and `/checkpoints`, so it covers everything the run touched — including files a `--verify` command reformatted.
+
+**`filesRead` is what the run actually opened**, in the order it first opened them, taken from the tool calls as they executed — never from the model's own account of itself, which is the thing that can't be trusted here. If your task said *"an equivalent guard already exists in `models/thesis.py` — follow that pattern"*, one look at this list tells you whether it was ever opened. Only tools that open a single named file count (`read_file`, `get_symbols`); a `search` hit or a directory listing does not, and neither does a read that failed. A sub-agent's reads are included — delegated work is still the run's work.
+
+**Where output goes**, in plain-text mode: stdout carries the work product — the response, the change table, the diff, the verify verdict. Everything about *how the run went* — files read, usage, the session id — goes to stderr. So `heapcode -p "explain this" > answer.txt` still writes exactly the answer, and nothing new appears on stdout unless the run changed something or you asked for it.
+
+#### What a run cost
+
+Every result also carries `usage`, so the trade in delegating work to a cheaper model is measurable on both sides instead of on neither:
+
+```json
+"usage": {"promptTokens":48210,"completionTokens":3155,"totalTokens":51365,
+          "elapsedMs":94120,"model":"glm-5.2","profile":"ollama-cloud"}
+```
+
+Token counts are summed over every model call the run made — agent turns, the context-compaction summary, sub-agents, and any `--verify` fix cycles. `model` is the *agent* model (the one that did the work), which can differ from the long-standing `model` field if the profile routes agent turns elsewhere.
+
+The numbers are the endpoint's own; heapcode estimates nothing. A field is `null` when the endpoint reported nothing, which is deliberately not the same as `0` — "not measured" and "free" are different answers. Streamed calls ask for usage with `stream_options: {include_usage: true}`; if a server rejects that, the turn is repeated without it and the run continues with counts unreported rather than failing.
+
+In plain-text mode this prints as one line on **stderr**, next to the session line, so a piped stdout is still exactly the answer.
+
+#### `--verify` — self-checking runs
+
+A model that never learns it failed the project's lint can't fix it; the caller pays for that round trip instead. `--verify` closes the loop:
+
+```bash
+heapcode -p "add retries to src/client.ts" --permission-mode auto-edit --verify "make check"
+```
+
+The command runs once the agent believes it's finished. If it fails, its output comes back to the agent as a new turn, the agent fixes the code, and the command runs again — up to `--verify-max` runs (default 3). The result reports whether it went green and after how many attempts, with the last failure output when it never did, and **the exit code is non-zero while the checks are still red**:
+
+```json
+"verify": {"command":"make check","passed":true,"cycles":2}
+"verify": {"command":"make check","passed":false,"cycles":3,"lastFailureOutput":"E501 line too long (106 > 100)"}
+```
+
+`cycles: 0` means the command never ran because the agent run itself errored or was interrupted — nothing was checked.
+
+**The command is yours, not the model's.** It's captured from your command line, parsed once, and spawned directly — no shell, ever. Nothing the model produces is interpolated into it, it isn't offered as a tool, and it can't be read, changed, or disabled from inside the run. That's what makes `--verify "make check"` safe to hand to a run whose permission mode denies `run_command` outright.
+
+The no-shell rule is the load-bearing part, so it's enforced rather than assumed: `&&`, `|`, `;`, redirection and `$(…)` are rejected up front instead of being passed through as literal arguments. Put chains in a script or a make target and point `--verify` at that. Quoting works as you'd expect (`--verify "pytest -k 'not slow'"`), and a check that hangs is killed after 10 minutes.
+
+**Point it at a command that repairs, then checks.** This is the single biggest factor in whether the loop succeeds. A check-only command hands the model failures it is structurally bad at fixing — "line is 102 characters, limit is 100" asks it to count characters, which is close to the worst thing you can ask an LLM to do, and it will burn every cycle failing at it. The formatter fixes that in one pass:
+
+```make
+verify:                 # not just `ruff check`
+	ruff format .
+	ruff check .
+	pytest -q
+```
+
+This matters most in `--permission-mode auto-edit`, where the model can't run the formatter itself because `run_command` is denied. Anything the verify command repairs is picked up in `filesChanged` and the diff — the summary is taken after the checks run, against the tree as it stood before the task started.
 
 Permission modes (headless has no one to prompt, so every mode resolves on its own):
 
@@ -98,6 +174,22 @@ Permission modes (headless has no one to prompt, so every mode resolves on its o
 | `default` | Every tool is visible, but writes/commands are denied — the agent adapts or reports what it would need |
 | `auto-edit` | File edits auto-approved; shell commands still denied |
 | `full-auto` | Everything auto-approved — for CI automation that should finish the task unattended |
+
+#### The step limit
+
+One run takes at most 100 model turns — a turn being one reply, so a batch of
+parallel tool calls costs one and a read-then-edit-then-test cycle costs three.
+
+In a session, reaching it is a question: *"I've used all 100 steps and the task
+isn't finished. Keep going for another 100?"* A yes continues **inside the same
+run**, which matters more than it sounds — only the final summary is saved to
+the conversation, so answering a cut-off run with a new "continue" message
+restarts the model from a paragraph describing work it can no longer see.
+
+Headless there is nobody to ask, so the run stops, prints what it did and what
+remains, and exits non-zero. Raise the ceiling for one run with
+`--max-iterations N`, or for every run with `{ "maxIterations": N }` in
+`~/.heapcode/config.json`.
 
 ### In-session commands
 
@@ -140,6 +232,8 @@ Keys: `Esc` interrupts the running agent · `Ctrl+C` clears typed input, twice e
 ```
 
 Override the config directory with the `HEAPCODE_HOME` environment variable.
+
+`{ "maxIterations": N }` in the same file changes the per-run step ceiling — see [the step limit](#the-step-limit).
 
 A startup check against npm's own registry surfaces an available update as one dim line, never a blocking prompt — nothing else is contacted. Opt out with `--no-update-check` or `{ "updateCheckEnabled": false }` in `~/.heapcode/config.json`.
 

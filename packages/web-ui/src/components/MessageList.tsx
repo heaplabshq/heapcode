@@ -185,6 +185,14 @@ const Row = memo(function Row({
       );
     case 'reasoning':
       return <Reasoning text={item.text} streaming={item.streaming} />;
+    case 'notice':
+      // role="status" so a reader that has scrolled away is still told the run
+      // ended in something other than a finished job.
+      return (
+        <div className={item.warn ? 'notice notice-warn' : 'notice'} role="status">
+          {item.text}
+        </div>
+      );
     default:
       return null;
   }

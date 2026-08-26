@@ -2,7 +2,7 @@
   "name": "heap-code",
   "displayName": "Heap Code",
   "description": "Model-agnostic AI coding assistant. Works with any OpenAI-compatible API — Ollama, OpenAI, OpenRouter, Groq, LM Studio, vLLM, and more.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "heapcode",
   "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -544,8 +544,8 @@
         },
         "heapcode.agent.maxIterations": {
           "type": "number",
-          "default": 50,
-          "description": "Maximum plan→act→observe iterations per agent session."
+          "default": 100,
+          "description": "Maximum plan→act→observe iterations per agent session. A session that reaches it is cut off mid-task with a progress summary, so this only wants lowering to keep a model on a short leash."
         },
         "heapcode.agent.disabledTools": {
           "type": "array",

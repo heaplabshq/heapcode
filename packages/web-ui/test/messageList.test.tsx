@@ -11,7 +11,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MessageList } from '../src/components/MessageList.js';
-import { emptyTranscript, reduce, type Transcript } from '../src/transcript.js';
+import { emptyTranscript, reduce, withNotice, type Transcript } from '../src/transcript.js';
 import type { AgentEvent } from '@heapcode/core';
 
 // jsdom has no layout, so it has no scrollIntoView — the list's follow-the-
@@ -126,5 +126,22 @@ describe('tool chips', () => {
     expect(container.querySelector('.diff-del')).toBeNull();
     // And it stays collapsed, as ordinary output always did.
     expect(container.querySelector('.chip-body')).toBeNull();
+  });
+});
+
+describe('a host notice about how the run ended', () => {
+  it('is drawn in the transcript, not as something the model said', () => {
+    const t = withNotice(
+      fold([{ type: 'text', text: 'Progress so far: three of ten files.' }]),
+      'Cut off at the 100-step limit for one run, mid-task — the summary above is not a finished job.',
+      true,
+    );
+    const { container } = render(<MessageList transcript={t} />);
+
+    const notice = container.querySelector('.notice-warn');
+    expect(notice?.textContent).toContain('100-step limit');
+    // The assistant bubble holds the model's words and nothing else — the
+    // whole point is that a cut-off run cannot pose as a finished one.
+    expect(container.querySelector('.msg-assistant')?.textContent).not.toContain('100-step limit');
   });
 });

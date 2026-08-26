@@ -9,7 +9,18 @@ export interface MockServer {
 }
 
 export type MockBehavior =
-  | { kind: 'sse'; chunks: string[]; delayMs?: number; omitDone?: boolean }
+  | {
+      kind: 'sse';
+      chunks: string[];
+      delayMs?: number;
+      omitDone?: boolean;
+      /**
+       * A final `usage` chunk before [DONE] — the shape OpenAI sends when the
+       * request carried `stream_options: {include_usage: true}`: usage at the
+       * top level, `choices` empty. Omit for an endpoint that reports nothing.
+       */
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    }
   | { kind: 'json'; status: number; body: unknown; headers?: Record<string, string> }
   | { kind: 'hang-after-first-chunk'; firstChunk: string }
   /** Accepts the request and never responds — for timeout tests. */
@@ -90,6 +101,7 @@ export async function startMockServer(behavior: MockBehavior): Promise<MockServe
           res.write(sseChunk(text));
           if (sse.delayMs) await new Promise((r) => setTimeout(r, sse.delayMs));
         }
+        if (sse.usage) res.write(`data: ${JSON.stringify({ choices: [], usage: sse.usage })}\n\n`);
         if (!sse.omitDone) res.write('data: [DONE]\n\n');
         res.end();
       };

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { runAgent, type AgentOptions } from '../src/agent/loop.js';
+import {
+  DEFAULT_MAX_ITERATIONS,
+  KEEP_GOING_OPTION,
+  STOP_HERE_OPTION,
+  runAgent,
+  saidKeepGoing,
+  type AgentOptions,
+} from '../src/agent/loop.js';
+import { ASK_USER_NO_ANSWER } from '../src/agent/askUser.js';
 import { parseToolBlocks } from '../src/agent/textProtocol.js';
 import type { ToolCall, ToolDefinition, ToolResult } from '../src/agent/tools.js';
 import type { ChatRequest, ChatResponse, Provider } from '../src/providers/types.js';
@@ -19,6 +27,13 @@ const TOOLS: ToolDefinition[] = [
     permission: 'write',
   },
 ];
+
+const ASK_USER: ToolDefinition = {
+  name: 'ask_user',
+  description: 'Ask the user a question',
+  parameters: { type: 'object', properties: { question: { type: 'string' } } },
+  permission: 'read',
+};
 
 /**
  * Provider fake returning scripted responses; records a deep snapshot of each
@@ -552,6 +567,115 @@ describe('runAgent — native tool calls', () => {
     });
     expect(outcome).toBe('max-iterations');
     expect(h.calls.length).toBe(3);
+  });
+
+  it('lets an unspecified run go far past a single-digit-file task (25 turns used to cut real work off mid-task)', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
+    ]);
+    const h = harness();
+    const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(outcome).toBe('max-iterations');
+    expect(h.calls.length).toBe(DEFAULT_MAX_ITERATIONS);
+    expect(DEFAULT_MAX_ITERATIONS).toBeGreaterThanOrEqual(100);
+  });
+
+  it('asks whether to keep going at the limit, and a yes buys another budget instead of ending the run', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
+    ]);
+    const answers: string[] = [];
+    const h = harness({
+      tools: [...TOOLS, ASK_USER],
+      execute: (call: ToolCall) => {
+        if (call.name === 'ask_user') {
+          answers.push(String(call.args.question));
+          // Once. A second limit ends the run, so the test terminates.
+          const answer = answers.length === 1 ? KEEP_GOING_OPTION : STOP_HERE_OPTION;
+          return Promise.resolve({ id: call.id, name: call.name, content: `User answered: ${answer}` });
+        }
+        return Promise.resolve({ id: call.id, name: call.name, content: `ok:${call.name}` });
+      },
+    });
+
+    const outcome = await runAgent({
+      ...h.options,
+      provider,
+      nativeToolCalls: true,
+      maxIterations: 3,
+      askToContinueAtLimit: true,
+    });
+
+    expect(outcome).toBe('max-iterations');
+    expect(answers).toHaveLength(2);
+    expect(answers[0]).toContain('3 steps');
+    // Three steps, a yes, three more — not three and done.
+    expect(h.calls.filter((c) => c.name === 'read_file')).toHaveLength(6);
+  });
+
+  it('picks the task back up rather than restarting it, and never fakes a tool result for a question the model did not ask', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
+    ]);
+    let asked = 0;
+    const h = harness({
+      tools: [...TOOLS, ASK_USER],
+      execute: (call: ToolCall) => {
+        const answer = call.name === 'ask_user' ? (asked++ === 0 ? KEEP_GOING_OPTION : STOP_HERE_OPTION) : undefined;
+        return Promise.resolve({
+          id: call.id,
+          name: call.name,
+          content: answer ? `User answered: ${answer}` : `ok:${call.name}`,
+        });
+      },
+    });
+    await runAgent({ ...h.options, provider, nativeToolCalls: true, maxIterations: 1, askToContinueAtLimit: true });
+
+    const afterGrant = provider.requests[1]!.messages.at(-1)!;
+    expect(afterGrant.role).toBe('user');
+    expect(afterGrant.content).toContain('keep going');
+    expect(afterGrant.content).toMatch(/where you left off/i);
+    // A tool message paired to nothing is what makes strict providers reject
+    // the whole transcript.
+    expect(provider.requests[1]!.messages.some((m) => m.toolCallId === 'steps_1')).toBe(false);
+  });
+
+  it('takes anything but a clear yes as a no, and never asks at all where nobody can answer', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
+    ]);
+    const declining = harness({
+      tools: [...TOOLS, ASK_USER],
+      execute: (call: ToolCall) =>
+        Promise.resolve({
+          id: call.id,
+          name: call.name,
+          content: call.name === 'ask_user' ? ASK_USER_NO_ANSWER : `ok:${call.name}`,
+        }),
+    });
+    await runAgent({
+      ...declining.options,
+      provider,
+      nativeToolCalls: true,
+      maxIterations: 2,
+      askToContinueAtLimit: true,
+    });
+    expect(declining.calls.filter((c) => c.name === 'read_file')).toHaveLength(2);
+
+    const unattended = harness({ tools: [...TOOLS, ASK_USER] });
+    await runAgent({ ...unattended.options, provider, nativeToolCalls: true, maxIterations: 2 });
+    expect(unattended.calls.some((c) => c.name === 'ask_user')).toBe(false);
+  });
+
+  it('tells the model it is being cut off, so its summary cannot read as a finished job', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
+    ]);
+    const h = harness();
+    await runAgent({ ...h.options, provider, nativeToolCalls: true, maxIterations: 2 });
+    const lastPrompt = provider.requests.at(-1)!.messages.at(-1)!.content;
+    expect(lastPrompt).toContain('2-step limit');
+    expect(lastPrompt).toMatch(/not a request to stop/i);
   });
 
   it('compacts the transcript when it outgrows the context window', async () => {
@@ -1195,5 +1319,24 @@ describe('parseToolBlocks — tolerated dialects', () => {
     const out = parseToolBlocks('I considered calling a function but there is nothing to do.');
     expect(out.calls).toEqual([]);
     expect(out.hasToolIntent).toBe(false);
+  });
+});
+
+describe('saidKeepGoing', () => {
+  it('accepts the offered option and the obvious ways of typing it', () => {
+    for (const answer of ['Keep going', 'User answered: Keep going', 'yes', 'y', 'continue please', 'carry on'])
+      expect(saidKeepGoing(answer)).toBe(true);
+  });
+
+  it('reads a negation as a no even when an affirmative word follows it', () => {
+    // "don't continue" and "no, keep going on the other thing" both contain a
+    // yes-word; matching on that word alone turns a refusal into consent.
+    for (const answer of ["don't continue", 'no, keep going on something else', 'Stop here', 'nope'])
+      expect(saidKeepGoing(answer)).toBe(false);
+  });
+
+  it('treats silence and anything it does not recognize as a no — an extra budget is not the safe guess', () => {
+    for (const answer of ['', '   ', ASK_USER_NO_ANSWER, 'hmm', 'what do you mean?'])
+      expect(saidKeepGoing(answer)).toBe(false);
   });
 });

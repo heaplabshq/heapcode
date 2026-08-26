@@ -43,10 +43,31 @@ export function projectConfigDir(cwd: string = process.cwd()): string {
   return join(cwd, '.heapcode');
 }
 
-/** A stable, readable-but-collision-safe directory name for a project's session state. */
+/**
+ * A stable, readable-but-collision-safe directory name for a project's
+ * session state.
+ *
+ * The readable half is the absolute path with its separators flattened, so
+ * on Windows it starts life containing the drive's colon (`C:-Users-...`) —
+ * and `:` is illegal in a Windows filename, which made every `mkdir` under
+ * `~/.heapcode/projects/` fail with a bare ENOENT. Everything Windows
+ * forbids (`<>:"|?*` and control characters) is folded to `-` here; the
+ * hash suffix, which is taken from the untouched path, keeps two projects
+ * that flatten to the same readable name apart. Kept unconditional rather
+ * than `platform === 'win32'`-only so one machine's directory names don't
+ * depend on which host process created them first.
+ *
+ * MUST stay identical to packages/core/src/server/address.ts's copy — see
+ * the note there.
+ */
 function projectStateKey(root: string): string {
   const abs = canonicalize(root);
-  const readable = abs.replace(/[\\/]+/g, '-').replace(/^-+/, '').slice(0, 80);
+  const readable = abs
+    .replace(/[\\/]+/g, '-')
+    .replace(/[<>:"|?*\u0000-\u001f]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 80);
   const hash = createHash('sha256').update(abs).digest('hex').slice(0, 8);
   return `${readable}-${hash}`;
 }

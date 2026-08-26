@@ -50,7 +50,15 @@ export function daemonAddress(home: string = heapcodeHome()): string {
  */
 export function projectStateDir(root: string, home: string = heapcodeHome()): string {
   const abs = canonicalize(root);
-  const readable = abs.replace(/[\\/]+/g, '-').replace(/^-+/, '').slice(0, 80);
+  // `:` (a Windows drive letter's) and the rest of Windows' forbidden set are
+  // folded to `-`, or the resulting directory is unopenable there; the hash is
+  // still taken from the untouched path. See packages/host/src/paths.ts.
+  const readable = abs
+    .replace(/[\\/]+/g, '-')
+    .replace(/[<>:"|?*\u0000-\u001f]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 80);
   const hash = createHash('sha256').update(abs).digest('hex').slice(0, 8);
   return join(home, 'projects', `${readable}-${hash}`);
 }

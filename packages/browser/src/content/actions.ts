@@ -73,8 +73,46 @@ function pointerEvent(type: string, target: Element): Event {
   return new Event(type, { bubbles: true, cancelable: true });
 }
 
+/**
+ * Why an element cannot be acted on, in terms the model can act on.
+ *
+ * A single "could not click" tells the model nothing about what to try next, so
+ * it retries the same call. Each of these implies a different next move: wait,
+ * scroll, pick a different control, or give up and say so.
+ */
+function whyNotActionable(element: Element): string | undefined {
+  if (!element.isConnected) return 'That element is no longer on the page. Read the page again.';
+
+  const disabled =
+    ('disabled' in element && (element as { disabled?: boolean }).disabled === true) ||
+    element.getAttribute('aria-disabled') === 'true' ||
+    element.closest('fieldset[disabled]') !== null;
+  if (disabled) {
+    return 'That control is disabled. Something else on the page probably has to happen first.';
+  }
+
+  const view = element.ownerDocument.defaultView;
+  const style = view?.getComputedStyle(element);
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+    return 'That element is hidden right now. It may need something else opened first.';
+  }
+  if (element.closest('[hidden], [inert], [aria-hidden="true"]')) {
+    return 'That element is hidden from users, so it cannot be clicked.';
+  }
+
+  const rect = element.getBoundingClientRect();
+  const hasLayout = rect.width !== 0 || rect.height !== 0 || rect.top !== 0 || rect.left !== 0;
+  if (hasLayout && rect.width < 1 && rect.height < 1) {
+    return 'That element has no size on screen, so it cannot be clicked.';
+  }
+  return undefined;
+}
+
 /** The full sequence a real click produces, in order. */
 export function performClick(element: Element): ActionResult {
+  const blocked = whyNotActionable(element);
+  if (blocked) return { ok: false, error: blocked };
+
   bringIntoView(element);
 
   element.dispatchEvent(pointerEvent('pointerover', element));
@@ -119,6 +157,9 @@ export function performType(element: Element, text: string): ActionResult {
   ) {
     return { ok: false, error: 'That element is not a text field.' };
   }
+
+  const blocked = whyNotActionable(element);
+  if (blocked) return { ok: false, error: blocked };
 
   bringIntoView(element);
   if (element instanceof HTMLElement) element.focus();

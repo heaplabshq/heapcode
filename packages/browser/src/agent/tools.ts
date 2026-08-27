@@ -34,6 +34,14 @@ export const READ_PAGE: ToolDefinition = {
   },
   permission: 'read',
   untrustedOutput: true,
+  /**
+   * Reading counts as verifying. Core will block `finish` once, with a nudge,
+   * if a mutating tool has run since the last successful read -- so an agent
+   * that clicks and then declares success without ever looking at the result
+   * gets sent back to look. The same mechanism that stops heapcode finishing
+   * with untested edits (PLAN M4).
+   */
+  verifies: true,
 };
 
 export const GET_ELEMENTS: ToolDefinition = {

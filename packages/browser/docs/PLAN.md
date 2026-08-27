@@ -146,14 +146,28 @@ that refuses ordinary fields gets switched off, and protects nobody.
 
 Goal: the agent notices when it was wrong.
 
-- [ ] Post-action snapshot diff → compact "what changed" observation back to the model
-- [ ] No-op detection: action reported success but nothing changed → reported honestly, not retried blindly
-- [ ] Navigation as a hard state boundary (re-inject → wait for load → re-snapshot)
-- [ ] Error taxonomy back to the model: stale handle / not visible / not interactable / navigated away / timeout
-- [ ] Verification gate before `finish` for tasks that took a mutating action
-- [ ] Per-step run timeline in the panel with the ability to stop and correct mid-run
+- [x] Post-action snapshot diff → compact "what changed" observation back to the model
+- [x] No-op detection: action reported success but nothing changed → reported honestly, not retried blindly
+- [x] Navigation as a hard state boundary (wait for load → re-inject → re-snapshot)
+- [x] Error taxonomy back to the model: stale handle / removed / disabled / hidden / no size / navigated away / timeout
+- [x] Verification gate before `finish` for tasks that took a mutating action
+- [x] Per-step run timeline in the panel (shipped with the transcript fix); mid-run correction is stop-and-reask, not inline editing
 
-**Exit criteria:** a deliberately broken fixture (button that does nothing, list that re-renders under the agent, redirect mid-action) produces an accurate report of failure rather than a false claim of success.
+**Exit status: the mechanisms are in and tested; the exit criteria need a real broken page.**
+
+The shape of the fix mattered more than the checklist. Every mutating action now *observes* its own
+result: settle, re-snapshot, diff. Before this a click returned "handles are void, read again" and
+the agent spent a whole turn discovering whether anything had happened — or skipped the read and
+reported success for an action that did nothing, which is the failure hardest to tell apart from a
+broken agent. A synthetic click on a page that ignores untrusted events returns perfectly normally;
+looking is the only way to know.
+
+A no-op is reported as one, with an explicit instruction not to retry. A page that ignored one
+synthetic click will ignore the next, and blind retries are how an agent orders three of something.
+
+The verification gate is core's, not a new one: `read_page` is marked `verifies: true` and the run
+sets `requireVerificationBeforeFinish`, so the loop blocks `finish` once, with a nudge, if a mutating
+tool ran since the last read. The same machinery that stops heapcode finishing with untested edits.
 
 ---
 
@@ -272,3 +286,7 @@ Park ideas here. Do not start.
 | 2026-08-27 | Hostile page text is labelled, never stripped | The user may want to know a page tried, and a sanitiser that removes text is one an attacker can probe and evade |
 | 2026-08-27 | Per-run ceilings on actions, navigations and per-host actions | Every other defence runs through the model's judgement or the user's attention, and both wear down — forty confirmations in front of a tiring user is its own attack. Arithmetic does not wear down |
 | 2026-08-27 | Ceilings are spent on the attempt, and never on reads | Retrying must not buy more budget; and counting reads would discourage looking before acting, which is the behaviour most worth having |
+| 2026-08-27 | Every mutating action observes its own result before returning | Otherwise the agent spends a turn finding out whether it worked, or skips that and reports success for a click the page ignored — which returns normally and is indistinguishable from success |
+| 2026-08-27 | The verification gate reuses core's `verifies` / `requireVerificationBeforeFinish` | The rule "do not declare success without checking" is not browser-specific, and heapcode had already built and tested it for untested edits |
+| 2026-08-27 | A no-op is reported with an explicit do-not-retry | A page that ignored one synthetic click will ignore the next; blind retries are how an agent orders three of something |
+| 2026-08-27 | The navigation load timeout is injectable | It was 15s of real waiting in a CI test. A slow test is a test people stop running |

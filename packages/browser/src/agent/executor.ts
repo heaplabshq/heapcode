@@ -1,7 +1,7 @@
 import type { ToolCall, ToolResult } from '@heapcode/core/agent';
 import { formatSnapshot, type Control, type PageSnapshot } from '../shared/snapshot.js';
 import { describeChanges } from '../shared/delta.js';
-import { ensurePage, sendToPage } from '../sidepanel/page.js';
+import { ensurePage, sendToPage, waitForLoad } from '../sidepanel/page.js';
 import type { ContentRequest } from '../content/index.js';
 import { classifyClick, classifyNavigate, classifyType } from './destructive.js';
 import type { Classification } from './destructive.js';
@@ -23,9 +23,12 @@ export class BrowserToolExecutor {
   #last?: PageSnapshot;
   /** The user's request, used to rank controls so the relevant ones survive. */
   #intent: string;
+  /** How long to wait for a navigation to land. Injectable so tests are fast. */
+  #loadTimeoutMs: number;
 
-  constructor(intent: string) {
+  constructor(intent: string, options: { loadTimeoutMs?: number } = {}) {
     this.#intent = intent;
+    this.#loadTimeoutMs = options.loadTimeoutMs ?? 15_000;
   }
 
   /** The most recent snapshot, for a host that wants to show what the agent saw. */
@@ -84,10 +87,10 @@ export class BrowserToolExecutor {
     if (!target.ok) return fail(target.reason);
 
     if (call.name === 'go_back') {
+      const before = this.#last;
       const response = await sendToPage(target.tabId, { type: 'back' });
       if (!response.ok) return fail(response.error);
-      this.#last = undefined;
-      return ok('Went back. All handles are void -- read the page again.');
+      return this.#observe(before, target.tabId, 'Went back.', ok);
     }
 
     if (call.name === 'navigate') {
@@ -99,9 +102,21 @@ export class BrowserToolExecutor {
       } catch {
         return fail(`"${url}" is not a URL that can be opened.`);
       }
+      const before = this.#last;
       await chrome.tabs.update(target.tabId, { url: resolved });
-      this.#last = undefined;
-      return ok(`Navigating to ${resolved}. All handles are void -- read the page again once it loads.`);
+
+      // Wait for the new document before doing anything else. The content
+      // script did not survive the navigation, and `ensurePage` inside
+      // `#observe` re-injects into whatever has actually arrived.
+      const loaded = await waitForLoad(target.tabId, this.#loadTimeoutMs);
+      if (!loaded) {
+        this.#last = undefined;
+        return ok(
+          `Started navigating to ${resolved}, but the page had not finished loading. ` +
+            `Read the page to see where it got to.`,
+        );
+      }
+      return this.#observe(before, target.tabId, `Navigated to ${resolved}.`, ok);
     }
 
     const generation = this.#last?.generation;
@@ -119,14 +134,66 @@ export class BrowserToolExecutor {
           ? { type: 'type', handle, generation, text: String(call.args.text ?? '') }
           : { type: 'select', handle, generation, option: String(call.args.option ?? '') };
 
+    const before = this.#last;
     const response = await sendToPage(target.tabId, request);
     if (!response.ok) return fail(response.error);
     if (response.kind !== 'acted') return fail('Unexpected reply from the page.');
 
-    // Every handle is void now, and saying so is what stops the next call
-    // reusing a number that no longer means anything.
-    this.#last = undefined;
-    return ok(`${response.note} Handles are now void -- read the page again to see the result.`);
+    return this.#observe(before, target.tabId, response.note, ok);
+  }
+
+  /**
+   * Look at what the action actually did, and say so.
+   *
+   * Without this the agent clicks, is told "handles are void, read again",
+   * spends a turn reading, and only then learns whether anything happened. Worse
+   * -- if it does not bother reading, it reports success for an action that did
+   * nothing at all, which is the failure hardest to tell apart from a broken
+   * agent (PRD section 7.3).
+   *
+   * A synthetic click on a page that ignores untrusted events returns perfectly
+   * normally. The only way to know is to look.
+   */
+  async #observe(
+    before: PageSnapshot | undefined,
+    tabId: number,
+    note: string,
+    ok: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    // Give the page a moment to react before judging it. Without this every
+    // action looks like a no-op on anything that re-renders asynchronously.
+    await sendToPage(tabId, { type: 'settle', seconds: 2 });
+
+    const after = await this.#snapshot();
+    if (!after.ok) {
+      // The page going away mid-action is itself the observation.
+      this.#last = undefined;
+      return ok(`${note} The page then became unreadable: ${after.reason}`);
+    }
+
+    this.#last = after.snapshot;
+
+    if (!before) return ok(`${note}\n\n${formatSnapshot(after.snapshot, { intent: this.#intent })}`);
+
+    if (before.url !== after.snapshot.url) {
+      return ok(
+        `${note} The page navigated to ${after.snapshot.url}.\n\n${formatSnapshot(after.snapshot, { intent: this.#intent })}`,
+      );
+    }
+
+    const changes = describeChanges(before, after.snapshot, { intent: this.#intent });
+    if (changes === 'Nothing on the page changed.') {
+      // Reported plainly, and NOT retried. A page that ignored one synthetic
+      // click will ignore the next one, and blind retries are how an agent
+      // orders three of something.
+      return ok(
+        `${note} But nothing on the page changed, so the action appears to have had no effect. ` +
+          `The page may ignore synthetic clicks, or the control may do nothing. Do not simply retry ` +
+          `the same action -- look for another route, or tell the user it did not work.`,
+      );
+    }
+
+    return ok(`${note}\n\n${changes}`);
   }
 
   /**

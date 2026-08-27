@@ -195,6 +195,10 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
       onContextUsage: (used, window) => events.onContextUsage(used, window),
       onCompaction: (before, after) => events.onCompaction(before, after),
     },
+    // An agent that clicked and then reported success without looking is the
+    // failure M4 exists to prevent; `read_page` is marked `verifies`, so this
+    // sends it back to check once before it may finish.
+    requireVerificationBeforeFinish: true,
     contextWindow: resolveContextWindow(profile),
     temperature: profile.temperature,
     maxTokens: profile.maxTokens,

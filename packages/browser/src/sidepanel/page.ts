@@ -89,6 +89,25 @@ export async function ensurePage(): Promise<PageTarget> {
   return { ok: true, tabId: tab.id, url: tab.url };
 }
 
+/**
+ * Wait for a tab to finish loading.
+ *
+ * Navigation is a hard state boundary: it destroys the content script, the
+ * handle registry, and any action in flight (PRD section 7.5). Acting before the
+ * new document exists produces a "the page did not respond" that looks like a
+ * broken extension rather than a page that simply had not arrived.
+ */
+export async function waitForLoad(tabId: number, timeoutMs = 15_000): Promise<boolean> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (!tab) return false;
+    if (tab.status === 'complete') return true;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return false;
+}
+
 /** One request to the content script, with a disconnect reported as what it means. */
 export async function sendToPage(tabId: number, request: ContentRequest): Promise<ContentResponse> {
   try {

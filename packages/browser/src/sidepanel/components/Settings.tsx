@@ -1,13 +1,18 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { PresetId } from '@heapcode/core/providers';
 import {
+  loadFiles,
+  loadUseDebugger,
   needsApiKey,
   presetById,
   presets,
   saveApiKey,
+  saveFiles,
   saveProfile,
+  saveUseDebugger,
   type StoredProfile,
 } from '../../shared/settings.js';
+import { hasDebuggerPermission, requestDebuggerPermission } from '../../agent/cdp.js';
 import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnostic.js';
 import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
 
@@ -37,6 +42,26 @@ export function Settings({
   const [apiKey, setApiKey] = useState('');
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<Diagnosis | undefined>();
+  const [useDebugger, setUseDebugger] = useState(false);
+  const [files, setFiles] = useState('');
+
+  useEffect(() => {
+    void loadUseDebugger().then(setUseDebugger);
+    void loadFiles().then((paths) => setFiles(paths.join('\n')));
+  }, []);
+
+  /**
+   * Turning this on needs both a permission and a user gesture, and the
+   * permission prompt is alarming enough that it should only ever appear because
+   * someone reached for this switch.
+   */
+  const toggleDebugger = async (wanted: boolean) => {
+    if (wanted && !(await hasDebuggerPermission())) {
+      if (!(await requestDebuggerPermission())) return;
+    }
+    setUseDebugger(wanted);
+    await saveUseDebugger(wanted);
+  };
 
   const preset = presetById(draft.preset);
 
@@ -136,6 +161,36 @@ export function Settings({
         <p className="muted">
           Get a key at <a href={preset.apiKeyUrl} target="_blank" rel="noreferrer noopener">{preset.apiKeyUrl}</a>
         </p>
+      )}
+
+      <hr className="rule" />
+
+      <label className="switch">
+        <input
+          type="checkbox"
+          checked={useDebugger}
+          onChange={(e) => void toggleDebugger(e.target.checked)}
+        />
+        Use Chrome&rsquo;s debugger
+      </label>
+      <p className="muted">
+        Reads the page the way the browser itself does, clicks with real input events, and can
+        attach files. Chrome shows a &ldquo;being debugged&rdquo; banner while a run is going, and
+        opening DevTools on the tab switches it back off.
+      </p>
+
+      {useDebugger && (
+        <label>
+          Files the agent may attach — one full path per line
+          <textarea
+            value={files}
+            onChange={(e) => setFiles(e.target.value)}
+            onBlur={() => void saveFiles(files.split('\n').map((line) => line.trim()))}
+            placeholder="/Users/you/Documents/CV.pdf"
+            rows={2}
+            spellCheck={false}
+          />
+        </label>
       )}
 
       <div className="row">

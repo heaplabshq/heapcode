@@ -83,4 +83,34 @@ export const GO_BACK: ToolDefinition = {
   permission: 'write',
 };
 
+/**
+ * Attach a file the user has already configured.
+ *
+ * Not offered unless the debugger is active: `HTMLInputElement.files` cannot be
+ * set from page context by design, so without CDP this is impossible rather than
+ * merely awkward (PRD section 7.4).
+ *
+ * The model picks *which* configured file, never a path. A model that could name
+ * arbitrary paths would be a model that could read arbitrary files off the
+ * machine, and the page it is reading gets to influence what it asks for.
+ */
+export const ATTACH_FILE: ToolDefinition = {
+  name: 'attach_file',
+  description:
+    'Attach one of the user\'s configured files (such as their CV) to a file input on the page. ' +
+    'Only the files the user has set up can be attached; you cannot name an arbitrary path.',
+  parameters: {
+    type: 'object',
+    properties: {
+      handle: HANDLE,
+      file: {
+        type: 'string',
+        description: 'Which configured file to attach, by name. Omit when only one is configured.',
+      },
+    },
+    required: ['handle'],
+  },
+  permission: 'write',
+};
+
 export const MUTATING_TOOLS: ToolDefinition[] = [CLICK, TYPE, SELECT, NAVIGATE, GO_BACK];

@@ -45,5 +45,11 @@ export default defineManifest({
   // per-origin grant below.
   permissions: ['sidePanel', 'storage', 'activeTab', 'scripting', 'tabs'],
   host_permissions: [],
+  // Requested at runtime, never at install: `debugger` reads alarmingly on the
+  // permission screen and shows a permanent "Chrome is being debugged" banner
+  // while attached. It buys the accessibility tree, genuinely trusted input, and
+  // file attachment -- none of which a content script can do -- so it is offered
+  // as an upgrade rather than a condition of installing (PRD section 4.3).
+  optional_permissions: ['debugger'],
   optional_host_permissions: ['http://*/*', 'https://*/*'],
 });

@@ -18,6 +18,8 @@ import type { ProviderProfileConfig } from '@heapcode/core/providers';
 
 const PROFILE_KEY = 'heapbrowse.profile';
 const API_KEY = 'heapbrowse.apiKey';
+const DEBUGGER_KEY = 'heapbrowse.useDebugger';
+const FILES_KEY = 'heapbrowse.files';
 
 /** The profile with no key attached — safe to log, safe to render. */
 export type StoredProfile = ProviderProfileConfig;
@@ -72,4 +74,42 @@ export function presetById(id: PresetId) {
  */
 export function needsApiKey(profile: StoredProfile): boolean {
   return getPreset(profile.preset).requiresApiKey;
+}
+
+
+/**
+ * Whether to drive pages through the Chrome DevTools Protocol.
+ *
+ * Off by default. It is strictly more capable -- the browser's own accessibility
+ * tree instead of our estimate of it, genuinely trusted input, and file
+ * attachment at all -- but it shows a permanent "Chrome is being debugged"
+ * banner while attached, which is not hideable and should never appear because
+ * of a default someone did not choose.
+ */
+export async function loadUseDebugger(): Promise<boolean> {
+  const stored = await chrome.storage.local.get(DEBUGGER_KEY);
+  return stored[DEBUGGER_KEY] === true;
+}
+
+export async function saveUseDebugger(value: boolean): Promise<void> {
+  await chrome.storage.local.set({ [DEBUGGER_KEY]: value });
+}
+
+/**
+ * Absolute paths the agent may attach to a form.
+ *
+ * Configured by the user rather than chosen by the model, and the model only
+ * ever names one of them. `DOM.setFileInputFiles` takes a real path on the
+ * machine, so a model free to invent paths would be a model able to upload any
+ * file it can guess the location of -- prompted, potentially, by the page it is
+ * reading.
+ */
+export async function loadFiles(): Promise<string[]> {
+  const stored = await chrome.storage.local.get(FILES_KEY);
+  const files = stored[FILES_KEY];
+  return Array.isArray(files) ? files.filter((f): f is string => typeof f === 'string') : [];
+}
+
+export async function saveFiles(paths: string[]): Promise<void> {
+  await chrome.storage.local.set({ [FILES_KEY]: paths.filter((p) => p.trim().length > 0) });
 }

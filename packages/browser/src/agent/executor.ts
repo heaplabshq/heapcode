@@ -1,8 +1,8 @@
 import type { ToolCall, ToolResult } from '@heapcode/core/agent';
 import { formatSnapshot, type Control, type PageSnapshot } from '../shared/snapshot.js';
 import { describeChanges } from '../shared/delta.js';
-import { currentTab, ensurePage, sendToPage, waitForLoad } from '../sidepanel/page.js';
-import type { ContentRequest } from '../content/index.js';
+import { currentTab, waitForLoad } from '../sidepanel/page.js';
+import { DriverPool } from './driverPool.js';
 import { classifyClick, classifyNavigate, classifyType } from './destructive.js';
 import type { Classification } from './destructive.js';
 
@@ -25,10 +25,24 @@ export class BrowserToolExecutor {
   #intent: string;
   /** How long to wait for a navigation to land. Injectable so tests are fast. */
   #loadTimeoutMs: number;
+  #pool: DriverPool;
+  /** Absolute paths the agent may attach, configured by the user. */
+  #files: string[];
 
-  constructor(intent: string, options: { loadTimeoutMs?: number } = {}) {
+  constructor(
+    intent: string,
+    options: { loadTimeoutMs?: number; pool?: DriverPool; files?: string[] } = {},
+  ) {
     this.#intent = intent;
     this.#loadTimeoutMs = options.loadTimeoutMs ?? 15_000;
+    this.#pool = options.pool ?? new DriverPool(false);
+    this.#files = options.files ?? [];
+  }
+
+  /** Which path is in use, for the panel to show and the audit log to record. */
+  async driverKind(): Promise<'cdp' | 'dom' | 'none'> {
+    const target = await this.#pool.forActiveTab();
+    return target.ok ? target.driver.kind : 'none';
   }
 
   /** The most recent snapshot, for a host that wants to show what the agent saw. */
@@ -63,6 +77,8 @@ export class BrowserToolExecutor {
         case 'navigate':
         case 'go_back':
           return await this.#act(call, ok, fail);
+        case 'attach_file':
+          return await this.#attachFile(call, ok, fail);
         default:
           return fail(`Unknown tool "${call.name}".`);
       }
@@ -87,7 +103,7 @@ export class BrowserToolExecutor {
     // Requiring the latter turned any redirect to an ungranted site into a trap
     // with no way back.
     const leaving = call.name === 'navigate' || call.name === 'go_back';
-    const target = leaving ? await currentTab() : await ensurePage();
+    const target = leaving ? await currentTab() : await this.#pool.forActiveTab();
     if (!target.ok) return fail(target.reason);
 
     if (call.name === 'go_back') {
@@ -138,19 +154,19 @@ export class BrowserToolExecutor {
     const handle = Number(call.args.handle);
     if (!Number.isInteger(handle)) return fail(`"${call.args.handle}" is not a handle number.`);
 
-    const request: ContentRequest =
-      call.name === 'click'
-        ? { type: 'click', handle, generation }
-        : call.name === 'type'
-          ? { type: 'type', handle, generation, text: String(call.args.text ?? '') }
-          : { type: 'select', handle, generation, option: String(call.args.option ?? '') };
+    const driven = await this.#pool.forActiveTab();
+    if (!driven.ok) return fail(driven.reason);
 
     const before = this.#last;
-    const response = await sendToPage(target.tabId, request);
-    if (!response.ok) return fail(response.error);
-    if (response.kind !== 'acted') return fail('Unexpected reply from the page.');
+    const result =
+      call.name === 'click'
+        ? await driven.driver.click(handle, generation)
+        : call.name === 'type'
+          ? await driven.driver.type(handle, generation, String(call.args.text ?? ''))
+          : await driven.driver.select(handle, generation, String(call.args.option ?? ''));
 
-    return this.#observe(before, target.tabId, response.note, ok);
+    if (!result.ok) return fail(result.error);
+    return this.#observe(before, driven.tabId, result.note, ok);
   }
 
   /**
@@ -173,7 +189,8 @@ export class BrowserToolExecutor {
   ): Promise<ToolResult> {
     // Give the page a moment to react before judging it. Without this every
     // action looks like a no-op on anything that re-renders asynchronously.
-    await sendToPage(tabId, { type: 'settle', seconds: 2 });
+    const settling = await this.#pool.forActiveTab();
+    if (settling.ok) await settling.driver.settle(2);
 
     const after = await this.#snapshot();
     if (!after.ok) {
@@ -214,7 +231,10 @@ export class BrowserToolExecutor {
    * same thing the executor is about to do.
    */
   async classify(call: ToolCall): Promise<{ classification: Classification; target?: Control; url?: string }> {
-    const page = await ensurePage();
+    // Only the address is needed here, and asking for read permission to
+    // classify an action would make an ungranted page unclassifiable rather
+    // than merely unreadable.
+    const page = await currentTab();
     const url = page.ok ? page.url : undefined;
 
     if (call.name === 'navigate') {
@@ -243,13 +263,67 @@ export class BrowserToolExecutor {
   }
 
   async #snapshot(): Promise<{ ok: true; snapshot: PageSnapshot } | { ok: false; reason: string }> {
-    const target = await ensurePage();
+    const target = await this.#pool.forActiveTab();
     if (!target.ok) return { ok: false, reason: target.reason };
+    try {
+      return { ok: true, snapshot: await target.driver.snapshot() };
+    } catch (error) {
+      if (DriverPool.isLostSession(error)) {
+        // The pool has already switched to the DOM driver; one retry lands there.
+        const retry = await this.#pool.forActiveTab();
+        if (retry.ok) return { ok: true, snapshot: await retry.driver.snapshot() };
+      }
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
 
-    const response = await sendToPage(target.tabId, { type: 'snapshot' });
-    if (!response.ok) return { ok: false, reason: response.error };
-    if (response.kind !== 'snapshot') return { ok: false, reason: 'Unexpected reply from the page.' };
-    return { ok: true, snapshot: response.snapshot };
+  /**
+   * Attach a file the user has configured.
+   *
+   * Only possible over CDP: `input.files` cannot be set from page context by
+   * design, which is why the PRD (section 7.4) kept uploads out of v1 entirely.
+   * The model chooses *which* configured file, never a path -- a model that
+   * could name arbitrary paths could read arbitrary files off the machine.
+   */
+  async #attachFile(
+    call: ToolCall,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    if (this.#files.length === 0) {
+      return fail(
+        'No files are configured for attachment. Ask the user to add one in Settings, or ask them ' +
+          'to attach it themselves.',
+      );
+    }
+
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+    if (!target.driver.attachFiles) {
+      return fail(
+        'Attaching files needs the debugger, which is not active on this tab. Ask the user to turn ' +
+          'it on in Settings, or to attach the file themselves.',
+      );
+    }
+
+    const generation = this.#last?.generation;
+    if (generation === undefined) return fail('Read the page first.');
+    const handle = Number(call.args.handle);
+    if (!Number.isInteger(handle)) return fail(`"${call.args.handle}" is not a handle number.`);
+
+    const wanted = String(call.args.file ?? '');
+    const path =
+      this.#files.find((candidate) => candidate.endsWith(wanted)) ??
+      (this.#files.length === 1 ? this.#files[0] : undefined);
+    if (!path) {
+      return fail(
+        `No configured file matches "${wanted}". Available: ${this.#files.join(', ')}`,
+      );
+    }
+
+    const result = await target.driver.attachFiles(handle, generation, [path]);
+    if (!result.ok) return fail(result.error);
+    return this.#observe(this.#last, target.tabId, result.note, ok);
   }
 
   async #readPage(
@@ -355,20 +429,18 @@ export class BrowserToolExecutor {
       return fail('scroll needs a direction of "down", "up", "top" or "bottom".');
     }
 
-    const target = await ensurePage();
+    const target = await this.#pool.forActiveTab();
     if (!target.ok) return fail(target.reason);
 
-    const request: ContentRequest = {
-      type: 'scroll',
+    const scrolled = await target.driver.scroll(
       direction,
-      pages: typeof args.pages === 'number' ? args.pages : undefined,
-    };
-    const response = await sendToPage(target.tabId, request);
-    if (!response.ok) return fail(response.error);
-    if (response.kind !== 'snapshot') return fail('Unexpected reply from the page.');
+      typeof args.pages === 'number' ? args.pages : 1,
+    );
+    if ('ok' in scrolled) return fail(scrolled.ok ? 'Unexpected reply from the page.' : scrolled.error);
 
     const previous = this.#last;
-    this.#last = response.snapshot;
+    this.#last = scrolled;
+    const response = { snapshot: scrolled };
 
     // Scrolling to the same place is how an agent loops forever on a page that
     // has hit its end, so it is reported as the fact it is.
@@ -387,13 +459,11 @@ export class BrowserToolExecutor {
     ok: (s: string) => ToolResult,
     fail: (s: string) => ToolResult,
   ): Promise<ToolResult> {
-    const target = await ensurePage();
+    const target = await this.#pool.forActiveTab();
     if (!target.ok) return fail(target.reason);
 
     const seconds = typeof args.seconds === 'number' ? args.seconds : 3;
-    const response = await sendToPage(target.tabId, { type: 'settle', seconds });
-    if (!response.ok) return fail(response.error);
-    if (response.kind !== 'settled') return fail('Unexpected reply from the page.');
+    const response = await target.driver.settle(seconds);
 
     return ok(
       response.settled

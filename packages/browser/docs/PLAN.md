@@ -235,8 +235,8 @@ Goal: earn the "operates it for you" claim on tasks people actually have.
 
 Not v1. Do not start before M7 ships.
 
-- [ ] `chrome.debugger` / CDP escalation: real trusted input events + `DOM.setFileInputFiles` for uploads
-- [ ] Accessibility-tree extraction as an alternative to the DOM walk
+- [x] `chrome.debugger` / CDP escalation: real trusted input events + `DOM.setFileInputFiles` for uploads
+- [x] Accessibility-tree extraction as an alternative to the DOM walk
 - [ ] Cross-tab and background/unattended runs
 - [ ] MCP tool support in the browser agent
 - [ ] Firefox port
@@ -260,6 +260,7 @@ Park ideas here. Do not start.
 |---|---|---|
 | 2026-08-27 | Agent loop lives in the **side panel**, not the service worker | MV3 kills an idle SW at ~30s; a multi-minute run cannot survive there (PRD §7.1) |
 | 2026-08-27 | DOM walk in a content script for v1; CDP deferred to Track X | CDP shows a persistent "being debugged" banner and is a much larger permission ask |
+| 2026-08-27 | **Brought forward:** CDP shipped as an opt-in driver, DOM walk retained as fallback | Every per-site break so far — scroll containers, inert modals, a `display:none` injection, silent no-op clicks — was our estimate of something the browser computes exactly. The banner is real but it was the user's cost to accept, and they did. The DOM walk stays because Chrome detaches the debugger the instant DevTools opens, with no warning and no refusal: the fallback is forced, not cautious |
 | 2026-08-27 | Indexed per-snapshot handles, not model-authored CSS selectors | Prevents acting on a mis-resolved or re-rendered element |
 | 2026-08-27 | No `full-auto` mode | heapcode's blast radius is a git-recoverable working tree; a browser's is the user's money |
 | 2026-08-27 | **Reversed:** an `auto` mode exists, off by default | The reasoning above still holds for the *default*, but it was decided on the user's behalf. After real use they asked for it twice, having understood the trade. Refusing a capability someone has understood and asked for is paternalism — and the practical result was worse, since a confirmation on every wizard step is what teaches people to click through the one that matters. `auto` does not lift the blocklist, the per-run ceilings, or the credential refusal: those are floors, not preferences |
@@ -310,3 +311,8 @@ Park ideas here. Do not start.
 | 2026-08-27 | An open modal dialog is the whole snapshot | Everything behind a modal is inert, so listing it hands the model a menu of things that cannot be clicked, indistinguishable from the ones that can — and a click on the backdrop dismisses the dialog. Observed as the agent losing LinkedIn's filter panel |
 | 2026-08-27 | Scrolling looks inside the dialog first | The document is usually locked while a modal is open, and the largest scrollable pane on screen is the (inert) list behind it |
 | 2026-08-27 | The prompt prefers URL parameters over filter UI | It spent a dozen turns on LinkedIn's all-filters dialog having already used the URL parameters successfully in an earlier run. A filter panel opens in a dialog and closes when anything else is clicked; a URL does neither |
+| 2026-08-27 | One `PageDriver` interface, two implementations | The executor must not know which path it has, because it can change mid-run when Chrome detaches |
+| 2026-08-27 | A lost session falls back for the rest of the run, and says what it costs | Re-attaching would fight whatever took it, and DevTools being open is a deliberate act. Switching silently would leave the user wondering why clicks started failing |
+| 2026-08-27 | The pool detaches on every run end, however it ended | A "Chrome is being debugged" banner still up after the agent has stopped reads as something watching them |
+| 2026-08-27 | The model names a *configured* file, never a path | `DOM.setFileInputFiles` takes a real path on the machine. A model free to invent paths could upload any file it can guess the location of — prompted, potentially, by the page it is reading |
+| 2026-08-27 | `attach_file` is only offered when it can work | A tool advertised and then refused every time is worse than no tool: it spends turns proposing it and explaining the failure |

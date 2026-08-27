@@ -10,14 +10,15 @@ import {
 } from '@heapcode/core/agent';
 import { createProvider, resolveContextWindow, resolveCapabilities } from '@heapcode/core/providers';
 import type { ChatMessage } from '@heapcode/core/providers';
-import { loadApiKey, type StoredProfile } from '../shared/settings.js';
+import { loadApiKey, loadFiles, loadUseDebugger, type StoredProfile } from '../shared/settings.js';
+import { DriverPool } from './driverPool.js';
 import { BrowserToolExecutor } from './executor.js';
 import { READ_ONLY_TOOLS } from './tools.js';
 import { BROWSER_AGENT_PROMPT } from './prompt.js';
 import { activeSite, sendToPage, ensurePage } from '../sidepanel/page.js';
 import { decide, mayOfferAlwaysAllow, type BrowserMode } from './originPolicy.js';
 import { recordAudit } from './audit.js';
-import { MUTATING_TOOLS } from './actions.js';
+import { ATTACH_FILE, MUTATING_TOOLS } from './actions.js';
 import { RunBudget } from './limits.js';
 
 /**
@@ -89,11 +90,20 @@ export interface RunRequest {
 }
 
 export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome> {
+  // The debugger banner must not outlive the run that raised it; a banner left
+  // up after the agent has stopped reads to a user as something watching them.
+  return withDriverPool(request);
+}
+
+async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   const { profile, task, history, events, signal, mode, trustedHosts, confirm } = request;
 
   const apiKey = await loadApiKey();
   const provider = createProvider(profile, apiKey);
-  const executor = new BrowserToolExecutor(task);
+
+  const [useDebugger, files] = await Promise.all([loadUseDebugger(), loadFiles()]);
+  const pool = new DriverPool(useDebugger, (reason) => request.onBlocked(reason));
+  const executor = new BrowserToolExecutor(task, { pool, files });
   // One budget per run. Checked before anything is shown to the user, so a
   // page that gets the model to propose forty actions cannot turn that into
   // forty confirmations to click through.
@@ -204,7 +214,17 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     systemPrompt: BROWSER_AGENT_PROMPT,
     // Read-only mode does not merely refuse the mutating tools -- it does not
     // offer them, so the model spends no turns proposing what it cannot do.
-    tools: mode === 'read-only' ? READ_ONLY_TOOLS : [...READ_ONLY_TOOLS, ...MUTATING_TOOLS],
+    tools:
+      mode === 'read-only'
+        ? READ_ONLY_TOOLS
+        : [
+            ...READ_ONLY_TOOLS,
+            ...MUTATING_TOOLS,
+            // Offered only when it can actually work. A tool the model is told
+            // about and then refused every time is worse than no tool: it spends
+            // turns proposing it and explaining the failure.
+            ...(useDebugger && files.length > 0 ? [ATTACH_FILE] : []),
+          ],
     nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
     execute: async (call) => {
       // `ask_user` is answered by the panel, not by the page, so it never
@@ -250,6 +270,8 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     temperature: profile.temperature,
     maxTokens: profile.maxTokens,
     signal,
+  }).finally(() => {
+    void pool.release();
   });
 }
 

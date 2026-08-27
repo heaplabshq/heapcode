@@ -429,3 +429,29 @@ button.stop { border-color: var(--danger); color: var(--danger); }
 }
 
 .ask-skip { margin-top: 6px; padding-left: 0; }
+
+.rule {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 4px 0;
+  width: 100%;
+}
+
+.switch {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 7px !important;
+  color: var(--fg) !important;
+  cursor: pointer;
+}
+
+.settings textarea {
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
+  resize: vertical;
+}

@@ -2,6 +2,7 @@ import { extractSnapshot } from './extract.js';
 import { HandleRegistry } from './registry.js';
 import { performClick, performSelect, performType, resolveTarget } from './actions.js';
 import { scrollBy } from './scroll.js';
+import { openModal } from './modal.js';
 import type { Control, PageSnapshot } from '../shared/snapshot.js';
 
 /**
@@ -76,7 +77,7 @@ export type ContentResponse =
   | { ok: false; error: string };
 
 function scroll(request: Extract<ContentRequest, { type: 'scroll' }>): void {
-  scrollBy(document, request.direction, request.pages ?? 1);
+  scrollBy(document, request.direction, request.pages ?? 1, openModal(document));
 }
 
 /**

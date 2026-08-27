@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SYSTEM_PROMPT } from '../src/sidepanel/prompt.js';
+import { BROWSER_AGENT_PROMPT } from '../src/agent/prompt.js';
 
 /**
  * The prompt is the only place the model is told what it is. These assert the
@@ -31,5 +32,26 @@ describe('the system prompt', () => {
 
   it('warns that the snapshot is truncated, so gaps are reported not invented', () => {
     expect(SYSTEM_PROMPT).toMatch(/truncated/i);
+  });
+});
+
+describe('the agent prompt', () => {
+  it('prefers URL parameters over operating a filter panel', () => {
+    // Observed: it spent a dozen turns fighting LinkedIn's all-filters dialog
+    // after having already used the URL parameters successfully in an earlier
+    // run. Filter panels open in dialogs and close when anything else is
+    // clicked; a URL does neither.
+    expect(BROWSER_AGENT_PROMPT).toMatch(/URL/);
+    expect(BROWSER_AGENT_PROMPT).toMatch(/filter panels?/i);
+  });
+
+  it('explains why the page shrinks when a dialog opens', () => {
+    expect(BROWSER_AGENT_PROMPT).toMatch(/dialog is open/i);
+    expect(BROWSER_AGENT_PROMPT).toMatch(/inert/i);
+  });
+
+  it('tells it to ask rather than invent a value for a real form', () => {
+    expect(BROWSER_AGENT_PROMPT).toMatch(/ask_user/);
+    expect(BROWSER_AGENT_PROMPT).toMatch(/[Nn]ever invent/);
   });
 });

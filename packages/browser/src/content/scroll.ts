@@ -46,10 +46,33 @@ export interface Scroller {
  * scroll wheel would drive. Otherwise the largest scrollable pane on screen,
  * which is the one a person would have aimed at.
  */
-export function findScroller(doc: Document): Scroller {
+export function findScroller(doc: Document, scope?: Element): Scroller {
   const view = doc.defaultView;
   const root = doc.scrollingElement ?? doc.documentElement;
   const viewportHeight = view?.innerHeight ?? 0;
+
+  // Inside an open dialog the document is usually locked and the pane that moves
+  // is in the dialog, so the search starts there rather than finding the
+  // (larger, inert) list behind it.
+  if (scope) {
+    const inside = largestScrollable(scope);
+    if (inside) {
+      return {
+        element: inside,
+        scrollTop: inside.scrollTop,
+        scrollHeight: inside.scrollHeight,
+        clientHeight: inside.clientHeight,
+      };
+    }
+    if (canScroll(scope)) {
+      return {
+        element: scope,
+        scrollTop: scope.scrollTop,
+        scrollHeight: scope.scrollHeight,
+        clientHeight: scope.clientHeight,
+      };
+    }
+  }
 
   if (root && root.scrollHeight - viewportHeight > 40) {
     return {
@@ -59,16 +82,7 @@ export function findScroller(doc: Document): Scroller {
     };
   }
 
-  let best: Element | undefined;
-  let bestArea = 0;
-  for (const element of doc.querySelectorAll('*')) {
-    if (!canScroll(element)) continue;
-    const size = area(element);
-    if (size > bestArea) {
-      best = element;
-      bestArea = size;
-    }
-  }
+  const best = largestScrollable(doc);
 
   if (best) {
     return {
@@ -86,11 +100,31 @@ export function findScroller(doc: Document): Scroller {
   };
 }
 
+/** The biggest thing under `root` that can actually scroll. */
+function largestScrollable(root: Document | Element): Element | undefined {
+  let best: Element | undefined;
+  let bestArea = 0;
+  for (const element of root.querySelectorAll('*')) {
+    if (!canScroll(element)) continue;
+    const size = area(element);
+    if (size > bestArea) {
+      best = element;
+      bestArea = size;
+    }
+  }
+  return best;
+}
+
 export type ScrollDirection = 'down' | 'up' | 'top' | 'bottom';
 
 /** Scroll whichever element actually moves, and report where it ended up. */
-export function scrollBy(doc: Document, direction: ScrollDirection, pages = 1): Scroller {
-  const scroller = findScroller(doc);
+export function scrollBy(
+  doc: Document,
+  direction: ScrollDirection,
+  pages = 1,
+  scope?: Element,
+): Scroller {
+  const scroller = findScroller(doc, scope);
   const step = scroller.clientHeight * pages;
 
   const target = (() => {

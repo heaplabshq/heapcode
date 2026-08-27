@@ -5,6 +5,7 @@ import type { HandleRegistry } from './registry.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
 import { moneyContext } from './money.js';
 import { findScroller } from './scroll.js';
+import { openModal } from './modal.js';
 
 /**
  * The DOM walk: a live page in, a `PageSnapshot` out.
@@ -112,9 +113,9 @@ function valueOf(element: Element): string | undefined {
   return undefined;
 }
 
-function extractControls(doc: Document, registry: HandleRegistry): Control[] {
+function extractControls(root: Document | Element, registry: HandleRegistry): Control[] {
   const controls: Control[] = [];
-  for (const element of doc.querySelectorAll(CONTROL_SELECTOR)) {
+  for (const element of root.querySelectorAll(CONTROL_SELECTOR)) {
     const role = roleOf(element);
     if (!role) continue;
     if (!isVisible(element)) continue;
@@ -160,9 +161,9 @@ function cellText(cell: Element): string {
   return (cell.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
 }
 
-function extractTables(doc: Document): TableSummary[] {
+function extractTables(root: Document | Element): TableSummary[] {
   const tables: TableSummary[] = [];
-  for (const table of doc.querySelectorAll('table')) {
+  for (const table of root.querySelectorAll('table')) {
     if (!isVisible(table)) continue;
     const rows = [...table.rows];
     if (rows.length === 0) continue;
@@ -199,9 +200,12 @@ function extractTables(doc: Document): TableSummary[] {
  * minus navigation and footers. Good enough is genuinely good enough here:
  * being wrong costs some wasted budget, not a wrong action.
  */
-export function extractText(doc: Document): string {
+export function extractText(doc: Document, scope?: Element): string {
   const preferred =
-    doc.querySelector('main, [role="main"]') ?? doc.querySelector('article') ?? doc.body;
+    scope ??
+    doc.querySelector('main, [role="main"]') ??
+    doc.querySelector('article') ??
+    doc.body;
   if (!preferred) return '';
 
   // Walked live rather than cloned. A detached clone has no layout, so
@@ -235,20 +239,24 @@ export function extractSnapshot(doc: Document, registry: HandleRegistry): PageSn
   // layout is an inner pane rather than the document. Reporting the document's
   // position there means every scroll looks like a no-op, and the agent
   // concludes it has reached the end of a list it has barely started.
-  const scroller = findScroller(doc);
+  // A dialog makes everything behind it inert, so it is the whole page for as
+  // long as it is open. See content/modal.ts.
+  const modal = openModal(doc);
+  const scope = modal ?? doc;
+  const scroller = findScroller(doc, modal);
 
   return {
     url: doc.location?.href ?? '',
-    title: doc.title,
+    title: modal ? `${doc.title} — dialog open` : doc.title,
     viewport: {
       width: view?.innerWidth ?? 0,
       height: view?.innerHeight ?? 0,
       scrollY: Math.round(scroller.scrollTop),
       scrollHeight: Math.round(scroller.scrollHeight),
     },
-    text: extractText(doc),
-    controls: extractControls(doc, registry),
-    tables: extractTables(doc),
+    text: extractText(doc, modal),
+    controls: extractControls(scope, registry),
+    tables: extractTables(scope),
     generation,
   };
 }

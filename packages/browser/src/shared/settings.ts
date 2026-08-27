@@ -80,15 +80,19 @@ export function needsApiKey(profile: StoredProfile): boolean {
 /**
  * Whether to drive pages through the Chrome DevTools Protocol.
  *
- * Off by default. It is strictly more capable -- the browser's own accessibility
- * tree instead of our estimate of it, genuinely trusted input, and file
- * attachment at all -- but it shows a permanent "Chrome is being debugged"
- * banner while attached, which is not hideable and should never appear because
- * of a default someone did not choose.
+ * On by default, because it is strictly more capable and every per-site failure
+ * this product has had came from the alternative estimating what CDP simply
+ * knows. Defaulting it off meant the good path was the one nobody was on.
+ *
+ * "On" is only ever a preference: the `debugger` permission is optional and
+ * cannot be granted without a user gesture, so a fresh install is on-but-not-
+ * granted and quietly runs the content-script path until someone allows it.
+ * That is why the setting and the grant are reported separately in the UI --
+ * a switch that says on while nothing changed is worse than one that says off.
  */
 export async function loadUseDebugger(): Promise<boolean> {
   const stored = await chrome.storage.local.get(DEBUGGER_KEY);
-  return stored[DEBUGGER_KEY] === true;
+  return stored[DEBUGGER_KEY] !== false;
 }
 
 export async function saveUseDebugger(value: boolean): Promise<void> {

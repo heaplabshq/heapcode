@@ -3,6 +3,7 @@ import { accessibleName, nearestContext } from './accessibleName.js';
 import { isDisabled, isVisible, positionScore } from './visibility.js';
 import type { HandleRegistry } from './registry.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
+import { moneyContext } from './money.js';
 
 /**
  * The DOM walk: a live page in, a `PageSnapshot` out.
@@ -87,11 +88,6 @@ function isSensitive(element: Element): boolean {
   );
 }
 
-/** Landmarks where an action is far more likely to cost money. */
-const CHECKOUT_SCOPE =
-  '[id*="checkout" i],[class*="checkout" i],[id*="payment" i],[class*="payment" i],' +
-  '[id*="cart" i],[class*="cart" i],form[action*="order" i],form[action*="pay" i]';
-
 function isSubmit(element: Element): boolean {
   if (element instanceof HTMLButtonElement) {
     // A <button> inside a form defaults to type=submit.
@@ -141,7 +137,8 @@ function extractControls(doc: Document, registry: HandleRegistry): Control[] {
     if (context && context !== name) control.context = context;
     if (disabled) control.disabled = true;
     if (isSubmit(element)) control.submits = true;
-    if (element.closest(CHECKOUT_SCOPE)) control.checkout = true;
+    const money = moneyContext(element);
+    if (money) control.checkout = money;
     if ((role === 'input' || role === 'textarea') && isSensitive(element)) control.sensitive = true;
 
     if (element instanceof HTMLAnchorElement) control.href = element.getAttribute('href') ?? undefined;

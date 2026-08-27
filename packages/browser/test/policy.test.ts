@@ -39,7 +39,7 @@ describe('inferring that a click commits something', () => {
   it('still escalates a wizard-looking button inside a checkout', () => {
     // "Continue" on a payment page is exactly as irreversible as "Buy now".
     expect(
-      classifyClick(control('Continue', { submits: true, checkout: true })).permission,
+      classifyClick(control('Continue', { submits: true, checkout: 'it sits inside "checkout"' })).permission,
     ).toBe('destructive');
   });
 
@@ -50,7 +50,7 @@ describe('inferring that a click commits something', () => {
   });
 
   it('escalates anything inside a checkout or payment area', () => {
-    expect(classifyClick(control('Yes', { checkout: true })).permission).toBe('destructive');
+    expect(classifyClick(control('Yes', { checkout: 'it sits inside "checkout"' })).permission).toBe('destructive');
   });
 
   it('leaves ordinary navigation and filtering as a plain write', () => {
@@ -84,7 +84,7 @@ describe('typing', () => {
 
   it('escalates inside checkout, where a field is part of a payment', () => {
     expect(
-      classifyType(control('Name on card', { role: 'input', checkout: true })).permission,
+      classifyType(control('Name on card', { role: 'input', checkout: 'it sits inside "checkout"' })).permission,
     ).toBe('destructive');
   });
 });

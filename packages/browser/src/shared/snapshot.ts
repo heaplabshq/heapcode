@@ -47,8 +47,14 @@ export interface Control {
    * submit is the moment a page stops being reversible.
    */
   submits?: boolean;
-  /** Inside a checkout, payment or order landmark. */
-  checkout?: boolean;
+  /**
+   * Why this sits in a part of the page that takes money, when it does.
+   *
+   * The reason rather than a flag, so the confirmation can say what it matched.
+   * A warning that explains itself is one the user can tell us is wrong -- and
+   * the first version of this fired on LinkedIn's Apply button.
+   */
+  checkout?: string;
   /**
    * A credential, one-time code, or payment field. The executor refuses to type
    * into these outright -- before the model's request is ever shown as a prompt

@@ -70,7 +70,7 @@ const COMMITTING = new RegExp(
  * matches `submit`, and "Continue" inside a payment area is still destructive.
  */
 const CONTINUATION =
-  /^(next|next step|continue|proceed|forward|skip|back|previous|save (and|&) (continue|next)|save draft|»|>>?)$/i;
+  /^(next|next step|continue|proceed|forward|skip|back|previous|review|preview|start|begin|get started|save (and|&) (continue|next)|save draft|»|>>?)$/i;
 
 /** Phrases that look committing but are not, checked before the list above. */
 const BENIGN = /\b(apply filters?|payment (history|methods?|options?)|order (history|status|details)|delete filters?|remove filter|cancel (filter|search)|confirm(ation)? (email|number|code)?\s*(sent|received)?)\b/i;
@@ -104,7 +104,7 @@ export function classifyClick(control: Control): Classification {
   if (control.checkout) {
     return {
       permission: 'destructive',
-      reason: `"${name}" is inside a checkout or payment area of the page`,
+      reason: `"${name}" looks like it takes payment — ${control.checkout}`,
     };
   }
 
@@ -123,7 +123,7 @@ export function classifyType(control: Control): Classification {
   if (control.checkout) {
     return {
       permission: 'destructive',
-      reason: `"${control.name}" is inside a checkout or payment area of the page`,
+      reason: `"${control.name}" looks like a payment field — ${control.checkout}`,
     };
   }
   return { permission: 'write' };

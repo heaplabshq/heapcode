@@ -521,8 +521,19 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   let finishReminderSent = false;
   let verificationNudges = 0;
   const MAX_VERIFICATION_NUDGES = 2;
+  /**
+   * Names the host's actual verifying tool rather than assuming `run_tests`.
+   *
+   * heapbrowse's is `read_page` — its agent changes a web page and verifies by
+   * looking at it — and being told to "run the tests (run_tests)" sent the model
+   * off explaining that it had no such tool, which is a wasted turn and reads to
+   * the user like the product is confused about itself.
+   */
+  const verifyToolNames = tools.filter((t) => t.verifies).map((t) => t.name);
   const VERIFY_NUDGE =
-    'Files changed since the last passing test run. Run the tests (run_tests) before finishing.';
+    verifyToolNames.length > 0
+      ? `Something changed since the last time you checked your work. Call ${verifyToolNames.join(' or ')} before finishing.`
+      : 'Something changed since the last time you checked your work. Verify it before finishing.';
 
   /**
    * True when finish should be deferred — pushes a nudge as a side effect (call

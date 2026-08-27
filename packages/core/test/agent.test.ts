@@ -1115,7 +1115,10 @@ describe('runAgent — requireVerificationBeforeFinish', () => {
     const toolMsg = deferredReq.messages[deferredReq.messages.length - 1]!;
     expect(toolMsg.role).toBe('tool');
     expect(toolMsg.toolCallId).toBe('c2');
-    expect(toolMsg.content).toContain('Run the tests');
+    // Names the host's own verifying tool. A host whose verifier is not
+    // `run_tests` — heapbrowse verifies by reading the page — was previously
+    // told to run tests it does not have, and spent a turn saying so.
+    expect(toolMsg.content).toContain('run_tests');
   });
 
   it('gives up gating after MAX_VERIFICATION_NUDGES and lets finish through', async () => {
@@ -1388,5 +1391,36 @@ describe('a host that refuses for its own reasons', () => {
     await runAgent({ ...h.options, provider, nativeToolCalls: true });
 
     expect(h.results[0]?.content).toBe(DENIED_RESULT_TEXT);
+  });
+});
+
+describe('the verification nudge', () => {
+  it('names whatever tool this host verifies with, not run_tests', async () => {
+    // heapbrowse verifies by reading the page. Being told to "run the tests
+    // (run_tests)" sent it off explaining it had no such tool — a wasted turn
+    // that reads to the user like the product is confused about itself.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a.ts' } }] },
+      { content: '', toolCalls: [{ id: 'c2', name: 'finish', args: { summary: 'done' } }] },
+      { content: '', toolCalls: [{ id: 'c3', name: 'look', args: {} }] },
+      { content: '', toolCalls: [{ id: 'c4', name: 'finish', args: { summary: 'done' } }] },
+    ]);
+    const h = harness({
+      tools: [
+        { name: 'write_file', description: 'Write', parameters: {}, permission: 'write' },
+        { name: 'look', description: 'Look', parameters: {}, permission: 'read', verifies: true },
+      ],
+      requireVerificationBeforeFinish: true,
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    // The deferred finish is answered with a paired tool message carrying the
+    // nudge — the same place the test above reads it from.
+    const deferred = provider.requests[2]!;
+    const nudge = deferred.messages[deferred.messages.length - 1]!;
+    expect(nudge.role).toBe('tool');
+    expect(nudge.content).toContain('look');
+    expect(nudge.content).not.toContain('run_tests');
   });
 });

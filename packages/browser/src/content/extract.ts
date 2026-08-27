@@ -4,6 +4,7 @@ import { isDisabled, isVisible, positionScore } from './visibility.js';
 import type { HandleRegistry } from './registry.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
 import { moneyContext } from './money.js';
+import { findScroller } from './scroll.js';
 
 /**
  * The DOM walk: a live page in, a `PageSnapshot` out.
@@ -230,6 +231,11 @@ export function extractText(doc: Document): string {
 export function extractSnapshot(doc: Document, registry: HandleRegistry): PageSnapshot {
   const generation = registry.reset();
   const view = doc.defaultView;
+  // Report the position of whatever actually scrolls, which on an app-shell
+  // layout is an inner pane rather than the document. Reporting the document's
+  // position there means every scroll looks like a no-op, and the agent
+  // concludes it has reached the end of a list it has barely started.
+  const scroller = findScroller(doc);
 
   return {
     url: doc.location?.href ?? '',
@@ -237,8 +243,8 @@ export function extractSnapshot(doc: Document, registry: HandleRegistry): PageSn
     viewport: {
       width: view?.innerWidth ?? 0,
       height: view?.innerHeight ?? 0,
-      scrollY: Math.round(view?.scrollY ?? 0),
-      scrollHeight: doc.documentElement?.scrollHeight ?? 0,
+      scrollY: Math.round(scroller.scrollTop),
+      scrollHeight: Math.round(scroller.scrollHeight),
     },
     text: extractText(doc),
     controls: extractControls(doc, registry),

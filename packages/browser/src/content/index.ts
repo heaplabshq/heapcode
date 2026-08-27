@@ -1,6 +1,7 @@
 import { extractSnapshot } from './extract.js';
 import { HandleRegistry } from './registry.js';
 import { performClick, performSelect, performType, resolveTarget } from './actions.js';
+import { scrollBy } from './scroll.js';
 import type { Control, PageSnapshot } from '../shared/snapshot.js';
 
 /**
@@ -75,21 +76,7 @@ export type ContentResponse =
   | { ok: false; error: string };
 
 function scroll(request: Extract<ContentRequest, { type: 'scroll' }>): void {
-  const step = window.innerHeight * (request.pages ?? 1);
-  switch (request.direction) {
-    case 'down':
-      window.scrollBy({ top: step, behavior: 'instant' as ScrollBehavior });
-      break;
-    case 'up':
-      window.scrollBy({ top: -step, behavior: 'instant' as ScrollBehavior });
-      break;
-    case 'top':
-      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-      break;
-    case 'bottom':
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' as ScrollBehavior });
-      break;
-  }
+  scrollBy(document, request.direction, request.pages ?? 1);
 }
 
 /**

@@ -1,4 +1,13 @@
-import { runAgent, type AgentOutcome, type PermissionClass, type ToolCall, type ToolResult } from '@heapcode/core/agent';
+import {
+  askUserAnswerMessage,
+  runAgent,
+  ASK_USER_NO_ANSWER,
+  askUserBlocksAction,
+  type AgentOutcome,
+  type PermissionClass,
+  type ToolCall,
+  type ToolResult,
+} from '@heapcode/core/agent';
 import { createProvider, resolveContextWindow, resolveCapabilities } from '@heapcode/core/providers';
 import type { ChatMessage } from '@heapcode/core/providers';
 import { loadApiKey, type StoredProfile } from '../shared/settings.js';
@@ -72,6 +81,11 @@ export interface RunRequest {
   onTrustHost(host: string): void;
   /** Told when policy refused outright, so the panel can explain it. */
   onBlocked(reason: string): void;
+  /**
+   * Put a question from the agent to the user. Resolves with their answer, or
+   * undefined if they chose to let it decide.
+   */
+  ask(question: { question: string; options?: string[]; blocksAction: boolean }): Promise<string | undefined>;
 }
 
 export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome> {
@@ -184,7 +198,28 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     // offer them, so the model spends no turns proposing what it cannot do.
     tools: mode === 'read-only' ? READ_ONLY_TOOLS : [...READ_ONLY_TOOLS, ...MUTATING_TOOLS],
     nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
-    execute: (call) => executor.execute(call),
+    execute: async (call) => {
+      // `ask_user` is answered by the panel, not by the page, so it never
+      // reaches the browser executor.
+      if (call.name === 'ask_user') {
+        const answer = await request.ask({
+          question: String(call.args.question ?? ''),
+          options: Array.isArray(call.args.options)
+            ? call.args.options.map((option) => String(option))
+            : undefined,
+          blocksAction: askUserBlocksAction(call.args),
+        });
+        return {
+          id: call.id,
+          name: call.name,
+          // Core's own wording for both cases, so "nobody answered" means the
+          // same thing here as it does in the CLI -- notably that it is not
+          // consent to anything.
+          content: answer ? askUserAnswerMessage(answer) : ASK_USER_NO_ANSWER,
+        };
+      }
+      return executor.execute(call);
+    },
     requestPermission,
     events: {
       onText: (text) => events.onText(text),
@@ -199,6 +234,10 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     // failure M4 exists to prevent; `read_page` is marked `verifies`, so this
     // sends it back to check once before it may finish.
     requireVerificationBeforeFinish: true,
+    // Now that `ask_user` exists, the step limit can ask instead of just
+    // stopping — the run keeps its transcript, which a follow-up message would
+    // not (core's own reasoning at the limit).
+    askToContinueAtLimit: true,
     contextWindow: resolveContextWindow(profile),
     temperature: profile.temperature,
     maxTokens: profile.maxTokens,

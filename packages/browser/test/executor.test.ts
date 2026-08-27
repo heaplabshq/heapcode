@@ -48,9 +48,22 @@ describe('the tool belt', () => {
 
   it('marks every page-reading tool as untrusted output', () => {
     // Results are whatever an arbitrary site put on screen, arriving while the
-    // agent sits beside the user's logged-in session.
-    for (const tool of READ_ONLY_TOOLS.filter((t) => t.name !== 'wait')) {
-      expect(tool.untrustedOutput, tool.name).toBe(true);
+    // agent sits beside the user's logged-in session. Named explicitly rather
+    // than by exclusion, so a new page-reading tool added without the flag
+    // fails here instead of quietly slipping past a filter.
+    const readsThePage = ['read_page', 'get_elements', 'extract_data', 'scroll'];
+    for (const name of readsThePage) {
+      const tool = READ_ONLY_TOOLS.find((t) => t.name === name);
+      expect(tool, name).toBeDefined();
+      expect(tool?.untrustedOutput, name).toBe(true);
+    }
+  });
+
+  it('does not mark tools that return nothing from the page', () => {
+    // `wait` reports timing and `ask_user` returns the user's own words —
+    // wrapping those as untrusted page data would be a lie about their origin.
+    for (const name of ['wait', 'ask_user']) {
+      expect(READ_ONLY_TOOLS.find((t) => t.name === name)?.untrustedOutput, name).toBeFalsy();
     }
   });
 });

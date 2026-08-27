@@ -50,36 +50,69 @@ function actionTakesMoney(form: HTMLFormElement): string | undefined {
   return undefined;
 }
 
+/** A field that only exists where money is actually being taken. */
+const PAYMENT_FIELD =
+  'input[autocomplete*="cc-"],input[name*="cardnumber" i],input[name*="card_number" i],' +
+  'input[id*="cardnumber" i],input[id*="cvv" i],input[name*="cvv" i],input[name*="cvc" i]';
+
 /**
  * The reason this element counts as being in a money area, or undefined.
  *
+ * A name alone is not enough, and this is the second time proving it: first a
+ * generated class put "cannot be undone" on LinkedIn's Apply button, then a
+ * token somewhere above the Easy Apply modal did the same to "Continue to next
+ * step". Class names are chosen by people who have never heard of this
+ * heuristic, and `closest` searches the whole ancestor chain, so a single
+ * matching word will always be findable somewhere on a large app.
+ *
+ * So a naming signal now needs corroboration: the same container must also
+ * actually take payment -- a card field inside it, or a form posting to a money
+ * endpoint. A real checkout has both by construction; a job board has neither,
+ * however its wrappers happen to be named.
+ *
  * Returns the reason rather than a boolean so the confirmation can say what it
- * matched. A warning that explains itself is one the user can tell us is wrong.
+ * matched. A warning that explains itself is one the user can tell us is wrong,
+ * which is how both of these were caught.
  */
 export function moneyContext(element: Element): string | undefined {
   let node: Element | null = element;
   while (node) {
+    // A form posting to a payment endpoint stands on its own: it is a statement
+    // about where the data goes, not about what someone named a div.
     if (node instanceof HTMLFormElement) {
       const reason = actionTakesMoney(node);
       if (reason) return reason;
     }
 
-    for (const attribute of ['id', 'class', 'data-testid'] as const) {
-      const value = node.getAttribute(attribute);
-      if (!value) continue;
-      for (const token of tokens(value)) {
-        if (MONEY_TOKENS.has(token)) return `it sits inside "${token}"`;
-      }
-    }
-
-    // An explicit landmark is a deliberate statement by the page, so it is
-    // trusted where a class name is not.
-    const label = node.getAttribute('aria-label');
-    if (label && tokens(label).some((token) => MONEY_TOKENS.has(token))) {
-      return `it sits inside an area labelled "${label}"`;
-    }
+    const named = namedForMoney(node);
+    if (named && takesPayment(node)) return `${named}, and it contains card fields`;
 
     node = node.parentElement;
   }
   return undefined;
+}
+
+/** The money-ish name on this element, if it has one. */
+function namedForMoney(node: Element): string | undefined {
+  for (const attribute of ['id', 'class', 'data-testid'] as const) {
+    const value = node.getAttribute(attribute);
+    if (!value) continue;
+    for (const token of tokens(value)) {
+      if (MONEY_TOKENS.has(token)) return `it sits inside "${token}"`;
+    }
+  }
+  const label = node.getAttribute('aria-label');
+  if (label && tokens(label).some((token) => MONEY_TOKENS.has(token))) {
+    return `it sits inside an area labelled "${label}"`;
+  }
+  return undefined;
+}
+
+/** Whether this container really takes payment, rather than merely sounding like it. */
+function takesPayment(node: Element): boolean {
+  if (node.querySelector(PAYMENT_FIELD)) return true;
+  for (const form of node.querySelectorAll('form')) {
+    if (form instanceof HTMLFormElement && actionTakesMoney(form)) return true;
+  }
+  return node instanceof HTMLFormElement && actionTakesMoney(node) !== undefined;
 }

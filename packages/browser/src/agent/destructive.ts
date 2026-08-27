@@ -70,7 +70,7 @@ const COMMITTING = new RegExp(
  * matches `submit`, and "Continue" inside a payment area is still destructive.
  */
 const CONTINUATION =
-  /^(next|next step|continue|proceed|forward|skip|back|previous|review|preview|start|begin|get started|save (and|&) (continue|next)|save draft|»|>>?)$/i;
+  /^(next|continue|proceed|forward|skip|back|previous|review|preview|start|begin|save)\b/i;
 
 /** Phrases that look committing but are not, checked before the list above. */
 const BENIGN = /\b(apply filters?|payment (history|methods?|options?)|order (history|status|details)|delete filters?|remove filter|cancel (filter|search)|confirm(ation)? (email|number|code)?\s*(sent|received)?)\b/i;
@@ -108,6 +108,9 @@ export function classifyClick(control: Control): Classification {
     };
   }
 
+  // Matched as a prefix, not exactly: real buttons read "Continue to next step"
+  // and "Save and continue", not "Continue". Safe as a prefix because committing
+  // language is checked first, so "Continue to payment" has already escalated.
   if (control.submits && !CONTINUATION.test(name.trim())) {
     return {
       permission: 'destructive',

@@ -90,7 +90,7 @@ Goal: a real multi-step agent, with the blast radius still zero.
 - [x] Streaming tool-call UI: tool chips, args, results, collapsible
 - [x] Context compaction when the transcript outgrows the window (core's, via `contextWindow`)
 - [x] Abort/stop mid-run leaves consistent state
-- [x] Max-iteration cap (core's default; the "keep going?" prompt needs `ask_user`, which needs M3's confirmation UI)
+- [x] Max-iteration cap with a "keep going?" prompt (landed once `ask_user` existed)
 
 **Exit criteria:** "summarise the top 5 results and compare them on price and RAM" completes on a real listing page using scroll + extract, in under N iterations, with the token cost of a 10-step run demonstrably below 10× a single snapshot.
 
@@ -262,6 +262,7 @@ Park ideas here. Do not start.
 | 2026-08-27 | DOM walk in a content script for v1; CDP deferred to Track X | CDP shows a persistent "being debugged" banner and is a much larger permission ask |
 | 2026-08-27 | Indexed per-snapshot handles, not model-authored CSS selectors | Prevents acting on a mis-resolved or re-rendered element |
 | 2026-08-27 | No `full-auto` mode | heapcode's blast radius is a git-recoverable working tree; a browser's is the user's money |
+| 2026-08-27 | **Reversed:** an `auto` mode exists, off by default | The reasoning above still holds for the *default*, but it was decided on the user's behalf. After real use they asked for it twice, having understood the trade. Refusing a capability someone has understood and asked for is paternalism — and the practical result was worse, since a confirmation on every wizard step is what teaches people to click through the one that matters. `auto` does not lift the blocklist, the per-run ceilings, or the credential refusal: those are floors, not preferences |
 | 2026-08-27 | File upload out of v1; agent pauses and hands it to the user | `input.files` is unsettable without CDP (PRD §7.4) |
 | 2026-08-27 | Destructive class is **inferred conservatively**, tuned only toward more confirmations | False positive costs a click; false negative costs a purchase |
 | 2026-08-27 | Consume `@heapcode/core` via subpath imports first, extract `@heaplabs/agent-core` after M2 | Extract on second real use, not on speculation (REUSE.md §5) |
@@ -295,3 +296,7 @@ Park ideas here. Do not start.
 | 2026-08-27 | Checkout detection matches whole tokens on id/class/action path, never substrings | Found on LinkedIn: a generated class name put "this cannot be undone" on the Apply button. `closest` means every element inherits every ancestor's classes, so substring matching there is hopeless on a real site |
 | 2026-08-27 | `cart` is not a money signal | Adding to a cart is reversible — it is the checkout that is not — and the token appears in too many unrelated class names to earn its false positives |
 | 2026-08-27 | The escalation reason names what matched | A warning that explains itself is one the user can tell us is wrong. The LinkedIn report was actionable because the message said "is inside a checkout or payment area", which was visibly false |
+| 2026-08-27 | A money-area name now needs corroboration — a card field or a money form action in the same container | Twice a name alone was wrong on LinkedIn. Class names are chosen by people who never heard of this heuristic, and `closest` searches the whole ancestor chain, so a matching word is always findable somewhere on a large app. A real checkout has card fields by construction; a job board has none |
+| 2026-08-27 | Continuation wording matched as a prefix, not exactly | Real buttons read "Continue to next step", not "Continue". Safe as a prefix because committing language is checked first, so "Continue to payment" has already escalated |
+| 2026-08-27 | `ask_user` added, reusing core's definition and idle semantics | A browser agent hits this constantly where a coding agent does not: a form needs facts that are not on the page. Without it the model invents a plausible value and types it into a real application. Also unlocks the step-limit prompt, which needs `ask_user` to exist |
+| 2026-08-27 | `toolDefinitions` added to core's browser-safe barrel | `ask_user` lives there and is not workspace-specific; restating its schema would put two definitions of one protocol tool in the portfolio |

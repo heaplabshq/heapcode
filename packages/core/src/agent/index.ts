@@ -11,11 +11,16 @@
  * pulls `node:child_process` into any bundle. This subpath is the way in for
  * those hosts.
  *
- * Deliberately excluded even though they are Node-free: `checkpoint`,
- * `skills`, `projectInstructions`, and `toolDefinitions`. They compile fine in
- * a browser but are workspace-domain concepts, and this barrel is a curated
- * surface rather than "whatever happens to build". Add them when a non-Node
- * host actually needs them.
+ * Deliberately excluded even though they are Node-free: `checkpoint`, `skills`
+ * and `projectInstructions`. They compile fine in a browser but are
+ * workspace-domain concepts, and this barrel is a curated surface rather than
+ * "whatever happens to build". Add them when a non-Node host actually needs one.
+ *
+ * `toolDefinitions` is included despite mostly being workspace tools, because
+ * `ask_user` lives there and is not workspace-specific at all — every host with
+ * a human attached needs it, and heapbrowse restating the schema would put two
+ * definitions of one protocol tool in the portfolio. The rest of the map is
+ * inert data a bundler drops.
  *
  * Node-coupled and never to be added here: `workspaceTools` (child_process),
  * `webSearch` (reaches child_process through workspaceTools), `mcp` (the MCP
@@ -33,3 +38,4 @@ export * from './personas.js';
 export * from './prompts.js';
 export * from './subAgent.js';
 export * from './askUser.js';
+export * from './toolDefinitions.js';

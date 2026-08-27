@@ -397,3 +397,35 @@ button.stop { border-color: var(--danger); color: var(--danger); }
 .audit-reason { color: var(--muted); font-style: italic; }
 
 .audit-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* The agent asking for a fact. Deliberately not styled like the permission
+   confirmation: that one asks "may I", and its safe answer is no; this one
+   asks "what", and has no safe default at all. */
+.ask {
+  padding: 10px;
+  border-top: 2px solid var(--accent);
+  background: var(--surface);
+}
+
+.ask-question { margin: 0 0 8px; overflow-wrap: anywhere; }
+
+.ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ask-entry { display: flex; gap: 6px; }
+
+.ask-entry input {
+  flex: 1;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
+}
+
+.ask-skip { margin-top: 6px; padding-left: 0; }

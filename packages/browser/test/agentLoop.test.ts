@@ -128,7 +128,7 @@ describe('core loop driving a browser', () => {
 
     const names = (provider.seen[0]?.tools ?? []).map((t) => t.name).sort();
     expect(names).toEqual(
-      ['extract_data', 'finish', 'get_elements', 'read_page', 'scroll', 'wait'].sort(),
+      ['ask_user', 'extract_data', 'finish', 'get_elements', 'read_page', 'scroll', 'wait'].sort(),
     );
   });
 

@@ -95,6 +95,8 @@ export interface ChatDeps {
   mode: BrowserMode;
   confirm(request: ConfirmRequest): Promise<ConfirmAnswer>;
   cancelConfirm(): void;
+  ask(question: { question: string; options?: string[]; blocksAction: boolean }): Promise<string | undefined>;
+  cancelAsk(): void;
 }
 
 export function useChat(profile: StoredProfile, deps: ChatDeps) {
@@ -117,6 +119,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
     // A question still on screen belongs to the run being stopped; leaving it
     // there would let a later click approve an action nobody is waiting for.
     deps.cancelConfirm();
+    deps.cancelAsk();
   }, [deps]);
 
   const send = useCallback(
@@ -169,6 +172,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
           mode: deps.mode,
           trustedHosts: trustedHosts.current,
           confirm: deps.confirm,
+          ask: deps.ask,
           onTrustHost: (host) => trustedHosts.current.add(host.toLowerCase()),
           onBlocked: (reason) =>
             patch((turn) => ({

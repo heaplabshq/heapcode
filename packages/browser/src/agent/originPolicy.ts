@@ -25,7 +25,7 @@ import { resolvePermission, type PermissionMode } from '@heapcode/core/agent';
  * not: a label that describes a narrower behaviour than the code has is how a
  * user ends up granting more than they meant to.
  */
-export const BROWSER_MODES = ['read-only', 'confirm', 'auto-approve'] as const;
+export const BROWSER_MODES = ['read-only', 'confirm', 'auto-approve', 'auto'] as const;
 export type BrowserMode = (typeof BROWSER_MODES)[number];
 
 export const DEFAULT_BROWSER_MODE: BrowserMode = 'confirm';
@@ -34,6 +34,10 @@ export const DEFAULT_BROWSER_MODE: BrowserMode = 'confirm';
 const CORE_MODE: Record<BrowserMode, PermissionMode> = {
   'read-only': 'plan',
   confirm: 'default',
+  // `auto` is handled before this map is consulted; core has no mode that
+  // auto-approves destructive actions, deliberately, and mapping onto one that
+  // does not would silently do the wrong thing.
+  auto: 'full-auto',
   // Auto-edit allows `write` and still asks for `destructive`, which is exactly
   // the ceiling here. `full-auto` is deliberately never reachable: heapcode's
   // most permissive mode risks a git-recoverable tree, this one risks money.
@@ -107,6 +111,25 @@ export function decide(input: PolicyInput): Decision {
         `acting is not, and this cannot be overridden.`,
     };
   }
+
+  /**
+   * `auto` approves everything the blocklist has not already refused.
+   *
+   * The PRD originally ruled this out, and the reasoning still stands for the
+   * default: heapcode's blast radius is a git-recoverable working tree, and a
+   * browser's is the user's money. But it was ruled out on the user's behalf,
+   * and after using the product they asked for it twice, having understood the
+   * trade. Refusing a capability someone has understood and asked for is not
+   * safety, it is paternalism -- and the practical result was worse, because a
+   * confirmation on every wizard step is what teaches people to click through
+   * the one that matters.
+   *
+   * What `auto` does NOT lift, and cannot: the high-harm blocklist above, the
+   * per-run action ceilings, and the refusal to type into credential fields.
+   * None of those are permission questions -- they are floors, and a floor a
+   * setting can lift is not a floor.
+   */
+  if (mode === 'auto') return { effect: 'allow' };
 
   // A trusted site raises the ceiling for writes only. Destructive still asks,
   // because "always allow" was answered about filling a field, not about

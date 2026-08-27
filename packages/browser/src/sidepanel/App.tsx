@@ -9,6 +9,8 @@ import { ContextMeter } from './components/ContextMeter.js';
 import { Confirm } from './components/Confirm.js';
 import { AuditLog } from './components/AuditLog.js';
 import { useConfirm } from './useConfirm.js';
+import { useAsk } from './useAsk.js';
+import { Ask } from './components/Ask.js';
 import { DEFAULT_BROWSER_MODE, type BrowserMode } from '../agent/originPolicy.js';
 import { activeSite, grantActiveSite, type ActiveSite } from './page.js';
 
@@ -21,10 +23,13 @@ export function App() {
   const [site, setSite] = useState<ActiveSite>();
   const [mode, setMode] = useState<BrowserMode>(DEFAULT_BROWSER_MODE);
   const confirmation = useConfirm();
+  const question = useAsk();
   const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile, {
     mode,
     confirm: confirmation.request,
     cancelConfirm: confirmation.cancel,
+    ask: question.ask,
+    cancelAsk: question.cancel,
   });
 
   useEffect(() => {
@@ -93,13 +98,17 @@ export function App() {
             'Read only: never acts.\n' +
             'Ask every time: confirms every action.\n' +
             'Ask only for risky: routine clicks and typing go ahead; anything that buys, ' +
-            'pays, submits, deletes or leaves the site still asks.'
+            'pays, submits, deletes or leaves the site still asks.\n' +
+            "Don't ask: acts without confirming. Banks and password managers are still " +
+            'refused, credential fields are still never typed into, and the per-run action ' +
+            'limits still apply.'
           }
           aria-label="Permission mode"
         >
           <option value="read-only">Read only</option>
           <option value="confirm">Ask every time</option>
           <option value="auto-approve">Ask only for risky</option>
+          <option value="auto">Don't ask</option>
         </select>
         <button type="button" className="ghost" onClick={clear} disabled={turns.length === 0}>
           Clear
@@ -160,6 +169,8 @@ export function App() {
       {confirmation.pending && (
         <Confirm request={confirmation.pending} onAnswer={confirmation.answer} />
       )}
+
+      {question.pending && <Ask question={question.pending} onAnswer={question.answer} />}
 
       {/* Closing the panel ends the run. Say so rather than letting it be
           discovered — the loop lives in this document, so there is nowhere for

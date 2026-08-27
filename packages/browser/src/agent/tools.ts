@@ -1,4 +1,4 @@
-import type { ToolDefinition } from '@heapcode/core/agent';
+import { sharedAgentTools, type ToolDefinition } from '@heapcode/core/agent';
 
 /**
  * What the agent can do to a page.
@@ -126,6 +126,29 @@ export const WAIT: ToolDefinition = {
   permission: 'read',
 };
 
+/**
+ * Asking the user something only they know.
+ *
+ * A browser agent runs into this constantly and in a way a coding agent does
+ * not: filling in a form needs facts that are not on the page and not in the
+ * repo — a notice period, a salary expectation, which of two addresses to use.
+ * Without this the model either stops and reports that it needs something, or
+ * invents a plausible value and types it into a real application form. The
+ * second is much worse and is what it will do by default.
+ *
+ * The definition is core's, imported rather than restated, so the semantics the
+ * loop already relies on — `blocksAction`, the idle rules in askUser.ts — mean
+ * here exactly what they mean in the CLI.
+ */
+export const ASK_USER: ToolDefinition = {
+  ...sharedAgentTools.ask_user,
+  description:
+    'Ask the user for something only they can tell you — a fact that is not on the page (their ' +
+    'notice period, expected salary, which option they prefer), or a decision between real ' +
+    'alternatives. Use this instead of guessing a value you are about to type into a form. Ask one ' +
+    'question at a time, and prefer a sensible default where one obviously exists.',
+};
+
 /** The read-only belt, in the order the model should generally reach for them. */
 export const READ_ONLY_TOOLS: ToolDefinition[] = [
   READ_PAGE,
@@ -133,4 +156,5 @@ export const READ_ONLY_TOOLS: ToolDefinition[] = [
   EXTRACT_DATA,
   SCROLL,
   WAIT,
+  ASK_USER,
 ];

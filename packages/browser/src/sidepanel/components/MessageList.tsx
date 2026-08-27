@@ -51,7 +51,18 @@ export function MessageList({ turns }: { turns: Turn[] }) {
             <p className="user-text">{turn.content}</p>
           ) : (
             <>
-              {turn.tools?.map((tool) => <ToolChip key={tool.id} tool={tool} />)}
+              {/* The run, in the order it happened: what the agent said, and
+                  what it did, interleaved. The narration usually explains the
+                  call that follows it, so the order carries meaning. */}
+              {turn.steps?.map((step, s) =>
+                step.kind === 'tool' ? (
+                  <ToolChip key={step.tool.id} tool={step.tool} />
+                ) : (
+                  <p key={`note-${s}`} className="note">
+                    {step.text}
+                  </p>
+                ),
+              )}
               {turn.content && (
                 <div
                   className="assistant-text"

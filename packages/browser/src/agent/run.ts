@@ -23,6 +23,13 @@ import { activeSite } from '../sidepanel/page.js';
  */
 
 export interface RunEvents {
+  /**
+   * The finish summary -- the answer the model meant to give, which core sends
+   * separately from the narration it streams along the way. Dropping this and
+   * showing the accumulated narration instead is what made a run read as the
+   * model repeating itself.
+   */
+  onText(text: string): void;
   onTextDelta(text: string): void;
   onTextEnd(): void;
   onToolCall(call: ToolCall): void;
@@ -67,7 +74,7 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     // (PLAN guardrail 5).
     requestPermission: async () => true,
     events: {
-      onText: () => {},
+      onText: (text) => events.onText(text),
       onTextDelta: (text) => events.onTextDelta(text),
       onTextEnd: () => events.onTextEnd(),
       onToolCall: (call) => events.onToolCall(call),

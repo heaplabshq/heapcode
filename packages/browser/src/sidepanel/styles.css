@@ -307,3 +307,11 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Narration between steps. Deliberately quieter than the answer: it is the
+   agent thinking aloud, not the thing the user asked for. */
+.note {
+  margin: 0 0 6px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}

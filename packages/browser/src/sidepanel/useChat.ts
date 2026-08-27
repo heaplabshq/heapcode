@@ -14,14 +14,32 @@ export interface ToolActivity {
   isError?: boolean;
 }
 
+/**
+ * A run is a sequence of things the agent said and did, in order.
+ *
+ * Narration and tool calls have to interleave, because that is the order they
+ * happened in and the narration usually explains the call that follows it.
+ * Accumulating all narration into one string instead produced a turn that read
+ * as the model repeating itself three times -- each iteration's "let me look
+ * for X" ran straight into the next with nothing between them.
+ */
+export type Step =
+  | { kind: 'note'; text: string }
+  | { kind: 'tool'; tool: ToolActivity };
+
 export interface Turn {
   role: 'user' | 'assistant';
+  /**
+   * The final answer. For an assistant turn this is the finish summary, which
+   * is what the model actually intended the user to read -- not its running
+   * commentary along the way.
+   */
   content: string;
   /** Set when the turn ended badly; rendered differently from model prose. */
   error?: string;
   /** True while the run behind this turn is still going. */
   streaming?: boolean;
-  tools?: ToolActivity[];
+  steps?: Step[];
 }
 
 /**
@@ -49,11 +67,28 @@ function outcomeNote(outcome: AgentOutcome): string | undefined {
 }
 
 /**
+ * The answer to show for a finished run.
+ *
+ * Normally the finish summary, which core delivers separately from the
+ * narration it streams. A run that was stopped or hit the step limit never
+ * called finish, but it still said things along the way -- that narration is
+ * the only answer there is, so it is promoted rather than leaving the turn
+ * blank and throwing the work away.
+ */
+export function answerFrom(turn: Turn): string {
+  if (turn.content.trim()) return turn.content;
+  return (turn.steps ?? [])
+    .filter((step): step is { kind: 'note'; text: string } => step.kind === 'note')
+    .map((step) => step.text)
+    .join('\n\n');
+}
+
+/**
  * The agent run behind the panel.
  *
- * Everything here drives core's loop; there is no chat path any more. A
- * question that needs no page is handled by the loop itself, which finishes
- * immediately for conversational messages rather than exploring.
+ * Everything here drives core's loop; there is no plain chat path. A question
+ * that needs no page is handled by the loop itself, which finishes immediately
+ * for conversational messages rather than exploring.
  */
 export function useChat(profile: StoredProfile) {
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -79,7 +114,7 @@ export function useChat(profile: StoredProfile) {
       setTurns((prev) => [
         ...prev,
         { role: 'user', content: text },
-        { role: 'assistant', content: '', streaming: true, tools: [] },
+        { role: 'assistant', content: '', streaming: true, steps: [] },
       ]);
       setBusy(true);
 
@@ -95,7 +130,17 @@ export function useChat(profile: StoredProfile) {
           return next;
         });
 
-      let content = '';
+      // Narration for the step currently in flight. Flushed when the model
+      // stops talking, so each note stays attached to its own step.
+      let note = '';
+      const flushNote = () =>
+        patch((turn) => {
+          const text = note.trim();
+          note = '';
+          if (!text) return turn;
+          return { ...turn, steps: [...(turn.steps ?? []), { kind: 'note', text }] };
+        });
+
       try {
         const outcome = await runBrowserAgent({
           profile,
@@ -103,24 +148,42 @@ export function useChat(profile: StoredProfile) {
           history,
           signal: controller.signal,
           events: {
+            // The finish summary. Core sends it here, separately from the
+            // streamed narration -- it is the answer the model meant to give.
+            onText: (summary) => patch((turn) => ({ ...turn, content: summary })),
             onTextDelta: (delta) => {
-              content += delta;
-              patch((turn) => ({ ...turn, content }));
+              note += delta;
+              const current = note;
+              patch((turn) => {
+                const steps = [...(turn.steps ?? [])];
+                const last = steps[steps.length - 1];
+                if (last?.kind === 'note') steps[steps.length - 1] = { kind: 'note', text: current };
+                else steps.push({ kind: 'note', text: current });
+                return { ...turn, steps };
+              });
             },
-            onTextEnd: () => {},
+            onTextEnd: () => {
+              note = '';
+            },
             onToolCall: (call: ToolCall) => {
+              // Whatever was being narrated belongs to this call; close it off
+              // so the next iteration starts a fresh note.
+              note = '';
               patch((turn) => ({
                 ...turn,
-                tools: [...(turn.tools ?? []), { id: call.id, name: call.name, args: call.args }],
+                steps: [
+                  ...(turn.steps ?? []),
+                  { kind: 'tool', tool: { id: call.id, name: call.name, args: call.args } },
+                ],
               }));
             },
             onToolResult: (result) => {
               patch((turn) => ({
                 ...turn,
-                tools: (turn.tools ?? []).map((t) =>
-                  t.id === result.id
-                    ? { ...t, result: result.content, isError: result.isError }
-                    : t,
+                steps: (turn.steps ?? []).map((step) =>
+                  step.kind === 'tool' && step.tool.id === result.id
+                    ? { ...step, tool: { ...step.tool, result: result.content, isError: result.isError } }
+                    : step,
                 ),
               }));
             },
@@ -129,7 +192,13 @@ export function useChat(profile: StoredProfile) {
           },
         });
 
-        patch((turn) => ({ ...turn, streaming: false, error: outcomeNote(outcome) }));
+        flushNote();
+        patch((turn) => ({
+          ...turn,
+          streaming: false,
+          error: outcomeNote(outcome),
+          content: answerFrom(turn),
+        }));
       } catch (error) {
         const message = controller.signal.aborted
           ? 'Stopped.'

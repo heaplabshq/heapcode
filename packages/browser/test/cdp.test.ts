@@ -166,6 +166,83 @@ describe('the pool', () => {
   });
 });
 
+describe('handles across calls', () => {
+  /**
+   * The bug this guards, seen on Amazon: every click failed with "Handle [139]
+   * is from an earlier snapshot (generation 1, now 0)". Generation had gone
+   * *backwards*, which is impossible for a counter that only increments — and
+   * was the tell that it was not the same counter.
+   *
+   * The pool built a fresh `CdpDriver` on every call, and the registry lives on
+   * the driver instance because handles map to backend node ids rather than to
+   * anything in the page. So the read registered handles on one object and the
+   * click looked them up on another, empty one. `DomDriver` is stateless and
+   * survived it, which is why this only appeared once CDP was switched on.
+   */
+  it('gives the same driver back for the same tab', async () => {
+    stubChrome();
+    const pool = new DriverPool(true);
+
+    const first = await pool.forActiveTab();
+    const second = await pool.forActiveTab();
+
+    expect(first.ok && second.ok).toBe(true);
+    if (first.ok && second.ok) expect(second.driver).toBe(first.driver);
+  });
+
+  it('resolves a handle registered by an earlier call', async () => {
+    const stub = stubChrome();
+    stub.sendCommand.mockImplementation(async (_target, method: string) => {
+      if (method === 'Accessibility.getFullAXTree') {
+        return {
+          nodes: [
+            {
+              nodeId: '1',
+              backendDOMNodeId: 7,
+              role: { value: 'link' },
+              name: { value: 'NATRAJ sofa' },
+              childIds: [],
+            },
+          ],
+        };
+      }
+      if (method === 'Page.getLayoutMetrics') {
+        return { cssVisualViewport: { clientWidth: 800, clientHeight: 600, pageY: 0 } };
+      }
+      if (method === 'DOM.getBoxModel') return { model: { content: [0, 0, 10, 0, 10, 10, 0, 10] } };
+      return {};
+    });
+
+    const pool = new DriverPool(true);
+
+    // Read on one call...
+    const reading = await pool.forActiveTab();
+    if (!reading.ok) throw new Error('expected a driver');
+    const page = await reading.driver.snapshot();
+    expect(page.controls).toHaveLength(1);
+
+    // ...act on the next, exactly as the executor does.
+    const acting = await pool.forActiveTab();
+    if (!acting.ok) throw new Error('expected a driver');
+    const result = await acting.driver.click(page.controls[0]!.handle, page.generation);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('replaces the driver when the session is lost, so its dead registry goes too', async () => {
+    const stub = stubChrome();
+    const pool = new DriverPool(true);
+
+    const before = await pool.forActiveTab();
+    expect(before.ok && before.driver.kind).toBe('cdp');
+
+    stub.fireDetach();
+
+    const after = await pool.forActiveTab();
+    expect(after.ok && after.driver.kind).toBe('dom');
+  });
+});
+
 describe('the CDP driver', () => {
   it('clicks with real input events at the element centre', async () => {
     const stub = stubChrome();

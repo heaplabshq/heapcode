@@ -25,6 +25,17 @@ export interface PageDriver {
   settle(seconds: number): Promise<{ settled: boolean; waitedMs: number }>;
   /** Attach files to a file input. Only CDP can do this at all. */
   attachFiles?(handle: number, generation: number, paths: string[]): Promise<Outcome>;
+  /**
+   * A picture of the page, for the user to watch — never for the model.
+   *
+   * Screenshots are 100-500KB, and a model that receives one receives it in
+   * every subsequent turn too: the context fills with stale pictures and the run
+   * gets slower and more expensive with each step. The model reads the
+   * accessibility tree, which is smaller, exact, and addressable. The human gets
+   * the picture, because "what is it looking at" is a question text answers
+   * badly.
+   */
+  screenshot?(): Promise<string | undefined>;
 }
 
 export type Outcome = { ok: true; note: string } | { ok: false; error: string };
@@ -303,6 +314,27 @@ export class CdpDriver implements PageDriver {
 
     await this.settle(1.5);
     return this.snapshot();
+  }
+
+  /**
+   * A JPEG of the viewport, as a data URL.
+   *
+   * Quality is deliberately low and the viewport is not exceeded: this is shown
+   * at a couple of hundred pixels wide in a side panel, and every extra kilobyte
+   * is memory held for the length of the run.
+   */
+  async screenshot(): Promise<string | undefined> {
+    try {
+      const shot = await this.#session.send<{ data: string }>('Page.captureScreenshot', {
+        format: 'jpeg',
+        quality: 45,
+        captureBeyondViewport: false,
+      });
+      return shot.data ? `data:image/jpeg;base64,${shot.data}` : undefined;
+    } catch {
+      // Never worth failing an action over a picture of it.
+      return undefined;
+    }
   }
 
   async settle(seconds: number): Promise<{ settled: boolean; waitedMs: number }> {

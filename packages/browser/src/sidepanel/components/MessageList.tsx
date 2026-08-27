@@ -54,15 +54,24 @@ export function MessageList({ turns }: { turns: Turn[] }) {
               {/* The run, in the order it happened: what the agent said, and
                   what it did, interleaved. The narration usually explains the
                   call that follows it, so the order carries meaning. */}
-              {turn.steps?.map((step, s) =>
-                step.kind === 'tool' ? (
-                  <ToolChip key={step.tool.id} tool={step.tool} />
-                ) : (
+              {turn.steps?.map((step, s) => {
+                if (step.kind === 'tool') return <ToolChip key={step.tool.id} tool={step.tool} />;
+                if (step.kind === 'view') {
+                  return (
+                    <img
+                      key={`view-${s}`}
+                      className="view"
+                      src={step.dataUrl}
+                      alt="What the agent is looking at"
+                    />
+                  );
+                }
+                return (
                   <p key={`note-${s}`} className="note">
                     {step.text}
                   </p>
-                ),
-              )}
+                );
+              })}
               {turn.content && (
                 <div
                   className="assistant-text"

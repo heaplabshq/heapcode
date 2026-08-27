@@ -17,9 +17,11 @@ function assistant(steps: Step[], content = ''): Turn {
 
 /** What the transcript renders, in order. */
 function render(turn: Turn): string[] {
-  const out = (turn.steps ?? []).map((step) =>
-    step.kind === 'tool' ? `[tool ${step.tool.name}]` : step.text,
-  );
+  const out = (turn.steps ?? []).map((step) => {
+    if (step.kind === 'tool') return `[tool ${step.tool.name}]`;
+    if (step.kind === 'view') return '[view]';
+    return step.text;
+  });
   if (turn.content) out.push(`ANSWER: ${turn.content}`);
   return out;
 }
@@ -91,5 +93,32 @@ describe('a finished run', () => {
 
   it('is empty when the run said nothing at all', () => {
     expect(answerFrom(assistant([]))).toBe('');
+  });
+});
+
+describe('what the agent is looking at', () => {
+  it('sits in the timeline alongside the narration and the tools', () => {
+    const turn = assistant([
+      { kind: 'note', text: 'Opening the orders page.' },
+      tool('1', 'read_page'),
+      { kind: 'view', dataUrl: 'data:image/jpeg;base64,AAA' },
+    ]);
+    expect(render(turn)).toEqual(['Opening the orders page.', '[tool read_page]', '[view]']);
+  });
+
+  it('is never part of the answer text', () => {
+    // The picture is for the user. Sending one to the model would put a few
+    // hundred kilobytes in the context for every remaining turn of the run.
+    const turn = assistant(
+      [{ kind: 'view', dataUrl: 'data:image/jpeg;base64,AAA' }],
+      'The cushions are 24 x 24 inches.',
+    );
+    expect(answerFrom(turn)).toBe('The cushions are 24 x 24 inches.');
+    expect(answerFrom(turn)).not.toContain('base64');
+  });
+
+  it('contributes nothing when a run ends without an answer', () => {
+    const turn = assistant([{ kind: 'view', dataUrl: 'data:image/jpeg;base64,AAA' }]);
+    expect(answerFrom(turn)).toBe('');
   });
 });

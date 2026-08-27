@@ -50,6 +50,8 @@ export interface RunEvents {
   onToolResult(result: ToolResult): void;
   onContextUsage(used: number, window: number): void;
   onCompaction(before: number, after: number): void;
+  /** A picture of what the agent is looking at. For the panel only. */
+  onView(dataUrl: string): void;
 }
 
 /** What the user is asked, in their own terms rather than the model's. */
@@ -103,7 +105,11 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
 
   const [useDebugger, files] = await Promise.all([loadUseDebugger(), loadFiles()]);
   const pool = new DriverPool(useDebugger, (reason) => request.onBlocked(reason));
-  const executor = new BrowserToolExecutor(task, { pool, files });
+  const executor = new BrowserToolExecutor(task, {
+    pool,
+    files,
+    onView: (dataUrl) => events.onView(dataUrl),
+  });
   // One budget per run. Checked before anything is shown to the user, so a
   // page that gets the model to propose forty actions cannot turn that into
   // forty confirmations to click through.

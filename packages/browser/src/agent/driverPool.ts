@@ -17,6 +17,20 @@ import { ensurePage } from '../sidepanel/page.js';
 export class DriverPool {
   #enabled: boolean;
   #sessions = new Map<number, CdpSession>();
+  /**
+   * One driver per tab, kept for the life of the run.
+   *
+   * Not an optimisation. `CdpDriver` holds the handle registry and the
+   * generation counter as instance state, because handles map to backend node
+   * ids rather than to anything living in the page. Handing out a fresh
+   * instance per call gave every action an empty registry and a generation of
+   * zero, so a handle issued by the read was always "from an earlier snapshot"
+   * — reported, absurdly, as generation 1 now 0. Every click failed.
+   *
+   * `DomDriver` is stateless and survived this, which is exactly why the bug
+   * only appeared once CDP was switched on.
+   */
+  #drivers = new Map<number, PageDriver>();
   #lost = new Set<number>();
   #onFallback?: (reason: string) => void;
 
@@ -37,15 +51,18 @@ export class DriverPool {
   }
 
   async #driverFor(tabId: number): Promise<PageDriver> {
-    if (!this.#enabled || this.#lost.has(tabId)) return new DomDriver(tabId);
-    if (!debuggerAvailable()) return new DomDriver(tabId);
+    const cached = this.#drivers.get(tabId);
+    if (cached) return cached;
 
-    const existing = this.#sessions.get(tabId);
-    if (existing?.attached) return new CdpDriver(existing);
+    if (!this.#enabled || this.#lost.has(tabId)) return this.#remember(tabId, new DomDriver(tabId));
+    if (!debuggerAvailable()) return this.#remember(tabId, new DomDriver(tabId));
 
     const session = new CdpSession(tabId);
     session.onLost(() => {
       this.#sessions.delete(tabId);
+      // The CDP driver's registry died with the session; the next call builds a
+      // DomDriver in its place.
+      this.#drivers.delete(tabId);
       // Remembered for the rest of the run: re-attaching would fight whatever
       // took the session, and DevTools being open is a deliberate act.
       this.#lost.add(tabId);
@@ -59,17 +76,23 @@ export class DriverPool {
     if (!attached.ok) {
       this.#lost.add(tabId);
       this.#onFallback?.(`${attached.reason} Continuing without the debugger.`);
-      return new DomDriver(tabId);
+      return this.#remember(tabId, new DomDriver(tabId));
     }
 
     this.#sessions.set(tabId, session);
-    return new CdpDriver(session);
+    return this.#remember(tabId, new CdpDriver(session));
+  }
+
+  #remember(tabId: number, driver: PageDriver): PageDriver {
+    this.#drivers.set(tabId, driver);
+    return driver;
   }
 
   /** Take the banner down. Always call this when a run ends, however it ended. */
   async release(): Promise<void> {
     const sessions = [...this.#sessions.values()];
     this.#sessions.clear();
+    this.#drivers.clear();
     await Promise.all(sessions.map((session) => session.detach()));
   }
 

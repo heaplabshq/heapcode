@@ -28,15 +28,37 @@ export class BrowserToolExecutor {
   #pool: DriverPool;
   /** Absolute paths the agent may attach, configured by the user. */
   #files: string[];
+  /** Hands the panel a picture of the page. Never reaches the model. */
+  #onView?: (dataUrl: string) => void;
 
   constructor(
     intent: string,
-    options: { loadTimeoutMs?: number; pool?: DriverPool; files?: string[] } = {},
+    options: {
+      loadTimeoutMs?: number;
+      pool?: DriverPool;
+      files?: string[];
+      onView?: (dataUrl: string) => void;
+    } = {},
   ) {
     this.#intent = intent;
     this.#loadTimeoutMs = options.loadTimeoutMs ?? 15_000;
     this.#pool = options.pool ?? new DriverPool(false);
     this.#files = options.files ?? [];
+    this.#onView = options.onView;
+  }
+
+  /**
+   * Show the user what the agent is looking at.
+   *
+   * Best-effort and fire-and-forget: a missing picture is a cosmetic loss, and
+   * waiting on one would slow every step of the run.
+   */
+  async #capture(): Promise<void> {
+    if (!this.#onView) return;
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok || !target.driver.screenshot) return;
+    const shot = await target.driver.screenshot();
+    if (shot) this.#onView(shot);
   }
 
   /** Which path is in use, for the panel to show and the audit log to record. */
@@ -200,6 +222,7 @@ export class BrowserToolExecutor {
     }
 
     this.#last = after.snapshot;
+    await this.#capture();
 
     if (!before) return ok(`${note}\n\n${formatSnapshot(after.snapshot, { intent: this.#intent })}`);
 
@@ -336,6 +359,7 @@ export class BrowserToolExecutor {
 
     const previous = this.#last;
     this.#last = result.snapshot;
+    await this.#capture();
 
     if (full || !previous) {
       return ok(formatSnapshot(result.snapshot, { intent: this.#intent }));

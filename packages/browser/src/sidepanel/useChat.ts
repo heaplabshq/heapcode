@@ -26,7 +26,16 @@ export interface ToolActivity {
  */
 export type Step =
   | { kind: 'note'; text: string }
-  | { kind: 'tool'; tool: ToolActivity };
+  | { kind: 'tool'; tool: ToolActivity }
+  /**
+   * What the page looked like at this point.
+   *
+   * Shown to the user and never sent to the model: a picture costs a few hundred
+   * kilobytes and would sit in the context for every remaining turn, which is
+   * how these agents become slow and expensive. The model reads the
+   * accessibility tree instead — smaller, exact, and addressable.
+   */
+  | { kind: 'view'; dataUrl: string };
 
 export interface Turn {
   role: 'user' | 'assistant';
@@ -219,6 +228,17 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
                 ),
               }));
             },
+            onView: (dataUrl) =>
+              patch((turn) => {
+                const steps = [...(turn.steps ?? [])];
+                const last = steps[steps.length - 1];
+                // Replace a view that has not been separated by anything else,
+                // so a burst of reads leaves one current picture rather than
+                // five near-identical ones.
+                if (last?.kind === 'view') steps[steps.length - 1] = { kind: 'view', dataUrl };
+                else steps.push({ kind: 'view', dataUrl });
+                return { ...turn, steps };
+              }),
             onContextUsage: (used) => setTokens(used),
             onCompaction: () => {},
           },

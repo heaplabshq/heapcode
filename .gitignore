@@ -4,6 +4,7 @@ out/
 coverage/
 .wrangler/
 *.vsix
+packages/browser/*.zip
 *.log
 .DS_Store
 packages/vscode/media/webview/

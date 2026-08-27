@@ -1,0 +1,254 @@
+/*
+ * The side panel is narrow (Chrome opens it around 320-400px) and lives beside
+ * the page, so it follows the browser's theme rather than imposing one.
+ */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1c1c1e;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2563eb;
+  --danger: #b91c1c;
+  --surface: #f6f7f9;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e;
+    --fg: #e8e8ea;
+    --muted: #9aa0a6;
+    --line: #34343a;
+    --accent: #60a5fa;
+    --danger: #f87171;
+    --surface: #26262a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+header .title { font-weight: 600; }
+
+header .model {
+  flex: 1;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button {
+  font: inherit;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:disabled { opacity: 0.5; cursor: default; }
+button.ghost { background: none; border-color: transparent; color: var(--muted); }
+button.stop { border-color: var(--danger); color: var(--danger); }
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.transcript.empty { color: var(--muted); }
+
+.turn { margin-bottom: 14px; }
+
+.turn.user .user-text {
+  margin: 0;
+  padding: 7px 10px;
+  background: var(--surface);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-text { overflow-wrap: anywhere; }
+
+/* Wide content must scroll inside itself; the panel is too narrow to give up
+   its layout to a long code line. */
+.assistant-text pre {
+  overflow-x: auto;
+  padding: 8px;
+  background: var(--surface);
+  border-radius: 6px;
+}
+
+.assistant-text code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.assistant-text table { display: block; overflow-x: auto; border-collapse: collapse; }
+.assistant-text img { max-width: 100%; }
+
+.cursor {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink { to { visibility: hidden; } }
+
+.turn-error {
+  margin: 6px 0 0;
+  color: var(--danger);
+}
+
+.notice {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.settings {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+}
+
+.settings input,
+.settings select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 7px;
+}
+
+.settings .row { display: flex; gap: 8px; }
+
+.muted { color: var(--muted); margin: 0; }
+
+.diagnosis { border-radius: 6px; padding: 8px; background: var(--surface); }
+.diagnosis.ok { color: var(--accent); }
+.diagnosis.origin-blocked, .diagnosis.unreachable, .diagnosis.http-error { color: var(--danger); }
+
+.diagnosis pre {
+  overflow-x: auto;
+  margin: 6px 0 0;
+  padding: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Which site the panel is pointed at, and whether it may be read. Sits above
+   the transcript because it is a permission fact, not a chat message. */
+.site {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.site-host {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.site-ok { color: var(--accent); }
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-bar {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.meter-fill.hot { background: var(--danger); }
+
+.composer-area {
+  border-top: 1px solid var(--line);
+}
+
+.composer { border-top: none; }
+
+.include-page {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.include-page input { cursor: pointer; }

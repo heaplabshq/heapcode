@@ -42,6 +42,20 @@ export interface Control {
   /** Nearest heading or row, for controls whose own name is uninformative. */
   context?: string;
   /**
+   * Submitting a form. Marked at extraction because it needs the DOM, and it
+   * is one of the three signals that escalate an action to destructive: a
+   * submit is the moment a page stops being reversible.
+   */
+  submits?: boolean;
+  /** Inside a checkout, payment or order landmark. */
+  checkout?: boolean;
+  /**
+   * A credential, one-time code, or payment field. The executor refuses to type
+   * into these outright -- before the model's request is ever shown as a prompt
+   * (PRD section 6.4) -- and extraction never reports their value.
+   */
+  sensitive?: boolean;
+  /**
    * Higher survives truncation. Computed at extraction from viewport
    * proximity and landmark role; `formatSnapshot` may add an intent boost.
    */

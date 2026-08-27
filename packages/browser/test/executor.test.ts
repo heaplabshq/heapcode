@@ -208,8 +208,17 @@ describe('wait', () => {
 describe('unknown tools', () => {
   it('are an error, not a silent success', async () => {
     stubChrome([]);
-    const result = await new BrowserToolExecutor('x').execute(call('click'));
+    const result = await new BrowserToolExecutor('x').execute(call('upload_file'));
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/Unknown tool/);
+  });
+});
+
+describe('acting without having read', () => {
+  it('is refused, because a handle number would be a guess', async () => {
+    stubChrome([]);
+    const result = await new BrowserToolExecutor('x').execute(call('click', { handle: 4 }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/Read the page first/);
   });
 });

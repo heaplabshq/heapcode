@@ -2,6 +2,7 @@ import type { Control, ControlRole, PageSnapshot, TableSummary } from '../shared
 import { accessibleName, nearestContext } from './accessibleName.js';
 import { isDisabled, isVisible, positionScore } from './visibility.js';
 import type { HandleRegistry } from './registry.js';
+import { namesSensitiveField } from '../shared/sensitive.js';
 
 /**
  * The DOM walk: a live page in, a `PageSnapshot` out.
@@ -71,14 +72,39 @@ function roleOf(element: Element): ControlRole | undefined {
  * user configured, so a password manager's autofill would otherwise be
  * transmitted verbatim.
  */
-const SECRET_NAME = /pass|otp|cvv|cvc|card|secret|token|pin\b/i;
+function isSensitive(element: Element): boolean {
+  if (element instanceof HTMLInputElement && element.type === 'password') return true;
+  return namesSensitiveField(
+    element.getAttribute('name'),
+    element.getAttribute('id'),
+    element.getAttribute('autocomplete'),
+    element.getAttribute('placeholder'),
+    element.getAttribute('aria-label'),
+    accessibleName(element),
+  );
+}
+
+/** Landmarks where an action is far more likely to cost money. */
+const CHECKOUT_SCOPE =
+  '[id*="checkout" i],[class*="checkout" i],[id*="payment" i],[class*="payment" i],' +
+  '[id*="cart" i],[class*="cart" i],form[action*="order" i],form[action*="pay" i]';
+
+function isSubmit(element: Element): boolean {
+  if (element instanceof HTMLButtonElement) {
+    // A <button> inside a form defaults to type=submit.
+    return element.type === 'submit' && element.form !== null;
+  }
+  if (element instanceof HTMLInputElement) {
+    return (element.type === 'submit' || element.type === 'image') && element.form !== null;
+  }
+  return false;
+}
 
 function valueOf(element: Element): string | undefined {
   if (element instanceof HTMLInputElement) {
     if (element.type === 'password') return '[hidden]';
     if (element.type === 'checkbox' || element.type === 'radio') return undefined;
-    const name = `${element.name} ${element.getAttribute('autocomplete') ?? ''}`;
-    if (SECRET_NAME.test(name)) return element.value ? '[hidden]' : '';
+    if (isSensitive(element)) return element.value ? '[hidden]' : '';
     return element.value;
   }
   if (element instanceof HTMLTextAreaElement) return element.value;
@@ -111,6 +137,9 @@ function extractControls(doc: Document, registry: HandleRegistry): Control[] {
     if (value !== undefined) control.value = value;
     if (context && context !== name) control.context = context;
     if (disabled) control.disabled = true;
+    if (isSubmit(element)) control.submits = true;
+    if (element.closest(CHECKOUT_SCOPE)) control.checkout = true;
+    if ((role === 'input' || role === 'textarea') && isSensitive(element)) control.sensitive = true;
 
     if (element instanceof HTMLAnchorElement) control.href = element.getAttribute('href') ?? undefined;
     if (element instanceof HTMLSelectElement) {

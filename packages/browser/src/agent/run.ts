@@ -1,11 +1,14 @@
-import { runAgent, type AgentOutcome, type ToolCall, type ToolResult } from '@heapcode/core/agent';
+import { runAgent, type AgentOutcome, type PermissionClass, type ToolCall, type ToolResult } from '@heapcode/core/agent';
 import { createProvider, resolveContextWindow, resolveCapabilities } from '@heapcode/core/providers';
 import type { ChatMessage } from '@heapcode/core/providers';
 import { loadApiKey, type StoredProfile } from '../shared/settings.js';
 import { BrowserToolExecutor } from './executor.js';
 import { READ_ONLY_TOOLS } from './tools.js';
 import { BROWSER_AGENT_PROMPT } from './prompt.js';
-import { activeSite } from '../sidepanel/page.js';
+import { activeSite, sendToPage, ensurePage } from '../sidepanel/page.js';
+import { decide, mayOfferAlwaysAllow, type BrowserMode } from './originPolicy.js';
+import { recordAudit } from './audit.js';
+import { MUTATING_TOOLS } from './actions.js';
 
 /**
  * Runs one agent task in the side panel.
@@ -38,16 +41,40 @@ export interface RunEvents {
   onCompaction(before: number, after: number): void;
 }
 
+/** What the user is asked, in their own terms rather than the model's. */
+export interface ConfirmRequest {
+  tool: string;
+  permission: PermissionClass;
+  /** Our own description of the element, not the model's account of it. */
+  target: string;
+  host: string;
+  /** Why this was escalated, when it was. */
+  reason?: string;
+  /** Whether "always allow on this site" may be offered for this action. */
+  mayAlwaysAllow: boolean;
+}
+
+export type ConfirmAnswer = 'allow' | 'always' | 'deny';
+
 export interface RunRequest {
   profile: StoredProfile;
   task: string;
   history: ChatMessage[];
   events: RunEvents;
   signal: AbortSignal;
+  mode: BrowserMode;
+  /** Hosts the user has trusted for writes, this session. */
+  trustedHosts: Set<string>;
+  /** Ask the human. Resolves when they answer; there is no timeout. */
+  confirm(request: ConfirmRequest): Promise<ConfirmAnswer>;
+  /** Told when the user trusts a host, so the panel can remember it. */
+  onTrustHost(host: string): void;
+  /** Told when policy refused outright, so the panel can explain it. */
+  onBlocked(reason: string): void;
 }
 
 export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome> {
-  const { profile, task, history, events, signal } = request;
+  const { profile, task, history, events, signal, mode, trustedHosts, confirm } = request;
 
   const apiKey = await loadApiKey();
   const provider = createProvider(profile, apiKey);
@@ -58,6 +85,80 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
   // asking which page the user means.
   const site = await activeSite();
 
+  /**
+   * The permission decision for one call.
+   *
+   * The class is inferred from the page, not the tool name -- `click` on a
+   * filter and `click` on "Place order" are the same call. Policy then decides
+   * from that class *and* the origin, and only what policy says to ask about
+   * reaches the human. Nothing here is delegated to the model: it requests, the
+   * engine and the user decide (PRD section 6.1.3).
+   */
+  const requestPermission = async (call: ToolCall): Promise<boolean> => {
+    const { classification, target, url } = await executor.classify(call);
+    const host = url ? safeHost(url) : (site?.host ?? '');
+
+    const decision = decide({
+      permission: classification.permission,
+      host,
+      mode,
+      trustedHosts,
+    });
+
+    const base = {
+      at: Date.now(),
+      host,
+      tool: call.name,
+      args: call.args,
+      permission: classification.permission,
+      target: target ? `[${target.handle}] ${target.name}` : undefined,
+      reason: classification.reason,
+    };
+
+    if (decision.effect === 'deny') {
+      request.onBlocked(decision.reason);
+      await recordAudit({ ...base, decision: 'blocked', decidedBy: 'policy', reason: decision.reason });
+      return false;
+    }
+
+    if (decision.effect === 'allow') {
+      await recordAudit({ ...base, decision: 'auto-allowed', decidedBy: 'policy' });
+      return true;
+    }
+
+    // Outline the real element while the question is on screen, so the user
+    // approves what is actually there rather than a name in a prompt.
+    const page = await ensurePage();
+    const generation = executor.lastSnapshot?.generation;
+    const handle = Number(call.args.handle);
+    if (page.ok && generation !== undefined && Number.isInteger(handle)) {
+      await sendToPage(page.tabId, { type: 'highlight', handle, generation });
+    }
+
+    let answer: ConfirmAnswer;
+    try {
+      answer = await confirm({
+        tool: call.name,
+        permission: classification.permission,
+        target: describeTarget(call, target?.name),
+        host,
+        reason: classification.reason,
+        mayAlwaysAllow: mayOfferAlwaysAllow(classification.permission, host),
+      });
+    } finally {
+      if (page.ok) await sendToPage(page.tabId, { type: 'clearHighlight' });
+    }
+
+    if (answer === 'always') request.onTrustHost(host);
+    const allowed = answer !== 'deny';
+    await recordAudit({
+      ...base,
+      decision: allowed ? 'allowed' : 'denied',
+      decidedBy: 'user',
+    });
+    return allowed;
+  };
+
   return runAgent({
     provider,
     model: profile.agentModel ?? profile.model,
@@ -65,14 +166,12 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     history,
     workspaceName: site ? `the web page at ${site.host}` : 'the current web page',
     systemPrompt: BROWSER_AGENT_PROMPT,
-    tools: READ_ONLY_TOOLS,
+    // Read-only mode does not merely refuse the mutating tools -- it does not
+    // offer them, so the model spends no turns proposing what it cannot do.
+    tools: mode === 'read-only' ? READ_ONLY_TOOLS : [...READ_ONLY_TOOLS, ...MUTATING_TOOLS],
     nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
     execute: (call) => executor.execute(call),
-    // M2 is read-only, so nothing here can need a decision. Every tool is
-    // `permission: 'read'` and the loop only asks for the others. M3 replaces
-    // this with the real engine, and no mutating tool ships before it does
-    // (PLAN guardrail 5).
-    requestPermission: async () => true,
+    requestPermission,
     events: {
       onText: (text) => events.onText(text),
       onTextDelta: (text) => events.onTextDelta(text),
@@ -87,4 +186,22 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     maxTokens: profile.maxTokens,
     signal,
   });
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+/** What the user reads in the prompt. Built from our data, never the model's. */
+function describeTarget(call: ToolCall, name?: string): string {
+  if (call.name === 'navigate') return String(call.args.url ?? '');
+  if (call.name === 'go_back') return 'the previous page';
+  const label = name ? `"${name}"` : `handle [${call.args.handle}]`;
+  if (call.name === 'type') return `${label} <- ${JSON.stringify(String(call.args.text ?? ''))}`;
+  if (call.name === 'select') return `${label} -> ${JSON.stringify(String(call.args.option ?? ''))}`;
+  return label;
 }

@@ -3,6 +3,8 @@ import { formatSnapshot, type Control, type PageSnapshot } from '../shared/snaps
 import { describeChanges } from '../shared/delta.js';
 import { ensurePage, sendToPage } from '../sidepanel/page.js';
 import type { ContentRequest } from '../content/index.js';
+import { classifyClick, classifyNavigate, classifyType } from './destructive.js';
+import type { Classification } from './destructive.js';
 
 /**
  * Runs the agent's tool calls against the page.
@@ -52,12 +54,114 @@ export class BrowserToolExecutor {
           return await this.#scroll(call.args, ok, fail);
         case 'wait':
           return await this.#wait(call.args, ok, fail);
+        case 'click':
+        case 'type':
+        case 'select':
+        case 'navigate':
+        case 'go_back':
+          return await this.#act(call, ok, fail);
         default:
           return fail(`Unknown tool "${call.name}".`);
       }
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error));
     }
+  }
+
+  /**
+   * Perform a mutating action.
+   *
+   * The permission decision has already been made by the time this runs -- the
+   * loop calls `requestPermission` first, and the host answers it using the
+   * same classification computed here. This is the execution half only.
+   */
+  async #act(
+    call: ToolCall,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const target = await ensurePage();
+    if (!target.ok) return fail(target.reason);
+
+    if (call.name === 'go_back') {
+      const response = await sendToPage(target.tabId, { type: 'back' });
+      if (!response.ok) return fail(response.error);
+      this.#last = undefined;
+      return ok('Went back. All handles are void -- read the page again.');
+    }
+
+    if (call.name === 'navigate') {
+      const url = String(call.args.url ?? '');
+      if (!url) return fail('navigate needs a url.');
+      let resolved: string;
+      try {
+        resolved = new URL(url, target.url).href;
+      } catch {
+        return fail(`"${url}" is not a URL that can be opened.`);
+      }
+      await chrome.tabs.update(target.tabId, { url: resolved });
+      this.#last = undefined;
+      return ok(`Navigating to ${resolved}. All handles are void -- read the page again once it loads.`);
+    }
+
+    const generation = this.#last?.generation;
+    if (generation === undefined) {
+      // Acting without having read is how a model guesses a handle number.
+      return fail('Read the page first -- handles only exist after a read.');
+    }
+    const handle = Number(call.args.handle);
+    if (!Number.isInteger(handle)) return fail(`"${call.args.handle}" is not a handle number.`);
+
+    const request: ContentRequest =
+      call.name === 'click'
+        ? { type: 'click', handle, generation }
+        : call.name === 'type'
+          ? { type: 'type', handle, generation, text: String(call.args.text ?? '') }
+          : { type: 'select', handle, generation, option: String(call.args.option ?? '') };
+
+    const response = await sendToPage(target.tabId, request);
+    if (!response.ok) return fail(response.error);
+    if (response.kind !== 'acted') return fail('Unexpected reply from the page.');
+
+    // Every handle is void now, and saying so is what stops the next call
+    // reusing a number that no longer means anything.
+    this.#last = undefined;
+    return ok(`${response.note} Handles are now void -- read the page again to see the result.`);
+  }
+
+  /**
+   * How dangerous this call is, decided from the page rather than the tool name.
+   *
+   * Returned to the host so the confirmation and the audit record describe the
+   * same thing the executor is about to do.
+   */
+  async classify(call: ToolCall): Promise<{ classification: Classification; target?: Control; url?: string }> {
+    const page = await ensurePage();
+    const url = page.ok ? page.url : undefined;
+
+    if (call.name === 'navigate') {
+      return {
+        classification: classifyNavigate(url ?? '', String(call.args.url ?? '')),
+        url,
+      };
+    }
+    if (call.name === 'go_back') return { classification: { permission: 'write' }, url };
+
+    const control = this.#last?.controls.find((c) => c.handle === Number(call.args.handle));
+    if (!control) {
+      // Unknown target: assume the worst rather than the best.
+      return {
+        classification: {
+          permission: 'destructive',
+          reason: 'the target could not be identified from the last read of the page',
+        },
+        url,
+      };
+    }
+
+    const classification =
+      call.name === 'type' ? classifyType(control) : classifyClick(control);
+    return { classification, target: control, url };
   }
 
   async #snapshot(): Promise<{ ok: true; snapshot: PageSnapshot } | { ok: false; reason: string }> {

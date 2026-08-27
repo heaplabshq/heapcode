@@ -1,6 +1,7 @@
 import { extractSnapshot } from './extract.js';
 import { HandleRegistry } from './registry.js';
-import type { PageSnapshot } from '../shared/snapshot.js';
+import { performClick, performSelect, performType, resolveTarget } from './actions.js';
+import type { Control, PageSnapshot } from '../shared/snapshot.js';
 
 /**
  * The content script: the only code that touches the page.
@@ -21,15 +22,56 @@ import type { PageSnapshot } from '../shared/snapshot.js';
 
 const registry = new HandleRegistry();
 
+/**
+ * The controls from the most recent snapshot, by handle.
+ *
+ * Kept so a confirmation can describe the element from our own extraction
+ * rather than from the model's description of it -- the page may have named it
+ * one thing while it does another.
+ */
+let lastControls = new Map<number, Control>();
+
+/**
+ * Retire every handle issued so far.
+ *
+ * Called after any mutating action, because that is the moment the page may
+ * have re-rendered underneath the indices. The next action on an old handle
+ * then fails loudly instead of landing on whatever now occupies that position
+ * (PRD section 4.2). The cost is a re-read between actions; the delta path
+ * makes that cheap, and the alternative is clicking the wrong row.
+ */
+function invalidateHandles(): void {
+  registry.reset();
+  lastControls = new Map();
+}
+
+function snapshotNow(): PageSnapshot {
+  const snapshot = extractSnapshot(document, registry);
+  lastControls = new Map(snapshot.controls.map((c) => [c.handle, c]));
+  return snapshot;
+}
+
 export type ContentRequest =
   | { type: 'snapshot' }
   | { type: 'scroll'; direction: 'down' | 'up' | 'top' | 'bottom'; pages?: number }
-  | { type: 'settle'; seconds: number };
+  | { type: 'settle'; seconds: number }
+  /** What is at this handle, for a confirmation the user can actually check. */
+  | { type: 'describe'; handle: number; generation: number }
+  /** Outline it on the page, so the user sees the real element, not a name. */
+  | { type: 'highlight'; handle: number; generation: number }
+  | { type: 'clearHighlight' }
+  | { type: 'click'; handle: number; generation: number }
+  | { type: 'type'; handle: number; generation: number; text: string }
+  | { type: 'select'; handle: number; generation: number; option: string }
+  | { type: 'back' };
 
 /** Discriminated on `kind` so a caller can narrow without re-checking shape. */
 export type ContentResponse =
   | { ok: true; kind: 'snapshot'; snapshot: PageSnapshot }
   | { ok: true; kind: 'settled'; settled: boolean; waitedMs: number }
+  | { ok: true; kind: 'control'; control: Control }
+  | { ok: true; kind: 'acted'; note: string }
+  | { ok: true; kind: 'ok' }
   | { ok: false; error: string };
 
 function scroll(request: Extract<ContentRequest, { type: 'scroll' }>): void {
@@ -88,22 +130,106 @@ function settle(seconds: number): Promise<{ settled: boolean; waitedMs: number }
   });
 }
 
+/** The snapshot entry for a handle, so a confirmation can describe the real element. */
+function describeHandle(handle: number): Control | undefined {
+  return lastControls.get(handle);
+}
+
+/**
+ * A visible outline on the element about to be acted on.
+ *
+ * The confirmation shows the user the element itself, not the model's account
+ * of it. That is the point of PRD section 6.1.4: a page can name a button one
+ * thing and have it do another, so the human is shown our extraction and the
+ * real thing on screen.
+ */
+const HIGHLIGHT_ID = '__heapbrowse_highlight';
+
+function clearHighlight(): void {
+  document.getElementById(HIGHLIGHT_ID)?.remove();
+}
+
+function highlight(element: Element): void {
+  clearHighlight();
+  element.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
+  const rect = element.getBoundingClientRect();
+  const box = document.createElement('div');
+  box.id = HIGHLIGHT_ID;
+  Object.assign(box.style, {
+    position: 'fixed',
+    left: `${rect.left - 3}px`,
+    top: `${rect.top - 3}px`,
+    width: `${rect.width + 6}px`,
+    height: `${rect.height + 6}px`,
+    border: '2px solid #2563eb',
+    borderRadius: '4px',
+    boxShadow: '0 0 0 9999px rgba(0,0,0,0.28)',
+    zIndex: '2147483647',
+    pointerEvents: 'none',
+  } satisfies Partial<CSSStyleDeclaration>);
+  document.body.appendChild(box);
+}
+
 async function handle(request: ContentRequest): Promise<ContentResponse> {
   try {
     switch (request.type) {
       case 'snapshot':
-        return { ok: true, kind: 'snapshot', snapshot: extractSnapshot(document, registry) };
+        return { ok: true, kind: 'snapshot', snapshot: snapshotNow() };
       case 'scroll': {
         scroll(request);
         // Let scrolling take effect, and give a lazy-loading page the chance to
         // put something there, before describing what is now visible.
         await settle(1.5);
-        return { ok: true, kind: 'snapshot', snapshot: extractSnapshot(document, registry) };
+        return { ok: true, kind: 'snapshot', snapshot: snapshotNow() };
       }
       case 'settle': {
         const result = await settle(request.seconds);
         return { ok: true, kind: 'settled', ...result };
       }
+      case 'describe': {
+        const found = resolveTarget(registry, request.handle, request.generation);
+        if (!found.ok) return { ok: false, error: found.error };
+        const control = describeHandle(request.handle);
+        if (!control) return { ok: false, error: `No record of handle [${request.handle}].` };
+        return { ok: true, kind: 'control', control };
+      }
+      case 'highlight': {
+        const found = resolveTarget(registry, request.handle, request.generation);
+        if (!found.ok) return { ok: false, error: found.error };
+        highlight(found.element);
+        return { ok: true, kind: 'ok' };
+      }
+      case 'clearHighlight':
+        clearHighlight();
+        return { ok: true, kind: 'ok' };
+      case 'click': {
+        const found = resolveTarget(registry, request.handle, request.generation);
+        if (!found.ok) return { ok: false, error: found.error };
+        clearHighlight();
+        const result = performClick(found.element);
+        invalidateHandles();
+        return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
+      }
+      case 'type': {
+        const found = resolveTarget(registry, request.handle, request.generation);
+        if (!found.ok) return { ok: false, error: found.error };
+        clearHighlight();
+        const result = performType(found.element, request.text);
+        invalidateHandles();
+        return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
+      }
+      case 'select': {
+        const found = resolveTarget(registry, request.handle, request.generation);
+        if (!found.ok) return { ok: false, error: found.error };
+        clearHighlight();
+        const result = performSelect(found.element, request.option);
+        invalidateHandles();
+        return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
+      }
+      case 'back':
+        history.back();
+        invalidateHandles();
+        return { ok: true, kind: 'acted', note: 'Went back.' };
       default:
         return { ok: false, error: 'unknown request' };
     }

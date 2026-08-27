@@ -3,7 +3,8 @@ import type { AgentOutcome, ToolCall } from '@heapcode/core/agent';
 import type { ChatMessage } from '@heapcode/core/providers';
 import { resolveContextWindow } from '@heapcode/core/providers';
 import type { StoredProfile } from '../shared/settings.js';
-import { runBrowserAgent } from '../agent/run.js';
+import { runBrowserAgent, type ConfirmAnswer, type ConfirmRequest } from '../agent/run.js';
+import type { BrowserMode } from '../agent/originPolicy.js';
 
 /** One tool call and what came back, as the transcript shows it. */
 export interface ToolActivity {
@@ -90,15 +91,33 @@ export function answerFrom(turn: Turn): string {
  * that needs no page is handled by the loop itself, which finishes immediately
  * for conversational messages rather than exploring.
  */
-export function useChat(profile: StoredProfile) {
+export interface ChatDeps {
+  mode: BrowserMode;
+  confirm(request: ConfirmRequest): Promise<ConfirmAnswer>;
+  cancelConfirm(): void;
+}
+
+export function useChat(profile: StoredProfile, deps: ChatDeps) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [busy, setBusy] = useState(false);
   const [tokens, setTokens] = useState(0);
   const abort = useRef<AbortController | undefined>(undefined);
+  /**
+   * Sites trusted for writes, for this session only.
+   *
+   * A ref rather than state because the running loop reads it between calls,
+   * and a re-render is not what should publish it. Session-scoped on purpose:
+   * "always allow" answered once on a shopping site should not still be in
+   * force next week (PRD section 6.3).
+   */
+  const trustedHosts = useRef(new Set<string>());
 
   const stop = useCallback(() => {
     abort.current?.abort();
-  }, []);
+    // A question still on screen belongs to the run being stopped; leaving it
+    // there would let a later click approve an action nobody is waiting for.
+    deps.cancelConfirm();
+  }, [deps]);
 
   const send = useCallback(
     async (text: string) => {
@@ -147,6 +166,15 @@ export function useChat(profile: StoredProfile) {
           task: text,
           history,
           signal: controller.signal,
+          mode: deps.mode,
+          trustedHosts: trustedHosts.current,
+          confirm: deps.confirm,
+          onTrustHost: (host) => trustedHosts.current.add(host.toLowerCase()),
+          onBlocked: (reason) =>
+            patch((turn) => ({
+              ...turn,
+              steps: [...(turn.steps ?? []), { kind: 'note', text: reason }],
+            })),
           events: {
             // The finish summary. Core sends it here, separately from the
             // streamed narration -- it is the answer the model meant to give.
@@ -211,7 +239,7 @@ export function useChat(profile: StoredProfile) {
         setBusy(false);
       }
     },
-    [busy, profile, turns],
+    [busy, profile, turns, deps],
   );
 
   const clear = useCallback(() => {

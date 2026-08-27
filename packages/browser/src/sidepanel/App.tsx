@@ -6,6 +6,9 @@ import { MessageList } from './components/MessageList.js';
 import { Composer } from './components/Composer.js';
 import { Settings } from './components/Settings.js';
 import { ContextMeter } from './components/ContextMeter.js';
+import { Confirm } from './components/Confirm.js';
+import { useConfirm } from './useConfirm.js';
+import { DEFAULT_BROWSER_MODE, type BrowserMode } from '../agent/originPolicy.js';
 import { activeSite, grantActiveSite, type ActiveSite } from './page.js';
 
 export function App() {
@@ -14,7 +17,13 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [site, setSite] = useState<ActiveSite>();
-  const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile);
+  const [mode, setMode] = useState<BrowserMode>(DEFAULT_BROWSER_MODE);
+  const confirmation = useConfirm();
+  const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile, {
+    mode,
+    confirm: confirmation.request,
+    cancelConfirm: confirmation.cancel,
+  });
 
   useEffect(() => {
     void loadProfile().then((stored) => {
@@ -71,6 +80,20 @@ export function App() {
           {configured ? profile.model : 'not configured'}
         </span>
         <ContextMeter tokens={tokens} window={contextWindow} />
+        {/* The ceiling on what a run may do, always visible. There is no
+            full-auto: the most permissive setting still asks before anything
+            irreversible (PRD section 6.3). */}
+        <select
+          className="mode"
+          value={mode}
+          onChange={(e) => setMode(e.target.value as BrowserMode)}
+          title="How much the agent may do without asking"
+          aria-label="Permission mode"
+        >
+          <option value="read-only">Read only</option>
+          <option value="confirm">Ask first</option>
+          <option value="trusted-site">Trusted site</option>
+        </select>
         <button type="button" className="ghost" onClick={clear} disabled={turns.length === 0}>
           Clear
         </button>
@@ -115,6 +138,10 @@ export function App() {
       )}
 
       <MessageList turns={turns} />
+
+      {confirmation.pending && (
+        <Confirm request={confirmation.pending} onAnswer={confirmation.answer} />
+      )}
 
       {/* Closing the panel ends the run. Say so rather than letting it be
           discovered — the loop lives in this document, so there is nowhere for

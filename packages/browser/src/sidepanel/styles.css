@@ -315,3 +315,50 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+
+/* The confirmation. Sits above the composer, in the way, on purpose. */
+.confirm {
+  padding: 10px;
+  border-top: 2px solid var(--accent);
+  background: var(--surface);
+}
+
+/* An irreversible action must not look like an ordinary one, or the
+   confirmation stops carrying information. */
+.confirm-destructive { border-top-color: var(--danger); }
+
+.confirm-what {
+  margin: 0 0 3px;
+  overflow-wrap: anywhere;
+}
+
+.confirm-where {
+  margin: 0;
+  color: var(--muted);
+}
+
+.confirm-why {
+  margin: 6px 0 0;
+  color: var(--danger);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.confirm-actions button { flex: 1; }
+.confirm-actions .primary { border-color: var(--accent); color: var(--accent); }
+.confirm-actions .danger { border-color: var(--danger); color: var(--danger); }
+.confirm-actions .deny { color: var(--muted); }
+
+.mode {
+  font: inherit;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  max-width: 108px;
+}

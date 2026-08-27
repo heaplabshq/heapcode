@@ -113,18 +113,32 @@ it twice is the thing to avoid.
 
 Goal: the agent can operate the page, and cannot do so unnoticed.
 
-- [ ] `click`, `type`, `select`, `navigate`, `go_back` with realistic event sequences (PRD §7.3)
-- [ ] Stale-handle detection → hard error, never a best-effort guess
-- [ ] Permission engine: `f(actionClass, origin)`, reusing `PermissionClass` + `resolvePermission`
-- [ ] Destructive-intent heuristic (buy/pay/submit/delete/transfer + form-submit + checkout landmark) escalating to `destructive`
-- [ ] Confirmation UI: element **highlighted in the page** + accessible name shown in the panel, from our extraction, not the model's description
-- [ ] Per-origin grants (session-scoped), origin chip in the panel header
-- [ ] Built-in high-harm origin blocklist (banking, brokerage, email, password managers) — read-only, opt-in, never `write`
-- [ ] Hard refusals at the executor: password fields, OTP/credential-named fields, payment card fields
-- [ ] Cross-origin `navigate` requires confirmation
-- [ ] Audit log: every call, args, decision, decider, origin, snapshot hash — viewable + exportable
+- [x] `click`, `type`, `select`, `navigate`, `go_back` with realistic event sequences (PRD §7.3)
+- [x] Stale-handle detection → hard error, never a best-effort guess; every handle retires after any mutating action
+- [x] Permission engine: `f(actionClass, origin)`, reusing `PermissionClass` + `resolvePermission`
+- [x] Destructive-intent heuristic (committing language + form-submit + checkout landmark) escalating to `destructive`
+- [x] Confirmation UI: element **highlighted in the page** + accessible name shown in the panel, from our extraction, not the model's description
+- [x] Per-origin grants (session-scoped); mode selector in the panel header
+- [x] Built-in high-harm origin blocklist (banking, brokerage, government, email, password managers) — read-only, never actionable, not overridable
+- [x] Hard refusals at the executor: password fields, OTP/credential-named fields, payment card fields
+- [x] Cross-origin `navigate` requires confirmation
+- [x] Audit log: every call, args, decision, decider, origin — recorded locally
+- [ ] Audit log viewer + export in the panel (the record is written; nothing shows it yet)
 
 **Exit criteria:** a form-filling task runs end to end; every mutating action appears in the audit log with a recorded decision; attempting to type into a password field is refused at the executor with the model told why; a blocklisted origin cannot be acted on at all.
+
+**Exit status: not met — needs a real form-filling run, and the audit viewer.** What is tested:
+84 unit tests across the safety logic, the action performer and the policy. A password, OTP or card
+field is refused at the executor with the model told why; a blocklisted host is denied under every
+mode and even with an explicit grant; destructive stays `ask` on a trusted site; the click sequence
+is asserted phase by phase, since a bare `.click()` is `isTrusted: false` and silently ignored by
+many frameworks.
+
+Two bugs the tests caught, both from substring matching: `/pass/` matched `passenger_name` on every
+flight-booking form, and `/card/` matched `discard`. The credential rule existed in two copies at
+that point, which is how one of them would eventually have stopped matching — it is now one shared
+module with whole-word matching. Over-refusing is not the safe direction it looks like: an agent
+that refuses ordinary fields gets switched off, and protects nobody.
 
 ---
 
@@ -232,3 +246,8 @@ Park ideas here. Do not start.
 | 2026-08-27 | The agent decides when to read the page; the per-message "include page" toggle is gone | With tools it is the agent's call, and the thing that actually gates exposure is the per-site grant in the header, not a checkbox that was easy to leave ticked |
 | 2026-08-27 | Tool results render as plain text, never markdown | They are page content from an untrusted source; putting them through a markdown renderer inside the extension origin hands an arbitrary page a way to shape the panel |
 | 2026-08-27 | Only prose turns become history; tool traffic stays in its run | Replaying old snapshots into the next run spends the window on stale pages whose handles no longer resolve |
+| 2026-08-27 | The permission class is inferred per call, not read off the tool | `click` on a filter and `click` on "Place order" are the same call. heapcode can classify by tool name because the tool names the intent; a browser cannot |
+| 2026-08-27 | Handles retire after **any** mutating action, not just navigation | The page may have re-rendered under the indices. Costs a re-read between actions, which deltas make cheap; the alternative is clicking the wrong row |
+| 2026-08-27 | The blocklist is checked before the mode, and cannot be overridden | A per-site grant is never offered on a bank. A floor that a setting can lift is not a floor |
+| 2026-08-27 | Credential matching is whole-word, in one shared module | Substring matching refused `passenger_name` and `discard`. Two copies of a security rule is how one stops matching — this repo already has that bug in its two `markdown.ts` files |
+| 2026-08-27 | Read-only mode does not offer the mutating tools at all | The model spends no turns proposing what it cannot do, and there is no path where a refused tool is half-executed |

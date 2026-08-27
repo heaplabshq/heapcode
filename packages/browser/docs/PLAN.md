@@ -81,17 +81,31 @@ corpus is for.
 
 Goal: a real multi-step agent, with the blast radius still zero.
 
-- [ ] Agent loop wired in the **side panel** (guardrail 3), SW as thin router
-- [ ] Long-lived `Port` panel↔SW; run state checkpointed to `chrome.storage.session`
-- [ ] Read-only tools: `read_page`, `get_elements`, `extract_data`, `scroll`, `wait`, `finish`
-- [ ] Structural termination on `finish` (inherited convention, not a stop-phrase heuristic)
-- [ ] Snapshot **deltas** after the first read — no full re-send per iteration
-- [ ] Streaming tool-call UI: tool chips, args, results, collapsible
-- [ ] Context compaction when the transcript outgrows the window
-- [ ] Abort/stop mid-run leaves consistent state
-- [ ] Max-iteration cap with an "keep going?" prompt
+- [x] Agent loop wired in the **side panel** (guardrail 3), SW as thin router
+- [x] Long-lived `Port` panel↔SW (kept from M0; the port is what stops the worker being reaped)
+- [ ] Run state checkpointed to `chrome.storage.session` so a panel reload can resume
+- [x] Read-only tools: `read_page`, `get_elements`, `extract_data`, `scroll`, `wait`, `finish`
+- [x] Structural termination on `finish` — inherited, and `finish` never reaches the host executor at all
+- [x] Snapshot **deltas** after the first read — no full re-send per iteration
+- [x] Streaming tool-call UI: tool chips, args, results, collapsible
+- [x] Context compaction when the transcript outgrows the window (core's, via `contextWindow`)
+- [x] Abort/stop mid-run leaves consistent state
+- [x] Max-iteration cap (core's default; the "keep going?" prompt needs `ask_user`, which needs M3's confirmation UI)
 
 **Exit criteria:** "summarise the top 5 results and compare them on price and RAM" completes on a real listing page using scroll + extract, in under N iterations, with the token cost of a 10-step run demonstrably below 10× a single snapshot.
+
+**Exit status: not met — needs a real listing page.** What is proven: core's `runAgent` drives the
+browser executor end to end with no change to the loop, the browser prompt replaces the coding one,
+the read-only belt is exactly what reaches the model, a page result arrives wrapped as untrusted,
+and a tool failure is reported to the model rather than ending the run. Deltas are asserted to be
+dramatically smaller than a snapshot on a 60-control page — which is the mechanism behind the cost
+bound, not the bound itself. The bound is a claim about a real run and needs one.
+
+Two items deliberately deferred rather than done. `chrome.storage.session` checkpointing buys
+resumption after a panel reload; closing the panel still ends the run either way, so it is a
+convenience, not the guardrail. The "keep going?" prompt at the step limit needs `ask_user`, whose
+whole point is a UI that blocks on a human answer — that is M3's confirmation surface, and building
+it twice is the thing to avoid.
 
 ---
 
@@ -214,3 +228,7 @@ Park ideas here. Do not start.
 | 2026-08-27 | Content script injected on demand, never declared in the manifest | A declared `content_scripts` entry needs its `matches` granted at install, i.e. every site up front. Injecting per-tab gets the same capability proportionately, and makes navigation lifecycle a non-issue |
 | 2026-08-27 | Snapshot never carries a password, OTP or card field value | The executor refusing to *type* into them (PRD §6.4) does not help if the snapshot *reads* them — it goes to whatever endpoint the user configured, so an autofilled password would be transmitted verbatim |
 | 2026-08-27 | Extraction and formatting split either side of a DOM-free boundary | The ranking and budget rules decide whether a 500KB page costs 2k tokens or 40k; keeping them DOM-free means they can be tested without standing up a document |
+| 2026-08-27 | Added `systemPrompt` to core's `AgentOptions` | The loop is tool-agnostic but its system prompt was hardcoded to "You are Heap Code Agent, an autonomous coding agent" — a browser agent was being told to go read files. First real gap a second host found, exactly as REUSE.md section 5 predicted |
+| 2026-08-27 | The agent decides when to read the page; the per-message "include page" toggle is gone | With tools it is the agent's call, and the thing that actually gates exposure is the per-site grant in the header, not a checkbox that was easy to leave ticked |
+| 2026-08-27 | Tool results render as plain text, never markdown | They are page content from an untrusted source; putting them through a markdown renderer inside the extension origin hands an arbitrary page a way to shape the panel |
+| 2026-08-27 | Only prose turns become history; tool traffic stays in its run | Replaying old snapshots into the next run spends the window on stale pages whose handles no longer resolve |

@@ -42,9 +42,17 @@ const COMMON =
   'happened — describing an edit and its test result in the same reply you never called edit_file or ' +
   'run_tests in is a fabrication, not progress.';
 
-export function buildNativeAgentSystemPrompt(workspaceName: string): string {
+/**
+ * `base` replaces the coding-agent identity and rules above, for hosts whose
+ * agent is not a coding agent. The tool-calling protocol below is appended
+ * either way, because it describes how this loop works rather than what the
+ * agent is for — a host that had to restate it would be copying the one part
+ * core actually owns. Defaults to the coding prompt, so existing callers are
+ * unaffected.
+ */
+export function buildNativeAgentSystemPrompt(workspaceName: string, base: string = COMMON): string {
   return (
-    `${COMMON}\n\nWorkspace: ${workspaceName}. ` +
+    `${base}\n\nWorkspace: ${workspaceName}. ` +
     'Use the provided tools. For a conversational message, call `finish` immediately with your ' +
     'reply as the summary — nothing else. For a task, every reply must contain a tool call. ' +
     'When the task is complete (or impossible), call the `finish` tool with a summary — ' +
@@ -55,9 +63,10 @@ export function buildNativeAgentSystemPrompt(workspaceName: string): string {
 export function buildFallbackAgentSystemPrompt(
   workspaceName: string,
   tools: ToolDefinition[],
+  base: string = COMMON,
 ): string {
   return (
-    `${COMMON}\n\nWorkspace: ${workspaceName}.\n\n` +
+    `${base}\n\nWorkspace: ${workspaceName}.\n\n` +
     'You call tools by embedding EXACTLY this block in your reply (valid JSON, ONE tool call per reply):\n' +
     '<tool name="TOOL_NAME">\n{"arg": "value"}\n</tool>\n\n' +
     `Available tools:\n\n${formatToolsForPrompt(tools)}\n\n` +

@@ -93,6 +93,7 @@ describe('reading the active page', () => {
     const stub = stubChrome({ tabs: [{ id: 1, url: 'https://example.com/x' }] });
     stub.tabs.sendMessage.mockResolvedValue({
       ok: true,
+      kind: 'snapshot',
       snapshot: {
         url: 'https://example.com/x',
         title: 'Example',

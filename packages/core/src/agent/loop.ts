@@ -67,6 +67,16 @@ export interface AgentOptions {
   /** Images attached to the task (data: URLs) — needs a vision-capable model. */
   images?: string[];
   workspaceName: string;
+  /**
+   * Replaces the built-in coding-agent identity and rules — for hosts whose
+   * agent is not a coding agent (heapbrowse drives a web page, not a repo, and
+   * the default prompt would send it looking for files that do not exist).
+   *
+   * Only the identity half is replaced. The tool-calling protocol is still
+   * appended by core, since it describes how this loop terminates and how calls
+   * are emitted, which is core's contract rather than the host's business.
+   */
+  systemPrompt?: string;
   tools: ToolDefinition[];
   /** True → OpenAI-native function calling; false → structured-text fallback. */
   nativeToolCalls: boolean;
@@ -423,8 +433,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     return { response: counted(response), streamed };
   };
   const systemPrompt = nativeToolCalls
-    ? buildNativeAgentSystemPrompt(opts.workspaceName)
-    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish);
+    ? buildNativeAgentSystemPrompt(opts.workspaceName, opts.systemPrompt)
+    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, opts.systemPrompt);
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },

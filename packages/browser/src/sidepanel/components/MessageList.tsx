@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { renderMarkdown } from '@heapcode/web-ui/markdown';
 import type { Turn } from '../useChat.js';
+import { ToolChip } from './ToolChip.js';
 
 /**
  * The transcript.
@@ -35,8 +36,8 @@ export function MessageList({ turns }: { turns: Turn[] }) {
       <div className="transcript empty">
         <p>Ask about the page you are on.</p>
         <p className="muted">
-          M0 has no page access yet — this is the chat pipe, talking to the endpoint you
-          configured and nothing else.
+          It reads the page itself when a question needs it. Allow the site first, then ask
+          something like &ldquo;what can I do here?&rdquo; or &ldquo;compare these on price&rdquo;.
         </p>
       </div>
     );
@@ -49,10 +50,15 @@ export function MessageList({ turns }: { turns: Turn[] }) {
           {turn.role === 'user' ? (
             <p className="user-text">{turn.content}</p>
           ) : (
-            <div
-              className="assistant-text"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.content) }}
-            />
+            <>
+              {turn.tools?.map((tool) => <ToolChip key={tool.id} tool={tool} />)}
+              {turn.content && (
+                <div
+                  className="assistant-text"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.content) }}
+                />
+              )}
+            </>
           )}
           {turn.streaming && <span className="cursor" aria-label="responding" />}
           {turn.error && <p className="turn-error">{turn.error}</p>}

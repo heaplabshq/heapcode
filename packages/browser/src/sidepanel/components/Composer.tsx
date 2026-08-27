@@ -11,23 +11,19 @@ import { useState, type KeyboardEvent } from 'react';
 export function Composer({
   busy,
   disabled,
-  includePage,
-  onIncludePageChange,
   onSend,
   onStop,
 }: {
   busy: boolean;
   disabled: boolean;
-  includePage: boolean;
-  onIncludePageChange: (value: boolean) => void;
-  onSend: (text: string, includePage: boolean) => void;
+  onSend: (text: string) => void;
   onStop: () => void;
 }) {
   const [text, setText] = useState('');
 
   const submit = () => {
     if (busy || disabled || text.trim().length === 0) return;
-    onSend(text, includePage);
+    onSend(text);
     setText('');
   };
 
@@ -39,18 +35,10 @@ export function Composer({
   };
 
   return (
+    // Reading the page is no longer a per-message choice: the agent decides
+    // when a question needs the page. What gates it is the per-site grant, which
+    // is shown in the header and is the thing that actually controls exposure.
     <div className="composer-area">
-      {/* Reading the page is opt-in and per-message. It is the action that
-          sends the contents of whatever the user is looking at to their
-          endpoint, so it should never be something that happened silently. */}
-      <label className="include-page">
-        <input
-          type="checkbox"
-          checked={includePage}
-          onChange={(e) => onIncludePageChange(e.target.checked)}
-        />
-        Include the current page
-      </label>
       <div className="composer">
       <textarea
         value={text}

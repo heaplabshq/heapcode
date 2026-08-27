@@ -13,7 +13,6 @@ export function App() {
   const [origin, setOrigin] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [includePage, setIncludePage] = useState(false);
   const [site, setSite] = useState<ActiveSite>();
   const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile);
 
@@ -122,14 +121,7 @@ export function App() {
           it to continue (PRD §7.1). */}
       {busy && <p className="notice">Keep this panel open — the run stops if it closes.</p>}
 
-      <Composer
-        busy={busy}
-        disabled={!configured}
-        includePage={includePage}
-        onIncludePageChange={setIncludePage}
-        onSend={(text, withPage) => void send(text, withPage)}
-        onStop={stop}
-      />
+      <Composer busy={busy} disabled={!configured} onSend={(text) => void send(text)} onStop={stop} />
     </div>
   );
 }

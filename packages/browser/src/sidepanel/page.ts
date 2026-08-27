@@ -4,7 +4,7 @@ import { originPatternFor } from '../shared/hostPermission.js';
 import type { ContentRequest, ContentResponse } from '../content/index.js';
 
 /**
- * Reading the page the user is looking at.
+ * Reaching the page the user is looking at.
  *
  * Three things have to line up: permission for that origin, the content script
  * being present in that tab, and the tab being one a content script can run in
@@ -12,16 +12,17 @@ import type { ContentRequest, ContentResponse } from '../content/index.js';
  * reported apart rather than as one "couldn't read the page".
  */
 
-export type PageResult =
-  | { ok: true; snapshot: PageSnapshot; text: string }
-  | { ok: false; reason: string };
+export type PageFailure = { ok: false; reason: string };
 
 /** Pages Chrome will not let any extension script, whatever it has been granted. */
 function unscriptable(url: string): string | undefined {
   if (/^(chrome|edge|about|devtools|view-source):/i.test(url)) {
     return 'Chrome does not allow extensions to read its own pages. Open an ordinary web page and try again.';
   }
-  if (url.startsWith('https://chromewebstore.google.com') || url.startsWith('https://chrome.google.com/webstore')) {
+  if (
+    url.startsWith('https://chromewebstore.google.com') ||
+    url.startsWith('https://chrome.google.com/webstore')
+  ) {
     return 'Chrome blocks extensions on the Web Store. Open an ordinary web page and try again.';
   }
   return undefined;
@@ -39,23 +40,27 @@ async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
   return tab;
 }
 
+export type PageTarget = { ok: true; tabId: number; url: string } | PageFailure;
+
 /**
- * Snapshot the active tab, budgeted and wrapped as untrusted data.
+ * Resolve the active tab and make sure our content script is in it.
  *
- * `intent` is the user's own message. It ranks the controls, which is what
- * keeps the thing they are pointing at from being truncated away on a page with
- * hundreds of them.
+ * Injecting into an already-injected tab is safe -- the script guards against
+ * registering twice -- and is cheaper than tracking which tabs are live across
+ * navigations, which the script cannot survive anyway.
  */
-export async function readActivePage(intent?: string, budgetChars?: number): Promise<PageResult> {
+export async function ensurePage(): Promise<PageTarget> {
   const tab = await activeTab();
   if (!tab?.id) return { ok: false, reason: 'No active tab to read.' };
-  // A tab with no URL is not an absent tab — it is one Chrome will not describe
+
+  // A tab with no URL is not an absent tab -- it is one Chrome will not describe
   // to us. Saying "no active tab" here sent the user looking for the wrong
   // problem entirely.
   if (!tab.url) {
     return {
       ok: false,
-      reason: 'Chrome is not letting heapbrowse see this tab’s address. Reload the page, or click the heapbrowse toolbar icon on this tab, then try again.',
+      reason:
+        'Chrome is not letting heapbrowse see this tab address. Reload the page, or click the heapbrowse toolbar icon on this tab, then try again.',
     };
   }
 
@@ -63,7 +68,7 @@ export async function readActivePage(intent?: string, budgetChars?: number): Pro
   if (blocked) return { ok: false, reason: blocked };
 
   const pattern = originPatternFor(tab.url);
-  if (!pattern) return { ok: false, reason: `Cannot read ${tab.url} — only http and https pages.` };
+  if (!pattern) return { ok: false, reason: `Cannot read ${tab.url} -- only http and https pages.` };
 
   if (!(await chrome.permissions.contains({ origins: [pattern] }))) {
     return {
@@ -73,31 +78,60 @@ export async function readActivePage(intent?: string, budgetChars?: number): Pro
   }
 
   try {
-    // Injecting into an already-injected tab is safe — the script guards
-    // against registering twice — and is cheaper than tracking which tabs are
-    // live across navigations, which the script cannot survive anyway.
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
   } catch (error) {
-    return { ok: false, reason: `Could not inject into the page: ${error instanceof Error ? error.message : String(error)}` };
+    return {
+      ok: false,
+      reason: `Could not inject into the page: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 
-  let response: ContentResponse;
-  try {
-    response = await chrome.tabs.sendMessage(tab.id, { type: 'snapshot' } satisfies ContentRequest);
-  } catch {
-    return { ok: false, reason: 'The page did not respond. It may have navigated while being read.' };
-  }
-
-  if (!response.ok) return { ok: false, reason: response.error };
-
-  const rendered = formatSnapshot(response.snapshot, { intent, budgetChars });
-  // Guardrail 4: every snapshot reaches the model as data, never as
-  // instructions. The page is hostile by default — it is arbitrary text arriving
-  // while the agent holds the user's logged-in session (PRD §6.1).
-  return { ok: true, snapshot: response.snapshot, text: wrapUntrusted(rendered) };
+  return { ok: true, tabId: tab.id, url: tab.url };
 }
 
-/** Ask for access to the active tab's origin. Must run inside a user gesture. */
+/** One request to the content script, with a disconnect reported as what it means. */
+export async function sendToPage(tabId: number, request: ContentRequest): Promise<ContentResponse> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, request);
+  } catch {
+    // The usual cause is the document being replaced mid-call, which takes the
+    // listener with it (PRD section 7.5).
+    return { ok: false, error: 'The page did not respond. It may have navigated while being read.' };
+  }
+}
+
+/** Take a snapshot of the active page, or say why not. */
+export async function snapshotActivePage(): Promise<{ ok: true; snapshot: PageSnapshot } | PageFailure> {
+  const target = await ensurePage();
+  if (!target.ok) return target;
+
+  const response = await sendToPage(target.tabId, { type: 'snapshot' });
+  if (!response.ok) return { ok: false, reason: response.error };
+  if (response.kind !== 'snapshot') return { ok: false, reason: 'Unexpected reply from the page.' };
+  return { ok: true, snapshot: response.snapshot };
+}
+
+export type PageResult = { ok: true; snapshot: PageSnapshot; text: string } | PageFailure;
+
+/**
+ * Snapshot the active tab, budgeted and wrapped as untrusted data.
+ *
+ * `intent` is the user's own message. It ranks the controls, which is what
+ * keeps the thing they are pointing at from being truncated away on a page with
+ * hundreds of them.
+ */
+export async function readActivePage(intent?: string, budgetChars?: number): Promise<PageResult> {
+  const result = await snapshotActivePage();
+  if (!result.ok) return result;
+
+  const rendered = formatSnapshot(result.snapshot, { intent, budgetChars });
+  // Guardrail 4: every snapshot reaches the model as data, never as
+  // instructions. The page is hostile by default -- it is arbitrary text arriving
+  // while the agent holds the user's logged-in session (PRD section 6.1).
+  return { ok: true, snapshot: result.snapshot, text: wrapUntrusted(rendered) };
+}
+
+/** Ask for access to the active tab origin. Must run inside a user gesture. */
 export async function grantActiveSite(): Promise<boolean> {
   const tab = await activeTab();
   if (!tab?.url) return false;

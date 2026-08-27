@@ -56,6 +56,22 @@ const COMMITTING = new RegExp(
   'i',
 );
 
+/**
+ * Wording that moves through a flow rather than completing one.
+ *
+ * A multi-step form -- a job application, a booking, a signup -- submits the
+ * form on every step just to advance, so treating a bare form-submit as
+ * irreversible put a confirmation in front of every "Next". Found in real use:
+ * applying for a job meant approving every page of the wizard, which is exactly
+ * the fatigue that makes the confirmations at the end worthless.
+ *
+ * This only ever de-escalates a *bare* submit. Committing language and checkout
+ * landmarks are checked first and are unaffected: "Submit application" still
+ * matches `submit`, and "Continue" inside a payment area is still destructive.
+ */
+const CONTINUATION =
+  /^(next|next step|continue|proceed|forward|skip|back|previous|save (and|&) (continue|next)|save draft|»|>>?)$/i;
+
 /** Phrases that look committing but are not, checked before the list above. */
 const BENIGN = /\b(apply filters?|payment (history|methods?|options?)|order (history|status|details)|delete filters?|remove filter|cancel (filter|search)|confirm(ation)? (email|number|code)?\s*(sent|received)?)\b/i;
 
@@ -92,7 +108,7 @@ export function classifyClick(control: Control): Classification {
     };
   }
 
-  if (control.submits) {
+  if (control.submits && !CONTINUATION.test(name.trim())) {
     return {
       permission: 'destructive',
       reason: `"${name}" submits a form, which is usually not reversible`,

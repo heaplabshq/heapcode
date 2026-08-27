@@ -22,9 +22,31 @@ describe('inferring that a click commits something', () => {
     }
   });
 
-  it('escalates a form submit even when the wording is bland', () => {
-    // "Continue" on a checkout form is exactly as irreversible as "Buy now".
-    expect(classifyClick(control('Continue', { submits: true })).permission).toBe('destructive');
+  it('escalates a form submit whose wording gives nothing away', () => {
+    expect(classifyClick(control('Go', { submits: true })).permission).toBe('destructive');
+    expect(classifyClick(control('OK', { submits: true })).permission).toBe('destructive');
+  });
+
+  it('does not escalate a wizard step, which submits merely to advance', () => {
+    // Found in real use: applying for a job meant approving every page of the
+    // wizard. That is the fatigue that makes the confirmation at the *end* --
+    // the one that matters -- get clicked through without reading.
+    for (const name of ['Next', 'Continue', 'Save and continue', 'Next step', 'Skip', 'Back']) {
+      expect(classifyClick(control(name, { submits: true })).permission, name).toBe('write');
+    }
+  });
+
+  it('still escalates a wizard-looking button inside a checkout', () => {
+    // "Continue" on a payment page is exactly as irreversible as "Buy now".
+    expect(
+      classifyClick(control('Continue', { submits: true, checkout: true })).permission,
+    ).toBe('destructive');
+  });
+
+  it('still escalates the button that actually finishes the application', () => {
+    for (const name of ['Submit application', 'Submit', 'Confirm and submit']) {
+      expect(classifyClick(control(name, { submits: true })).permission, name).toBe('destructive');
+    }
   });
 
   it('escalates anything inside a checkout or payment area', () => {
@@ -124,7 +146,7 @@ describe('the decision', () => {
   });
 
   it('refuses to act on a blocklisted site whatever the mode or grant', () => {
-    for (const mode of ['confirm', 'trusted-site', 'read-only'] as const) {
+    for (const mode of ['confirm', 'auto-approve', 'read-only'] as const) {
       const result = decide({
         permission: 'write',
         host: 'netbanking.hdfcbank.com',
@@ -160,7 +182,7 @@ describe('the decision', () => {
       decide({
         permission: 'destructive',
         host: 'amazon.in',
-        mode: 'trusted-site',
+        mode: 'auto-approve',
         trustedHosts: new Set(['amazon.in']),
       }).effect,
     ).toBe('ask');

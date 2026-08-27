@@ -81,7 +81,7 @@ describe('a fully compromised model', () => {
     });
     expect(classification.permission).toBe('destructive');
 
-    for (const mode of ['confirm', 'trusted-site'] as const) {
+    for (const mode of ['confirm', 'auto-approve'] as const) {
       expect(
         decide({
           permission: 'destructive',
@@ -99,7 +99,7 @@ describe('a fully compromised model', () => {
       decide({
         permission: 'write',
         host: 'netbanking.hdfcbank.com',
-        mode: 'trusted-site',
+        mode: 'auto-approve',
         trustedHosts: new Set(['netbanking.hdfcbank.com']),
       }).effect,
     ).toBe('deny');

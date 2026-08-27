@@ -17,7 +17,15 @@ import { resolvePermission, type PermissionMode } from '@heapcode/core/agent';
  * explicitly trusted, and destructive always asks (PRD section 6.3).
  */
 
-export const BROWSER_MODES = ['read-only', 'confirm', 'trusted-site'] as const;
+/**
+ * `auto-approve` applies everywhere, not to one site -- it lifts the prompt for
+ * routine actions generally. Per-site trust is the separate `trustedHosts` set,
+ * granted by answering "always on this site" at a confirmation. The mode was
+ * originally called `trusted-site`, which read as the per-site thing and was
+ * not: a label that describes a narrower behaviour than the code has is how a
+ * user ends up granting more than they meant to.
+ */
+export const BROWSER_MODES = ['read-only', 'confirm', 'auto-approve'] as const;
 export type BrowserMode = (typeof BROWSER_MODES)[number];
 
 export const DEFAULT_BROWSER_MODE: BrowserMode = 'confirm';
@@ -27,8 +35,9 @@ const CORE_MODE: Record<BrowserMode, PermissionMode> = {
   'read-only': 'plan',
   confirm: 'default',
   // Auto-edit allows `write` and still asks for `destructive`, which is exactly
-  // the trusted-site ceiling. `full-auto` is deliberately never reachable.
-  'trusted-site': 'auto-edit',
+  // the ceiling here. `full-auto` is deliberately never reachable: heapcode's
+  // most permissive mode risks a git-recoverable tree, this one risks money.
+  'auto-approve': 'auto-edit',
 };
 
 /**
@@ -103,7 +112,7 @@ export function decide(input: PolicyInput): Decision {
   // because "always allow" was answered about filling a field, not about
   // placing an order.
   const effective: BrowserMode =
-    trustedHosts.has(host.toLowerCase()) && mode === 'confirm' ? 'trusted-site' : mode;
+    trustedHosts.has(host.toLowerCase()) && mode === 'confirm' ? 'auto-approve' : mode;
 
   const resolution = resolvePermission(permission, CORE_MODE[effective]);
   if (resolution === 'allow') return { effect: 'allow' };

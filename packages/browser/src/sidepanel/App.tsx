@@ -89,12 +89,17 @@ export function App() {
           className="mode"
           value={mode}
           onChange={(e) => setMode(e.target.value as BrowserMode)}
-          title="How much the agent may do without asking"
+          title={
+            'Read only: never acts.\n' +
+            'Ask every time: confirms every action.\n' +
+            'Ask only for risky: routine clicks and typing go ahead; anything that buys, ' +
+            'pays, submits, deletes or leaves the site still asks.'
+          }
           aria-label="Permission mode"
         >
           <option value="read-only">Read only</option>
-          <option value="confirm">Ask first</option>
-          <option value="trusted-site">Trusted site</option>
+          <option value="confirm">Ask every time</option>
+          <option value="auto-approve">Ask only for risky</option>
         </select>
         <button type="button" className="ghost" onClick={clear} disabled={turns.length === 0}>
           Clear

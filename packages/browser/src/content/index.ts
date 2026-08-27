@@ -33,20 +33,6 @@ const registry = new HandleRegistry();
  */
 let lastControls = new Map<number, Control>();
 
-/**
- * Retire every handle issued so far.
- *
- * Called after any mutating action, because that is the moment the page may
- * have re-rendered underneath the indices. The next action on an old handle
- * then fails loudly instead of landing on whatever now occupies that position
- * (PRD section 4.2). The cost is a re-read between actions; the delta path
- * makes that cheap, and the alternative is clicking the wrong row.
- */
-function invalidateHandles(): void {
-  registry.reset();
-  lastControls = new Map();
-}
-
 function snapshotNow(): PageSnapshot {
   const snapshot = extractSnapshot(document, registry);
   lastControls = new Map(snapshot.controls.map((c) => [c.handle, c]));
@@ -195,7 +181,6 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         if (!found.ok) return { ok: false, error: found.error };
         clearHighlight();
         const result = performClick(found.element);
-        invalidateHandles();
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'type': {
@@ -203,7 +188,6 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         if (!found.ok) return { ok: false, error: found.error };
         clearHighlight();
         const result = performType(found.element, request.text);
-        invalidateHandles();
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'select': {
@@ -211,12 +195,10 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         if (!found.ok) return { ok: false, error: found.error };
         clearHighlight();
         const result = performSelect(found.element, request.option);
-        invalidateHandles();
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'back':
         history.back();
-        invalidateHandles();
         return { ok: true, kind: 'acted', note: 'Went back.' };
       default:
         return { ok: false, error: 'unknown request' };

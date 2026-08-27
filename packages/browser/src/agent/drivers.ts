@@ -109,9 +109,13 @@ interface BoxModel {
 export class CdpDriver implements PageDriver {
   readonly kind = 'cdp';
   #session: CdpSession;
+  /** handle -> backend node id. Stable across reads, like the DOM registry. */
   #nodes = new Map<number, number>();
-  #generation = 0;
+  #byNode = new Map<number, number>();
+  #reads = 0;
   #next = 1;
+  /** The origin the handles were taken on, checked before every mutation. */
+  #origin?: string;
 
   constructor(session: CdpSession) {
     this.#session = session;
@@ -124,9 +128,8 @@ export class CdpDriver implements PageDriver {
       chrome.tabs.get(this.#session.tabId),
     ]);
 
-    this.#nodes.clear();
-    this.#next = 1;
-    this.#generation++;
+    this.#reads++;
+    this.#origin = originOf(tab.url);
 
     return snapshotFromAxTree({
       nodes: tree.nodes ?? [],
@@ -138,26 +141,46 @@ export class CdpDriver implements PageDriver {
         scrollY: Math.round(metrics.cssVisualViewport?.pageY ?? 0),
         scrollHeight: Math.round(metrics.cssContentSize?.height ?? 0),
       },
-      generation: this.#generation,
+      generation: this.#reads,
       register: (node) => {
+        const backendNodeId = node.backendDOMNodeId as number;
+        // The same node keeps the same number across reads, so the model can
+        // hold "[12] is Apply" across several steps rather than re-reading
+        // between every action.
+        const existing = this.#byNode.get(backendNodeId);
+        if (existing !== undefined) return existing;
         const handle = this.#next++;
-        this.#nodes.set(handle, node.backendDOMNodeId as number);
+        this.#nodes.set(handle, backendNodeId);
+        this.#byNode.set(backendNodeId, handle);
         return handle;
       },
     });
   }
 
-  #resolve(handle: number, generation: number): { ok: true; backendNodeId: number } | Outcome {
-    if (generation !== this.#generation) {
-      return {
-        ok: false,
-        error: `Handle [${handle}] is from an earlier snapshot (generation ${generation}, now ${this.#generation}). Read the page again.`,
-      };
-    }
+  /**
+   * The node for a handle, or why it cannot be used.
+   *
+   * A backend node id names one node for as long as it exists, so there is no
+   * expiry — a node that has gone makes `DOM.getBoxModel` fail, which is the
+   * honest signal. What is checked instead is the origin: acting on handles
+   * taken from a different site is the case expiry was really guarding, and it
+   * is the one a counter cannot distinguish from a harmless re-render.
+   */
+  async #resolve(handle: number): Promise<{ ok: true; backendNodeId: number } | Outcome> {
     const backendNodeId = this.#nodes.get(handle);
     if (backendNodeId === undefined) {
-      return { ok: false, error: `No element with handle [${handle}] in the current snapshot.` };
+      return { ok: false, error: `No element with handle [${handle}]. Read the page first.` };
     }
+
+    const tab = await chrome.tabs.get(this.#session.tabId).catch(() => undefined);
+    const now = originOf(tab?.url);
+    if (this.#origin && now && now !== this.#origin) {
+      return {
+        ok: false,
+        error: `The page moved from ${this.#origin} to ${now} since these handles were taken. Read the page again.`,
+      };
+    }
+
     return { ok: true, backendNodeId };
   }
 
@@ -179,8 +202,8 @@ export class CdpDriver implements PageDriver {
     };
   }
 
-  async click(handle: number, generation: number): Promise<Outcome> {
-    const target = this.#resolve(handle, generation);
+  async click(handle: number, _generation?: number): Promise<Outcome> {
+    const target = await this.#resolve(handle);
     if (!('backendNodeId' in target)) return target;
 
     const point = await this.#centre(target.backendNodeId);
@@ -193,6 +216,10 @@ export class CdpDriver implements PageDriver {
     // failure the DOM path can detect but never fix.
     const common = { x: point.x, y: point.y, button: 'left' as const, clickCount: 1 };
     await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...common });
+    // A beat between arriving and pressing. Hover-triggered menus and tooltips
+    // need a frame or two to appear, and clicking into the gap hits whatever was
+    // there before they did.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await this.#session.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
     await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...common });
 
@@ -200,8 +227,8 @@ export class CdpDriver implements PageDriver {
     return { ok: true, note: 'Clicked with a real input event.' };
   }
 
-  async type(handle: number, generation: number, text: string): Promise<Outcome> {
-    const target = this.#resolve(handle, generation);
+  async type(handle: number, _generation: number, text: string): Promise<Outcome> {
+    const target = await this.#resolve(handle);
     if (!('backendNodeId' in target)) return target;
 
     await this.#session.send('DOM.focus', { backendNodeId: target.backendNodeId });
@@ -213,14 +240,20 @@ export class CdpDriver implements PageDriver {
       code: 'KeyA',
       windowsVirtualKeyCode: 65,
     });
-    await this.#session.send('Input.insertText', { text });
+    // One character at a time. A single `insertText` arrives as one event, and a
+    // search box that filters as you type, an autocomplete, or a field that
+    // validates per keystroke sees nothing it recognises -- which is most search
+    // fields on the sites this is used for.
+    for (const character of [...text]) {
+      await this.#session.send('Input.insertText', { text: character });
+    }
 
     this.#invalidate();
     return { ok: true, note: `Typed ${text.length} characters with real input.` };
   }
 
-  async select(handle: number, generation: number, option: string): Promise<Outcome> {
-    const target = this.#resolve(handle, generation);
+  async select(handle: number, _generation: number, option: string): Promise<Outcome> {
+    const target = await this.#resolve(handle);
     if (!('backendNodeId' in target)) return target;
 
     // No CDP command sets a <select>; it has to be done in page context, then
@@ -269,8 +302,8 @@ export class CdpDriver implements PageDriver {
    * to the user (PRD section 7.4). Paths are absolute paths on the user's own
    * machine, which is why they are configured rather than chosen by the model.
    */
-  async attachFiles(handle: number, generation: number, paths: string[]): Promise<Outcome> {
-    const target = this.#resolve(handle, generation);
+  async attachFiles(handle: number, _generation: number, paths: string[]): Promise<Outcome> {
+    const target = await this.#resolve(handle);
     if (!('backendNodeId' in target)) return target;
 
     await this.#session.send('DOM.setFileInputFiles', {
@@ -346,9 +379,24 @@ export class CdpDriver implements PageDriver {
     return { settled: true, waitedMs: Date.now() - started };
   }
 
-  /** Every handle dies with the page state that produced it. */
+  /**
+   * Nothing to invalidate any more.
+   *
+   * Handles name nodes, so an action that replaces a node kills its handle by
+   * itself and one that does not leaves it correct. Wiping the map here is what
+   * forced a re-read between every action.
+   */
   #invalidate(): void {
-    this.#nodes.clear();
-    this.#generation++;
+    this.#reads++;
+  }
+}
+
+
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
   }
 }

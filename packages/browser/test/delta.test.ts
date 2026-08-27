@@ -38,14 +38,15 @@ describe('describing what changed', () => {
     expect(describeChanges(before, after)).toBe('Nothing on the page changed.');
   });
 
-  it('warns that handles were reissued whenever it reports a change', () => {
-    // Without this the model happily reuses the numbers from the previous read.
+  it('does not tell the model to renumber, because handles are stable now', () => {
+    // They name elements rather than positions, so a control still on the page
+    // keeps the number it had. Only new controls bring new numbers.
     const before = page({ controls: [control(1, 'Add to cart')] });
     const after = page({
       controls: [control(1, 'Add to cart'), control(2, 'Remove')],
       generation: 2,
     });
-    expect(describeChanges(before, after)).toMatch(/Handles have been reissued/);
+    expect(describeChanges(before, after)).not.toMatch(/reissued/i);
   });
 
   it('reports a new control with its current handle', () => {

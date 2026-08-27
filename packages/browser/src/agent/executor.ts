@@ -28,7 +28,7 @@ export class BrowserToolExecutor {
   #pool: DriverPool;
   /** Absolute paths the agent may attach, configured by the user. */
   #files: string[];
-  /** Hands the panel a picture of the page. Never reaches the model. */
+  /** Hands the panel a picture of the page. Shown to the user every read. */
   #onView?: (dataUrl: string) => void;
 
   constructor(
@@ -85,6 +85,13 @@ export class BrowserToolExecutor {
       switch (call.name) {
         case 'read_page':
           return await this.#readPage(call.args.full === true, ok, fail);
+        case 'get_page_text':
+          return await this.#pageText(call.args, ok, fail);
+        case 'screenshot': {
+          const shot = await this.#screenshot(ok, fail);
+          // Keep the call's own id so the tool message pairs correctly.
+          return { ...shot, id: call.id, name: call.name };
+        }
         case 'get_elements':
           return await this.#getElements(call.args, ok, fail);
         case 'extract_data':
@@ -365,6 +372,84 @@ export class BrowserToolExecutor {
       return ok(formatSnapshot(result.snapshot, { intent: this.#intent }));
     }
     return ok(describeChanges(previous, result.snapshot, { intent: this.#intent }));
+  }
+
+  /**
+   * The page's text, generously budgeted, optionally filtered.
+   *
+   * Ten times `read_page`'s text allowance, because this is the tool for
+   * answering questions rather than choosing what to click, and the detail
+   * wanted is usually the part ranking would discard.
+   */
+  async #pageText(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const result = await this.#snapshot();
+    if (!result.ok) return fail(result.reason);
+    this.#last = result.snapshot;
+    await this.#capture();
+
+    const text = result.snapshot.text;
+    if (!text.trim()) {
+      return ok('This page has no readable text. Try read_page, or screenshot if it is an image.');
+    }
+
+    const find = typeof args.find === 'string' ? args.find.trim() : '';
+    if (find) {
+      const lines = text.split('\n');
+      const needle = find.toLowerCase();
+      const hits: string[] = [];
+      lines.forEach((line, index) => {
+        if (!line.toLowerCase().includes(needle)) return;
+        // A line either side, because a value is often on the line after its
+        // label -- "Seat Height" and "17 inches" are rarely the same line.
+        hits.push([lines[index - 1], line, lines[index + 1]].filter(Boolean).join('\n'));
+      });
+      if (hits.length === 0) {
+        return ok(
+          `Nothing on this page mentions "${find}". The page has ${text.length} characters of text; ` +
+            `call get_page_text without a filter to read it.`,
+        );
+      }
+      return ok(`${hits.length} match(es) for "${find}":\n\n${hits.join('\n---\n')}`);
+    }
+
+    const BUDGET = 60_000;
+    if (text.length <= BUDGET) return ok(text);
+    return ok(
+      `${text.slice(0, BUDGET)}\n…[${text.length - BUDGET} more characters — use the find argument to search the rest]`,
+    );
+  }
+
+  /**
+   * A picture, when text has not answered the question.
+   *
+   * Only reachable over CDP: a content script cannot photograph its own page.
+   */
+  async #screenshot(
+    _ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+    if (!target.driver.screenshot) {
+      return fail(
+        'Taking a picture needs the debugger, which is not active on this tab. Read the page ' +
+          'instead, or ask the user to turn it on in Settings.',
+      );
+    }
+
+    const shot = await target.driver.screenshot();
+    if (!shot) return fail('The page could not be captured.');
+    this.#onView?.(shot);
+    return {
+      id: 'screenshot',
+      name: 'screenshot',
+      content: 'Screenshot of the visible part of the page.',
+      images: [shot],
+    };
   }
 
   async #getElements(

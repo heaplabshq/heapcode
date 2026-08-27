@@ -286,9 +286,7 @@ describe('the CDP driver', () => {
     expect(press?.[2]).toMatchObject({ x: 20, y: 30 });
   });
 
-  it('refuses a handle from an earlier snapshot', async () => {
-    // A backend node id outlives a re-render, which makes a stale handle more
-    // dangerous here than in the DOM path, not less.
+  it('refuses a handle it never issued', async () => {
     const stub = stubChrome();
     const session = new CdpSession(1);
     await session.attach();
@@ -296,9 +294,43 @@ describe('the CDP driver', () => {
 
     const driver = new CdpDriver(session);
     await driver.snapshot();
-    const result = await driver.click(1, 0);
+    const result = await driver.click(1);
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/earlier snapshot/);
+    if (!result.ok) expect(result.error).toMatch(/Read the page first/);
+  });
+
+  it('refuses handles once the page has moved to another site', async () => {
+    // The case expiry was really guarding, and the one a counter cannot tell
+    // apart from a harmless re-render.
+    const stub = stubChrome();
+    const session = new CdpSession(1);
+    await session.attach();
+    stub.sendCommand.mockImplementation(async (_t, method: string) => {
+      if (method === 'Accessibility.getFullAXTree') {
+        return {
+          nodes: [
+            { nodeId: '1', backendDOMNodeId: 7, role: { value: 'button' }, name: { value: 'Apply' }, childIds: [] },
+          ],
+        };
+      }
+      if (method === 'Page.getLayoutMetrics') {
+        return { cssVisualViewport: { clientWidth: 800, clientHeight: 600, pageY: 0 } };
+      }
+      return {};
+    });
+
+    const driver = new CdpDriver(session);
+    const page = await driver.snapshot();
+
+    (chrome.tabs.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 1,
+      url: 'https://elsewhere.example/other',
+      title: 'Elsewhere',
+    });
+
+    const result = await driver.click(page.controls[0]!.handle);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/moved from/);
   });
 });

@@ -110,10 +110,7 @@ export function describeChanges(
 
   if (parts.length === 0) return 'Nothing on the page changed.';
 
-  // Handles are reissued on every read, so even an unchanged control has a new
-  // number. Saying so prevents the model reusing the numbers it saw last time.
-  return [
-    'Handles have been reissued for this read -- use the numbers below, not the ones from before.',
-    ...parts,
-  ].join('\n');
+  // No note about renumbering: handles name elements now, so a control that is
+  // still there keeps the number it had. Only new controls bring new numbers.
+  return parts.join('\n');
 }

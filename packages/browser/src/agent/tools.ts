@@ -89,6 +89,64 @@ export const EXTRACT_DATA: ToolDefinition = {
   untrustedOutput: true,
 };
 
+/**
+ * The whole page as text, with no control list and a generous budget.
+ *
+ * `read_page` is built for *acting*: ranked, budgeted, truncated, and mostly
+ * spent on controls. That is the wrong shape for answering a question about
+ * something written far down the page -- a specification table, a returns
+ * policy, the small print -- where the detail wanted is exactly what ranking
+ * throws away.
+ *
+ * Observed directly: asked for a sofa's seat measurements, Claude in Chrome
+ * reached for its page-text tool and had the answer in one step. `read_page`
+ * would have truncated the spec table before the model ever saw it.
+ */
+export const GET_PAGE_TEXT: ToolDefinition = {
+  name: 'get_page_text',
+  description:
+    'Read the full text of the page, without the control list. Use this to answer questions about ' +
+    'what the page says — specifications, descriptions, policies, prices, small print — especially ' +
+    'when the detail is likely below the fold or in a table. Prefer this over read_page when you ' +
+    'need to know something rather than do something.',
+  parameters: {
+    type: 'object',
+    properties: {
+      find: {
+        type: 'string',
+        description:
+          'Only return the parts mentioning this word or phrase, with surrounding context. Use it ' +
+          'on a long page to go straight to the relevant section.',
+      },
+    },
+  },
+  permission: 'read',
+  untrustedOutput: true,
+  verifies: true,
+};
+
+/**
+ * A picture of the page, for the model.
+ *
+ * Deliberately a tool the model calls rather than an image attached to every
+ * turn. A screenshot is a few hundred kilobytes and, once in the transcript, is
+ * re-sent on every subsequent request -- attaching one automatically is how a
+ * browser agent becomes slow and expensive by the fifth step. Asked for only
+ * when text has failed, the cost is paid once and for a reason: a chart, a
+ * canvas, an image, or a layout question the accessibility tree cannot express.
+ */
+export const SCREENSHOT: ToolDefinition = {
+  name: 'screenshot',
+  description:
+    'Take a picture of what is currently on screen. Use it only when reading the page has not ' +
+    'answered the question — for something shown in an image, a chart or a canvas, or when you ' +
+    'need to see how the page is laid out. Prefer read_page and get_page_text first; they are ' +
+    'cheaper and more precise.',
+  parameters: { type: 'object', properties: {} },
+  permission: 'read',
+  untrustedOutput: true,
+};
+
 export const SCROLL: ToolDefinition = {
   name: 'scroll',
   description:
@@ -152,6 +210,7 @@ export const ASK_USER: ToolDefinition = {
 /** The read-only belt, in the order the model should generally reach for them. */
 export const READ_ONLY_TOOLS: ToolDefinition[] = [
   READ_PAGE,
+  GET_PAGE_TEXT,
   GET_ELEMENTS,
   EXTRACT_DATA,
   SCROLL,

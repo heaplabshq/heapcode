@@ -791,6 +791,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
             // Pair off the call's own id (as chat/chatTurn.ts does), never the
             // result's — see execTool.
             messages.push({ role: 'tool', content: result.content, toolCallId: requested.id });
+            // A tool message cannot carry an image in the OpenAI-compatible
+            // protocol, so images arrive as the user turn that follows it —
+            // the only shape vision models accept. Marked as tool output rather
+            // than as something the user said, since that is what it is.
+            if (result.images?.length) {
+              messages.push({
+                role: 'user',
+                content: `[image output from ${requested.name}]`,
+                images: result.images,
+              });
+            }
           }
           continue;
         }

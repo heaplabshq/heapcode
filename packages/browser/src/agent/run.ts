@@ -13,7 +13,7 @@ import type { ChatMessage } from '@heapcode/core/providers';
 import { loadApiKey, loadFiles, loadUseDebugger, type StoredProfile } from '../shared/settings.js';
 import { DriverPool } from './driverPool.js';
 import { BrowserToolExecutor } from './executor.js';
-import { READ_ONLY_TOOLS } from './tools.js';
+import { READ_ONLY_TOOLS, SCREENSHOT } from './tools.js';
 import { BROWSER_AGENT_PROMPT } from './prompt.js';
 import { activeSite, sendToPage, ensurePage } from '../sidepanel/page.js';
 import { decide, mayOfferAlwaysAllow, type BrowserMode } from './originPolicy.js';
@@ -222,8 +222,11 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     // offer them, so the model spends no turns proposing what it cannot do.
     tools:
       mode === 'read-only'
-        ? READ_ONLY_TOOLS
+        ? [...READ_ONLY_TOOLS, ...(useDebugger ? [SCREENSHOT] : [])]
         : [
+            // Only when it can work: a content script cannot photograph its own
+            // page, and a tool refused every time costs turns.
+            ...(useDebugger ? [SCREENSHOT] : []),
             ...READ_ONLY_TOOLS,
             ...MUTATING_TOOLS,
             // Offered only when it can actually work. A tool the model is told

@@ -20,10 +20,19 @@ export interface RunLimits {
   maxPerHost: number;
 }
 
+/**
+ * Sized for real work, not for a demo.
+ *
+ * The first numbers here (30 / 8 / 20) were guesses, and a real task walked
+ * straight through them: applying to five jobs on one site is naturally dozens
+ * of clicks and tens of navigations, and the run spent its last third telling
+ * the user it had hit a wall. A ceiling that stops legitimate work is not a
+ * safety feature, it is a bug that happens to fail closed.
+ */
 export const DEFAULT_LIMITS: RunLimits = {
-  maxActions: 30,
-  maxNavigations: 8,
-  maxPerHost: 20,
+  maxActions: 150,
+  maxNavigations: 40,
+  maxPerHost: 120,
 };
 
 export type LimitCheck = { ok: true } | { ok: false; reason: string };
@@ -50,6 +59,12 @@ export class RunBudget {
    * agent fail repeatedly still runs out. Reads are not counted: they cannot
    * change anything, and counting them would stop the agent looking before it
    * acts, which is the behaviour we want most.
+   *
+   * Neither are actions a human approved one at a time. The ceiling exists for
+   * actions taken *unattended* — it is the backstop that survives a compromised
+   * model in auto mode. When someone is reading and approving each request,
+   * they are a better limit than any number, and charging them for it only
+   * hurries them toward the wall.
    */
   spend(tool: string, host: string): LimitCheck {
     const navigating = tool === 'navigate' || tool === 'go_back';

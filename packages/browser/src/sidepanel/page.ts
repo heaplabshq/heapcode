@@ -43,6 +43,25 @@ async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
 export type PageTarget = { ok: true; tabId: number; url: string } | PageFailure;
 
 /**
+ * The active tab, without requiring permission to read it.
+ *
+ * Leaving a page is not reading it, and it must never need the page's own
+ * consent -- otherwise landing on a site the user has not granted is a trap
+ * with no way out. That happened: an application redirected to an external
+ * Workday portal, and every attempt to go back to LinkedIn was refused because
+ * the extension could not read the Workday page it was trying to leave. The
+ * agent spent the rest of the run explaining it was stuck.
+ *
+ * Safe because it exposes nothing: changing a tab's URL reveals no page
+ * content, and `chrome.tabs` already tells us the address.
+ */
+export async function currentTab(): Promise<PageTarget> {
+  const tab = await activeTab();
+  if (!tab?.id) return { ok: false, reason: 'No active tab.' };
+  return { ok: true, tabId: tab.id, url: tab.url ?? '' };
+}
+
+/**
  * Resolve the active tab and make sure our content script is in it.
  *
  * Injecting into an already-injected tab is safe -- the script guards against

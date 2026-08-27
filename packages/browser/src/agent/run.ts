@@ -113,7 +113,9 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
    * reaches the human. Nothing here is delegated to the model: it requests, the
    * engine and the user decide (PRD section 6.1.3).
    */
-  const requestPermission = async (call: ToolCall): Promise<boolean> => {
+  const requestPermission = async (
+    call: ToolCall,
+  ): Promise<boolean | { allowed: boolean; reason: string }> => {
     const { classification, target, url } = await executor.classify(call);
     const host = url ? safeHost(url) : (site?.host ?? '');
 
@@ -137,19 +139,25 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     if (decision.effect === 'deny') {
       request.onBlocked(decision.reason);
       await recordAudit({ ...base, decision: 'blocked', decidedBy: 'policy', reason: decision.reason });
-      return false;
-    }
-
-    // Ceilings apply to everything that changes the page, including actions the
-    // policy would otherwise allow without asking.
-    const affordable = budget.spend(call.name, host);
-    if (!affordable.ok) {
-      request.onBlocked(affordable.reason);
-      await recordAudit({ ...base, decision: 'blocked', decidedBy: 'policy', reason: affordable.reason });
-      return false;
+      // The real reason, not "the user denied this". A model told the user
+      // refused will keep hunting for a route the user might accept; told the
+      // site is off limits, it stops and says so.
+      return { allowed: false, reason: decision.reason };
     }
 
     if (decision.effect === 'allow') {
+      // Only unattended actions are charged — see RunBudget.spend.
+      const affordable = budget.spend(call.name, host);
+      if (!affordable.ok) {
+        request.onBlocked(affordable.reason);
+        await recordAudit({
+          ...base,
+          decision: 'blocked',
+          decidedBy: 'policy',
+          reason: affordable.reason,
+        });
+        return { allowed: false, reason: affordable.reason };
+      }
       await recordAudit({ ...base, decision: 'auto-allowed', decidedBy: 'policy' });
       return true;
     }

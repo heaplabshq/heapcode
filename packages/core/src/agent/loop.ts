@@ -82,7 +82,19 @@ export interface AgentOptions {
   nativeToolCalls: boolean;
   execute(call: ToolCall): Promise<ToolResult>;
   /** Resolve to false to deny; a denial is reported to the model, not fatal. */
-  requestPermission(call: ToolCall, tool: ToolDefinition): Promise<boolean>;
+  /**
+   * Resolve to false to deny; a denial is reported to the model, not fatal.
+   *
+   * A host may also return `{ allowed: false, reason }` when it refused for a
+   * reason of its own rather than because the user said no — a policy block, a
+   * rate ceiling, an origin that is off limits. The default message says the
+   * *user* denied it, and a model told that will keep looking for a route the
+   * user might accept. Told it hit a ceiling, it stops.
+   */
+  requestPermission(
+    call: ToolCall,
+    tool: ToolDefinition,
+  ): Promise<boolean | { allowed: boolean; reason?: string }>;
   /**
    * Called for non-read tools right after a permission grant, before execute()
    * — e.g. to snapshot the workspace for fine-grained rollback (PLAN.md M8).
@@ -460,8 +472,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     const call: ToolCall = { ...rawCall, args: unwrapMisenvelopedArgs(rawCall.args, tool) };
     events.onToolCall(call);
     let result: ToolResult;
-    if (tool.permission !== 'read' && !(await opts.requestPermission(call, tool))) {
-      result = { id: call.id, name: call.name, content: DENIED_RESULT_TEXT, isError: true };
+    const decision =
+      tool.permission === 'read' ? true : await opts.requestPermission(call, tool);
+    const allowed = typeof decision === 'boolean' ? decision : decision.allowed;
+    if (!allowed) {
+      const reason = typeof decision === 'boolean' ? undefined : decision.reason;
+      result = {
+        id: call.id,
+        name: call.name,
+        content: reason ?? DENIED_RESULT_TEXT,
+        isError: true,
+      };
     } else {
       try {
         if (tool.permission !== 'read') await opts.beforeToolCall?.(call, tool);

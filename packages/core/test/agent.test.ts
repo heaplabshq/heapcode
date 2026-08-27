@@ -9,7 +9,7 @@ import {
 } from '../src/agent/loop.js';
 import { ASK_USER_NO_ANSWER } from '../src/agent/askUser.js';
 import { parseToolBlocks } from '../src/agent/textProtocol.js';
-import type { ToolCall, ToolDefinition, ToolResult } from '../src/agent/tools.js';
+import { DENIED_RESULT_TEXT, type ToolCall, type ToolDefinition, type ToolResult } from '../src/agent/tools.js';
 import type { ChatRequest, ChatResponse, Provider } from '../src/providers/types.js';
 import { ProviderError } from '../src/providers/errors.js';
 
@@ -1338,5 +1338,55 @@ describe('saidKeepGoing', () => {
   it('treats silence and anything it does not recognize as a no — an extra budget is not the safe guess', () => {
     for (const answer of ['', '   ', ASK_USER_NO_ANSWER, 'hmm', 'what do you mean?'])
       expect(saidKeepGoing(answer)).toBe(false);
+  });
+});
+
+describe('a host that refuses for its own reasons', () => {
+  /**
+   * `requestPermission` returning false says "the user denied this", and a model
+   * told that reasonably hunts for a route the user might accept. When the
+   * refusal was actually a policy block or a rate ceiling, that is both wrong
+   * and expensive: heapbrowse hit a per-site action limit and spent the rest of
+   * the run trying new ways to do the same thing, telling the user they had
+   * denied something they had in fact approved.
+   */
+  it('reports the host reason to the model instead of blaming the user', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a.ts' } }] },
+      { content: 'Stopping, that is the limit.' },
+    ]);
+    const h = harness({
+      requestPermission: () =>
+        Promise.resolve({
+          allowed: false,
+          reason: 'This run has already taken 120 actions on example.com, which is the limit.',
+        }),
+      execute: () => {
+        throw new Error('execute must not run when permission was refused');
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(h.results[0]?.content).toMatch(/already taken 120 actions/);
+    expect(h.results[0]?.content).not.toMatch(/user denied/i);
+    expect(h.results[0]?.isError).toBe(true);
+  });
+
+  it('still says the user denied it when the host simply returns false', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a.ts' } }] },
+      { content: 'Understood.' },
+    ]);
+    const h = harness({
+      requestPermission: () => Promise.resolve(false),
+      execute: () => {
+        throw new Error('execute must not run when permission was refused');
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(h.results[0]?.content).toBe(DENIED_RESULT_TEXT);
   });
 });

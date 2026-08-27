@@ -1,7 +1,7 @@
 import type { ToolCall, ToolResult } from '@heapcode/core/agent';
 import { formatSnapshot, type Control, type PageSnapshot } from '../shared/snapshot.js';
 import { describeChanges } from '../shared/delta.js';
-import { ensurePage, sendToPage, waitForLoad } from '../sidepanel/page.js';
+import { currentTab, ensurePage, sendToPage, waitForLoad } from '../sidepanel/page.js';
 import type { ContentRequest } from '../content/index.js';
 import { classifyClick, classifyNavigate, classifyType } from './destructive.js';
 import type { Classification } from './destructive.js';
@@ -83,13 +83,24 @@ export class BrowserToolExecutor {
     ok: (s: string) => ToolResult,
     fail: (s: string) => ToolResult,
   ): Promise<ToolResult> {
-    const target = await ensurePage();
+    // Navigation only needs the tab, never permission to read what is on it.
+    // Requiring the latter turned any redirect to an ungranted site into a trap
+    // with no way back.
+    const leaving = call.name === 'navigate' || call.name === 'go_back';
+    const target = leaving ? await currentTab() : await ensurePage();
     if (!target.ok) return fail(target.reason);
 
     if (call.name === 'go_back') {
       const before = this.#last;
-      const response = await sendToPage(target.tabId, { type: 'back' });
-      if (!response.ok) return fail(response.error);
+      // `chrome.tabs.goBack` rather than the content script: the script may not
+      // be in the page at all, which is exactly the case where going back
+      // matters most.
+      try {
+        await chrome.tabs.goBack(target.tabId);
+      } catch {
+        return fail('There is nothing to go back to in this tab.');
+      }
+      await waitForLoad(target.tabId, this.#loadTimeoutMs);
       return this.#observe(before, target.tabId, 'Went back.', ok);
     }
 

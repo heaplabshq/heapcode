@@ -12,7 +12,7 @@ import {
   saveUseDebugger,
   type StoredProfile,
 } from '../../shared/settings.js';
-import { hasDebuggerPermission, requestDebuggerPermission } from '../../agent/cdp.js';
+import { debuggerAvailable } from '../../agent/cdp.js';
 import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnostic.js';
 import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
 
@@ -42,47 +42,27 @@ export function Settings({
   const [apiKey, setApiKey] = useState('');
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<Diagnosis | undefined>();
-  const [wantsDebugger, setWantsDebugger] = useState(false);
-  const [debuggerGranted, setDebuggerGranted] = useState(false);
-  const [debuggerRefused, setDebuggerRefused] = useState(false);
+  const [useDebugger, setUseDebugger] = useState(false);
   const [files, setFiles] = useState('');
 
   useEffect(() => {
-    void loadUseDebugger().then(setWantsDebugger);
-    void hasDebuggerPermission().then(setDebuggerGranted);
+    void loadUseDebugger().then(setUseDebugger);
     void loadFiles().then((paths) => setFiles(paths.join('\n')));
   }, []);
 
   /**
-   * Turning this on needs the permission, and the permission needs a live user
-   * gesture.
+   * Just a preference now.
    *
-   * `chrome.permissions.request` is only honoured while the gesture that led to
-   * it is still in scope, and *any* prior await ends it. Checking whether the
-   * permission was already held before asking -- the obvious way to avoid a
-   * redundant prompt -- was enough to make the prompt never appear at all: the
-   * request resolved false, the switch sprang back, and nothing said why.
-   *
-   * So the request goes first, with nothing awaited before it. Asking when the
-   * permission is already held is free: Chrome resolves true without a prompt.
+   * There is no permission to request: Chrome refuses to let `debugger` be
+   * optional, so it is held from install or not at all. The runtime grant flow
+   * this replaced could never have worked -- `permissions.request` throws for a
+   * permission the manifest does not declare as optional, which is why the
+   * switch would not stay ticked.
    */
   const toggleDebugger = async (wanted: boolean) => {
-    setDebuggerRefused(false);
-    if (wanted) {
-      const granted = await requestDebuggerPermission();
-      if (!granted) {
-        setDebuggerRefused(true);
-        return;
-      }
-      setDebuggerGranted(true);
-    }
-    setWantsDebugger(wanted);
+    setUseDebugger(wanted);
     await saveUseDebugger(wanted);
   };
-
-  // On only when both are true. Wanted-but-ungranted is a real state -- the
-  // setting defaults to on, and the permission cannot be granted at install.
-  const useDebugger = wantsDebugger && debuggerGranted;
 
   const preset = presetById(draft.preset);
 
@@ -200,14 +180,9 @@ export function Settings({
         attach files. Chrome shows a &ldquo;being debugged&rdquo; banner while a run is going, and
         opening DevTools on the tab switches it back off.
       </p>
-      {wantsDebugger && !debuggerGranted && !debuggerRefused && (
-        <p className="muted">
-          Chrome has not granted this yet — tick the box to allow it.
-        </p>
-      )}
-      {debuggerRefused && (
+      {useDebugger && !debuggerAvailable() && (
         <p className="turn-error">
-          Chrome declined the permission. Tick the box again and choose Allow on the prompt.
+          This build does not have the debugger permission, so the page will be read the older way.
         </p>
       )}
 

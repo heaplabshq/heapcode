@@ -19,7 +19,9 @@ interface DebuggerStub {
   fireDetach: () => void;
 }
 
-function stubChrome(overrides: { attachError?: string; granted?: boolean } = {}): DebuggerStub {
+function stubChrome(
+  overrides: { attachError?: string; granted?: boolean; noDebuggerApi?: boolean } = {},
+): DebuggerStub {
   const listeners: ((source: chrome.debugger.Debuggee) => void)[] = [];
   const attach = overrides.attachError
     ? vi.fn().mockRejectedValue(new Error(overrides.attachError))
@@ -28,15 +30,17 @@ function stubChrome(overrides: { attachError?: string; granted?: boolean } = {})
   const sendCommand = vi.fn().mockResolvedValue({});
 
   vi.stubGlobal('chrome', {
-    debugger: {
-      attach,
-      detach,
-      sendCommand,
-      onDetach: {
-        addListener: (fn: (source: chrome.debugger.Debuggee) => void) => listeners.push(fn),
-        removeListener: () => {},
-      },
-    },
+    debugger: overrides.noDebuggerApi
+      ? undefined
+      : {
+          attach,
+          detach,
+          sendCommand,
+          onDetach: {
+            addListener: (fn: (source: chrome.debugger.Debuggee) => void) => listeners.push(fn),
+            removeListener: () => {},
+          },
+        },
     permissions: {
       // Two different grants: host access lets us read the page at all, the
       // `debugger` permission lets us attach. Only the second is optional here.
@@ -106,8 +110,11 @@ describe('the pool', () => {
     expect(target.ok && target.driver.kind).toBe('dom');
   });
 
-  it('uses the DOM driver when the permission was never granted', async () => {
-    stubChrome({ granted: false });
+  it('uses the DOM driver when the debugger API is not there at all', async () => {
+    // Normally impossible -- `debugger` is a required permission -- but a
+    // manifest edit that dropped it should degrade rather than fail as an
+    // `undefined` deep inside a run.
+    stubChrome({ noDebuggerApi: true });
     const target = await new DriverPool(true).forActiveTab();
     expect(target.ok && target.driver.kind).toBe('dom');
   });

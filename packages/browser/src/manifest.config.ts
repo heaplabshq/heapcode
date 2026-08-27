@@ -43,13 +43,19 @@ export default defineManifest({
   // per-site grant, because it does not know which site to ask for. It buys
   // visibility of the address only; reading page *content* still needs the
   // per-origin grant below.
-  permissions: ['sidePanel', 'storage', 'activeTab', 'scripting', 'tabs'],
+  //
+  // `debugger` is required rather than optional because Chrome refuses to have
+  // it any other way: listing it under `optional_permissions` is silently
+  // dropped ("Permission 'debugger' cannot be listed as optional"), and asking
+  // for it at runtime then throws. It is granted at install or not at all.
+  //
+  // The cost is real and unavoidable: it appears on the install prompt, and
+  // Chrome shows a "being debugged" banner whenever a run is attached. What it
+  // buys is the browser's own accessibility tree, genuinely trusted input, and
+  // file attachment — the three things a content script cannot do, and the
+  // source of every per-site failure this product has had. Using it is still a
+  // setting; holding the permission is not.
+  permissions: ['sidePanel', 'storage', 'activeTab', 'scripting', 'tabs', 'debugger'],
   host_permissions: [],
-  // Requested at runtime, never at install: `debugger` reads alarmingly on the
-  // permission screen and shows a permanent "Chrome is being debugged" banner
-  // while attached. It buys the accessibility tree, genuinely trusted input, and
-  // file attachment -- none of which a content script can do -- so it is offered
-  // as an upgrade rather than a condition of installing (PRD section 4.3).
-  optional_permissions: ['debugger'],
   optional_host_permissions: ['http://*/*', 'https://*/*'],
 });

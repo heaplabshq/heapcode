@@ -1,4 +1,4 @@
-import { CdpDetached, CdpSession, hasDebuggerPermission } from './cdp.js';
+import { CdpDetached, CdpSession, debuggerAvailable } from './cdp.js';
 import { CdpDriver, DomDriver, type PageDriver } from './drivers.js';
 import { ensurePage } from '../sidepanel/page.js';
 
@@ -38,7 +38,7 @@ export class DriverPool {
 
   async #driverFor(tabId: number): Promise<PageDriver> {
     if (!this.#enabled || this.#lost.has(tabId)) return new DomDriver(tabId);
-    if (!(await hasDebuggerPermission())) return new DomDriver(tabId);
+    if (!debuggerAvailable()) return new DomDriver(tabId);
 
     const existing = this.#sessions.get(tabId);
     if (existing?.attached) return new CdpDriver(existing);

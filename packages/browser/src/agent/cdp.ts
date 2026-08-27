@@ -118,12 +118,14 @@ export class CdpDetached extends Error {
   }
 }
 
-/** Whether the user has granted the `debugger` permission. */
-export async function hasDebuggerPermission(): Promise<boolean> {
-  return chrome.permissions.contains({ permissions: ['debugger'] });
-}
-
-/** Ask for it. Must run inside a user gesture. */
-export async function requestDebuggerPermission(): Promise<boolean> {
-  return chrome.permissions.request({ permissions: ['debugger'] });
+/**
+ * Whether the debugger API is usable at all.
+ *
+ * `debugger` is a required permission -- Chrome does not allow it to be optional
+ * -- so this is normally true. It is checked rather than assumed because a
+ * manifest edit that dropped it would otherwise fail as a confusing `undefined`
+ * deep inside a run rather than as a clean fall back to the content script.
+ */
+export function debuggerAvailable(): boolean {
+  return typeof chrome !== 'undefined' && typeof chrome.debugger?.attach === 'function';
 }

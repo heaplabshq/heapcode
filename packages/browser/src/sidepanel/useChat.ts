@@ -6,6 +6,7 @@ import { estimateMessagesTokens } from '@heapcode/core/context';
 import { resolveContextWindow } from '@heapcode/core/providers';
 import { loadApiKey, type StoredProfile } from '../shared/settings.js';
 import { readActivePage } from './page.js';
+import { SYSTEM_PROMPT } from './prompt.js';
 
 export interface Turn {
   role: 'user' | 'assistant';
@@ -62,6 +63,10 @@ export function useChat(profile: StoredProfile) {
       }
 
       const history: ChatMessage[] = [
+        // The system role is the only channel carrying instructions. Page text
+        // arrives as a user-role message and is marked untrusted, so the two
+        // stay structurally distinct (PRD §6.1).
+        { role: 'system', content: SYSTEM_PROMPT },
         ...turns
           .filter((t) => !t.error)
           .map((t) => ({ role: t.role, content: t.content }) satisfies ChatMessage),

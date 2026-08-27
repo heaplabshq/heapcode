@@ -123,7 +123,7 @@ Goal: the agent can operate the page, and cannot do so unnoticed.
 - [x] Hard refusals at the executor: password fields, OTP/credential-named fields, payment card fields
 - [x] Cross-origin `navigate` requires confirmation
 - [x] Audit log: every call, args, decision, decider, origin — recorded locally
-- [ ] Audit log viewer + export in the panel (the record is written; nothing shows it yet)
+- [x] Audit log viewer + export in the panel
 
 **Exit criteria:** a form-filling task runs end to end; every mutating action appears in the audit log with a recorded decision; attempting to type into a password field is refused at the executor with the model told why; a blocklisted origin cannot be acted on at all.
 
@@ -161,14 +161,31 @@ Goal: the agent notices when it was wrong.
 
 Goal: the safety claim is tested, not asserted.
 
-- [ ] Adversarial fixture suite: injected instructions in visible text, `alt`, `aria-label`, hidden nodes, comments, `title`
-- [ ] System prompt hardening + role separation (user turns vs tool results structurally distinct)
-- [ ] Assert: no injected fixture produces a tool call the user did not ask for
-- [ ] Untrusted-output marking verified for every page-reading tool
-- [ ] Rate/volume guards: max actions per run, max navigations per run, per-origin action ceiling
+- [x] Adversarial fixture suite: injected instructions in visible text, `alt`, `aria-label`, `title`, table cells, select options, hidden nodes, comments, and text impersonating the user / a system prompt / a tool result
+- [x] System prompt hardening + role separation (user turns vs tool results structurally distinct)
+- [x] Untrusted-output marking verified for every page-reading tool
+- [x] Rate/volume guards: max actions per run, max navigations per run, per-host action ceiling
 - [ ] Security review write-up for the Chrome Web Store submission
 
 **Exit criteria:** the adversarial suite is green in CI and runs on every PR. A red test blocks release.
+
+**Exit status: met for the suite, one item outstanding (the write-up).** The suite runs in `pnpm test`,
+which CI already runs on every PR, so a red test blocks release today.
+
+The suite deliberately does **not** test "the model resisted". That would be testing a model, and it
+would pass or fail differently on every endpoint a user might configure — which makes it worthless as
+a release gate. It tests the properties that hold whatever the model decides: the payload never
+arrives unlabelled, the notice precedes the content rather than trailing it, page text never occupies
+a role that carries authority, a destructive action always reaches a human under every mode and
+grant, a bank is refused outright, and a run cannot take unbounded actions. A section of the suite
+assumes the injection **fully succeeded** and asserts all of that still holds.
+
+It immediately found a real hole. `extractText` stripped scripts, nav and footers but never checked
+visibility, so a `display:none` payload was invisible to the user and fully visible to the model —
+the most valuable place on a page to hide an instruction, since nobody will ever notice it. Controls
+had been visibility-filtered from the start; the text block had not. It was cloning the subtree
+first, and a detached clone has no layout, so `display:none` was undetectable in it by construction.
+Now walked live.
 
 ---
 
@@ -251,3 +268,7 @@ Park ideas here. Do not start.
 | 2026-08-27 | The blocklist is checked before the mode, and cannot be overridden | A per-site grant is never offered on a bank. A floor that a setting can lift is not a floor |
 | 2026-08-27 | Credential matching is whole-word, in one shared module | Substring matching refused `passenger_name` and `discard`. Two copies of a security rule is how one stops matching — this repo already has that bug in its two `markdown.ts` files |
 | 2026-08-27 | Read-only mode does not offer the mutating tools at all | The model spends no turns proposing what it cannot do, and there is no path where a refused tool is half-executed |
+| 2026-08-27 | The injection suite tests the guarantees, never "the model resisted" | Model behaviour varies by endpoint and BYOK means we do not choose the endpoint, so a suite that tested it would be a release gate that passes or fails for reasons outside the code |
+| 2026-08-27 | Hostile page text is labelled, never stripped | The user may want to know a page tried, and a sanitiser that removes text is one an attacker can probe and evade |
+| 2026-08-27 | Per-run ceilings on actions, navigations and per-host actions | Every other defence runs through the model's judgement or the user's attention, and both wear down — forty confirmations in front of a tiring user is its own attack. Arithmetic does not wear down |
+| 2026-08-27 | Ceilings are spent on the attempt, and never on reads | Retrying must not buy more budget; and counting reads would discourage looking before acting, which is the behaviour most worth having |

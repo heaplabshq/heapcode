@@ -9,6 +9,7 @@ import { activeSite, sendToPage, ensurePage } from '../sidepanel/page.js';
 import { decide, mayOfferAlwaysAllow, type BrowserMode } from './originPolicy.js';
 import { recordAudit } from './audit.js';
 import { MUTATING_TOOLS } from './actions.js';
+import { RunBudget } from './limits.js';
 
 /**
  * Runs one agent task in the side panel.
@@ -79,6 +80,10 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
   const apiKey = await loadApiKey();
   const provider = createProvider(profile, apiKey);
   const executor = new BrowserToolExecutor(task);
+  // One budget per run. Checked before anything is shown to the user, so a
+  // page that gets the model to propose forty actions cannot turn that into
+  // forty confirmations to click through.
+  const budget = new RunBudget();
 
   // The site the panel is pointed at stands in for heapcode's workspace name:
   // it is the thing the agent is working on, and naming it stops the model
@@ -118,6 +123,15 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
     if (decision.effect === 'deny') {
       request.onBlocked(decision.reason);
       await recordAudit({ ...base, decision: 'blocked', decidedBy: 'policy', reason: decision.reason });
+      return false;
+    }
+
+    // Ceilings apply to everything that changes the page, including actions the
+    // policy would otherwise allow without asking.
+    const affordable = budget.spend(call.name, host);
+    if (!affordable.ok) {
+      request.onBlocked(affordable.reason);
+      await recordAudit({ ...base, decision: 'blocked', decidedBy: 'policy', reason: affordable.reason });
       return false;
     }
 

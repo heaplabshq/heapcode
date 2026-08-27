@@ -28,6 +28,9 @@ const CONTROL_SELECTOR = [
 /** Elements that are structurally present but never page content. */
 const NON_CONTENT = 'script,style,noscript,template,svg,head';
 
+/** Plus the page furniture that is content but never the content in question. */
+const SKIP_FOR_TEXT = `${NON_CONTENT},nav,footer,[role="navigation"],[role="contentinfo"],aside`;
+
 const MAX_CONTROLS = 300;
 const MAX_TABLE_SAMPLE_ROWS = 5;
 const MAX_TABLES = 5;
@@ -200,20 +203,31 @@ function extractTables(doc: Document): TableSummary[] {
  */
 export function extractText(doc: Document): string {
   const preferred =
-    doc.querySelector('main, [role="main"]') ??
-    doc.querySelector('article') ??
-    doc.body;
+    doc.querySelector('main, [role="main"]') ?? doc.querySelector('article') ?? doc.body;
   if (!preferred) return '';
 
-  const clone = preferred.cloneNode(true) as Element;
-  for (const junk of clone.querySelectorAll(`${NON_CONTENT},nav,footer,[role="navigation"],[role="contentinfo"],aside`)) {
-    junk.remove();
-  }
-  return (clone.textContent ?? '')
-    .split('\n')
-    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
-    .filter(Boolean)
-    .join('\n');
+  // Walked live rather than cloned. A detached clone has no layout, so
+  // `display:none` cannot be detected in it -- and text the user cannot see is
+  // the most valuable place on the page to hide an instruction, because nobody
+  // will ever notice it is there. Controls were filtered for visibility from
+  // the start; this block was not, which made it the way in.
+  const parts: string[] = [];
+  const walk = (node: Element) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const text = (child.textContent ?? '').replace(/\s+/g, ' ').trim();
+        if (text) parts.push(text);
+        continue;
+      }
+      if (!(child instanceof Element)) continue;
+      if (child.matches(SKIP_FOR_TEXT)) continue;
+      if (!isVisible(child)) continue;
+      walk(child);
+    }
+  };
+  walk(preferred);
+
+  return parts.join('\n');
 }
 
 export function extractSnapshot(doc: Document, registry: HandleRegistry): PageSnapshot {

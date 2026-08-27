@@ -362,3 +362,38 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   color: var(--muted);
   max-width: 108px;
 }
+
+.audit {
+  border-bottom: 1px solid var(--line);
+  padding: 10px;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+
+.audit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.audit-list { list-style: none; margin: 0; padding: 0; }
+
+.audit-row {
+  padding: 6px 0 6px 8px;
+  border-left: 2px solid var(--line);
+  margin-bottom: 6px;
+}
+
+/* The decision is the thing worth seeing at a glance, so it is what colours
+   the row -- not the action. */
+.audit-blocked, .audit-denied { border-left-color: var(--danger); }
+.audit-allowed { border-left-color: var(--accent); }
+
+.audit-line { display: flex; gap: 6px; overflow-wrap: anywhere; }
+.audit-tool { font-weight: 600; }
+.audit-target { color: var(--fg); }
+.audit-meta { color: var(--muted); }
+.audit-reason { color: var(--muted); font-style: italic; }
+
+.audit-actions { display: flex; gap: 6px; margin-top: 8px; }

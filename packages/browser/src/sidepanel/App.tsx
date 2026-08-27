@@ -7,6 +7,7 @@ import { Composer } from './components/Composer.js';
 import { Settings } from './components/Settings.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { Confirm } from './components/Confirm.js';
+import { AuditLog } from './components/AuditLog.js';
 import { useConfirm } from './useConfirm.js';
 import { DEFAULT_BROWSER_MODE, type BrowserMode } from '../agent/originPolicy.js';
 import { activeSite, grantActiveSite, type ActiveSite } from './page.js';
@@ -15,6 +16,7 @@ export function App() {
   const [profile, setProfile] = useState<StoredProfile>(defaultProfile);
   const [origin, setOrigin] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [showAudit, setShowAudit] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [site, setSite] = useState<ActiveSite>();
   const [mode, setMode] = useState<BrowserMode>(DEFAULT_BROWSER_MODE);
@@ -100,6 +102,15 @@ export function App() {
         <button
           type="button"
           className="ghost"
+          onClick={() => setShowAudit((v) => !v)}
+          aria-expanded={showAudit}
+          title="What heapbrowse has done"
+        >
+          Log
+        </button>
+        <button
+          type="button"
+          className="ghost"
           onClick={() => setShowSettings((v) => !v)}
           aria-expanded={showSettings}
         >
@@ -136,6 +147,8 @@ export function App() {
           )}
         </div>
       )}
+
+      {showAudit && <AuditLog onClose={() => setShowAudit(false)} />}
 
       <MessageList turns={turns} />
 

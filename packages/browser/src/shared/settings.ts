@@ -101,6 +101,27 @@ export async function saveProfile(profile: StoredProfile): Promise<void> {
   const current = active ?? profiles[0]?.name;
   const index = profiles.findIndex((candidate) => candidate.name === current);
 
+  /*
+   * A rename takes the key with it.
+   *
+   * Keys are stored under the profile's name, so renaming a profile left its
+   * key behind under the old one and the renamed profile authenticated with
+   * nothing -- a 401 on the next run, from a change that never mentioned keys.
+   * The field is write-only and empty on load, so there was nothing to notice
+   * and nothing to re-enter unless you knew.
+   *
+   * Only on a real rename, and only when there is something to move. (Two
+   * profiles sharing a name would collide here, but they collide everywhere
+   * else first: the name is the identity.)
+   */
+  if (current && current !== profile.name) {
+    const held = (await chrome.storage.local.get(apiKeyFor(current)))[apiKeyFor(current)];
+    if (typeof held === 'string' && held.length > 0) {
+      await chrome.storage.local.set({ [apiKeyFor(profile.name)]: held });
+      await chrome.storage.local.remove(apiKeyFor(current));
+    }
+  }
+
   const next = index >= 0 ? profiles.map((p, i) => (i === index ? profile : p)) : [...profiles, profile];
   await saveProfiles(next);
   await setActiveProfile(profile.name);

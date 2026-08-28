@@ -434,18 +434,34 @@ export function Settings({
         </div>
       </section>
 
-      <details className="disclosure">
-        <summary>Your details</summary>
-        <Details />
+      <details className="settings-card disclosure-card">
+        <summary className="settings-card-head disclosure-summary">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="form" />
+          </span>
+          <h3 className="section-title">Your details</h3>
+          <Icon name="chevron" size={12} className="disclosure-caret" />
+        </summary>
+        <div className="settings-card-body">
+          <Details />
+        </div>
       </details>
 
-      <details className="disclosure">
-        <summary>Where your data goes</summary>
-        <p className="muted">
-          The text of the pages you point heapbrowse at is sent to the endpoint configured above,
-          and nowhere else. There is no heapbrowse server. Your API key and your saved details are
-          stored on this device, never synced through your Chrome profile.
-        </p>
+      <details className="settings-card disclosure-card">
+        <summary className="settings-card-head disclosure-summary">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="lock" />
+          </span>
+          <h3 className="section-title">Where your data goes</h3>
+          <Icon name="chevron" size={12} className="disclosure-caret" />
+        </summary>
+        <div className="settings-card-body">
+          <p className="muted">
+            The text of the pages you point heapbrowse at is sent to the endpoint configured above,
+            and nowhere else. There is no heapbrowse server. Your API key and your saved details are
+            stored on this device, never synced through your Chrome profile.
+          </p>
+        </div>
       </details>
 
       <div className="settings-actions">

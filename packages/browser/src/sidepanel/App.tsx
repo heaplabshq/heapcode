@@ -228,7 +228,10 @@ export function App() {
                 {site.host}
               </span>
               {site.granted ? (
-                <span className="site-ok">readable</span>
+                <span className="site-ok">
+                  <Icon name="check" size={11} />
+                  readable
+                </span>
               ) : (
                 <button
                   type="button"

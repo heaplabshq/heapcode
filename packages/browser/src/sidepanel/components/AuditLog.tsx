@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { clearAudit, exportAudit, readAudit, type AuditEntry } from '../../agent/audit.js';
+import { Icon } from './Icon.js';
 
 /**
  * What it did, and who let it.
@@ -14,11 +15,24 @@ import { clearAudit, exportAudit, readAudit, type AuditEntry } from '../../agent
  */
 
 const DECISION_LABEL: Record<AuditEntry['decision'], string> = {
-  allowed: 'you allowed',
-  denied: 'you refused',
-  'auto-allowed': 'allowed by settings',
-  blocked: 'blocked',
+  allowed: 'You allowed',
+  denied: 'You refused',
+  'auto-allowed': 'Auto-allowed',
+  blocked: 'Blocked',
 };
+
+/** "2h ago", "just now" — enough to tell recent from old without a wall of dates. */
+function relative(ts: number): string {
+  const diff = Date.now() - ts;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
 
 export function AuditLog() {
   const [entries, setEntries] = useState<AuditEntry[]>();
@@ -38,33 +52,55 @@ export function AuditLog() {
     <div className="pane">
       {entries === undefined && <p className="muted">Loading…</p>}
       {entries?.length === 0 && (
-        <p className="muted">Nothing yet. Actions on a page are recorded here as they happen.</p>
+        <div className="audit-empty">
+          <Icon name="log" className="audit-empty-icon" />
+          <p className="muted">
+            Nothing yet. Actions on a page are recorded here as they happen.
+          </p>
+        </div>
       )}
 
       {entries && entries.length > 0 && (
         <>
           <ul className="audit-list">
-            {entries.map((entry, i) => (
-              <li key={i} className={`audit-row audit-${entry.decision}`}>
-                <div className="audit-line">
-                  <span className="audit-tool">{entry.tool}</span>
-                  {entry.target && <span className="audit-target">{entry.target}</span>}
-                </div>
-                <div className="audit-meta">
-                  {new Date(entry.at).toLocaleString()} · {entry.host} · {entry.permission} ·{' '}
-                  {DECISION_LABEL[entry.decision]}
-                </div>
-                {entry.reason && <div className="audit-reason">{entry.reason}</div>}
-              </li>
-            ))}
+            {entries.map((entry, i) => {
+              const denied = entry.decision === 'denied' || entry.decision === 'blocked';
+              return (
+                <li
+                  key={i}
+                  className={`audit-entry${denied ? ' is-denied' : ''}`}
+                >
+                  <span className="audit-node" aria-hidden="true" />
+                  <div className="audit-body">
+                    <div className="audit-line">
+                      <span className="audit-tool">{entry.tool}</span>
+                      {entry.target && <span className="audit-target">{entry.target}</span>}
+                      <span
+                        className={`audit-decision${denied ? ' is-denied' : ''}`}
+                      >
+                        {DECISION_LABEL[entry.decision]}
+                      </span>
+                    </div>
+                    <div className="audit-meta">
+                      <span className="audit-when" title={new Date(entry.at).toLocaleString()}>
+                        {relative(entry.at)}
+                      </span>
+                      <span className="audit-host">{entry.host}</span>
+                      <span className="audit-perm">{entry.permission}</span>
+                    </div>
+                    {entry.reason && <div className="audit-reason">{entry.reason}</div>}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
-          <div className="row">
-            <button type="button" onClick={() => void copy()}>
+          <div className="audit-actions">
+            <button type="button" className="ghost" onClick={() => void copy()}>
               {copied ? 'Copied' : 'Copy all'}
             </button>
             <button
               type="button"
-              className="danger"
+              className="ghost danger"
               onClick={async () => {
                 await clearAudit();
                 setEntries([]);

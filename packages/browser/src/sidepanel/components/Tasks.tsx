@@ -10,6 +10,7 @@ import {
   type RunRecord,
   type SavedTask,
 } from '../../shared/tasks.js';
+import { Icon } from './Icon.js';
 
 /**
  * Tasks worth repeating, and what has already been run.
@@ -56,7 +57,7 @@ export function Tasks({
   };
 
   return (
-    <div className="pane">
+    <div className="pane tasks-pane">
       <div className="pane-head">
         <h3 className="section-title">Saved tasks</h3>
         {currentDraft.trim().length > 0 && (
@@ -71,17 +72,21 @@ export function Tasks({
       </div>
 
       {tasks.length === 0 && (
-        <p className="muted">
-          Nothing saved yet. Type a request in the box below and save it here to run it again later
-          with one click.
-        </p>
+        <div className="tasks-empty">
+          <Icon name="tasks" size={18} className="tasks-empty-icon" />
+          <p className="muted">
+            Nothing saved yet. Type a request in the box below and save it here to run it again later
+            with one click.
+          </p>
+        </div>
       )}
 
       <ul className="task-list">
         {tasks.map((task) => (
-          <li key={task.id}>
+          <li key={task.id} className="task-card">
             {editing === task.id ? (
               <input
+                className="task-rename"
                 value={name}
                 autoFocus
                 onChange={(e) => setName(e.target.value)}
@@ -95,28 +100,40 @@ export function Tasks({
               />
             ) : (
               <button type="button" className="task-run" onClick={() => void run(task)} title={task.prompt}>
-                {task.name}
+                <span className="task-run-name">{task.name}</span>
+                {(task.host || task.lastRunAt) && (
+                  <span className="task-meta">
+                    {task.host && <span className="task-host">{task.host}</span>}
+                    {task.lastRunAt && (
+                      <span className="task-last">last run {relative(task.lastRunAt)}</span>
+                    )}
+                  </span>
+                )}
               </button>
             )}
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => {
-                setEditing(task.id);
-                setName(task.name);
-              }}
-              aria-label={`Rename ${task.name}`}
-            >
-              Rename
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={async () => setTasks(await deleteTask(task.id))}
-              aria-label={`Delete ${task.name}`}
-            >
-              Delete
-            </button>
+            <div className="task-actions">
+              <button
+                type="button"
+                className="icon-button task-action"
+                onClick={() => {
+                  setEditing(task.id);
+                  setName(task.name);
+                }}
+                aria-label={`Rename ${task.name}`}
+                title="Rename"
+              >
+                <Icon name="sparkle" />
+              </button>
+              <button
+                type="button"
+                className="icon-button task-action"
+                onClick={async () => setTasks(await deleteTask(task.id))}
+                aria-label={`Delete ${task.name}`}
+                title="Delete"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
           </li>
         ))}
       </ul>
@@ -139,42 +156,74 @@ export function Tasks({
         )}
       </div>
 
-      {history.length === 0 && <p className="muted">No runs recorded yet.</p>}
+      {history.length === 0 && (
+        <div className="tasks-empty">
+          <Icon name="log" size={18} className="tasks-empty-icon" />
+          <p className="muted">No runs recorded yet. Anything you ask will show up here so you can
+            find it again later.</p>
+        </div>
+      )}
 
       <ul className="history-list">
-        {history.map((record) => (
-          <li key={record.id}>
-            <div className="history-line">
-              <span className="history-when">{new Date(record.at).toLocaleString()}</span>
-              {record.host && <span className="history-host">{record.host}</span>}
-              {record.outcome !== 'done' && <span className="history-outcome">{record.outcome}</span>}
-            </div>
-            <p className="history-task">{record.task}</p>
-            {record.summary && <p className="muted history-summary">{record.summary}</p>}
-            <div className="row">
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  onRun(record.task);
-                  onClose();
-                }}
-              >
-                Run again
-              </button>
-              <button
-                type="button"
-                className="ghost"
-                onClick={async () => setTasks(await saveTask(record.task, undefined, record.host))}
-              >
-                Save
-              </button>
-            </div>
-          </li>
-        ))}
+        {history.map((record) => {
+          const done = record.outcome === 'done';
+          return (
+            <li
+              key={record.id}
+              className={`history-entry${done ? ' is-done' : ' is-failed'}`}
+            >
+              <span className="history-node" aria-hidden="true" />
+              <div className="history-body">
+                <div className="history-line">
+                  <span className="history-when" title={new Date(record.at).toLocaleString()}>
+                    {relative(record.at)}
+                  </span>
+                  {record.host && <span className="history-host">{record.host}</span>}
+                  {!done && <span className="history-outcome">{record.outcome}</span>}
+                </div>
+                <p className="history-task">{record.task}</p>
+                {record.summary && <p className="muted history-summary">{record.summary}</p>}
+                <div className="row history-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      onRun(record.task);
+                      onClose();
+                    }}
+                  >
+                    Run again
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={async () =>
+                      setTasks(await saveTask(record.task, undefined, record.host))
+                    }
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
+}
+
+/** "2h ago", "just now" — enough to tell recent from old without a wall of dates. */
+function relative(ts: number): string {
+  const diff = Date.now() - ts;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return new Date(ts).toLocaleDateString();
 }
 
 /**

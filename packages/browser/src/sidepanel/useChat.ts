@@ -115,6 +115,54 @@ export function answerFrom(turn: Turn): string {
 }
 
 /**
+ * Whitespace-insensitive, for comparing two copies of the same prose.
+ *
+ * Not markdown-insensitive: both strings being compared are markdown *source* —
+ * the narration as it streamed and the finish summary as core delivered it — so
+ * `**Ollama**` appears identically in each. Only the line breaks differ, because
+ * one arrived in deltas.
+ */
+function normalize(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Drop narration that is just the answer, written twice.
+ *
+ * A model that streams its reply and then calls `finish` with that same reply
+ * as the summary produces both — core reports them separately, correctly, and
+ * the panel rendered each: once as raw narration and once as the rendered
+ * answer, one under the other. It reads as a stutter, and it is the second time
+ * this failure mode has appeared in a different disguise.
+ *
+ * Deliberately conservative. Only long notes are considered, because a short
+ * one ("Let me read the page") is never the answer; and a note is only dropped
+ * when it and the answer are substantially the same text, not merely when one
+ * mentions the other. Losing real narration to a clever rule would be worse
+ * than showing a duplicate.
+ */
+export function withoutEchoedAnswer(turn: Turn): Turn {
+  const answer = normalize(turn.content);
+  const MIN = 40;
+  if (answer.length < MIN) return turn;
+
+  const steps = (turn.steps ?? []).filter((step) => {
+    if (step.kind !== 'note') return true;
+    const note = normalize(step.text);
+    if (note.length < MIN) return true;
+    if (note === answer) return false;
+
+    // One containing the other counts only when the shorter is most of the
+    // longer: the model that trimmed a sentence off its summary wrote the same
+    // thing twice, the one that narrated a plan and then answered did not.
+    const [shorter, longer] = note.length < answer.length ? [note, answer] : [answer, note];
+    return !(longer.includes(shorter) && shorter.length >= longer.length * 0.6);
+  });
+
+  return steps.length === (turn.steps ?? []).length ? turn : { ...turn, steps };
+}
+
+/**
  * The agent run behind the panel.
  *
  * Everything here drives core's loop; there is no plain chat path. A question
@@ -360,13 +408,17 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
         flushNote();
         let answer = '';
         patch((turn) => {
+          // Whether the model actually called finish. When it did not, the
+          // narration *is* the answer and must not be treated as an echo of it.
+          const summarised = turn.content.trim().length > 0;
           answer = answerFrom(turn);
-          return {
+          const next: Turn = {
             ...turn,
             streaming: false,
             error: outcomeNote(outcome),
             content: answer,
           };
+          return summarised ? withoutEchoedAnswer(next) : next;
         });
         // Recorded after the fact, with what it produced, so the list is useful
         // for finding the wording of something that worked rather than being a

@@ -113,8 +113,13 @@ export function App() {
   if (onboarding) {
     return (
       <div className="app">
-        <header>
-          <span className="title">heapbrowse</span>
+        <header className="app-header">
+          <div className="header-row">
+            <span className="brand">
+              <span className="brand-mark" aria-hidden="true" />
+              heapbrowse
+            </span>
+          </div>
         </header>
         <Onboarding
           profile={profile}
@@ -131,64 +136,85 @@ export function App() {
 
   return (
     <div className="app">
-      <header>
-        <span className="title">heapbrowse</span>
-        <span className="model" title={`${profile.name} — ${profile.baseUrl}`}>
-          {configured ? profile.model : 'not configured'}
-        </span>
-        <ContextMeter tokens={tokens} window={contextWindow} />
-        {/* The ceiling on what a run may do, always visible. There is no
-            full-auto: the most permissive setting still asks before anything
-            irreversible (PRD section 6.3). */}
-        <select
-          className="mode"
-          value={mode}
-          onChange={(e) => setMode(e.target.value as BrowserMode)}
-          title={
-            'Read only: never acts.\n' +
-            'Ask every time: confirms every action.\n' +
-            'Ask only for risky: routine clicks and typing go ahead; anything that buys, ' +
-            'pays, submits, deletes or leaves the site still asks.\n' +
-            "Don't ask: acts without confirming. Banks and password managers are still " +
-            'refused, credential fields are still never typed into, and the per-run action ' +
-            'limits still apply.'
-          }
-          aria-label="Permission mode"
-        >
-          <option value="read-only">Read only</option>
-          <option value="confirm">Ask every time</option>
-          <option value="auto-approve">Ask only for risky</option>
-          <option value="auto">Don't ask</option>
-        </select>
-        <button type="button" className="ghost" onClick={clear} disabled={turns.length === 0}>
-          Clear
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => setShowTasks((v) => !v)}
-          aria-expanded={showTasks}
-          title="Saved tasks and earlier runs"
-        >
-          Tasks
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => setShowAudit((v) => !v)}
-          aria-expanded={showAudit}
-          title="What heapbrowse has done"
-        >
-          Log
-        </button>
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => setShowSettings((v) => !v)}
-          aria-expanded={showSettings}
-        >
-          {showSettings ? 'Close' : 'Settings'}
-        </button>
+      {/*
+        Two rows, not one. Eight controls competing for a 350px header meant
+        every one of them was truncated to an ambiguous stub, and the model name
+        — the thing you most often want to check — lost every time. Identity and
+        state on top, the controls beneath them.
+      */}
+      <header className="app-header">
+        <div className="header-row">
+          <span className="brand">
+            <span className="brand-mark" aria-hidden="true" />
+            heapbrowse
+          </span>
+          <span className="model" title={`${profile.name} — ${profile.baseUrl}`}>
+            {configured ? profile.model : 'not configured'}
+          </span>
+          <ContextMeter tokens={tokens} window={contextWindow} />
+        </div>
+        <div className="header-row header-controls">
+          {/* The ceiling on what a run may do, always visible. There is no
+              full-auto: the most permissive setting still asks before anything
+              irreversible (PRD section 6.3). */}
+          <select
+            className="mode"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as BrowserMode)}
+            title={
+              'Read only: never acts.\n' +
+              'Ask every time: confirms every action.\n' +
+              'Ask only for risky: routine clicks and typing go ahead; anything that buys, ' +
+              'pays, submits, deletes or leaves the site still asks.\n' +
+              "Don't ask: acts without confirming. Banks and password managers are still " +
+              'refused, credential fields are still never typed into, and the per-run action ' +
+              'limits still apply.'
+            }
+            aria-label="Permission mode"
+          >
+            <option value="read-only">Read only</option>
+            <option value="confirm">Ask every time</option>
+            <option value="auto-approve">Ask only for risky</option>
+            <option value="auto">Don't ask</option>
+          </select>
+          <span className="header-spacer" />
+          <button
+            type="button"
+            className={showTasks ? 'ghost on' : 'ghost'}
+            onClick={() => setShowTasks((v) => !v)}
+            aria-expanded={showTasks}
+            title="Saved tasks and earlier runs"
+          >
+            Tasks
+          </button>
+          <button
+            type="button"
+            className={showAudit ? 'ghost on' : 'ghost'}
+            onClick={() => setShowAudit((v) => !v)}
+            aria-expanded={showAudit}
+            title="What heapbrowse has done"
+          >
+            Log
+          </button>
+          <button
+            type="button"
+            className={showSettings ? 'ghost on' : 'ghost'}
+            onClick={() => setShowSettings((v) => !v)}
+            aria-expanded={showSettings}
+            title="Provider, details and permissions"
+          >
+            Settings
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={clear}
+            disabled={turns.length === 0}
+            title="Start a new conversation"
+          >
+            Clear
+          </button>
+        </div>
       </header>
 
       {showSettings && loaded && (
@@ -203,14 +229,17 @@ export function App() {
       )}
 
       {site && (
-        <div className="site">
-          <span className="site-host" title={site.host}>{site.host}</span>
+        <div className={site.granted ? 'site site-granted' : 'site'}>
+          <span className="site-dot" aria-hidden="true" />
+          <span className="site-host" title={site.host}>
+            {site.host}
+          </span>
           {site.granted ? (
             <span className="site-ok">readable</span>
           ) : (
             <button
               type="button"
-              className="ghost"
+              className="grant"
               onClick={async () => {
                 if (await grantActiveSite()) setSite({ ...site, granted: true });
               }}
@@ -247,7 +276,12 @@ export function App() {
       {/* Closing the panel ends the run. Say so rather than letting it be
           discovered — the loop lives in this document, so there is nowhere for
           it to continue (PRD §7.1). */}
-      {busy && <p className="notice">Keep this panel open — the run stops if it closes.</p>}
+      {busy && (
+        <p className="notice">
+          <span className="notice-dot" aria-hidden="true" />
+          Working — keep this panel open, the run stops if it closes.
+        </p>
+      )}
 
       <Composer
         busy={busy}

@@ -3,6 +3,7 @@ import { renderMarkdown } from '@heapcode/web-ui/markdown';
 import type { Turn } from '../useChat.js';
 import { ToolChip } from './ToolChip.js';
 import { DataTable } from './DataTable.js';
+import { Thinking } from './Thinking.js';
 
 /**
  * The transcript.
@@ -57,6 +58,9 @@ export function MessageList({ turns }: { turns: Turn[] }) {
                   call that follows it, so the order carries meaning. */}
               {turn.steps?.map((step, s) => {
                 if (step.kind === 'tool') return <ToolChip key={step.tool.id} tool={step.tool} />;
+                if (step.kind === 'thinking') {
+                  return <Thinking key={`think-${s}`} text={step.text} streaming={step.streaming} />;
+                }
                 if (step.kind === 'data') {
                   return <DataTable key={`data-${s}`} dataset={step.dataset} />;
                 }

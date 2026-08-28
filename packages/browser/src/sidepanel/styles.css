@@ -1,38 +1,90 @@
 /*
- * The side panel is narrow (Chrome opens it around 320-400px) and lives beside
- * the page, so it follows the browser's theme rather than imposing one.
+ * The side panel is narrow — Chrome opens it around 320–400px — and it sits
+ * beside a page it does not own, so it follows the browser's theme rather than
+ * imposing one.
+ *
+ * The constraint that shapes everything here is width. At 350px there is room
+ * for one column and no room at all for decoration that does not carry
+ * information: every border earns its place by separating two things that would
+ * otherwise be confused, and anything wide (a table, a code block, a URL)
+ * scrolls inside its own box rather than making the conversation scroll
+ * sideways.
  */
 
 :root {
   --bg: #ffffff;
-  --fg: #1c1c1e;
+  --fg: #16181d;
   --muted: #6b7280;
-  --line: #e5e7eb;
+  --faint: #9ca3af;
+  --line: #e6e8ec;
+  --line-strong: #d4d7dd;
   --accent: #2563eb;
-  --danger: #b91c1c;
-  --surface: #f6f7f9;
+  --accent-soft: rgba(37, 99, 235, 0.1);
+  --danger: #c02626;
+  --danger-soft: rgba(192, 38, 38, 0.09);
+  --surface: #f7f8fa;
+  --surface-2: #eef0f4;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --radius: 8px;
+  --radius-sm: 6px;
+
+  /* One spacing scale, so nothing is 7px because 7px looked right that day. */
+  --s1: 4px;
+  --s2: 6px;
+  --s3: 8px;
+  --s4: 10px;
+  --s5: 14px;
+
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1c1c1e;
-    --fg: #e8e8ea;
+    --bg: #17181c;
+    --fg: #e9eaec;
     --muted: #9aa0a6;
-    --line: #34343a;
-    --accent: #60a5fa;
-    --danger: #f87171;
-    --surface: #26262a;
+    --faint: #71767d;
+    --line: #2c2e34;
+    --line-strong: #3a3d45;
+    --accent: #6ea8fe;
+    --accent-soft: rgba(110, 168, 254, 0.14);
+    --danger: #f27272;
+    --danger-soft: rgba(242, 114, 114, 0.13);
+    --surface: #202127;
+    --surface-2: #282a31;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 13px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A scrollbar that does not shout in a 350px column. */
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .app {
@@ -41,101 +93,594 @@ body {
   height: 100vh;
 }
 
-header {
+/* ---------------------------------------------------------------- header -- */
+
+.app-header {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
   border-bottom: 1px solid var(--line);
+  background: var(--bg);
 }
 
-header .title { font-weight: 600; }
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
 
-header .model {
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  flex: none;
+}
+
+/* A mark rather than an icon file: one gradient dot, no asset to load. */
+.brand-mark {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent), #7c3aed);
+}
+
+.model {
   flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-spacer {
+  flex: 1;
+}
+
+.header-controls {
+  gap: var(--s1);
+}
+
+/* ---------------------------------------------------------------- buttons -- */
+
+button {
+  font: inherit;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface);
+}
+
+button:active:not(:disabled) {
+  background: var(--surface-2);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 4px 7px;
+  font-size: 12px;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--fg);
+}
+
+/* A panel that is open should look open, not identical to the three that are not. */
+button.ghost.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+button.stop {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button.stop:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.mode {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--muted);
+  max-width: 132px;
+}
+
+/* ------------------------------------------------------------------ site -- */
+
+/* Which site the panel is pointed at, and whether it may be read. Above the
+   transcript because it is a permission fact, not a chat message. */
+.site {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.site-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: none;
+}
+
+.site-granted .site-dot {
+  background: #16a34a;
+}
+
+.site-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.site-ok {
+  color: var(--muted);
+  flex: none;
+}
+
+/* The one call to action in the header area, so it does not read as a label. */
+.grant {
+  flex: none;
+  padding: 3px 9px;
+  font-size: 12px;
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg);
+}
+
+.grant:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+/* ------------------------------------------------------------- transcript -- */
+
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--s4);
+  scroll-behavior: smooth;
+}
+
+.transcript.empty {
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--s5);
+}
+
+.turn {
+  margin-bottom: var(--s5);
+  animation: rise 0.16s ease-out;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+/* The user's own words, set apart from everything the machine produced. */
+.turn.user {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--s4);
+}
+
+.turn.user .user-text {
+  margin: 0;
+  padding: 7px var(--s4);
+  max-width: 88%;
+  background: var(--accent-soft);
+  border-radius: 12px 12px 3px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-text {
+  overflow-wrap: anywhere;
+}
+
+.assistant-text > :first-child {
+  margin-top: 0;
+}
+
+.assistant-text > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-text h1,
+.assistant-text h2,
+.assistant-text h3 {
+  font-size: 14px;
+  margin: var(--s4) 0 var(--s2);
+}
+
+.assistant-text ul,
+.assistant-text ol {
+  padding-left: 20px;
+  margin: var(--s2) 0;
+}
+
+.assistant-text li + li {
+  margin-top: 2px;
+}
+
+.assistant-text a {
+  color: var(--accent);
+}
+
+.assistant-text blockquote {
+  margin: var(--s2) 0;
+  padding-left: var(--s4);
+  border-left: 2px solid var(--line-strong);
+  color: var(--muted);
+}
+
+/* Wide content scrolls inside itself; the panel is too narrow to give up its
+   layout to one long line. */
+.assistant-text pre {
+  overflow-x: auto;
+  padding: var(--s3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.assistant-text code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.assistant-text :not(pre) > code {
+  background: var(--surface-2);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.assistant-text table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.assistant-text th,
+.assistant-text td {
+  border: 1px solid var(--line);
+  padding: 3px 7px;
+  text-align: left;
+}
+
+.assistant-text img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+.cursor {
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  background: var(--accent);
+  border-radius: 1px;
+  vertical-align: text-bottom;
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.turn-error {
+  margin: var(--s2) 0 0;
+  padding: var(--s2) var(--s3);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* Narration between steps. Quieter than the answer on purpose: it is the agent
+   thinking aloud, not the thing the user asked for. */
+.note {
+  margin: 0 0 var(--s2);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------- thinking -- */
+
+/* Reasoning models produce pages of this and none of it is addressed to the
+   user, so it collapses to one quiet line. It is not hidden, because when it
+   matters it matters a great deal — an agent that did something surprising
+   usually talked itself into it here first. */
+.thinking {
+  margin: 0 0 var(--s2);
+}
+
+.thinking-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: 3px var(--s2);
+  border: none;
+  background: none;
+  color: var(--faint);
+  font-size: 12px;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.thinking-head:hover {
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.thinking-glyph {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.thinking.live .thinking-glyph {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+.thinking-caret {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.thinking-body {
+  margin: var(--s1) 0 0 var(--s2);
+  padding: var(--s2) var(--s4);
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------------------- tool chips -- */
+
+/* What the agent did. Collapsed by default: the summary line is what most
+   people read, and "what did it just do?" is this product's core question. */
+.chip {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: var(--s2);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.chip-error {
+  border-color: var(--danger);
+}
+
+.chip-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: 5px var(--s3);
+  border: none;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--fg);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chip-head:hover {
+  background: var(--surface-2);
+}
+
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.chip-error .chip-dot {
+  background: var(--danger);
+}
+
+.chip-dot.spinning {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.chip-name {
+  flex: none;
+  font-weight: 500;
+}
+
+.chip-detail {
+  flex: 1;
+  min-width: 0;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-button {
-  font: inherit;
-  padding: 5px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--fg);
-  cursor: pointer;
+.chip-toggle {
+  color: var(--faint);
+  flex: none;
+  font-size: 10px;
 }
 
-button:disabled { opacity: 0.5; cursor: default; }
-button.ghost { background: none; border-color: transparent; color: var(--muted); }
-button.stop { border-color: var(--danger); color: var(--danger); }
-
-.transcript {
-  flex: 1;
-  overflow-y: auto;
-  padding: 10px;
-}
-
-.transcript.empty { color: var(--muted); }
-
-.turn { margin-bottom: 14px; }
-
-.turn.user .user-text {
+/* Tool results are page content, so plain text only — never markdown, which
+   would give an untrusted page a way to shape the panel. */
+.chip-body {
   margin: 0;
-  padding: 7px 10px;
-  background: var(--surface);
-  border-radius: 8px;
+  padding: var(--s3);
+  max-height: 260px;
+  overflow: auto;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.assistant-text { overflow-wrap: anywhere; }
+/* What the agent is looking at. Shown to the user only — it never reaches the
+   model, because a screenshot in the context is carried for every turn after. */
+.view {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: var(--s2);
+}
 
-/* Wide content must scroll inside itself; the panel is too narrow to give up
-   its layout to a long code line. */
-.assistant-text pre {
-  overflow-x: auto;
-  padding: 8px;
+/* ------------------------------------------------------- collected tables -- */
+
+/* The deliverable for a comparison task, so it gets to be a real table rather
+   than prose the model wrote about one. */
+.dataset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: var(--s2);
+  overflow: hidden;
+}
+
+.dataset-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
   background: var(--surface);
-  border-radius: 6px;
+  font-size: 12px;
 }
 
-.assistant-text code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.assistant-text table { display: block; overflow-x: auto; border-collapse: collapse; }
-.assistant-text img { max-width: 100%; }
-
-.cursor {
-  display: inline-block;
-  width: 7px;
-  height: 1em;
-  background: var(--accent);
-  vertical-align: text-bottom;
-  animation: blink 1s steps(2, start) infinite;
+/* The panel is narrow and the data is not. Scroll inside the box, never the
+   conversation. */
+.dataset-scroll {
+  overflow-x: auto;
+  max-height: 320px;
+  overflow-y: auto;
 }
 
-@keyframes blink { to { visibility: hidden; } }
-
-.turn-error {
-  margin: 6px 0 0;
-  color: var(--danger);
+.dataset table {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: max-content;
+  min-width: 100%;
 }
 
-.notice {
-  margin: 0;
-  padding: 6px 10px;
-  color: var(--muted);
+.dataset th,
+.dataset td {
   border-top: 1px solid var(--line);
+  padding: 4px var(--s3);
+  text-align: left;
+  vertical-align: top;
+  max-width: 260px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dataset tbody tr:nth-child(even) {
+  background: var(--surface);
+}
+
+.dataset th {
+  background: var(--surface-2);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+
+.dataset-actions {
+  display: flex;
+  gap: var(--s1);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--line);
+}
+
+/* --------------------------------------------------------------- composer -- */
+
+.composer-area {
+  border-top: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .composer {
   display: flex;
-  gap: 8px;
+  gap: var(--s2);
   align-items: flex-end;
-  padding: 8px;
-  border-top: 1px solid var(--line);
+  padding: var(--s3);
+  border-top: none;
 }
 
 .composer textarea {
@@ -144,27 +689,201 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   font: inherit;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: var(--s2) var(--s3);
+  transition: border-color 0.12s ease;
 }
+
+.composer textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.composer textarea::placeholder {
+  color: var(--faint);
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s2) var(--s4);
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.notice-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+/* Saved tasks in front of the user on a blank panel, where the decision is. */
+.task-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: 0 var(--s4) var(--s3);
+}
+
+.task-chip {
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px var(--s4);
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ------------------------------------------------------ asking the person -- */
+
+/* The confirmation. Sits above the composer, in the way, on purpose. */
+.confirm {
+  padding: var(--s4);
+  border-top: 2px solid var(--accent);
+  background: var(--surface);
+  animation: rise 0.16s ease-out;
+}
+
+/* An irreversible action must not look like an ordinary one, or the
+   confirmation stops carrying information. */
+.confirm-destructive {
+  border-top-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.confirm-what {
+  margin: 0 0 3px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.confirm-where {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.confirm-why {
+  margin: var(--s2) 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+.confirm-actions button {
+  flex: 1;
+}
+
+.confirm-actions .primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.confirm-actions .danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.confirm-actions .deny {
+  color: var(--muted);
+}
+
+/* The agent asking for a fact. Deliberately not styled like the permission
+   confirmation: that one asks "may I", and its safe answer is no; this one asks
+   "what", and has no safe default at all. */
+.ask {
+  padding: var(--s4);
+  border-top: 2px solid var(--accent);
+  background: var(--surface);
+  animation: rise 0.16s ease-out;
+}
+
+.ask-question {
+  margin: 0 0 var(--s3);
+  overflow-wrap: anywhere;
+}
+
+.ask-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+
+.ask-entry {
+  display: flex;
+  gap: var(--s2);
+}
+
+.ask-entry input {
+  flex: 1;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+}
+
+.ask-skip {
+  margin-top: var(--s2);
+  padding-left: 0;
+}
+
+/* ------------------------------------------------------------- form panes -- */
 
 .settings,
 .details,
-.onboarding {
-  padding: 10px;
+.onboarding,
+.tasks,
+.audit {
+  padding: var(--s4);
   border-bottom: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--s3);
+  background: var(--bg);
 }
 
-/* The onboarding is the whole panel while it is up, and it is longer than the
-   panel is tall on every step but the first. */
+.settings,
+.tasks,
+.audit {
+  max-height: 62vh;
+  overflow-y: auto;
+}
+
+/* The onboarding is the whole panel while it is up, and longer than the panel
+   is tall on every step but the first. */
 .onboarding {
   overflow-y: auto;
   flex: 1;
   border-bottom: none;
+  max-height: none;
 }
 
 .settings label,
@@ -174,34 +893,52 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   flex-direction: column;
   gap: 3px;
   color: var(--muted);
+  font-size: 12px;
 }
 
 .settings input,
 .settings select,
+.settings textarea,
 .details input,
 .details textarea,
 .onboarding input,
-.onboarding select {
+.onboarding select,
+.onboarding textarea {
   font: inherit;
+  font-size: 13px;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   padding: 5px 7px;
+  transition: border-color 0.12s ease;
+}
+
+.settings input:focus,
+.details input:focus,
+.details textarea:focus,
+.onboarding input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.settings textarea,
+.details textarea,
+.onboarding textarea {
+  resize: vertical;
+}
+
+.settings textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
 }
 
 .settings .row,
-.onboarding .row { display: flex; gap: 8px; flex-wrap: wrap; }
-
-.details textarea,
-.onboarding textarea {
-  font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 5px 7px;
-  resize: vertical;
+.onboarding .row,
+.tasks .row {
+  display: flex;
+  gap: var(--s3);
+  flex-wrap: wrap;
 }
 
 /* Collapsed by default: the provider fields are what someone opens Settings
@@ -210,294 +947,33 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   cursor: pointer;
   color: var(--fg);
   font-weight: 500;
-  padding: 2px 0;
+  padding: 3px 0;
+  font-size: 12px;
+  list-style-position: inside;
 }
 
-.disclosure .details { padding: 6px 0 0; border-bottom: none; }
-
-.onboarding h2 { font-size: 15px; margin: 0; line-height: 1.4; }
-.onboarding h3 { font-size: 13px; margin: 6px 0 0; color: var(--fg); }
-.onboarding p { margin: 0; line-height: 1.5; color: var(--muted); }
-.onboarding p strong { color: var(--fg); font-weight: 600; }
-
-.onboarding .suggestions {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--muted);
-  line-height: 1.7;
+.disclosure[open] > summary {
+  margin-bottom: var(--s2);
 }
 
-/* Which of the four steps this is. Decorative, and hidden from the reader that
-   would otherwise announce four bullets with no text in them. */
-.onboarding-steps { display: flex; gap: 5px; }
-
-.onboarding-steps .dot {
-  width: 18px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--line);
+.disclosure .details {
+  padding: var(--s2) 0 0;
+  border-bottom: none;
 }
 
-.onboarding-steps .dot.on { background: var(--muted); }
-
-.muted { color: var(--muted); margin: 0; }
-
-.diagnosis { border-radius: 6px; padding: 8px; background: var(--surface); }
-.diagnosis.ok { color: var(--accent); }
-.diagnosis.origin-blocked, .diagnosis.unreachable, .diagnosis.http-error { color: var(--danger); }
-
-.diagnosis pre {
-  overflow-x: auto;
-  margin: 6px 0 0;
-  padding: 7px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  color: var(--fg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-/* Which site the panel is pointed at, and whether it may be read. Sits above
-   the transcript because it is a permission fact, not a chat message. */
-.site {
+/* Which endpoint is in use, above the fields that describe it. */
+.profiles {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-bottom: var(--s3);
   border-bottom: 1px solid var(--line);
-  color: var(--muted);
 }
-
-.site-host {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.site-ok { color: var(--accent); }
-
-.meter {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.meter-bar {
-  width: 40px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--line);
-  overflow: hidden;
-}
-
-.meter-fill {
-  height: 100%;
-  background: var(--accent);
-}
-
-.meter-fill.hot { background: var(--danger); }
-
-.composer-area {
-  border-top: 1px solid var(--line);
-}
-
-.composer { border-top: none; }
-
-/* What the agent did. Collapsed by default, because the summary line is what
-   most people read and "what did it just do?" is this product's core question. */
-.chip {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  margin-bottom: 6px;
-  overflow: hidden;
-}
-
-.chip-error { border-color: var(--danger); }
-
-.chip-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 0;
-  background: var(--surface);
-  color: var(--fg);
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-}
-
-.chip-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
-
-.chip-dot.spinning { animation: pulse 1s ease-in-out infinite; }
-
-@keyframes pulse {
-  50% { opacity: 0.25; }
-}
-
-.chip-name { flex: none; }
-
-.chip-detail {
-  flex: 1;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chip-toggle { color: var(--muted); flex: none; }
-
-/* Tool results are page content, so plain text only -- never markdown, which
-   would give an untrusted page a way to shape the panel. */
-.chip-body {
-  margin: 0;
-  padding: 8px;
-  max-height: 260px;
-  overflow: auto;
-  background: var(--bg);
-  border-top: 1px solid var(--line);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* Narration between steps. Deliberately quieter than the answer: it is the
-   agent thinking aloud, not the thing the user asked for. */
-.note {
-  margin: 0 0 6px;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-/* The confirmation. Sits above the composer, in the way, on purpose. */
-.confirm {
-  padding: 10px;
-  border-top: 2px solid var(--accent);
-  background: var(--surface);
-}
-
-/* An irreversible action must not look like an ordinary one, or the
-   confirmation stops carrying information. */
-.confirm-destructive { border-top-color: var(--danger); }
-
-.confirm-what {
-  margin: 0 0 3px;
-  overflow-wrap: anywhere;
-}
-
-.confirm-where {
-  margin: 0;
-  color: var(--muted);
-}
-
-.confirm-why {
-  margin: 6px 0 0;
-  color: var(--danger);
-}
-
-.confirm-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.confirm-actions button { flex: 1; }
-.confirm-actions .primary { border-color: var(--accent); color: var(--accent); }
-.confirm-actions .danger { border-color: var(--danger); color: var(--danger); }
-.confirm-actions .deny { color: var(--muted); }
-
-.mode {
-  font: inherit;
-  padding: 3px 5px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--muted);
-  max-width: 108px;
-}
-
-.audit {
-  border-bottom: 1px solid var(--line);
-  padding: 10px;
-  max-height: 45vh;
-  overflow-y: auto;
-}
-
-.audit-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.audit-list { list-style: none; margin: 0; padding: 0; }
-
-.audit-row {
-  padding: 6px 0 6px 8px;
-  border-left: 2px solid var(--line);
-  margin-bottom: 6px;
-}
-
-/* The decision is the thing worth seeing at a glance, so it is what colours
-   the row -- not the action. */
-.audit-blocked, .audit-denied { border-left-color: var(--danger); }
-.audit-allowed { border-left-color: var(--accent); }
-
-.audit-line { display: flex; gap: 6px; overflow-wrap: anywhere; }
-.audit-tool { font-weight: 600; }
-.audit-target { color: var(--fg); }
-.audit-meta { color: var(--muted); }
-.audit-reason { color: var(--muted); font-style: italic; }
-
-.audit-actions { display: flex; gap: 6px; margin-top: 8px; }
-
-/* The agent asking for a fact. Deliberately not styled like the permission
-   confirmation: that one asks "may I", and its safe answer is no; this one
-   asks "what", and has no safe default at all. */
-.ask {
-  padding: 10px;
-  border-top: 2px solid var(--accent);
-  background: var(--surface);
-}
-
-.ask-question { margin: 0 0 8px; overflow-wrap: anywhere; }
-
-.ask-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.ask-entry { display: flex; gap: 6px; }
-
-.ask-entry input {
-  flex: 1;
-  font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 5px 7px;
-}
-
-.ask-skip { margin-top: 6px; padding-left: 0; }
 
 .rule {
   border: none;
   border-top: 1px solid var(--line);
-  margin: 4px 0;
+  margin: var(--s1) 0;
   width: 100%;
 }
 
@@ -506,101 +982,129 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   align-items: center;
   gap: 7px !important;
   color: var(--fg) !important;
+  font-size: 13px !important;
   cursor: pointer;
 }
 
-.settings textarea {
-  font: inherit;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 5px 7px;
-  resize: vertical;
+.muted {
+  color: var(--muted);
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-/* What the agent is looking at. Shown to the user only -- it never reaches the
-   model, because a screenshot in the context is carried for every turn after. */
-.view {
-  display: block;
-  width: 100%;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  margin-bottom: 6px;
-}
-
-/* Collected rows. The table is the deliverable for a comparison task, so it
-   gets to be a real table rather than prose the model wrote about one. */
-.dataset {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  margin-bottom: 6px;
-  overflow: hidden;
-}
-
-.dataset-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 8px;
+.diagnosis {
+  border-radius: var(--radius-sm);
+  padding: var(--s3);
   background: var(--surface);
   font-size: 12px;
 }
 
-/* The panel is narrow and the data is not. Scroll inside the box, never the
-   conversation. */
-.dataset-scroll { overflow-x: auto; max-height: 320px; overflow-y: auto; }
-
-.dataset table { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
-
-.dataset th,
-.dataset td {
-  border-top: 1px solid var(--line);
-  padding: 4px 8px;
-  text-align: left;
-  vertical-align: top;
-  max-width: 260px;
-  white-space: pre-wrap;
-  word-break: break-word;
+.diagnosis.ok {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
-.dataset th { background: var(--surface); font-weight: 600; position: sticky; top: 0; }
+.diagnosis.origin-blocked,
+.diagnosis.unreachable,
+.diagnosis.http-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
 
-.dataset-actions {
+.diagnosis pre {
+  overflow-x: auto;
+  margin: var(--s2) 0 0;
+  padding: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ------------------------------------------------------------- onboarding -- */
+
+.onboarding h2 {
+  font-size: 15px;
+  margin: 0;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+.onboarding h3 {
+  font-size: 13px;
+  margin: var(--s2) 0 0;
+  color: var(--fg);
+}
+
+.onboarding p {
+  margin: 0;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.onboarding p strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.onboarding .suggestions {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+/* Which of the four steps this is. Decorative, and hidden from the reader that
+   would otherwise announce four bullets with no text in them. */
+.onboarding-steps {
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  padding: 6px 8px;
-  border-top: 1px solid var(--line);
+  gap: 5px;
 }
 
-/* Saved tasks and earlier runs. */
-.tasks {
-  padding: 10px;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 60vh;
-  overflow-y: auto;
+.onboarding-steps .dot {
+  width: 20px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  transition: background 0.2s ease;
 }
 
-.tasks-head {
+.onboarding-steps .dot.on {
+  background: var(--accent);
+}
+
+/* ------------------------------------------------------- tasks and history -- */
+
+.tasks-head,
+.audit-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--s3);
 }
 
 .task-list,
-.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.history-list,
+.audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
 
-.task-list li { display: flex; align-items: center; gap: 4px; }
+.task-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
 
 .task-run {
   flex: 1;
+  min-width: 0;
   text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -609,15 +1113,29 @@ button.stop { border-color: var(--danger); color: var(--danger); }
 
 .history-list li {
   border-top: 1px solid var(--line);
-  padding-top: 6px;
+  padding-top: var(--s2);
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.history-line { display: flex; gap: 8px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
-.history-outcome { color: var(--fg); }
-.history-task { margin: 0; font-size: 13px; }
+.history-line {
+  display: flex;
+  gap: var(--s3);
+  font-size: 11px;
+  color: var(--faint);
+  flex-wrap: wrap;
+}
+
+.history-outcome {
+  color: var(--danger);
+}
+
+.history-task {
+  margin: 0;
+  font-size: 13px;
+}
+
 .history-summary {
   margin: 0;
   font-size: 12px;
@@ -627,31 +1145,94 @@ button.stop { border-color: var(--danger); color: var(--danger); }
   overflow: hidden;
 }
 
-/* Saved tasks in front of the user on a blank panel, where the decision is. */
-.task-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 8px; }
+/* ------------------------------------------------------------- audit log -- */
 
-.chip {
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 4px 10px;
-  cursor: pointer;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.audit-row {
+  padding: var(--s2) 0 var(--s2) var(--s3);
+  border-left: 2px solid var(--line);
 }
 
-.chip:hover { border-color: var(--muted); }
+/* The decision is the thing worth seeing at a glance, so it is what colours the
+   row — not the action. */
+.audit-blocked,
+.audit-denied {
+  border-left-color: var(--danger);
+}
 
-/* Which endpoint is in use, above the fields that describe it. */
-.profiles {
+.audit-allowed {
+  border-left-color: var(--accent);
+}
+
+.audit-line {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--line);
+  gap: var(--s2);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.audit-tool {
+  font-weight: 600;
+}
+
+.audit-target {
+  color: var(--fg);
+}
+
+.audit-meta {
+  color: var(--muted);
+}
+
+.audit-reason {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+}
+
+.audit-actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: var(--s3);
+}
+
+/* ---------------------------------------------------------- context meter -- */
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.meter-bar {
+  width: 34px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.meter-fill.hot {
+  background: var(--danger);
+}
+
+/* Someone who has asked for less movement should get less of it. Every
+   animation here is decoration on information that is already in the text. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

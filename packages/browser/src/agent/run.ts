@@ -48,6 +48,16 @@ export interface RunEvents {
   onText(text: string): void;
   onTextDelta(text: string): void;
   onTextEnd(): void;
+  /**
+   * Thinking, kept apart from what the model is saying to the user.
+   *
+   * Reasoning models produce a great deal of it, and rendered as narration it
+   * reads as the assistant talking to itself in the transcript. Core already
+   * separates it when the endpoint puts it in its own field; models that inline
+   * it as `<think>` tags are split in the panel.
+   */
+  onReasoningDelta(text: string): void;
+  onReasoningEnd(): void;
   onToolCall(call: ToolCall): void;
   onToolResult(result: ToolResult): void;
   onContextUsage(used: number, window: number): void;
@@ -296,6 +306,8 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
       onText: (text) => events.onText(text),
       onTextDelta: (text) => events.onTextDelta(text),
       onTextEnd: () => events.onTextEnd(),
+      onReasoningDelta: (text) => events.onReasoningDelta(text),
+      onReasoningEnd: () => events.onReasoningEnd(),
       onToolCall: (call) => events.onToolCall(call),
       onToolResult: (result) => events.onToolResult(result),
       onContextUsage: (used, window) => events.onContextUsage(used, window),

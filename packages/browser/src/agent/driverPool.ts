@@ -1,6 +1,7 @@
 import { CdpDetached, CdpSession, debuggerAvailable } from './cdp.js';
 import { CdpDriver, DomDriver, type PageDriver } from './drivers.js';
 import { ensurePage, ensureTab } from '../sidepanel/page.js';
+import { hideActivity, showActivity } from './activity.js';
 
 /**
  * Picks the driver for a tab, and copes with losing it.
@@ -44,10 +45,42 @@ export class DriverPool {
    * run to a tab, and it stays pinned until it is closed or switched again.
    */
   #target?: number;
+  /**
+   * Tabs currently showing the "an agent is driving this" overlay.
+   *
+   * Tracked so it can be taken down from every tab a run touched, including
+   * ones the run moved away from. An indicator left up after the agent stopped
+   * is worse than none: it says something is happening when nothing is.
+   */
+  #marked = new Set<number>();
 
   constructor(enabled: boolean, onFallback?: (reason: string) => void) {
     this.#enabled = enabled;
     this.#onFallback = onFallback;
+  }
+
+  /**
+   * Mark a tab as being driven.
+   *
+   * Best-effort and never awaited by anything that matters. Chrome's "being
+   * debugged" banner says a debugger is attached, which is true between steps
+   * as much as during them, and says nothing at all on the content-script path
+   * — where the agent can click just as well. The page carries its own mark so
+   * the user can tell, on the page itself, that something is driving it.
+   */
+  mark(tabId: number): void {
+    if (this.#marked.has(tabId)) return;
+    this.#marked.add(tabId);
+    // Injected on its own channel, and not awaited: the driver protocol is
+    // strictly one request and one answer, and slipping an extra round trip in
+    // front of every acquisition desynchronises anything counting them.
+    void showActivity(tabId);
+  }
+
+  async unmarkAll(): Promise<void> {
+    const tabs = [...this.#marked];
+    this.#marked.clear();
+    await Promise.all(tabs.map((tabId) => hideActivity(tabId)));
   }
 
   /** Which tab the run is pinned to, if any. */
@@ -63,6 +96,7 @@ export class DriverPool {
   /** Stop working in this tab — it has been closed, or the run is done with it. */
   async forget(tabId: number): Promise<void> {
     if (this.#target === tabId) this.#target = undefined;
+    this.#marked.delete(tabId);
     this.#drivers.delete(tabId);
     this.#lost.delete(tabId);
     const session = this.#sessions.get(tabId);
@@ -90,6 +124,7 @@ export class DriverPool {
         const fallback = await ensurePage();
         if (fallback.ok) {
           const driver = await this.#driverFor(fallback.tabId);
+          this.mark(fallback.tabId);
           return { ok: true, driver, tabId: fallback.tabId, url: fallback.url };
         }
         return fallback;
@@ -98,6 +133,7 @@ export class DriverPool {
     }
 
     const driver = await this.#driverFor(page.tabId);
+    this.mark(page.tabId);
     return { ok: true, driver, tabId: page.tabId, url: page.url };
   }
 
@@ -145,7 +181,7 @@ export class DriverPool {
     this.#sessions.clear();
     this.#drivers.clear();
     this.#target = undefined;
-    await Promise.all(sessions.map((session) => session.detach()));
+    await Promise.all([...sessions.map((session) => session.detach()), this.unmarkAll()]);
   }
 
   /** Whether a CDP command failure should be retried on the DOM driver. */

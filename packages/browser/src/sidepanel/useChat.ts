@@ -8,6 +8,7 @@ import type { BrowserMode } from '../agent/originPolicy.js';
 import { clearSession, loadSession, saveSession } from '../shared/session.js';
 import type { Dataset } from '../shared/dataset.js';
 import { recordRun } from '../shared/tasks.js';
+import { ThinkSplitter } from './thinkStream.js';
 
 /** One tool call and what came back, as the transcript shows it. */
 export interface ToolActivity {
@@ -29,6 +30,15 @@ export interface ToolActivity {
  */
 export type Step =
   | { kind: 'note'; text: string }
+  /**
+   * The model thinking, as its own collapsed block.
+   *
+   * Kept apart from narration because it is not addressed to the user: a
+   * reasoning model produces pages of "wait, let me reconsider", and rendering
+   * that as speech makes the transcript unreadable and the answer hard to find.
+   * Collapsed by default, and still there when someone wants to know why.
+   */
+  | { kind: 'thinking'; text: string; streaming?: boolean }
   | { kind: 'tool'; tool: ToolActivity }
   /**
    * What the page looked like at this point.
@@ -212,6 +222,39 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
       // Narration for the step currently in flight. Flushed when the model
       // stops talking, so each note stays attached to its own step.
       let note = '';
+      /**
+       * Splits `<think>` tags out of the narration stream.
+       *
+       * One per run, reset when a message ends: the tag can straddle two
+       * deltas, so this has to hold state across them. Endpoints that report
+       * reasoning in its own field never reach it — those arrive on
+       * `onReasoningDelta` already separated.
+       */
+      let splitter = new ThinkSplitter();
+
+      /** Append to the thinking block in flight, or start one. */
+      const think = (text: string) => {
+        if (!text) return;
+        patch((turn) => {
+          const steps = [...(turn.steps ?? [])];
+          const last = steps[steps.length - 1];
+          if (last?.kind === 'thinking' && last.streaming) {
+            steps[steps.length - 1] = { ...last, text: last.text + text };
+          } else {
+            steps.push({ kind: 'thinking', text, streaming: true });
+          }
+          return { ...turn, steps };
+        });
+      };
+
+      /** Close the thinking block, so the next one is a new block. */
+      const endThinking = () =>
+        patch((turn) => ({
+          ...turn,
+          steps: (turn.steps ?? []).map((step) =>
+            step.kind === 'thinking' && step.streaming ? { ...step, streaming: false } : step,
+          ),
+        }));
       const flushNote = () =>
         patch((turn) => {
           const text = note.trim();
@@ -240,8 +283,15 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
             // The finish summary. Core sends it here, separately from the
             // streamed narration -- it is the answer the model meant to give.
             onText: (summary) => patch((turn) => ({ ...turn, content: summary })),
-            onTextDelta: (delta) => {
-              note += delta;
+            onReasoningDelta: (delta) => think(delta),
+            onReasoningEnd: () => endThinking(),
+            onTextDelta: (rawDelta) => {
+              // Inline `<think>` goes to the thinking block; what is left is
+              // what the model is actually saying to the user.
+              const split = splitter.push(rawDelta);
+              if (split.reasoning) think(split.reasoning);
+              if (!split.text) return;
+              note += split.text;
               const current = note;
               patch((turn) => {
                 const steps = [...(turn.steps ?? [])];
@@ -252,11 +302,16 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
               });
             },
             onTextEnd: () => {
+              const tail = splitter.end();
+              if (tail.reasoning) think(tail.reasoning);
+              endThinking();
+              splitter = new ThinkSplitter();
               note = '';
             },
             onToolCall: (call: ToolCall) => {
               // Whatever was being narrated belongs to this call; close it off
               // so the next iteration starts a fresh note.
+              endThinking();
               note = '';
               patch((turn) => ({
                 ...turn,

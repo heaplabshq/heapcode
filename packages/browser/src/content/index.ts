@@ -306,7 +306,6 @@ function describeHandle(handle: number): Control | undefined {
  * real thing on screen.
  */
 const HIGHLIGHT_ID = '__heapbrowse_highlight';
-
 function clearHighlight(): void {
   document.getElementById(HIGHLIGHT_ID)?.remove();
 }

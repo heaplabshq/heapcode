@@ -200,7 +200,7 @@ export function TaskChips({ onRun }: { onRun: (prompt: string) => void }) {
         <button
           key={task.id}
           type="button"
-          className="chip"
+          className="task-chip"
           title={task.prompt}
           onClick={async () => {
             await markTaskRun(task.id);

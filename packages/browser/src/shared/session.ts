@@ -54,7 +54,11 @@ function shrink(turns: Turn[]): Turn[] {
     // URL and tells a returning user nothing they cannot get by looking at the
     // tab. The rows are the work, and losing them on a panel close is exactly
     // what this is for.
-    steps: turn.steps?.filter((step) => step.kind !== 'view'),
+    steps: turn.steps
+      ?.filter((step) => step.kind !== 'view')
+      // A block still marked live would come back with a "Thinking…" header on
+      // a run that stopped when the panel closed.
+      .map((step) => (step.kind === 'thinking' ? { ...step, streaming: false } : step)),
   }));
 
   // Oldest turns go first if it is still too large. The recent ones are what a

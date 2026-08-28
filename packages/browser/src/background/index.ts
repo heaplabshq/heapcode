@@ -122,6 +122,25 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   });
 });
 
+/**
+ * The keyboard shortcut.
+ *
+ * `sidePanel.open` requires a user gesture, and a command invocation is one —
+ * which is what makes this work where `_execute_action` did not. Opened by
+ * window rather than by tab, so the panel is not bound to whichever tab
+ * happened to be in front when the key was pressed.
+ */
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command !== 'open-panel') return;
+  const windowId = tab?.windowId;
+  void (windowId === undefined
+    ? chrome.windows.getCurrent().then((window) => chrome.sidePanel.open({ windowId: window.id! }))
+    : chrome.sidePanel.open({ windowId })
+  ).catch((error: unknown) => {
+    console.error('heapbrowse: could not open the side panel', error);
+  });
+});
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== PORT_NAME) return;
 

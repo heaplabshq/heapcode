@@ -207,6 +207,14 @@ export interface ChatDeps {
   cancelConfirm(): void;
   ask(question: { question: string; options?: string[]; blocksAction: boolean }): Promise<string | undefined>;
   cancelAsk(): void;
+  /**
+   * The run is stuck for want of a host permission.
+   *
+   * Handed up rather than handled here: granting needs a user gesture, so the
+   * only thing that can act on it is a button, and the button belongs to the
+   * panel.
+   */
+  needsGrant(host: string): void;
 }
 
 export function useChat(profile: StoredProfile, deps: ChatDeps) {
@@ -357,6 +365,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
               ...turn,
               steps: [...(turn.steps ?? []), { kind: 'note', text: reason }],
             })),
+          onNeedsGrant: (host) => deps.needsGrant(host),
           events: {
             // The finish summary. Core sends it here, separately from the
             // streamed narration -- it is the answer the model meant to give.

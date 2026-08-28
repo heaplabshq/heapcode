@@ -106,6 +106,14 @@ export interface RunRequest {
   /** Told when policy refused outright, so the panel can explain it. */
   onBlocked(reason: string): void;
   /**
+   * Told when the run is stuck only for want of a host permission.
+   *
+   * The panel turns this into an Allow button. Without it the agent's only
+   * recourse is to say "blocked, please go and grant it", which is a dead end
+   * printed into a transcript that will still say it after the user has.
+   */
+  onNeedsGrant(host: string): void;
+  /**
    * Put a question from the agent to the user. Resolves with their answer, or
    * undefined if they chose to let it decide.
    */
@@ -136,7 +144,11 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   // Switched off means the run does not receive them at all, rather than
   // receiving them and being asked not to use them.
   const userProfile = profileEnabled ? savedProfile : {};
-  const pool = new DriverPool(useDebugger, (reason) => request.onBlocked(reason));
+  const pool = new DriverPool(
+    useDebugger,
+    (reason) => request.onBlocked(reason),
+    (host) => request.onNeedsGrant(host),
+  );
   const executor = new BrowserToolExecutor(task, {
     pool,
     files,

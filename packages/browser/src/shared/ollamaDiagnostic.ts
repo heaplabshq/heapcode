@@ -28,7 +28,20 @@
 import { hasHostPermission, originPatternFor } from './hostPermission.js';
 
 export type Diagnosis =
-  | { kind: 'ok' }
+  /**
+   * Reachable, permitted, and here is what it will answer as.
+   *
+   * The probe already asks `/models` -- that is what makes it a connectivity
+   * check at all -- so the answer is parsed rather than thrown away. Testing
+   * the connection and finding out what you can run are the same question
+   * asked once, which is why the model field is a list the moment the check
+   * passes instead of a box you have to know what to type into.
+   *
+   * Empty when the endpoint answered in a shape we do not recognise. That is
+   * not a failure: plenty of gateways serve chat completions perfectly well
+   * and list nothing, so the field falls back to being typed in.
+   */
+  | { kind: 'ok'; models: string[] }
   /**
    * Chrome has not been granted access to this origin, so the request is
    * subject to CORS and most endpoints will fail it. Checked first because it
@@ -102,7 +115,7 @@ export async function diagnose(
   const first = withTimeout(PROBE_TIMEOUT_MS);
   try {
     const response = await fetchImpl(url, { headers, signal: first.signal });
-    if (response.ok) return { kind: 'ok' };
+    if (response.ok) return { kind: 'ok', models: parseModels(await response.text()) };
     // We were allowed to read the response, so connectivity is fine and the
     // endpoint itself is objecting.
     //
@@ -134,11 +147,77 @@ export async function diagnose(
   }
 }
 
+/**
+ * The model names in a `/models` response.
+ *
+ * Two shapes, because the two endpoints a user of this actually points at do
+ * not agree: OpenAI-compatible servers answer `{ data: [{ id }] }`, and
+ * Ollama's own API answers `{ models: [{ name }] }`. Anything else yields
+ * nothing, and nothing is a fine answer -- the field falls back to being typed.
+ *
+ * Deliberately total: a malformed body from an endpoint the user typed the
+ * address of must not turn a working connection into a thrown error.
+ */
+export function parseModels(body: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!parsed || typeof parsed !== 'object') return [];
+    const record = parsed as { data?: unknown; models?: unknown };
+    const rows = Array.isArray(record.data)
+      ? record.data
+      : Array.isArray(record.models)
+        ? record.models
+        : [];
+    const names = rows
+      .map((row) => {
+        if (typeof row === 'string') return row;
+        if (!row || typeof row !== 'object') return undefined;
+        const entry = row as { id?: unknown; name?: unknown };
+        if (typeof entry.id === 'string') return entry.id;
+        if (typeof entry.name === 'string') return entry.name;
+        return undefined;
+      })
+      .filter((name): name is string => Boolean(name));
+    // Sorted and de-duplicated: a provider that lists two hundred models in
+    // insertion order is a list nobody can find anything in.
+    return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Just the model list, for a picker that does not need the whole diagnosis.
+ *
+ * Silent on every failure. The composer's model picker refreshes itself in the
+ * background; a provider that is briefly unreachable should leave the list as
+ * it was, not put an error in front of someone who was doing something else.
+ */
+export async function listModels(baseUrl: string, apiKey?: string): Promise<string[]> {
+  try {
+    if (!(await hasHostPermission(baseUrl))) return [];
+    const { signal, done } = withTimeout(PROBE_TIMEOUT_MS);
+    try {
+      const headers: Record<string, string> = {};
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, { headers, signal });
+      if (!response.ok) return [];
+      return parseModels(await response.text());
+    } finally {
+      done();
+    }
+  } catch {
+    return [];
+  }
+}
+
 /** One-line summary for the panel; the fix text is rendered separately. */
 export function describe(diagnosis: Diagnosis): string {
   switch (diagnosis.kind) {
     case 'ok':
-      return 'Connected.';
+      return diagnosis.models.length > 0
+        ? `Connected. ${diagnosis.models.length} model${diagnosis.models.length === 1 ? '' : 's'} available.`
+        : 'Connected. It did not list its models, so type the name yourself.';
     case 'no-permission':
       return `Chrome has not granted this extension access to ${diagnosis.pattern}. Press Allow on the prompt — without it the browser blocks the request before it is sent.`;
     case 'origin-blocked':

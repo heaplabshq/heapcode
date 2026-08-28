@@ -10,12 +10,16 @@
  * naming the step in progress, and a stop button that works from the page
  * rather than requiring a trip back to the side panel.
  *
- * The design is deliberately quiet, and it is one element. A border breathing
- * around the whole viewport -- what this used to be -- boxes the content in and
- * reads as an error state, and even a soft wash with a beam along the top edge
- * is a second thing moving on a page the user is trying to read. The bar says
- * everything the wash said and says what step it is on as well, so the wash is
- * gone. Dark glass in both themes, because it has to sit legibly on a page
+ * Two elements, and they answer two different questions. The glow around the
+ * edges answers "is something driving this page", from the corner of the eye,
+ * without being read; the bar answers "what is it doing", and is read. A hard
+ * 2px border -- what the glow used to be -- boxed the content in and looked
+ * like an error, and a beam travelling along the top edge was a second thing
+ * moving on a page someone is trying to read. What is here now has no edge of
+ * its own: it fades to nothing about thirty pixels in, and breathes slowly
+ * enough to register as alive rather than as urgent.
+ *
+ * The bar is dark glass in both themes, because it has to sit legibly on a page
  * whose colours it cannot know.
  *
  * Injected with `chrome.scripting.executeScript` rather than sent to the
@@ -44,6 +48,31 @@ function paint(id: string, label: string, detail: string): void {
   style.textContent = `
     :host { all: initial; }
     * { box-sizing: border-box; }
+
+    /*
+     * The glow. Four edges, no border: an inset shadow with a large blur and no
+     * spread has no line anywhere in it, so it reads as light coming in from
+     * outside the page rather than as a frame drawn around it.
+     *
+     * Promoted to its own compositor layer, so the browser animates the
+     * opacity without repainting the page underneath -- this sits on top of a
+     * site the agent is in the middle of reading, and it must cost that site
+     * nothing.
+     */
+    .glow {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2147483646;
+      box-shadow:
+        inset 0 0 34px -6px rgba(99, 102, 241, 0.75),
+        inset 0 0 90px -30px rgba(168, 85, 247, 0.6);
+      opacity: 0;
+      will-change: opacity;
+      animation:
+        hb-glow-in 0.6s cubic-bezier(0.22, 0.61, 0.36, 1) forwards,
+        hb-glow 3.4s ease-in-out 0.6s infinite;
+    }
 
     .bar {
       position: fixed;
@@ -119,6 +148,11 @@ function paint(id: string, label: string, detail: string): void {
     .stop:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
     .stop svg { display: block; }
 
+    @keyframes hb-glow-in { to { opacity: 0.85; } }
+    @keyframes hb-glow {
+      0%, 100% { opacity: 0.45; }
+      50% { opacity: 1; }
+    }
     @keyframes hb-bar-in { to { transform: translate(-50%, 0); } }
     @keyframes hb-breathe {
       0%, 100% { transform: scale(0.86); opacity: 0.7; }
@@ -132,10 +166,15 @@ function paint(id: string, label: string, detail: string): void {
     /* Someone who has asked for less movement gets a bar that simply is there.
        Nothing above carries information that is not also in the text. */
     @media (prefers-reduced-motion: reduce) {
+      /* Still there, still saying the same thing, just not moving. */
+      .glow { animation: none; opacity: 0.8; }
       .bar { animation: none; transform: translate(-50%, 0); }
       .mark, .swap { animation: none; }
     }
   `;
+
+  const glow = document.createElement('div');
+  glow.className = 'glow';
 
   const bar = document.createElement('div');
   bar.className = 'bar';
@@ -176,7 +215,7 @@ function paint(id: string, label: string, detail: string): void {
   });
 
   bar.append(mark, text, stop);
-  root.append(style, bar);
+  root.append(style, glow, bar);
 
   // Updating without re-injecting: the setter is hung off the host element,
   // which is the only handle a later `executeScript` has on this shadow root.

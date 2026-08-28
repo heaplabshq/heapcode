@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { describe as summarize, diagnose, ollamaOriginsFix } from '../src/shared/ollamaDiagnostic.js';
+import {
+  describe as summarize,
+  diagnose,
+  ollamaOriginsFix,
+  parseModels,
+} from '../src/shared/ollamaDiagnostic.js';
 import { originPatternFor } from '../src/shared/hostPermission.js';
 
 const ORIGIN = 'chrome-extension://abcdefghijklmnop';
@@ -193,5 +198,77 @@ describe('origin patterns', () => {
     expect(originPatternFor('file:///etc/passwd')).toBeUndefined();
     expect(originPatternFor('not a url')).toBeUndefined();
     expect(originPatternFor('')).toBeUndefined();
+  });
+});
+
+/**
+ * The connection check and "what can I run" are the same question.
+ *
+ * The probe already asks `/models` -- that is what makes it a connection check
+ * -- so the answer is parsed rather than discarded, and the model field becomes
+ * a list the moment the check passes. Typing a model name from memory is the
+ * step of setup people get wrong most often, and it fails silently until the
+ * first question comes back a 404.
+ */
+describe('the models an endpoint lists', () => {
+  it('reads the OpenAI-compatible shape', () => {
+    expect(parseModels('{"data":[{"id":"gpt-4o-mini"},{"id":"gpt-4o"}]}')).toEqual([
+      'gpt-4o',
+      'gpt-4o-mini',
+    ]);
+  });
+
+  /** Ollama's own API does not agree with the one it emulates. */
+  it('reads the Ollama shape', () => {
+    expect(parseModels('{"models":[{"name":"llama3.1"},{"name":"qwen2.5"}]}')).toEqual([
+      'llama3.1',
+      'qwen2.5',
+    ]);
+  });
+
+  it('sorts, so a list of two hundred is one a person can search', () => {
+    expect(parseModels('{"data":[{"id":"zephyr"},{"id":"alpha"}]}')).toEqual(['alpha', 'zephyr']);
+  });
+
+  it('says each name once', () => {
+    expect(parseModels('{"data":[{"id":"a"},{"id":"a"}]}')).toEqual(['a']);
+  });
+
+  /**
+   * Total by necessity. This body comes from an address the user typed, and a
+   * malformed one must not turn a working connection into a thrown error.
+   */
+  it('yields nothing rather than throwing, whatever it is handed', () => {
+    expect(parseModels('not json')).toEqual([]);
+    expect(parseModels('null')).toEqual([]);
+    expect(parseModels('{"data":"nope"}')).toEqual([]);
+    expect(parseModels('{"data":[{},{"id":7}]}')).toEqual([]);
+  });
+
+  it('comes back with the diagnosis, so one probe answers both questions', async () => {
+    const result = await diagnose(
+      'http://localhost:11434/v1',
+      ORIGIN,
+      undefined,
+      fetchStub(() => new Response('{"data":[{"id":"llama3.1"}]}', { status: 200 })),
+      granted,
+    );
+    expect(result).toEqual({ kind: 'ok', models: ['llama3.1'] });
+  });
+
+  /**
+   * Plenty of gateways serve chat completions perfectly well and list nothing.
+   * That is a text box, not a failure.
+   */
+  it('treats an endpoint that lists nothing as connected', async () => {
+    const result = await diagnose(
+      'https://gateway.example/v1',
+      ORIGIN,
+      'key',
+      fetchStub(() => new Response('{}', { status: 200 })),
+      granted,
+    );
+    expect(result).toEqual({ kind: 'ok', models: [] });
+    expect(summarize(result)).toContain('type the name yourself');
   });
 });

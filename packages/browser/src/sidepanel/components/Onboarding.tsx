@@ -14,6 +14,7 @@ import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnosti
 import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
 import { grantActiveSite, type ActiveSite } from '../page.js';
 import { Icon } from './Icon.js';
+import { ModelField } from './ModelField.js';
 
 /**
  * The first three minutes.
@@ -56,6 +57,8 @@ export function Onboarding({
   const [result, setResult] = useState<Diagnosis | undefined>();
   const [granted, setGranted] = useState(site?.granted ?? false);
   const [useDebugger, setUseDebugger] = useState(true);
+  /** What the endpoint says it can run. Filled in by the connection check. */
+  const [models, setModels] = useState<string[]>([]);
 
   const preset = presetById(draft.preset);
 
@@ -82,7 +85,14 @@ export function Onboarding({
     setResult(undefined);
     try {
       await ensureAccess();
-      setResult(await diagnose(draft.baseUrl, origin, apiKey || undefined));
+      const diagnosis = await diagnose(draft.baseUrl, origin, apiKey || undefined);
+      setResult(diagnosis);
+      if (diagnosis.kind !== 'ok') return;
+      setModels(diagnosis.models);
+      // Nothing chosen yet and exactly one thing to choose is not a decision.
+      if (!draft.model.trim() && diagnosis.models.length === 1) {
+        setDraft((current) => ({ ...current, model: diagnosis.models[0]! }));
+      }
     } finally {
       setChecking(false);
     }
@@ -180,6 +190,8 @@ export function Onboarding({
                       baseUrl: untouched ? next.defaultBaseUrl : draft.baseUrl,
                     });
                     setResult(undefined);
+                    // The list belonged to the endpoint being left.
+                    setModels([]);
                   }}
                 >
                   {presets.map((p) => (
@@ -195,20 +207,20 @@ export function Onboarding({
                 Base URL
                 <input
                   value={draft.baseUrl}
-                  onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+                  onChange={(e) => {
+                    setDraft({ ...draft, baseUrl: e.target.value });
+                    setModels([]);
+                  }}
                   spellCheck={false}
                 />
               </label>
 
-              <label>
-                Model
-                <input
-                  value={draft.model}
-                  onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-                  placeholder={draft.preset === 'ollama' ? 'llama3.1' : 'gpt-4o-mini'}
-                  spellCheck={false}
-                />
-              </label>
+              <ModelField
+                value={draft.model}
+                models={models}
+                onChange={(model) => setDraft({ ...draft, model })}
+                placeholder={draft.preset === 'ollama' ? 'llama3.1' : 'gpt-4o-mini'}
+              />
 
               {needsApiKey(draft) && (
                 <label>

@@ -1,6 +1,6 @@
 import { CdpDetached, CdpSession, debuggerAvailable } from './cdp.js';
 import { CdpDriver, DomDriver, type PageDriver } from './drivers.js';
-import { ensurePage, ensureTab } from '../sidepanel/page.js';
+import { ensurePage, ensureTab, type PageFailure } from '../sidepanel/page.js';
 import { hideActivity, noteActivity, showActivity } from './activity.js';
 
 /**
@@ -35,6 +35,15 @@ export class DriverPool {
   #lost = new Set<number>();
   #onFallback?: (reason: string) => void;
   /**
+   * Told when a step failed only because a host has not been granted.
+   *
+   * Reported from here rather than from each of the dozen call sites, because
+   * every one of them goes through `forActiveTab` and none of them cares. What
+   * the panel does with it is put an Allow button in front of the user, which
+   * is the one thing that turns "blocked" from a dead end into a step.
+   */
+  #onNeedsGrant?: (host: string) => void;
+  /**
    * The tab this run is working on, once it has opened or chosen one.
    *
    * Unset means "whatever the user is looking at", which is the right default:
@@ -64,9 +73,14 @@ export class DriverPool {
    */
   #note: { label: string; detail: string } = { label: 'heapbrowse is working', detail: '' };
 
-  constructor(enabled: boolean, onFallback?: (reason: string) => void) {
+  constructor(
+    enabled: boolean,
+    onFallback?: (reason: string) => void,
+    onNeedsGrant?: (host: string) => void,
+  ) {
     this.#enabled = enabled;
     this.#onFallback = onFallback;
+    this.#onNeedsGrant = onNeedsGrant;
   }
 
   /**
@@ -136,15 +150,17 @@ export class DriverPool {
    * point of pinning.
    */
   async forActiveTab(): Promise<
-    { ok: true; driver: PageDriver; tabId: number; url: string } | { ok: false; reason: string }
+    { ok: true; driver: PageDriver; tabId: number; url: string } | PageFailure
   > {
     const page = this.#target !== undefined ? await ensureTab(this.#target) : await ensurePage();
     if (!page.ok) {
+      if (page.needsGrant) this.#onNeedsGrant?.(page.needsGrant);
       // A pinned tab that has gone is not a failure to report to the user; it is
       // a reason to go back to following them.
       if (this.#target !== undefined) {
         await this.forget(this.#target);
         const fallback = await ensurePage();
+        if (!fallback.ok && fallback.needsGrant) this.#onNeedsGrant?.(fallback.needsGrant);
         if (fallback.ok) {
           const driver = await this.#driverFor(fallback.tabId);
           this.mark(fallback.tabId);

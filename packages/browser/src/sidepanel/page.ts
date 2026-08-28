@@ -12,7 +12,19 @@ import type { ContentRequest, ContentResponse } from '../content/index.js';
  * reported apart rather than as one "couldn't read the page".
  */
 
-export type PageFailure = { ok: false; reason: string };
+export type PageFailure = {
+  ok: false;
+  reason: string;
+  /**
+   * The host the user could grant to fix this, when that is what is wrong.
+   *
+   * Carried as a value rather than left implicit in `reason`, because the panel
+   * offers a button for it and a button must not be conjured by matching on the
+   * wording of a sentence. Everything between here and the transcript passes it
+   * through untouched.
+   */
+  needsGrant?: string;
+};
 
 /** Pages Chrome will not let any extension script, whatever it has been granted. */
 function unscriptable(url: string): string | undefined {
@@ -116,9 +128,11 @@ async function prepare(tab: chrome.tabs.Tab): Promise<PageTarget> {
   if (!pattern) return { ok: false, reason: `Cannot read ${tab.url} -- only http and https pages.` };
 
   if (!(await chrome.permissions.contains({ origins: [pattern] }))) {
+    const host = new URL(tab.url).host;
     return {
       ok: false,
-      reason: `heapbrowse has not been granted access to ${new URL(tab.url).host}. Use "Allow this site" to grant it.`,
+      reason: `heapbrowse has not been granted access to ${host}. Ask the user to allow it, then try again.`,
+      needsGrant: host,
     };
   }
 
@@ -206,6 +220,16 @@ export async function readActivePage(intent?: string, budgetChars?: number): Pro
   // instructions. The page is hostile by default -- it is arbitrary text arriving
   // while the agent holds the user's logged-in session (PRD section 6.1).
   return { ok: true, snapshot: result.snapshot, text: wrapUntrusted(rendered) };
+}
+
+/**
+ * Ask for access to one host by name. Must run inside a user gesture.
+ *
+ * By host rather than by active tab, because the run may have moved to another
+ * tab by the time the user presses the button that offers this.
+ */
+export async function grantHost(host: string): Promise<boolean> {
+  return chrome.permissions.request({ origins: [`*://${host}/*`] });
 }
 
 /** Ask for access to the active tab origin. Must run inside a user gesture. */

@@ -81,6 +81,27 @@ describe('the bar on the page', () => {
     expect(shadow().querySelector('.detail')?.textContent).toBe('example.com');
   });
 
+  /**
+   * The glow answers a different question from the bar: "is something driving
+   * this page", from the corner of the eye, without being read. It is the part
+   * that has to survive a page the agent has scrolled away from the bar on.
+   */
+  it('lights the edges of the page as well as naming the step', async () => {
+    stubChrome();
+    await showActivity(1, 'Reading the page');
+    expect(shadow().querySelector('.glow')).toBeTruthy();
+  });
+
+  it('takes the glow down with the bar', async () => {
+    vi.useFakeTimers();
+    stubChrome();
+    await showActivity(1);
+    await hideActivity(1);
+    vi.advanceTimersByTime(300);
+
+    expect(document.querySelector('#__heapbrowse_activity')).toBeNull();
+  });
+
   it('lands on documentElement, so a page mid-navigation still gets one', async () => {
     stubChrome();
     await showActivity(1);

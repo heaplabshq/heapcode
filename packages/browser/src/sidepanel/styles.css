@@ -1219,12 +1219,50 @@ button.danger:hover:not(:disabled) {
 }
 
 .meta-model {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
   flex: 1;
+  min-width: 0;
+  padding: 1px var(--s2);
+  margin-left: calc(var(--s2) * -1);
+  border-radius: var(--r-sm);
+  color: inherit;
+  transition:
+    background var(--d1) var(--ease),
+    color var(--d1) var(--ease);
+}
+
+.meta-model-name {
   min-width: 0;
   font-family: var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Only the switchable one invites a press. */
+.meta-model.picker:hover {
+  background: var(--surface-1);
+  color: var(--fg);
+}
+
+.meta-model.picker > select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.meta-model .picker-caret {
+  position: static;
+  flex: none;
 }
 
 /* ------------------------------------------------------------ mode select -- */
@@ -1457,7 +1495,8 @@ button.danger:hover:not(:disabled) {
   gap: var(--s4);
 }
 
-.pane label {
+.pane label,
+.onboarding label {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1467,7 +1506,10 @@ button.danger:hover:not(:disabled) {
 
 .pane input,
 .pane select,
-.pane textarea {
+.pane textarea,
+.onboarding input,
+.onboarding select,
+.onboarding textarea {
   font: inherit;
   font-size: var(--t-md);
   color: var(--fg);
@@ -1482,13 +1524,17 @@ button.danger:hover:not(:disabled) {
 
 .pane input:focus,
 .pane select:focus,
-.pane textarea:focus {
+.pane textarea:focus,
+.onboarding input:focus,
+.onboarding select:focus,
+.onboarding textarea:focus {
   border-color: var(--accent);
   outline: none;
   box-shadow: var(--ring);
 }
 
-.pane textarea {
+.pane textarea,
+.onboarding textarea {
   resize: vertical;
 }
 
@@ -1626,6 +1672,44 @@ button.danger:hover:not(:disabled) {
   font-size: var(--t-sm);
 }
 
+/*
+ * A select, wearing our chrome.
+ *
+ * The native control stays -- it is what keeps the keyboard, the screen reader
+ * and Chrome's own menu placement working -- and is made transparent over a
+ * span that draws the value and the caret. The same trick as the permission
+ * mode, and for the same reason.
+ */
+.picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.picker > select {
+  width: 100%;
+  min-width: 0;
+  /* Room for the caret drawn on top of it. */
+  padding-right: var(--s6);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.picker-caret {
+  position: absolute;
+  right: var(--s3);
+  color: var(--faint);
+  pointer-events: none;
+}
+
+/* What a field will become once the endpoint has been asked. */
+.hint {
+  color: var(--faint);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+}
+
 /* ============================================================ onboarding == */
 
 /*
@@ -1690,8 +1774,15 @@ button.danger:hover:not(:disabled) {
   padding: var(--s3) var(--s5) var(--s6);
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: var(--s4);
   animation: step-in var(--d3) var(--ease);
+}
+
+/* A lone button in a stretch column is a full-width button, which reads as the
+   step's primary action -- and the step's primary action is in the footer. */
+.onboarding-body > button {
+  align-self: flex-start;
 }
 
 @keyframes step-in {

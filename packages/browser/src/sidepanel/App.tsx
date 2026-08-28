@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { defaultProfile, loadOnboarded, loadProfile, type StoredProfile } from '../shared/settings.js';
+import {
+  defaultProfile,
+  loadOnboarded,
+  loadProfile,
+  saveProfile,
+  type StoredProfile,
+} from '../shared/settings.js';
 import { PENDING_PROMPT_KEY, PORT_NAME, type WorkerMessage } from '../shared/messages.js';
 import { useChat } from './useChat.js';
 import { MessageList } from './components/MessageList.js';
@@ -16,7 +22,9 @@ import { useConfirm } from './useConfirm.js';
 import { useAsk } from './useAsk.js';
 import { Ask } from './components/Ask.js';
 import { DEFAULT_BROWSER_MODE, type BrowserMode } from '../agent/originPolicy.js';
-import { activeSite, grantActiveSite, type ActiveSite } from './page.js';
+import { activeSite, grantActiveSite, grantHost, type ActiveSite } from './page.js';
+import { listModels } from '../shared/ollamaDiagnostic.js';
+import { loadApiKey } from '../shared/settings.js';
 
 /** Which pane is over the conversation. One at a time, by construction. */
 type Pane = 'tasks' | 'log' | 'settings';
@@ -32,6 +40,17 @@ export function App() {
   const [onboarding, setOnboarding] = useState<boolean>();
   const [site, setSite] = useState<ActiveSite>();
   const [mode, setMode] = useState<BrowserMode>(DEFAULT_BROWSER_MODE);
+  /** What the configured endpoint says it can run. Empty until it has answered. */
+  const [models, setModels] = useState<string[]>([]);
+  /**
+   * A host the run asked for and does not have.
+   *
+   * Held apart from the transcript on purpose. The transcript is a record and
+   * a record must not change its mind -- what the agent said when it was
+   * blocked stays true of that moment. This is the live state, so it clears the
+   * instant the grant exists, and the button it carries disappears with it.
+   */
+  const [wanted, setWanted] = useState<string>();
   const confirmation = useConfirm();
   const question = useAsk();
   const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile, {
@@ -41,6 +60,7 @@ export function App() {
     cancelConfirm: confirmation.cancel,
     ask: question.ask,
     cancelAsk: question.cancel,
+    needsGrant: setWanted,
   });
 
   /**
@@ -119,7 +139,12 @@ export function App() {
    * be open when the panel was first opened.
    */
   useEffect(() => {
-    const refresh = async () => setSite(await activeSite());
+    const refresh = async () => {
+      const current = await activeSite();
+      setSite(current);
+      // The ask is answered the moment the grant exists, however it was given.
+      if (current?.granted) setWanted((host) => (host === current.host ? undefined : host));
+    };
     void refresh();
     chrome.tabs.onActivated.addListener(refresh);
     chrome.tabs.onUpdated.addListener(refresh);
@@ -129,11 +154,36 @@ export function App() {
     };
   }, []);
 
+  /**
+   * What the endpoint can run, refreshed whenever the endpoint changes.
+   *
+   * So the picker under the composer has something to offer without the user
+   * having gone to Settings and pressed Test. Silent on failure: an endpoint
+   * that will not list its models is a text box, not an error.
+   */
+  useEffect(() => {
+    let live = true;
+    if (!profile.baseUrl) return;
+    void loadApiKey(profile.name)
+      .then((key) => listModels(profile.baseUrl, key))
+      .then((found) => {
+        if (live) setModels(found);
+      });
+    return () => {
+      live = false;
+    };
+  }, [profile.baseUrl, profile.name]);
+
   const configured = profile.model.length > 0 && profile.baseUrl.length > 0;
   const toggle = (which: Pane) => setPane((open) => (open === which ? undefined : which));
+  /** Every way a run starts. A new question clears the last one's unmet ask. */
+  const start = (prompt: string) => {
+    setWanted(undefined);
+    void send(prompt);
+  };
   const runAndClose = (prompt: string) => {
     setPane(undefined);
-    void send(prompt);
+    start(prompt);
   };
 
   if (onboarding) {
@@ -148,7 +198,7 @@ export function App() {
           // Finishing by pressing a suggestion should run it. The profile has
           // been saved by the time this resolves, but `useChat` closes over the
           // profile in state — so the run is queued for after the re-render.
-          if (firstPrompt) setTimeout(() => void send(firstPrompt), 0);
+          if (firstPrompt) setTimeout(() => start(firstPrompt), 0);
         }}
       />
     );
@@ -182,7 +232,9 @@ export function App() {
                   type="button"
                   className="grant"
                   onClick={async () => {
-                    if (await grantActiveSite()) setSite({ ...site, granted: true });
+                    if (!(await grantActiveSite())) return;
+                    setSite({ ...site, granted: true });
+                    setWanted((host) => (host === site.host ? undefined : host));
                   }}
                 >
                   Allow
@@ -247,6 +299,7 @@ export function App() {
             <Settings
               profile={profile}
               origin={origin}
+              knownModels={models}
               onSaved={(saved) => {
                 setProfile(saved);
                 setPane(undefined);
@@ -260,7 +313,7 @@ export function App() {
             <Tasks
               currentDraft={draft}
               host={site?.host}
-              onRun={(prompt) => void send(prompt)}
+              onRun={start}
               onClose={() => setPane(undefined)}
             />
           </Sheet>
@@ -290,16 +343,54 @@ export function App() {
 
         {question.pending && <Ask question={question.pending} onAnswer={question.answer} />}
 
+        {/* The run is blocked on a permission, so the permission is offered
+            here rather than described in a sentence the user has to go and act
+            on somewhere else. */}
+        {wanted && (
+          <div className="prompt-sheet" role="alertdialog" aria-label="Allow a site">
+            <p className="confirm-head">
+              <Icon name="lock" size={13} />
+              Needs your permission
+            </p>
+            <p className="confirm-what">
+              heapbrowse has not been allowed to read <strong>{wanted}</strong>.
+            </p>
+            <p className="confirm-where">It cannot go any further on this site without it.</p>
+            <div className="confirm-actions">
+              <button type="button" className="ghost deny" onClick={() => setWanted(undefined)}>
+                Not now
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={async () => {
+                  const allowed = await grantHost(wanted);
+                  setWanted(undefined);
+                  if (allowed) setSite(await activeSite());
+                }}
+              >
+                Allow {wanted}
+              </button>
+            </div>
+          </div>
+        )}
+
         <Composer
           busy={busy}
           disabled={!configured}
           text={draft}
           onText={setDraft}
-          onSend={(text) => void send(text)}
+          onSend={start}
           onStop={stop}
           mode={mode}
           onMode={setMode}
           model={configured ? profile.model : undefined}
+          models={models}
+          onModel={(model) => {
+            const next = { ...profile, model };
+            setProfile(next);
+            void saveProfile(next);
+          }}
           endpoint={`${profile.name} — ${profile.baseUrl}`}
           meter={<ContextMeter tokens={tokens} window={contextWindow} />}
         />

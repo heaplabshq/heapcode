@@ -20,6 +20,7 @@ import { debuggerAvailable } from '../../agent/cdp.js';
 import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnostic.js';
 import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
 import { Details } from './Details.js';
+import { ModelField } from './ModelField.js';
 
 /**
  * Provider setup, plus the connectivity check.
@@ -37,10 +38,13 @@ import { Details } from './Details.js';
 export function Settings({
   profile,
   origin,
+  knownModels = [],
   onSaved,
 }: {
   profile: StoredProfile;
   origin: string;
+  /** Models the panel has already fetched for the active profile. */
+  knownModels?: string[];
   onSaved: (profile: StoredProfile) => void;
 }) {
   const [draft, setDraft] = useState<StoredProfile>(profile);
@@ -50,6 +54,14 @@ export function Settings({
   const [useDebugger, setUseDebugger] = useState(false);
   const [files, setFiles] = useState('');
   const [profiles, setProfiles] = useState<StoredProfile[]>([]);
+  /**
+   * What the endpoint says it can run.
+   *
+   * Seeded from whatever the panel has already discovered, so opening Settings
+   * on a working profile shows a list rather than making the user press Test
+   * again to get back what it already knew.
+   */
+  const [models, setModels] = useState<string[]>(knownModels);
 
   useEffect(() => {
     void loadUseDebugger().then(setUseDebugger);
@@ -71,6 +83,8 @@ export function Settings({
     setDraft(wanted);
     setApiKey('');
     setResult(undefined);
+    // The list belonged to the endpoint being left.
+    setModels([]);
     onSaved(wanted);
   };
 
@@ -102,6 +116,7 @@ export function Settings({
       baseUrl: untouched ? next.defaultBaseUrl : draft.baseUrl,
     });
     setResult(undefined);
+    setModels([]);
   };
 
   /**
@@ -135,7 +150,13 @@ export function Settings({
       await ensureAccess();
       // Use the key being typed if there is one, so the check reflects the form
       // rather than what was last saved.
-      setResult(await diagnose(draft.baseUrl, origin, apiKey || undefined));
+      const diagnosis = await diagnose(draft.baseUrl, origin, apiKey || undefined);
+      setResult(diagnosis);
+      if (diagnosis.kind !== 'ok') return;
+      setModels(diagnosis.models);
+      if (!draft.model.trim() && diagnosis.models.length === 1) {
+        setDraft((current) => ({ ...current, model: diagnosis.models[0]! }));
+      }
     } finally {
       setChecking(false);
     }
@@ -218,20 +239,20 @@ export function Settings({
         Base URL
         <input
           value={draft.baseUrl}
-          onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+          onChange={(e) => {
+            setDraft({ ...draft, baseUrl: e.target.value });
+            setModels([]);
+          }}
           spellCheck={false}
         />
       </label>
 
-      <label>
-        Model
-        <input
-          value={draft.model}
-          onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-          placeholder={draft.preset === 'ollama' ? 'llama3.1' : 'gpt-4o-mini'}
-          spellCheck={false}
-        />
-      </label>
+      <ModelField
+        value={draft.model}
+        models={models}
+        onChange={(model) => setDraft({ ...draft, model })}
+        placeholder={draft.preset === 'ollama' ? 'llama3.1' : 'gpt-4o-mini'}
+      />
 
       <label>
         API key {needsApiKey(draft) ? '' : '(not needed for this provider)'}

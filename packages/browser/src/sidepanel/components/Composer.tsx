@@ -49,6 +49,8 @@ export function Composer({
   mode,
   onMode,
   model,
+  models,
+  onModel,
   endpoint,
   meter,
 }: {
@@ -67,6 +69,10 @@ export function Composer({
   onMode: (mode: BrowserMode) => void;
   /** Which model answers. Undefined until a provider has been configured. */
   model?: string;
+  /** Everything the configured endpoint says it can run. */
+  models: string[];
+  /** Switch model without opening Settings. */
+  onModel: (model: string) => void;
   /** Profile and base URL, for the tooltip on the model name. */
   endpoint: string;
   meter: ReactNode;
@@ -169,12 +175,35 @@ export function Composer({
         </div>
       </div>
 
-      {/* Which model is answering, and how full its window is. Quiet, because
-          it is a thing to check rather than a thing to do. */}
+      {/*
+        Which model is answering, how full its window is, and — because the name
+        was already here and switching model is the commonest reason anyone
+        opened Settings — a way to change it without leaving the conversation.
+        Quiet: it is a thing to check far more often than a thing to change.
+      */}
       <div className="composer-meta">
-        <span className="meta-model" title={endpoint}>
-          {model ?? 'no model configured'}
-        </span>
+        {models.length > 0 ? (
+          <span className="meta-model picker" title={endpoint}>
+            <span className="meta-model-name">{model ?? 'choose a model'}</span>
+            <Icon name="chevron" size={10} className="picker-caret" />
+            <select
+              value={model ?? ''}
+              onChange={(e) => onModel(e.target.value)}
+              aria-label="Model"
+            >
+              {model === undefined && <option value="">Choose a model…</option>}
+              {(model && !models.includes(model) ? [model, ...models] : models).map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </span>
+        ) : (
+          <span className="meta-model" title={endpoint}>
+            <span className="meta-model-name">{model ?? 'no model configured'}</span>
+          </span>
+        )}
         {meter}
       </div>
     </div>

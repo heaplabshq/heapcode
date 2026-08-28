@@ -12,18 +12,32 @@ import type { ContentRequest, ContentResponse } from '../content/index.js';
  * reported apart rather than as one "couldn't read the page".
  */
 
+/** A host the run cannot reach, and the exact pattern that would fix it. */
+export interface GrantNeeded {
+  host: string;
+  /** A Chrome match pattern: scheme, host, and every path under it. */
+  pattern: string;
+}
+
 export type PageFailure = {
   ok: false;
   reason: string;
   /**
-   * The host the user could grant to fix this, when that is what is wrong.
+   * What the user would have to grant to fix this, when that is what is wrong.
    *
    * Carried as a value rather than left implicit in `reason`, because the panel
    * offers a button for it and a button must not be conjured by matching on the
-   * wording of a sentence. Everything between here and the transcript passes it
-   * through untouched.
+   * wording of a sentence.
+   *
+   * The match pattern travels with the host, and that is not redundant.
+   * Chrome grants only patterns covered by `optional_host_permissions`, and
+   * this manifest declares one for http and one for https -- both with an
+   * explicit scheme. A pattern rebuilt later from the host alone has to guess,
+   * and the obvious guess uses a scheme wildcard, which is covered by neither
+   * of them: `permissions.request` refuses it and the button does nothing at
+   * all. The scheme is known here, and it is known nowhere else.
    */
-  needsGrant?: string;
+  needsGrant?: GrantNeeded;
 };
 
 /** Pages Chrome will not let any extension script, whatever it has been granted. */
@@ -131,8 +145,8 @@ async function prepare(tab: chrome.tabs.Tab): Promise<PageTarget> {
     const host = new URL(tab.url).host;
     return {
       ok: false,
-      reason: `heapbrowse has not been granted access to ${host}. Ask the user to allow it, then try again.`,
-      needsGrant: host,
+      reason: `heapbrowse has not been granted access to ${host}. The user was asked and has not allowed it.`,
+      needsGrant: { host, pattern },
     };
   }
 
@@ -223,13 +237,17 @@ export async function readActivePage(intent?: string, budgetChars?: number): Pro
 }
 
 /**
- * Ask for access to one host by name. Must run inside a user gesture.
+ * Ask for one match pattern. Must be called from a user gesture.
  *
- * By host rather than by active tab, because the run may have moved to another
- * tab by the time the user presses the button that offers this.
+ * By pattern rather than by tab, because the run may have moved to another tab
+ * by the time the user presses the button that offers this -- and because the
+ * pattern is the thing Chrome will actually accept. Not `async`, and it does
+ * not await anything first: Chrome ties the request to the gesture that is
+ * still on the stack, and an `await` before it is how a permission prompt ends
+ * up never appearing.
  */
-export async function grantHost(host: string): Promise<boolean> {
-  return chrome.permissions.request({ origins: [`*://${host}/*`] });
+export function grantPattern(pattern: string): Promise<boolean> {
+  return chrome.permissions.request({ origins: [pattern] });
 }
 
 /** Ask for access to the active tab origin. Must run inside a user gesture. */

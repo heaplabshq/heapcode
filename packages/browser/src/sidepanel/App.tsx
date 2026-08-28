@@ -22,7 +22,8 @@ import { useConfirm } from './useConfirm.js';
 import { useAsk } from './useAsk.js';
 import { Ask } from './components/Ask.js';
 import { DEFAULT_BROWSER_MODE, type BrowserMode } from '../agent/originPolicy.js';
-import { activeSite, grantActiveSite, grantHost, type ActiveSite } from './page.js';
+import { activeSite, grantActiveSite, grantPattern, type ActiveSite } from './page.js';
+import { useGrant } from './useGrant.js';
 import { listModels } from '../shared/ollamaDiagnostic.js';
 import { loadApiKey } from '../shared/settings.js';
 
@@ -43,14 +44,14 @@ export function App() {
   /** What the configured endpoint says it can run. Empty until it has answered. */
   const [models, setModels] = useState<string[]>([]);
   /**
-   * A host the run asked for and does not have.
+   * A site permission the run is stopped on.
    *
-   * Held apart from the transcript on purpose. The transcript is a record and
-   * a record must not change its mind -- what the agent said when it was
-   * blocked stays true of that moment. This is the live state, so it clears the
-   * instant the grant exists, and the button it carries disappears with it.
+   * Held apart from the transcript on purpose. The transcript is a record and a
+   * record must not change its mind -- what the agent said when it was blocked
+   * stays true of that moment. This is the live question, and it goes away when
+   * it is answered.
    */
-  const [wanted, setWanted] = useState<string>();
+  const grant = useGrant();
   const confirmation = useConfirm();
   const question = useAsk();
   const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile, {
@@ -60,7 +61,8 @@ export function App() {
     cancelConfirm: confirmation.cancel,
     ask: question.ask,
     cancelAsk: question.cancel,
-    needsGrant: setWanted,
+    requestGrant: grant.request,
+    cancelGrant: grant.cancel,
   });
 
   /**
@@ -142,8 +144,6 @@ export function App() {
     const refresh = async () => {
       const current = await activeSite();
       setSite(current);
-      // The ask is answered the moment the grant exists, however it was given.
-      if (current?.granted) setWanted((host) => (host === current.host ? undefined : host));
     };
     void refresh();
     chrome.tabs.onActivated.addListener(refresh);
@@ -176,11 +176,7 @@ export function App() {
 
   const configured = profile.model.length > 0 && profile.baseUrl.length > 0;
   const toggle = (which: Pane) => setPane((open) => (open === which ? undefined : which));
-  /** Every way a run starts. A new question clears the last one's unmet ask. */
-  const start = (prompt: string) => {
-    setWanted(undefined);
-    void send(prompt);
-  };
+  const start = (prompt: string) => void send(prompt);
   const runAndClose = (prompt: string) => {
     setPane(undefined);
     start(prompt);
@@ -232,9 +228,7 @@ export function App() {
                   type="button"
                   className="grant"
                   onClick={async () => {
-                    if (!(await grantActiveSite())) return;
-                    setSite({ ...site, granted: true });
-                    setWanted((host) => (host === site.host ? undefined : host));
+                    if (await grantActiveSite()) setSite({ ...site, granted: true });
                   }}
                 >
                   Allow
@@ -330,7 +324,7 @@ export function App() {
         {/* Closing the panel ends the run. Say so rather than letting it be
             discovered — the loop lives in this document, so there is nowhere for
             it to continue (PRD §7.1). */}
-        {busy && !confirmation.pending && !question.pending && (
+        {busy && !confirmation.pending && !question.pending && !grant.pending && (
           <p className="notice">
             <span className="notice-dot" aria-hidden="true" />
             Working — keep this panel open, the run stops if it closes.
@@ -343,33 +337,40 @@ export function App() {
 
         {question.pending && <Ask question={question.pending} onAnswer={question.answer} />}
 
-        {/* The run is blocked on a permission, so the permission is offered
-            here rather than described in a sentence the user has to go and act
-            on somewhere else. */}
-        {wanted && (
+        {/* The run is stopped here until this is answered. The permission is
+            offered where the run stopped, rather than described in a sentence
+            the user has to go and act on somewhere else. */}
+        {grant.pending && (
           <div className="prompt-sheet" role="alertdialog" aria-label="Allow a site">
             <p className="confirm-head">
               <Icon name="lock" size={13} />
               Needs your permission
             </p>
             <p className="confirm-what">
-              heapbrowse has not been allowed to read <strong>{wanted}</strong>.
+              heapbrowse has not been allowed to read <strong>{grant.pending.host}</strong>.
             </p>
-            <p className="confirm-where">It cannot go any further on this site without it.</p>
+            <p className="confirm-where">The run is waiting here until you decide.</p>
             <div className="confirm-actions">
-              <button type="button" className="ghost deny" onClick={() => setWanted(undefined)}>
+              <button type="button" className="ghost deny" onClick={() => grant.answer(false)}>
                 Not now
               </button>
               <button
                 type="button"
                 className="primary"
-                onClick={async () => {
-                  const allowed = await grantHost(wanted);
-                  setWanted(undefined);
-                  if (allowed) setSite(await activeSite());
+                onClick={() => {
+                  /*
+                   * Not `async`, and nothing is awaited before the request.
+                   * Chrome ties a permission prompt to the gesture still on the
+                   * stack, and an `await` in front of it is how the prompt ends
+                   * up never appearing at all.
+                   */
+                  void grantPattern(grant.pending!.pattern).then(async (allowed) => {
+                    grant.answer(allowed);
+                    if (allowed) setSite(await activeSite());
+                  });
                 }}
               >
-                Allow {wanted}
+                Allow {grant.pending.host}
               </button>
             </div>
           </div>

@@ -1,6 +1,6 @@
 import { CdpDetached, CdpSession, debuggerAvailable } from './cdp.js';
 import { CdpDriver, DomDriver, type PageDriver } from './drivers.js';
-import { ensurePage, ensureTab, type PageFailure } from '../sidepanel/page.js';
+import { ensurePage, ensureTab, type GrantNeeded, type PageFailure } from '../sidepanel/page.js';
 import { hideActivity, noteActivity, showActivity } from './activity.js';
 
 /**
@@ -35,14 +35,28 @@ export class DriverPool {
   #lost = new Set<number>();
   #onFallback?: (reason: string) => void;
   /**
-   * Told when a step failed only because a host has not been granted.
+   * Ask the user for a host the run cannot reach. Resolves when they answer.
    *
-   * Reported from here rather than from each of the dozen call sites, because
-   * every one of them goes through `forActiveTab` and none of them cares. What
-   * the panel does with it is put an Allow button in front of the user, which
-   * is the one thing that turns "blocked" from a dead end into a step.
+   * Asked from here rather than from each of the dozen call sites, because
+   * every one of them goes through `forActiveTab` and none of them cares.
+   *
+   * It blocks, like a confirmation does, and that is the whole point. Telling
+   * the panel and carrying on meant the agent spent the rest of the run
+   * explaining it was stuck while the answer sat unread on screen -- and by the
+   * time the user pressed Allow the run had already given up and written its
+   * conclusion. Stopping costs nothing: the loop is an async call in this same
+   * document, so waiting is a promise, and the step it was on resumes with the
+   * permission it needed.
    */
-  #onNeedsGrant?: (host: string) => void;
+  #askGrant?: (needed: GrantNeeded) => Promise<boolean>;
+  /**
+   * Hosts already put to the user and turned down.
+   *
+   * Without this a refusal is re-asked on the next tool call, and the next, for
+   * as long as the model keeps trying -- which turns one "not now" into a
+   * dialog the user cannot get out of.
+   */
+  #refused = new Set<string>();
   /**
    * The tab this run is working on, once it has opened or chosen one.
    *
@@ -76,11 +90,11 @@ export class DriverPool {
   constructor(
     enabled: boolean,
     onFallback?: (reason: string) => void,
-    onNeedsGrant?: (host: string) => void,
+    askGrant?: (needed: GrantNeeded) => Promise<boolean>,
   ) {
     this.#enabled = enabled;
     this.#onFallback = onFallback;
-    this.#onNeedsGrant = onNeedsGrant;
+    this.#askGrant = askGrant;
   }
 
   /**
@@ -202,15 +216,23 @@ export class DriverPool {
   async forActiveTab(): Promise<
     { ok: true; driver: PageDriver; tabId: number; url: string } | PageFailure
   > {
-    const page = this.#target !== undefined ? await ensureTab(this.#target) : await ensurePage();
+    let page = this.#target !== undefined ? await ensureTab(this.#target) : await ensurePage();
+
+    // Stop and ask, then carry on with the answer. The retry is what makes this
+    // a step in the run rather than a message about one.
+    if (!page.ok && page.needsGrant && (await this.#negotiate(page.needsGrant))) {
+      page = this.#target !== undefined ? await ensureTab(this.#target) : await ensurePage();
+    }
+
     if (!page.ok) {
-      if (page.needsGrant) this.#onNeedsGrant?.(page.needsGrant);
       // A pinned tab that has gone is not a failure to report to the user; it is
       // a reason to go back to following them.
       if (this.#target !== undefined) {
         await this.forget(this.#target);
-        const fallback = await ensurePage();
-        if (!fallback.ok && fallback.needsGrant) this.#onNeedsGrant?.(fallback.needsGrant);
+        let fallback = await ensurePage();
+        if (!fallback.ok && fallback.needsGrant && (await this.#negotiate(fallback.needsGrant))) {
+          fallback = await ensurePage();
+        }
         if (fallback.ok) {
           const driver = await this.#driverFor(fallback.tabId);
           this.mark(fallback.tabId);
@@ -224,6 +246,22 @@ export class DriverPool {
     const driver = await this.#driverFor(page.tabId);
     this.mark(page.tabId);
     return { ok: true, driver, tabId: page.tabId, url: page.url };
+  }
+
+  /**
+   * Put a missing permission to the user, once per host per run.
+   *
+   * Returns whether the run may now proceed. A host that has been refused
+   * answers `false` without asking again: one "not now" is an answer, and
+   * re-raising it on every subsequent tool call would be a dialog with no way
+   * out of it.
+   */
+  async #negotiate(needed: GrantNeeded): Promise<boolean> {
+    if (!this.#askGrant) return false;
+    if (this.#refused.has(needed.host)) return false;
+    const allowed = await this.#askGrant(needed);
+    if (!allowed) this.#refused.add(needed.host);
+    return allowed;
   }
 
   async #driverFor(tabId: number): Promise<PageDriver> {

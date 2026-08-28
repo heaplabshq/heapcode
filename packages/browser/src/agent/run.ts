@@ -16,7 +16,13 @@ import { DriverPool } from './driverPool.js';
 import { BrowserToolExecutor } from './executor.js';
 import { READ_ONLY_TOOLS, SCREENSHOT } from './tools.js';
 import { BROWSER_AGENT_PROMPT } from './prompt.js';
-import { activeSite, sendToPage, ensurePage, ensureTab } from '../sidepanel/page.js';
+import {
+  activeSite,
+  sendToPage,
+  ensurePage,
+  ensureTab,
+  type GrantNeeded,
+} from '../sidepanel/page.js';
 import { decide, mayOfferAlwaysAllow, type BrowserMode } from './originPolicy.js';
 import { recordAudit } from './audit.js';
 import { ATTACH_FILE, AUTOFILL_FORM, DRAG, MUTATING_TOOLS } from './actions.js';
@@ -106,13 +112,14 @@ export interface RunRequest {
   /** Told when policy refused outright, so the panel can explain it. */
   onBlocked(reason: string): void;
   /**
-   * Told when the run is stuck only for want of a host permission.
+   * Ask for a host the run cannot reach. Resolves when the user answers.
    *
-   * The panel turns this into an Allow button. Without it the agent's only
-   * recourse is to say "blocked, please go and grant it", which is a dead end
-   * printed into a transcript that will still say it after the user has.
+   * Blocking, like `confirm`. The agent's only other recourse is to say
+   * "blocked, please go and grant it" -- a dead end printed into a transcript
+   * that will still be showing it after the user has, and by then the run has
+   * given up and written a conclusion around the thing it could not read.
    */
-  onNeedsGrant(host: string): void;
+  requestGrant(needed: GrantNeeded): Promise<boolean>;
   /**
    * Put a question from the agent to the user. Resolves with their answer, or
    * undefined if they chose to let it decide.
@@ -147,7 +154,7 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   const pool = new DriverPool(
     useDebugger,
     (reason) => request.onBlocked(reason),
-    (host) => request.onNeedsGrant(host),
+    (needed) => request.requestGrant(needed),
   );
   const executor = new BrowserToolExecutor(task, {
     pool,

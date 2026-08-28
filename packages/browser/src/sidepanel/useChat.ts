@@ -6,6 +6,7 @@ import type { StoredProfile } from '../shared/settings.js';
 import { runBrowserAgent, type ConfirmAnswer, type ConfirmRequest } from '../agent/run.js';
 import type { BrowserMode } from '../agent/originPolicy.js';
 import { clearSession, loadSession, saveSession } from '../shared/session.js';
+import type { GrantNeeded } from './page.js';
 import type { Dataset } from '../shared/dataset.js';
 import { recordRun } from '../shared/tasks.js';
 import { ThinkSplitter } from './thinkStream.js';
@@ -208,13 +209,15 @@ export interface ChatDeps {
   ask(question: { question: string; options?: string[]; blocksAction: boolean }): Promise<string | undefined>;
   cancelAsk(): void;
   /**
-   * The run is stuck for want of a host permission.
+   * Ask for a host the run cannot reach. Resolves when the user answers.
    *
    * Handed up rather than handled here: granting needs a user gesture, so the
    * only thing that can act on it is a button, and the button belongs to the
    * panel.
    */
-  needsGrant(host: string): void;
+  requestGrant(needed: GrantNeeded): Promise<boolean>;
+  /** Abandon a pending ask, when the run it belongs to is stopped. */
+  cancelGrant(): void;
 }
 
 export function useChat(profile: StoredProfile, deps: ChatDeps) {
@@ -273,6 +276,9 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
     // there would let a later click approve an action nobody is waiting for.
     deps.cancelConfirm();
     deps.cancelAsk();
+    // A permission asked for by a run that is being stopped is not a question
+    // anyone still needs answered.
+    deps.cancelGrant();
   }, [deps]);
 
   const send = useCallback(
@@ -365,7 +371,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
               ...turn,
               steps: [...(turn.steps ?? []), { kind: 'note', text: reason }],
             })),
-          onNeedsGrant: (host) => deps.needsGrant(host),
+          requestGrant: deps.requestGrant,
           events: {
             // The finish summary. Core sends it here, separately from the
             // streamed narration -- it is the answer the model meant to give.

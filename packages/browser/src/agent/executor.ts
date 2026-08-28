@@ -15,6 +15,7 @@ import type { Classification } from './destructive.js';
 import { parseKey, KNOWN_KEYS } from './keys.js';
 import { matchAll, PROFILE_FIELDS, type UserProfile } from '../shared/profile.js';
 import { mergeTable, type Dataset } from '../shared/dataset.js';
+import { RepetitionGuard } from './repetition.js';
 import { findNextControl, nextIsExhausted, nextPageUrl } from './pagination.js';
 
 /**
@@ -30,6 +31,25 @@ import { findNextControl, nextIsExhausted, nextPageUrl } from './pagination.js';
  * the model gets what changed rather than the page again, which is the
  * difference between a ten-step run costing ten pages and costing one.
  */
+/** Tools that change the page. Repetition means something different for these. */
+const MUTATING = new Set([
+  'click',
+  'type',
+  'fill_form',
+  'autofill_form',
+  'select',
+  'press_key',
+  'drag',
+  'navigate',
+  'go_back',
+  'next_page',
+  'open_tab',
+  'close_tab',
+  'switch_tab',
+  'attach_file',
+  'download',
+]);
+
 export class BrowserToolExecutor {
   /**
    * The last snapshot of each tab the run has read, keyed by tab.
@@ -82,6 +102,14 @@ export class BrowserToolExecutor {
    * four. The user gets the table; the model gets a receipt.
    */
   #dataset?: Dataset;
+  /**
+   * Whether the run is getting anywhere.
+   *
+   * Core has no repetition detection and its step limit is a hundred turns, so
+   * an agent that has started going in circles does so expensively and without
+   * anyone being told. See repetition.ts for the run this was written from.
+   */
+  #repetition = new RepetitionGuard();
 
   constructor(
     intent: string,
@@ -138,6 +166,42 @@ export class BrowserToolExecutor {
     const ok = (content: string): ToolResult => ({ id: call.id, name: call.name, content });
 
     try {
+      const result = await this.#dispatch(call, ok, fail);
+      return this.#guard(call, result, fail);
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Notice a run going in circles, and say so in the result it asked for.
+   *
+   * Never applied to an action: a click repeated is a different question (the
+   * no-op detection in `#observe` covers that, and blind retries are already
+   * refused there), and a failed call is not a loop -- it is a failure, and the
+   * error explains itself.
+   */
+  #guard(call: ToolCall, result: ToolResult, fail: (s: string) => ToolResult): ToolResult {
+    if (MUTATING.has(call.name)) {
+      this.#repetition.acted();
+      return result;
+    }
+    if (result.isError) return result;
+
+    const verdict = this.#repetition.check(call.name, call.args, result.content);
+    if (verdict.kind === 'refuse') return fail(verdict.reason);
+    // Warned, not withheld. The model asked a legitimate question and gets its
+    // answer; the observation rides along with it.
+    if (verdict.kind === 'warn') return { ...result, content: `${result.content}\n\n${verdict.note}` };
+    return result;
+  }
+
+  async #dispatch(
+    call: ToolCall,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    {
       switch (call.name) {
         case 'read_page':
           return await this.#readPage(call.args.full === true, ok, fail);
@@ -189,8 +253,6 @@ export class BrowserToolExecutor {
         default:
           return fail(`Unknown tool "${call.name}".`);
       }
-    } catch (error) {
-      return fail(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1242,8 +1304,28 @@ export class BrowserToolExecutor {
       const scope = [role && `role ${role}`, filter && `matching "${filter}"`]
         .filter(Boolean)
         .join(' ');
+
+      // And show what *is* here. A bare "nothing matched" is a dead end, and a
+      // dead end is what makes a model try the same call with a synonym, then
+      // another synonym -- which is precisely the loop this cost a real run.
+      // Seeing the actual names ends the guessing in one step: either the thing
+      // is there under another word, or it plainly is not on the page.
+      const present = [...result.snapshot.controls]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10)
+        .map((control) => `[${control.handle}] ${control.role} ${JSON.stringify(control.name)}`);
+
+      const sample =
+        present.length > 0
+          ? `\n\nWhat is here, most prominent first:\n${present.map((line) => `  ${line}`).join('\n')}`
+          : '';
+
       return ok(
-        `No controls ${scope || 'found'} on this page. It has ${result.snapshot.controls.length} controls in total; call read_page to see them.`,
+        `No controls ${scope || 'found'} on this page. It has ${result.snapshot.controls.length} ` +
+          `controls in total.${sample}\n\nIf what you want is not among these, do not try another ` +
+          `word for it -- it is not on the page as read. It may be below the fold (scroll), inside ` +
+          `a list that only renders what is on screen (scroll the list itself), or behind something ` +
+          `that has to be opened first.`,
       );
     }
 

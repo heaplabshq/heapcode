@@ -67,7 +67,11 @@ export class RunBudget {
    * hurries them toward the wall.
    */
   spend(tool: string, host: string): LimitCheck {
-    const navigating = tool === 'navigate' || tool === 'go_back';
+    // Opening a tab is a navigation that keeps the old page. It costs the
+    // navigation budget for the same reason `navigate` does -- a run that has
+    // been talked into hopping between forty pages is the thing being bounded,
+    // and doing it in forty tabs instead is not a different behaviour.
+    const navigating = tool === 'navigate' || tool === 'go_back' || tool === 'open_tab';
 
     if (this.#actions >= this.#limits.maxActions) {
       return {

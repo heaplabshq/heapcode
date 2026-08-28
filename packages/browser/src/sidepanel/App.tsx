@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { defaultProfile, loadProfile, type StoredProfile } from '../shared/settings.js';
+import { defaultProfile, loadOnboarded, loadProfile, type StoredProfile } from '../shared/settings.js';
 import { PORT_NAME, type WorkerMessage } from '../shared/messages.js';
 import { useChat } from './useChat.js';
 import { MessageList } from './components/MessageList.js';
@@ -8,6 +8,8 @@ import { Settings } from './components/Settings.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { Confirm } from './components/Confirm.js';
 import { AuditLog } from './components/AuditLog.js';
+import { Onboarding } from './components/Onboarding.js';
+import { Tasks, TaskChips } from './components/Tasks.js';
 import { useConfirm } from './useConfirm.js';
 import { useAsk } from './useAsk.js';
 import { Ask } from './components/Ask.js';
@@ -19,13 +21,19 @@ export function App() {
   const [origin, setOrigin] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showAudit, setShowAudit] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
+  /** The composer's text, held here so the saved-tasks panel can offer to keep it. */
+  const [draft, setDraft] = useState('');
   const [loaded, setLoaded] = useState(false);
+  /** Undefined until the flag has been read, so the panel does not flash. */
+  const [onboarding, setOnboarding] = useState<boolean>();
   const [site, setSite] = useState<ActiveSite>();
   const [mode, setMode] = useState<BrowserMode>(DEFAULT_BROWSER_MODE);
   const confirmation = useConfirm();
   const question = useAsk();
   const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile, {
     mode,
+    host: site?.host,
     confirm: confirmation.request,
     cancelConfirm: confirmation.cancel,
     ask: question.ask,
@@ -33,12 +41,14 @@ export function App() {
   });
 
   useEffect(() => {
-    void loadProfile().then((stored) => {
+    void Promise.all([loadProfile(), loadOnboarded()]).then(([stored, onboarded]) => {
       setProfile(stored);
       setLoaded(true);
-      // Nothing can be sent without a model, so open setup rather than letting
-      // the first send fail for a reason the user cannot see.
-      if (stored.model.length === 0) setShowSettings(true);
+      // First run gets the explanation, not the settings form. Someone who has
+      // been through it once and cleared their model gets the form, because at
+      // that point the thing they are missing is a field, not an explanation.
+      setOnboarding(!onboarded);
+      if (onboarded && stored.model.length === 0) setShowSettings(true);
     });
   }, []);
 
@@ -79,6 +89,25 @@ export function App() {
 
   const configured = profile.model.length > 0 && profile.baseUrl.length > 0;
 
+  if (onboarding) {
+    return (
+      <div className="app">
+        <header>
+          <span className="title">heapbrowse</span>
+        </header>
+        <Onboarding
+          profile={profile}
+          origin={origin}
+          site={site}
+          onDone={(saved) => {
+            setProfile(saved);
+            setOnboarding(false);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header>
@@ -112,6 +141,15 @@ export function App() {
         </select>
         <button type="button" className="ghost" onClick={clear} disabled={turns.length === 0}>
           Clear
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => setShowTasks((v) => !v)}
+          aria-expanded={showTasks}
+          title="Saved tasks and earlier runs"
+        >
+          Tasks
         </button>
         <button
           type="button"
@@ -162,9 +200,22 @@ export function App() {
         </div>
       )}
 
+      {showTasks && (
+        <Tasks
+          currentDraft={draft}
+          host={site?.host}
+          onRun={(prompt) => void send(prompt)}
+          onClose={() => setShowTasks(false)}
+        />
+      )}
+
       {showAudit && <AuditLog onClose={() => setShowAudit(false)} />}
 
       <MessageList turns={turns} />
+
+      {turns.length === 0 && !busy && configured && (
+        <TaskChips onRun={(prompt) => void send(prompt)} />
+      )}
 
       {confirmation.pending && (
         <Confirm request={confirmation.pending} onAnswer={confirmation.answer} />
@@ -177,7 +228,14 @@ export function App() {
           it to continue (PRD §7.1). */}
       {busy && <p className="notice">Keep this panel open — the run stops if it closes.</p>}
 
-      <Composer busy={busy} disabled={!configured} onSend={(text) => void send(text)} onStop={stop} />
+      <Composer
+        busy={busy}
+        disabled={!configured}
+        text={draft}
+        onText={setDraft}
+        onSend={(text) => void send(text)}
+        onStop={stop}
+      />
     </div>
   );
 }

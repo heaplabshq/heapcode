@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from 'react';
+import type { KeyboardEvent } from 'react';
 
 /**
  * The input. Enter sends, Shift+Enter makes a newline — the convention every
@@ -11,20 +11,28 @@ import { useState, type KeyboardEvent } from 'react';
 export function Composer({
   busy,
   disabled,
+  text,
+  onText,
   onSend,
   onStop,
 }: {
   busy: boolean;
   disabled: boolean;
+  /**
+   * Controlled from above, so the saved-tasks panel can offer to keep whatever
+   * is half-typed. State that only one component can see is state nothing else
+   * can offer to do anything with.
+   */
+  text: string;
+  onText: (text: string) => void;
   onSend: (text: string) => void;
   onStop: () => void;
 }) {
-  const [text, setText] = useState('');
 
   const submit = () => {
     if (busy || disabled || text.trim().length === 0) return;
     onSend(text);
-    setText('');
+    onText('');
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -42,7 +50,7 @@ export function Composer({
       <div className="composer">
       <textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => onText(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder={disabled ? 'Configure a provider first' : 'Ask something…'}
         rows={2}

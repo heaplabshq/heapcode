@@ -154,3 +154,56 @@ export function classifyNavigate(from: string, to: string): Classification {
   }
   return { permission: 'write' };
 }
+
+/**
+ * Pressing a key, which can be a commit in disguise.
+ *
+ * Enter in a text field is a form submit on most of the web, so it inherits the
+ * click classification of whatever it is submitting rather than being waved
+ * through as an ordinary write. With no target given, the fallback is the page:
+ * if anything on it looks like checkout, Enter there is treated as destructive.
+ * That over-asks on a search box next to a payment form, which is the direction
+ * this whole module is deliberately wrong in.
+ */
+export function classifyPress(
+  key: string,
+  target: Control | undefined,
+  page: Control[],
+): Classification {
+  if (key !== 'Enter') return { permission: 'write' };
+
+  if (target) {
+    if (target.checkout) {
+      return {
+        permission: 'destructive',
+        reason: `Enter in "${target.name}" would submit a payment form — ${target.checkout}`,
+      };
+    }
+    if (target.submits) {
+      return {
+        permission: 'destructive',
+        reason: `Enter in "${target.name}" submits a form, which is usually not reversible`,
+      };
+    }
+    return { permission: 'write' };
+  }
+
+  const checkout = page.find((control) => control.checkout);
+  if (checkout) {
+    return {
+      permission: 'destructive',
+      reason: `this page has a payment area (${checkout.checkout}), and Enter may submit it`,
+    };
+  }
+  return { permission: 'write' };
+}
+
+/** The most dangerous of several classifications — how a batch is judged. */
+export function worstOf(classifications: Classification[]): Classification {
+  const rank = (permission: PermissionClass): number =>
+    permission === 'destructive' ? 3 : permission === 'execute' ? 2 : permission === 'write' ? 1 : 0;
+  return classifications.reduce<Classification>(
+    (worst, candidate) => (rank(candidate.permission) > rank(worst.permission) ? candidate : worst),
+    { permission: 'write' },
+  );
+}

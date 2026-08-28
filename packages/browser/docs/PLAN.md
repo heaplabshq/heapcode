@@ -83,7 +83,9 @@ Goal: a real multi-step agent, with the blast radius still zero.
 
 - [x] Agent loop wired in the **side panel** (guardrail 3), SW as thin router
 - [x] Long-lived `Port` panel↔SW (kept from M0; the port is what stops the worker being reaped)
-- [ ] Run state checkpointed to `chrome.storage.session` so a panel reload can resume
+- [x] Run state checkpointed to `chrome.storage.session` so a panel reload can resume — the
+      transcript, not the run: an in-flight model call cannot be resumed, and a turn that was
+      still going when the panel closed comes back marked interrupted rather than spinning
 - [x] Read-only tools: `read_page`, `get_elements`, `extract_data`, `scroll`, `wait`, `finish`
 - [x] Structural termination on `finish` — inherited, and `finish` never reaches the host executor at all
 - [x] Snapshot **deltas** after the first read — no full re-send per iteration
@@ -207,12 +209,29 @@ Now walked live.
 
 Goal: earn the "operates it for you" claim on tasks people actually have.
 
-- [ ] Multi-page flows (paginate, accumulate, compare)
-- [ ] `extract_data` → table view in the panel + CSV/JSON export
-- [ ] User profile store (name, email, resume text) — local, opt-in, field-matched injection only
+- [x] Multi-page flows (paginate, accumulate, compare) — `next_page` finds the pagination control,
+      or increments a page/offset parameter the URL already has, and says plainly when there is no
+      next page so a collection loop has a stop signal. Never invents a `?page=2` a site never had:
+      a page that ignores it silently returns page one, which a collecting agent reads as "no new
+      rows" and gives up on
+- [x] `extract_data` → table view in the panel + CSV/JSON export. The rows **accumulate outside the
+      transcript**: `extract_data` merges each page into one de-duplicated set, tells the model only
+      the running total, and hands the set to the panel. Before this, page five was reasoned about
+      alongside four pages of re-sent text — the run got slower and worse as it went on
+- [x] User profile store (name, email, resume text) — local, opt-in, field-matched injection only.
+      `autofill_form` matches the page's fields to saved details by `autocomplete` token first and
+      the field's own label second, and the **model never receives a value**: it is told which
+      details exist, names one, and the substitution happens in the executor after the user has
+      approved the call. (Once a value is in a field, the next `read_page` does report it — that is
+      unavoidable and no different from the user typing it.)
 - [ ] Job-application flow: fill everything, **pause and hand the file upload to the user** (PRD §7.4)
-- [ ] Saved/repeatable tasks
-- [ ] Task history with replayable audit trail
+- [x] Saved/repeatable tasks — named prompts, shown as chips on a blank panel where the decision
+      actually gets made rather than behind a button
+- [x] Task history — every run recorded with its site, outcome and answer, and re-runnable.
+      **Re-running sends the request again; it does not replay the actions.** A recorded click
+      sequence is worthless on a page that has been redesigned, and worse than worthless on one
+      that has not: "the third result" is a different product this week, and clicking it again is
+      precisely the wrong thing. The prompt is the durable part
 
 **Exit criteria:** the two PRD example tasks (cheapest 16GB laptop under ₹60,000; fill a job application) both complete on live sites, with the upload step correctly handed back.
 
@@ -220,8 +239,11 @@ Goal: earn the "operates it for you" claim on tasks people actually have.
 
 ## M7 — Launch
 
-- [ ] Onboarding: first-run setup, permission explainer, model picker
-- [ ] Privacy disclosure ("page content goes to the endpoint you configure, and nowhere else")
+- [x] Onboarding: first-run setup, permission explainer, model picker — four steps, skippable at
+      every one, with the Ollama connectivity check *inside* setup rather than waiting to fail on
+      the first real question
+- [x] Privacy disclosure ("page content goes to the endpoint you configure, and nowhere else") —
+      in onboarding step 1 and under Settings
 - [ ] Telemetry: register `heapbrowse` in `heaplabs-telemetry` `KNOWN_APPS`, opt-in, anonymous counts only
 - [ ] Permission minimisation pass — `activeTab` + per-site grants over `<all_urls>` wherever UX survives
 - [ ] Landing page at `browse.heaplabs.dev`
@@ -237,9 +259,41 @@ Not v1. Do not start before M7 ships.
 
 - [x] `chrome.debugger` / CDP escalation: real trusted input events + `DOM.setFileInputFiles` for uploads
 - [x] Accessibility-tree extraction as an alternative to the DOM walk
-- [ ] Cross-tab and background/unattended runs
+- [x] Cross-tab runs — `open_tab` / `switch_tab` / `close_tab` / `list_tabs`, with the run pinned
+      to the tab it is working in and one snapshot kept per tab. Background/unattended runs are
+      still out: the loop dies with the panel, which is the guardrail, not a gap
 - [ ] MCP tool support in the browser agent
 - [ ] Firefox port
+
+### Also brought forward
+
+Four gaps that showed up as "the agent is stuck" rather than as a missing feature:
+
+- [x] **Keys.** `press_key` — Enter, Escape, Tab, arrows, chords. Over CDP these are real key
+      events, so Enter submits a plain HTML form and Tab moves focus; the content-script fallback
+      says in its own result that it only synthesized them, because a caller told "pressed Enter"
+      when nothing happened will not know to turn the debugger on.
+- [x] **Frames.** Both drivers now read embedded frames: CDP asks for the accessibility tree per
+      frame, and the content script runs in every frame and gathers its children over
+      `postMessage`. Handles are banded per frame, so the number itself says where to route the
+      click. A frame that could not be read is reported as unread — "the accept button is in a
+      frame I cannot see" and "there is no accept button" lead a model to different next moves.
+- [x] **Real waiting.** `settle` under CDP was `setTimeout(1200)`. It now waits on requests in
+      flight, document readiness, and then DOM quiet. The old version read search results
+      mid-render and reported an empty list for a page that was about to have twenty items on it.
+- [x] **Batched fills and pointer work.** `fill_form` fills a whole form in one call and one
+      confirmation; `hover` opens hover-only menus; `drag` (CDP only) moves things.
+
+Confirmed working manually on live sites (2026-08-28).
+
+### Then
+
+- [x] `screenshot` works without the debugger too, via `captureVisibleTab` — which can only
+      photograph the tab in front, so it refuses rather than returning a picture of the wrong page
+- [x] A waiting run raises a badge on the toolbar icon, so a confirmation nobody is looking at is
+      visible from another window. A badge rather than `chrome.notifications`: that permission adds
+      a line to the install prompt for something the toolbar already does, and M7 owes a
+      permission-minimisation pass rather than another permission.
 
 ---
 

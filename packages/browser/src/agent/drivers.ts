@@ -1,8 +1,9 @@
 import type { PageSnapshot } from '../shared/snapshot.js';
 import type { ScrollDirection } from '../content/scroll.js';
 import { sendToPage } from '../sidepanel/page.js';
-import { CdpDetached, CdpSession } from './cdp.js';
+import { CdpDetached, CdpSession, frameList } from './cdp.js';
 import { snapshotFromAxTree, type AxNode } from './axTree.js';
+import { describeKey, keySpec, modifierMask, selectAllModifier, type KeyPress } from './keys.js';
 
 /**
  * Two ways to drive a page, behind one interface.
@@ -21,8 +22,21 @@ export interface PageDriver {
   click(handle: number, generation: number): Promise<Outcome>;
   type(handle: number, generation: number, text: string): Promise<Outcome>;
   select(handle: number, generation: number, option: string): Promise<Outcome>;
+  /** Move the pointer onto an element, for menus and tooltips that open on it. */
+  hover(handle: number, generation: number): Promise<Outcome>;
+  /**
+   * Press a key, optionally after focusing an element.
+   *
+   * Both drivers offer this, but they are not equally good at it and the note
+   * that comes back says so: only CDP produces a key event the browser itself
+   * acts on, so only CDP can press Enter to submit a plain HTML form or Tab to
+   * move focus.
+   */
+  press(press: KeyPress, handle?: number, generation?: number): Promise<Outcome>;
   scroll(direction: ScrollDirection, pages: number): Promise<PageSnapshot | Outcome>;
   settle(seconds: number): Promise<{ settled: boolean; waitedMs: number }>;
+  /** Drag one element onto another. Needs real pointer input, so CDP only. */
+  drag?(from: number, to: number, generation: number): Promise<Outcome>;
   /** Attach files to a file input. Only CDP can do this at all. */
   attachFiles?(handle: number, generation: number, paths: string[]): Promise<Outcome>;
   /**
@@ -75,6 +89,14 @@ export class DomDriver implements PageDriver {
     return this.#act({ type: 'select', handle, generation, option });
   }
 
+  hover(handle: number, generation: number) {
+    return this.#act({ type: 'hover', handle, generation });
+  }
+
+  press(press: KeyPress, handle?: number, generation?: number) {
+    return this.#act({ type: 'press', handle, generation, press });
+  }
+
   async scroll(direction: ScrollDirection, pages: number): Promise<PageSnapshot | Outcome> {
     const response = await sendToPage(this.#tabId, { type: 'scroll', direction, pages });
     if (!response.ok) return { ok: false, error: response.error };
@@ -86,6 +108,30 @@ export class DomDriver implements PageDriver {
     const response = await sendToPage(this.#tabId, { type: 'settle', seconds });
     if (!response.ok || response.kind !== 'settled') return { settled: false, waitedMs: 0 };
     return { settled: response.settled, waitedMs: response.waitedMs };
+  }
+
+  /**
+   * A picture, without the debugger.
+   *
+   * `captureVisibleTab` photographs whatever is in front in that window, and
+   * nothing else -- it takes no tab id and cannot be pointed at a background
+   * tab. So this refuses rather than returning a picture of the wrong page,
+   * which is the failure that would be hardest to notice: a screenshot always
+   * looks like a real answer.
+   *
+   * A content script cannot photograph its own page at all, which is why this
+   * lives on the driver and goes through the extension API instead.
+   */
+  async screenshot(): Promise<string | undefined> {
+    try {
+      const tab = await chrome.tabs.get(this.#tabId);
+      if (!tab.active || tab.windowId === undefined) return undefined;
+      return await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 45 });
+    } catch {
+      // No grant for this tab, a page Chrome will not let anyone capture, or the
+      // tab has gone. None of them are worth failing an action over.
+      return undefined;
+    }
   }
 }
 
@@ -122,8 +168,8 @@ export class CdpDriver implements PageDriver {
   }
 
   async snapshot(): Promise<PageSnapshot> {
-    const [tree, metrics, tab] = await Promise.all([
-      this.#session.send<{ nodes: AxNode[] }>('Accessibility.getFullAXTree'),
+    const [trees, metrics, tab] = await Promise.all([
+      this.#trees(),
       this.#session.send<LayoutMetrics>('Page.getLayoutMetrics'),
       chrome.tabs.get(this.#session.tabId),
     ]);
@@ -132,7 +178,8 @@ export class CdpDriver implements PageDriver {
     this.#origin = originOf(tab.url);
 
     return snapshotFromAxTree({
-      nodes: tree.nodes ?? [],
+      nodes: trees.nodes,
+      notes: trees.notes,
       url: tab.url ?? '',
       title: tab.title ?? '',
       viewport: {
@@ -155,6 +202,74 @@ export class CdpDriver implements PageDriver {
         return handle;
       },
     });
+  }
+
+  /**
+   * The accessibility tree of every frame in the tab, merged into one.
+   *
+   * `Accessibility.getFullAXTree` with no argument returns the top document
+   * only. A cookie banner, an embedded checkout, a payment field, a reCAPTCHA —
+   * all of those live in an iframe, and none of them were in the page as the
+   * model saw it. Asking per frame is the whole fix.
+   *
+   * Node ids are only unique within one tree, so each frame's ids are prefixed
+   * on the way in; otherwise the second frame's "3" overwrites the first frame's
+   * and the parent/child walk starts crossing documents. Backend node ids, which
+   * are what handles actually point at, are unique across the tab already.
+   *
+   * A frame Chrome runs out of process refuses the request — it belongs to
+   * another debugger target. That is reported rather than swallowed: "the page
+   * has no accept button" and "the accept button is in a frame I cannot read"
+   * lead a model to completely different next moves.
+   */
+  async #trees(): Promise<{ nodes: AxNode[]; notes: string[] }> {
+    const frames = await frameList(this.#session);
+    const notes: string[] = [];
+
+    // The top document is always read. Child frames are capped, because a page
+    // carrying twenty advert frames would otherwise pay twenty round trips per
+    // read for content nobody wants.
+    const MAX_CHILD_FRAMES = 8;
+    const children = frames.filter((frame) => !frame.top).slice(0, MAX_CHILD_FRAMES);
+    const skipped = frames.filter((frame) => !frame.top).length - children.length;
+
+    const nodes: AxNode[] = [];
+    let index = 0;
+
+    for (const frame of [frames.find((f) => f.top) ?? { id: '', url: '', top: true }, ...children]) {
+      const label = frame.top ? undefined : hostOf(frame.url);
+      try {
+        const tree = await this.#session.send<{ nodes: AxNode[] }>(
+          'Accessibility.getFullAXTree',
+          frame.top || !frame.id ? {} : { frameId: frame.id },
+        );
+        const prefix = frame.top ? '' : `f${++index}:`;
+        for (const node of tree.nodes ?? []) {
+          nodes.push(
+            prefix
+              ? {
+                  ...node,
+                  nodeId: prefix + node.nodeId,
+                  childIds: node.childIds?.map((id) => prefix + id),
+                  frameLabel: label,
+                }
+              : node,
+          );
+        }
+      } catch (error) {
+        if (error instanceof CdpDetached) throw error;
+        if (!frame.top) {
+          notes.push(
+            `An embedded frame (${label ?? 'unknown origin'}) could not be read — Chrome runs it ` +
+              `separately from the page. If what you need should be inside it, say so rather than ` +
+              `concluding it is not there.`,
+          );
+        }
+      }
+    }
+
+    if (skipped > 0) notes.push(`${skipped} further embedded frame(s) were not read.`);
+    return { nodes, notes };
   }
 
   /**
@@ -232,10 +347,19 @@ export class CdpDriver implements PageDriver {
     if (!('backendNodeId' in target)) return target;
 
     await this.#session.send('DOM.focus', { backendNodeId: target.backendNodeId });
-    // Select-all then insert, so typing replaces rather than appends.
+    // Select-all then insert, so typing replaces rather than appends. The
+    // modifier is platform-dependent and getting it wrong does not error: the
+    // field simply keeps its old value and the new text lands after it.
     await this.#session.send('Input.dispatchKeyEvent', {
       type: 'keyDown',
-      modifiers: 4,
+      modifiers: selectAllModifier(),
+      key: 'a',
+      code: 'KeyA',
+      windowsVirtualKeyCode: 65,
+    });
+    await this.#session.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      modifiers: selectAllModifier(),
       key: 'a',
       code: 'KeyA',
       windowsVirtualKeyCode: 65,
@@ -292,6 +416,123 @@ export class CdpDriver implements PageDriver {
 
     this.#invalidate();
     return { ok: true, note: `Selected "${value.slice(3)}".` };
+  }
+
+  /**
+   * Move the real pointer onto an element and leave it there.
+   *
+   * A hover menu is not waiting for one `mouseover`; it is waiting for the
+   * pointer to arrive and stay. Two moves a beat apart is what the browser sends
+   * when a hand does it, and it is the difference between a menu that opens and
+   * one that flickers.
+   */
+  async hover(handle: number, _generation?: number): Promise<Outcome> {
+    const target = await this.#resolve(handle);
+    if (!('backendNodeId' in target)) return target;
+
+    const point = await this.#centre(target.backendNodeId);
+    if (!point) return { ok: false, error: 'That element has no position on screen to hover over.' };
+
+    await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+    // Whatever opened is new, and the page has to be read again to see it.
+    await this.settle(1.5);
+    return { ok: true, note: 'Moved the pointer onto it with a real mouse event.' };
+  }
+
+  /**
+   * A real key press, which is a different thing from typing text.
+   *
+   * `Input.insertText` puts characters in a field and produces no key events, so
+   * a form that submits on Enter, a combobox driven by arrow keys, and a dialog
+   * that closes on Escape are all beyond it. This is the browser's own key
+   * dispatch: the page cannot tell it from a keyboard, and the browser's default
+   * behaviour runs.
+   */
+  async press(press: KeyPress, handle?: number, _generation?: number): Promise<Outcome> {
+    if (handle !== undefined) {
+      const target = await this.#resolve(handle);
+      if (!('backendNodeId' in target)) return target;
+      await this.#session.send('DOM.focus', { backendNodeId: target.backendNodeId }).catch(() => {
+        // A non-focusable target is not a reason to refuse the key; it goes to
+        // whatever has focus, which is what pressing Escape usually wants.
+      });
+    }
+
+    const spec = keySpec(press);
+    const modifiers = modifierMask(press);
+    const common = {
+      modifiers,
+      key: spec.key,
+      code: spec.code,
+      windowsVirtualKeyCode: spec.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: spec.windowsVirtualKeyCode,
+    };
+
+    // `keyDown` with text is what Chrome turns into a character; `rawKeyDown`
+    // is the right type when there is no text, and using the wrong one is how a
+    // key arrives with no `keypress` and gets ignored by half the web.
+    await this.#session.send('Input.dispatchKeyEvent', {
+      ...common,
+      type: spec.text && modifiers === 0 ? 'keyDown' : 'rawKeyDown',
+      ...(spec.text && modifiers === 0 ? { text: spec.text, unmodifiedText: spec.text } : {}),
+    });
+    await this.#session.send('Input.dispatchKeyEvent', { ...common, type: 'keyUp' });
+
+    this.#invalidate();
+    return { ok: true, note: `Pressed ${describeKey(press)} with a real key event.` };
+  }
+
+  /**
+   * Drag one element onto another.
+   *
+   * Steps rather than a jump: a drag implementation that tracks movement (every
+   * sortable list, every file drop zone, every range slider) needs to see the
+   * pointer travel, and a single move from source to target reads as a
+   * teleport it will not respond to.
+   */
+  async drag(from: number, to: number, _generation?: number): Promise<Outcome> {
+    const source = await this.#resolve(from);
+    if (!('backendNodeId' in source)) return source;
+    const destination = await this.#resolve(to);
+    if (!('backendNodeId' in destination)) return destination;
+
+    const start = await this.#centre(source.backendNodeId);
+    const end = await this.#centre(destination.backendNodeId);
+    if (!start || !end) {
+      return { ok: false, error: 'One of those elements has no position on screen, so it cannot be dragged.' };
+    }
+
+    await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...start });
+    await this.#session.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      ...start,
+      button: 'left',
+      clickCount: 1,
+    });
+
+    const STEPS = 12;
+    for (let step = 1; step <= STEPS; step++) {
+      await this.#session.send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: start.x + ((end.x - start.x) * step) / STEPS,
+        y: start.y + ((end.y - start.y) * step) / STEPS,
+        button: 'left',
+        buttons: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
+
+    await this.#session.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      ...end,
+      button: 'left',
+      clickCount: 1,
+    });
+
+    this.#invalidate();
+    return { ok: true, note: 'Dragged it onto the target with real pointer input.' };
   }
 
   /**
@@ -370,13 +611,84 @@ export class CdpDriver implements PageDriver {
     }
   }
 
+  /**
+   * Wait until the page has actually stopped, not for a fixed number of
+   * milliseconds.
+   *
+   * This used to be `setTimeout(1200)`, which is wrong in both directions and
+   * expensively so: a second and a fifth of dead time on a page that was ready
+   * at once, and a read taken mid-render on a search that took two seconds to
+   * come back. The agent then reported an empty result list for a page that was
+   * about to have twenty items on it — the single most confusing failure this
+   * product produced, because reading again immediately made it work.
+   *
+   * Three conditions, in the order they resolve. Requests in flight, because
+   * with `Network` enabled the browser tells us exactly how many there are.
+   * Document readiness, because a page can be quiet simply by not having started.
+   * Then DOM quiet, because a framework renders *after* its data arrives, and
+   * network idle alone lands one frame too early.
+   */
   async settle(seconds: number): Promise<{ settled: boolean; waitedMs: number }> {
-    // No DOM-mutation signal is exposed over CDP without instrumenting the page,
-    // so this waits for the page's own load state to be quiet and then a beat.
     const started = Date.now();
     const budget = Math.min(Math.max(seconds, 0), 15) * 1000;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(budget, 1200)));
-    return { settled: true, waitedMs: Date.now() - started };
+    const QUIET_MS = 400;
+    const remaining = () => budget - (Date.now() - started);
+
+    while (remaining() > 0) {
+      const idleFor = Date.now() - Math.max(this.#session.lastNetworkActivity, started - QUIET_MS);
+      if (this.#session.pendingRequests === 0 && idleFor >= QUIET_MS && (await this.#ready())) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    if (remaining() <= 0) return { settled: false, waitedMs: Date.now() - started };
+
+    const quiet = await this.#domQuiet(Math.min(remaining(), 2_000), QUIET_MS);
+    return { settled: quiet, waitedMs: Date.now() - started };
+  }
+
+  /** Whether the document has finished parsing. Cheap, and often decisive. */
+  async #ready(): Promise<boolean> {
+    try {
+      const result = await this.#session.send<{ result: { value?: string } }>('Runtime.evaluate', {
+        expression: 'document.readyState',
+        returnByValue: true,
+      });
+      return result.result.value !== 'loading';
+    } catch (error) {
+      if (error instanceof CdpDetached) throw error;
+      // A page we cannot ask is not a page to keep waiting on.
+      return true;
+    }
+  }
+
+  /**
+   * Resolve once the DOM stops changing, using the page's own MutationObserver.
+   *
+   * CDP exposes no mutation signal, so the observer has to run in the page. It
+   * disconnects itself on both exits, including the timeout, because leaving one
+   * attached to every page the agent visits is a slow leak on a long run.
+   */
+  async #domQuiet(capMs: number, quietMs: number): Promise<boolean> {
+    const expression = `new Promise((resolve) => {
+      let timer;
+      const done = (settled) => { observer.disconnect(); clearTimeout(timer); clearTimeout(cap); resolve(settled); };
+      const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => done(true), ${quietMs}); });
+      const cap = setTimeout(() => done(false), ${capMs});
+      timer = setTimeout(() => done(true), ${quietMs});
+      observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true });
+    })`;
+
+    try {
+      const result = await this.#session.send<{ result: { value?: boolean } }>('Runtime.evaluate', {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      return result.result.value !== false;
+    } catch (error) {
+      if (error instanceof CdpDetached) throw error;
+      return true;
+    }
   }
 
   /**
@@ -396,6 +708,15 @@ function originOf(url: string | undefined): string | undefined {
   if (!url) return undefined;
   try {
     return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A frame's origin in the shortest form worth showing the model. */
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).host || undefined;
   } catch {
     return undefined;
   }

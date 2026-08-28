@@ -11,15 +11,17 @@ import {
 import { createProvider, resolveContextWindow, resolveCapabilities } from '@heapcode/core/providers';
 import type { ChatMessage } from '@heapcode/core/providers';
 import { loadApiKey, loadFiles, loadUseDebugger, type StoredProfile } from '../shared/settings.js';
+import { availableLabels, loadProfileEnabled, loadUserProfile } from '../shared/profile.js';
 import { DriverPool } from './driverPool.js';
 import { BrowserToolExecutor } from './executor.js';
 import { READ_ONLY_TOOLS, SCREENSHOT } from './tools.js';
 import { BROWSER_AGENT_PROMPT } from './prompt.js';
-import { activeSite, sendToPage, ensurePage } from '../sidepanel/page.js';
+import { activeSite, sendToPage, ensurePage, ensureTab } from '../sidepanel/page.js';
 import { decide, mayOfferAlwaysAllow, type BrowserMode } from './originPolicy.js';
 import { recordAudit } from './audit.js';
-import { ATTACH_FILE, MUTATING_TOOLS } from './actions.js';
+import { ATTACH_FILE, AUTOFILL_FORM, DRAG, MUTATING_TOOLS } from './actions.js';
 import { RunBudget } from './limits.js';
+import type { Dataset } from '../shared/dataset.js';
 
 /**
  * Runs one agent task in the side panel.
@@ -52,6 +54,14 @@ export interface RunEvents {
   onCompaction(before: number, after: number): void;
   /** A picture of what the agent is looking at. For the panel only. */
   onView(dataUrl: string): void;
+  /**
+   * Rows the agent has collected so far. For the panel only.
+   *
+   * Deliberately not sent back to the model, which already knows what it
+   * extracted and does not need fifty rows re-read to it on every turn — that
+   * is the cost this whole mechanism exists to avoid.
+   */
+  onData(dataset: Dataset): void;
 }
 
 /** What the user is asked, in their own terms rather than the model's. */
@@ -103,12 +113,22 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   const apiKey = await loadApiKey();
   const provider = createProvider(profile, apiKey);
 
-  const [useDebugger, files] = await Promise.all([loadUseDebugger(), loadFiles()]);
+  const [useDebugger, files, profileEnabled, savedProfile] = await Promise.all([
+    loadUseDebugger(),
+    loadFiles(),
+    loadProfileEnabled(),
+    loadUserProfile(),
+  ]);
+  // Switched off means the run does not receive them at all, rather than
+  // receiving them and being asked not to use them.
+  const userProfile = profileEnabled ? savedProfile : {};
   const pool = new DriverPool(useDebugger, (reason) => request.onBlocked(reason));
   const executor = new BrowserToolExecutor(task, {
     pool,
     files,
+    profile: userProfile,
     onView: (dataUrl) => events.onView(dataUrl),
+    onData: (dataset) => events.onData(dataset),
   });
   // One budget per run. Checked before anything is shown to the user, so a
   // page that gets the model to propose forty actions cannot turn that into
@@ -132,7 +152,7 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   const requestPermission = async (
     call: ToolCall,
   ): Promise<boolean | { allowed: boolean; reason: string }> => {
-    const { classification, target, url } = await executor.classify(call);
+    const { classification, target, url, describe } = await executor.classify(call);
     const host = url ? safeHost(url) : (site?.host ?? '');
 
     const decision = decide({
@@ -179,8 +199,9 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     }
 
     // Outline the real element while the question is on screen, so the user
-    // approves what is actually there rather than a name in a prompt.
-    const page = await ensurePage();
+    // approves what is actually there rather than a name in a prompt. In the
+    // tab the run is working in, which is not necessarily the one in front.
+    const page = pool.target !== undefined ? await ensureTab(pool.target) : await ensurePage();
     const generation = executor.lastSnapshot?.generation;
     const handle = Number(call.args.handle);
     if (page.ok && generation !== undefined && Number.isInteger(handle)) {
@@ -192,7 +213,9 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
       answer = await confirm({
         tool: call.name,
         permission: classification.permission,
-        target: describeTarget(call, target?.name),
+        // The executor's own description when it has one: some calls decide
+        // what they will do rather than carrying it in their arguments.
+        target: describe ?? describeTarget(call, target?.name),
         host,
         reason: classification.reason,
         mayAlwaysAllow: mayOfferAlwaysAllow(classification.permission, host),
@@ -217,21 +240,29 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     task,
     history,
     workspaceName: site ? `the web page at ${site.host}` : 'the current web page',
-    systemPrompt: BROWSER_AGENT_PROMPT,
+    systemPrompt: `${BROWSER_AGENT_PROMPT}${savedDetails(availableLabels(userProfile))}`,
     // Read-only mode does not merely refuse the mutating tools -- it does not
     // offer them, so the model spends no turns proposing what it cannot do.
     tools:
       mode === 'read-only'
-        ? [...READ_ONLY_TOOLS, ...(useDebugger ? [SCREENSHOT] : [])]
+        ? [...READ_ONLY_TOOLS, SCREENSHOT]
         : [
-            // Only when it can work: a content script cannot photograph its own
-            // page, and a tool refused every time costs turns.
-            ...(useDebugger ? [SCREENSHOT] : []),
+            // Offered on both paths now. The debugger captures any tab it is
+            // attached to; without it Chrome will only photograph the tab in
+            // front, and the tool says so rather than returning the wrong page.
+            SCREENSHOT,
             ...READ_ONLY_TOOLS,
             ...MUTATING_TOOLS,
             // Offered only when it can actually work. A tool the model is told
             // about and then refused every time is worse than no tool: it spends
-            // turns proposing it and explaining the failure.
+            // turns proposing it and explaining the failure. A synthesized drag
+            // is ignored by every implementation worth dragging in, so it is in
+            // the same position as file attachment: real with the debugger, and
+            // absent without it.
+            ...(useDebugger ? [DRAG] : []),
+            // Offered only when there is something to fill from. A tool that
+            // always answers "nothing is saved" costs a turn to discover that.
+            ...(Object.keys(userProfile).length > 0 ? [AUTOFILL_FORM] : []),
             ...(useDebugger && files.length > 0 ? [ATTACH_FILE] : []),
           ],
     nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
@@ -284,6 +315,28 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   });
 }
 
+/**
+ * What the model is told about the user's saved details.
+ *
+ * The names, never the values. It plans with "there is an email address on
+ * file" and refers to it by name; the substitution happens in the executor
+ * after the user has approved the call. A page that talks the model into
+ * repeating the user's address cannot succeed, because the model does not have
+ * it to repeat.
+ *
+ * In the prompt rather than behind a tool so it costs no round trip, and
+ * because a list of field names is small and static for the whole run.
+ */
+function savedDetails(labels: string[]): string {
+  if (labels.length === 0) return '';
+  return `\n\nTHE USER'S SAVED DETAILS
+The user has saved these details for filling in forms: ${labels.join(', ')}.
+
+You cannot see their values and never will. To use one, call autofill_form -- which matches the page's fields to them for you -- or name it in a fill_form field's "detail" argument. The value is filled in locally after the user approves the action.
+
+Do not ask the user for anything in that list; it is already known. Do ask about anything that is not, rather than guessing.`;
+}
+
 function safeHost(url: string): string {
   try {
     return new URL(url).host;
@@ -295,9 +348,28 @@ function safeHost(url: string): string {
 /** What the user reads in the prompt. Built from our data, never the model's. */
 function describeTarget(call: ToolCall, name?: string): string {
   if (call.name === 'navigate') return String(call.args.url ?? '');
+  if (call.name === 'open_tab') return `${String(call.args.url ?? '')} (in a new tab)`;
+  if (call.name === 'close_tab') return `tab ${String(call.args.tab ?? '')}`;
   if (call.name === 'go_back') return 'the previous page';
+
+  if (call.name === 'fill_form') {
+    const fields = Array.isArray(call.args.fields) ? call.args.fields : [];
+    // Every field, not a count. The user is approving one action that touches
+    // several places, and "5 fields" is not something anyone can check.
+    const lines = fields.map((entry) => {
+      const field = entry as { handle?: unknown; value?: unknown };
+      return `  [${String(field.handle)}] <- ${JSON.stringify(String(field.value ?? ''))}`;
+    });
+    return `${fields.length} field(s):\n${lines.join('\n')}`;
+  }
+
   const label = name ? `"${name}"` : `handle [${call.args.handle}]`;
   if (call.name === 'type') return `${label} <- ${JSON.stringify(String(call.args.text ?? ''))}`;
   if (call.name === 'select') return `${label} -> ${JSON.stringify(String(call.args.option ?? ''))}`;
+  if (call.name === 'press_key') {
+    const key = String(call.args.key ?? '');
+    return call.args.handle === undefined ? `press ${key}` : `press ${key} in ${label}`;
+  }
+  if (call.name === 'drag') return `drag [${String(call.args.from)}] onto [${String(call.args.to)}]`;
   return label;
 }

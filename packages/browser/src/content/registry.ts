@@ -23,11 +23,40 @@ export class HandleRegistry {
   #byHandle = new Map<Handle, WeakRef<Element>>();
   #byElement = new WeakMap<Element, Handle>();
   #next: Handle = 1;
+  /**
+   * Where this registry's numbers start.
+   *
+   * Zero in the top frame. A frame inside the page gets a band of its own, so a
+   * handle is unique across the whole tab and the number itself says which frame
+   * to send the action to — without that, `[3]` means one element in the page
+   * and a different one in the embedded checkout, and the top frame has no way
+   * to tell which the model meant.
+   */
+  #base = 0;
   /** Incremented per read. Informational — never used to reject a handle. */
   #reads = 0;
 
   get generation(): number {
     return this.#reads;
+  }
+
+  get base(): number {
+    return this.#base;
+  }
+
+  /**
+   * Claim a band of handle numbers. Only ever honoured once.
+   *
+   * A frame keeps the band it was first given for as long as it lives, even if
+   * a later read would assign a different one — the numbers already handed to
+   * the model have to keep meaning what they meant.
+   */
+  useBase(base: number): number {
+    if (this.#base === 0 && base > 0 && this.#next === 1) {
+      this.#base = base;
+      this.#next = base + 1;
+    }
+    return this.#base;
   }
 
   /** Begin a read. Handles survive it; only the read counter moves. */

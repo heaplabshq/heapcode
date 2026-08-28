@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import type { ConfirmAnswer, ConfirmRequest } from '../agent/run.js';
+import { attentionCleared, attentionNeeded } from './attention.js';
 
 /**
  * A confirmation the run waits on.
@@ -16,6 +17,9 @@ export function useConfirm() {
 
   const request = useCallback((next: ConfirmRequest): Promise<ConfirmAnswer> => {
     setPending(next);
+    // The run is now stopped until someone answers. Say so on the toolbar, so
+    // it is visible from another window rather than only in this panel.
+    attentionNeeded('confirm');
     return new Promise<ConfirmAnswer>((resolve) => {
       resolver.current = resolve;
     });
@@ -23,6 +27,7 @@ export function useConfirm() {
 
   const answer = useCallback((value: ConfirmAnswer) => {
     setPending(undefined);
+    attentionCleared();
     resolver.current?.(value);
     resolver.current = undefined;
   }, []);
@@ -31,6 +36,7 @@ export function useConfirm() {
   const cancel = useCallback(() => {
     if (!resolver.current) return;
     setPending(undefined);
+    attentionCleared();
     resolver.current('deny');
     resolver.current = undefined;
   }, []);

@@ -205,6 +205,152 @@ export function performSelect(element: Element, option: string): ActionResult {
   return { ok: true, note: `Selected "${match.text.trim()}".` };
 }
 
+
+/**
+ * Hover, as a sequence rather than a single event.
+ *
+ * A menu that opens on hover is listening for the pointer arriving, not for one
+ * `mouseover`: most implementations want `pointerover`, `mouseover`,
+ * `mouseenter` and then movement before they commit to opening. Sending one
+ * event opens roughly half of them, which is worse than sending none, because
+ * the agent then reads a page mid-animation and concludes the menu is empty.
+ */
+export function performHover(element: Element): ActionResult {
+  const blocked = whyNotActionable(element);
+  if (blocked) return { ok: false, error: blocked };
+
+  bringIntoView(element);
+  element.dispatchEvent(pointerEvent('pointerover', element));
+  element.dispatchEvent(mouseEvent('mouseover', element));
+  element.dispatchEvent(mouseEvent('mouseenter', element));
+  element.dispatchEvent(pointerEvent('pointermove', element));
+  element.dispatchEvent(mouseEvent('mousemove', element));
+
+  return { ok: true, note: 'Moved the pointer over it.' };
+}
+
+export interface KeyPress {
+  key: string;
+  ctrl?: boolean;
+  alt?: boolean;
+  shift?: boolean;
+  meta?: boolean;
+}
+
+/**
+ * A key press, as far as a content script can produce one.
+ *
+ * This is the weakest thing in the file and it says so: a synthesized
+ * `KeyboardEvent` has `isTrusted: false`, so it never triggers the browser's own
+ * default behaviour. Enter in a text field does not submit the form, Escape does
+ * not close a native dialog, and Tab does not move focus — the page only sees
+ * them if it has its own handler, which many single-page apps do and plain HTML
+ * forms do not.
+ *
+ * So the two cases worth the most are special-cased into something that
+ * actually works: Enter inside a form requests a real submit, and Escape is
+ * offered to the page and then applied to a native `<dialog>`. Everything else
+ * is dispatched honestly and the note says what was sent, because a caller told
+ * "pressed Enter" when nothing happened will not know to try the debugger.
+ */
+export function performPress(element: Element | undefined, press: KeyPress): ActionResult {
+  const target =
+    element ??
+    (document.activeElement && document.activeElement !== document.body
+      ? document.activeElement
+      : document.documentElement);
+
+  if (element) {
+    const blocked = whyNotActionable(element);
+    if (blocked) return { ok: false, error: blocked };
+    bringIntoView(element);
+    if (element instanceof HTMLElement) element.focus();
+  }
+
+  const init: KeyboardEventInit = {
+    key: press.key,
+    code: codeFor(press.key),
+    ctrlKey: press.ctrl ?? false,
+    altKey: press.alt ?? false,
+    shiftKey: press.shift ?? false,
+    metaKey: press.meta ?? false,
+    bubbles: true,
+    cancelable: true,
+  };
+
+  const down = new KeyboardEvent('keydown', init);
+  const defaultAllowed = target.dispatchEvent(down);
+  if (press.key.length === 1) target.dispatchEvent(new KeyboardEvent('keypress', init));
+  target.dispatchEvent(new KeyboardEvent('keyup', init));
+
+  // The page took it. Nothing else to do, and doing more would double-fire.
+  if (!defaultAllowed) return { ok: true, note: `Pressed ${describe(press)}; the page handled it.` };
+
+  if (press.key === 'Enter' && !press.shift) {
+    const form = target.closest('form');
+    if (form instanceof HTMLFormElement) {
+      // `requestSubmit` rather than `submit`: it runs validation and fires the
+      // submit event, which is what pressing Enter actually does. `submit`
+      // skips both and is how an agent posts an invalid form.
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.submit();
+      return { ok: true, note: 'Pressed Enter, which submitted the form.' };
+    }
+  }
+
+  if (press.key === 'Escape') {
+    const dialog = target.closest('dialog');
+    if (dialog instanceof HTMLDialogElement && dialog.open) {
+      dialog.close();
+      return { ok: true, note: 'Pressed Escape, which closed the dialog.' };
+    }
+  }
+
+  return {
+    ok: true,
+    note:
+      `Sent ${describe(press)} to the page. Note this was a synthetic key event, so it only had an ` +
+      `effect if the page listens for keys itself.`,
+  };
+}
+
+function describe(press: KeyPress): string {
+  const parts = [
+    press.ctrl && 'Ctrl',
+    press.alt && 'Alt',
+    press.shift && 'Shift',
+    press.meta && 'Meta',
+    press.key,
+  ].filter(Boolean);
+  return parts.join('+');
+}
+
+/** `code` is the physical key, which some handlers read instead of `key`. */
+function codeFor(key: string): string {
+  if (/^[a-zA-Z]$/.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^[0-9]$/.test(key)) return `Digit${key}`;
+  switch (key) {
+    case ' ':
+      return 'Space';
+    case 'Enter':
+    case 'Tab':
+    case 'Escape':
+    case 'Backspace':
+    case 'Delete':
+    case 'Home':
+    case 'End':
+    case 'PageUp':
+    case 'PageDown':
+    case 'ArrowUp':
+    case 'ArrowDown':
+    case 'ArrowLeft':
+    case 'ArrowRight':
+      return key;
+    default:
+      return '';
+  }
+}
+
 /**
  * Resolve a handle, or explain why it cannot be used.
  *

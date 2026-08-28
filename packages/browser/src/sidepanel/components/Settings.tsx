@@ -15,6 +15,7 @@ import {
 import { debuggerAvailable } from '../../agent/cdp.js';
 import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnostic.js';
 import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
+import { Details } from './Details.js';
 
 /**
  * Provider setup, plus the connectivity check.
@@ -199,6 +200,24 @@ export function Settings({
           />
         </label>
       )}
+
+      <hr className="rule" />
+
+      <details className="disclosure">
+        <summary>Your details</summary>
+        <Details />
+      </details>
+
+      <hr className="rule" />
+
+      <details className="disclosure">
+        <summary>Where your data goes</summary>
+        <p className="muted">
+          The text of the pages you point heapbrowse at is sent to the endpoint configured above,
+          and nowhere else. There is no heapbrowse server. Your API key and your saved details are
+          stored on this device, never synced through your Chrome profile.
+        </p>
+      </details>
 
       <div className="row">
         <button type="button" onClick={save}>Save</button>

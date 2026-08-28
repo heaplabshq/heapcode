@@ -142,6 +142,9 @@ function extractControls(root: Document | Element, registry: HandleRegistry): Co
     const money = moneyContext(element);
     if (money) control.checkout = money;
     if ((role === 'input' || role === 'textarea') && isSensitive(element)) control.sensitive = true;
+    // Kept for matching the user's saved details, never rendered to the model.
+    const autocomplete = element.getAttribute('autocomplete');
+    if (autocomplete) control.autocomplete = autocomplete;
 
     if (element instanceof HTMLAnchorElement) control.href = element.getAttribute('href') ?? undefined;
     if (element instanceof HTMLSelectElement) {

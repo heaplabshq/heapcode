@@ -1,10 +1,13 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentOutcome, ToolCall } from '@heapcode/core/agent';
 import type { ChatMessage } from '@heapcode/core/providers';
 import { resolveContextWindow } from '@heapcode/core/providers';
 import type { StoredProfile } from '../shared/settings.js';
 import { runBrowserAgent, type ConfirmAnswer, type ConfirmRequest } from '../agent/run.js';
 import type { BrowserMode } from '../agent/originPolicy.js';
+import { clearSession, loadSession, saveSession } from '../shared/session.js';
+import type { Dataset } from '../shared/dataset.js';
+import { recordRun } from '../shared/tasks.js';
 
 /** One tool call and what came back, as the transcript shows it. */
 export interface ToolActivity {
@@ -35,7 +38,15 @@ export type Step =
    * how these agents become slow and expensive. The model reads the
    * accessibility tree instead — smaller, exact, and addressable.
    */
-  | { kind: 'view'; dataUrl: string };
+  | { kind: 'view'; dataUrl: string }
+  /**
+   * The rows collected so far, as a table the user can read and export.
+   *
+   * One step per run rather than one per extraction: the set is cumulative, so
+   * a five-page collection should leave one table that grew, not five snapshots
+   * of it growing.
+   */
+  | { kind: 'data'; dataset: Dataset };
 
 export interface Turn {
   role: 'user' | 'assistant';
@@ -102,6 +113,8 @@ export function answerFrom(turn: Turn): string {
  */
 export interface ChatDeps {
   mode: BrowserMode;
+  /** The site the panel is pointed at, recorded with the run for later recall. */
+  host?: string;
   confirm(request: ConfirmRequest): Promise<ConfirmAnswer>;
   cancelConfirm(): void;
   ask(question: { question: string; options?: string[]; blocksAction: boolean }): Promise<string | undefined>;
@@ -113,6 +126,41 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
   const [busy, setBusy] = useState(false);
   const [tokens, setTokens] = useState(0);
   const abort = useRef<AbortController | undefined>(undefined);
+  /**
+   * Whether the stored conversation has been read back yet.
+   *
+   * Without it the first render writes an empty transcript over the stored one
+   * before the read has returned, which loses exactly the conversation this is
+   * meant to save.
+   */
+  const restored = useRef(false);
+
+  // Bring back the conversation the last panel was having. The run itself is
+  // gone -- an in-flight model call cannot be resumed -- but the transcript, the
+  // answers the user already gave, and the work already done all come back, and
+  // an unfinished turn is marked as interrupted rather than left spinning.
+  useEffect(() => {
+    let cancelled = false;
+    void loadSession().then((session) => {
+      if (cancelled || !session) {
+        restored.current = true;
+        return;
+      }
+      setTurns(session.turns);
+      setTokens(session.tokens);
+      restored.current = true;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Checkpoint after every change rather than at the end of a run: the case
+  // this exists for is the panel closing at a moment nobody chose.
+  useEffect(() => {
+    if (!restored.current) return;
+    void saveSession(turns, tokens);
+  }, [turns, tokens]);
   /**
    * Sites trusted for writes, for this session only.
    *
@@ -228,6 +276,16 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
                 ),
               }));
             },
+            onData: (dataset) =>
+              patch((turn) => {
+                const steps = [...(turn.steps ?? [])];
+                const existing = steps.findIndex((step) => step.kind === 'data');
+                // Replace rather than append: the dataset is cumulative, so a
+                // second table would be the same rows plus a few more.
+                if (existing >= 0) steps[existing] = { kind: 'data', dataset };
+                else steps.push({ kind: 'data', dataset });
+                return { ...turn, steps };
+              }),
             onView: (dataUrl) =>
               patch((turn) => {
                 const steps = [...(turn.steps ?? [])];
@@ -245,12 +303,20 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
         });
 
         flushNote();
-        patch((turn) => ({
-          ...turn,
-          streaming: false,
-          error: outcomeNote(outcome),
-          content: answerFrom(turn),
-        }));
+        let answer = '';
+        patch((turn) => {
+          answer = answerFrom(turn);
+          return {
+            ...turn,
+            streaming: false,
+            error: outcomeNote(outcome),
+            content: answer,
+          };
+        });
+        // Recorded after the fact, with what it produced, so the list is useful
+        // for finding the wording of something that worked rather than being a
+        // bare list of prompts.
+        void recordRun({ task: text, host: deps.host, at: Date.now(), outcome, summary: answer });
       } catch (error) {
         const message = controller.signal.aborted
           ? 'Stopped.'
@@ -258,6 +324,13 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
             ? error.message
             : String(error);
         patch((turn) => ({ ...turn, streaming: false, error: message }));
+        void recordRun({
+          task: text,
+          host: deps.host,
+          at: Date.now(),
+          outcome: controller.signal.aborted ? 'stopped' : 'error',
+          summary: message,
+        });
       } finally {
         abort.current = undefined;
         setBusy(false);
@@ -269,6 +342,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
   const clear = useCallback(() => {
     setTurns([]);
     setTokens(0);
+    void clearSession();
   }, []);
 
   return { turns, busy, send, stop, clear, tokens, contextWindow: resolveContextWindow(profile) };

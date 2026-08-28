@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { attentionCleared, attentionNeeded } from './attention.js';
 
 /**
  * A question from the agent that the run waits on.
@@ -22,6 +23,7 @@ export function useAsk() {
 
   const ask = useCallback((question: AgentQuestion): Promise<string | undefined> => {
     setPending(question);
+    attentionNeeded('question');
     return new Promise<string | undefined>((resolve) => {
       resolver.current = resolve;
     });
@@ -29,6 +31,7 @@ export function useAsk() {
 
   const answer = useCallback((value: string | undefined) => {
     setPending(undefined);
+    attentionCleared();
     resolver.current?.(value);
     resolver.current = undefined;
   }, []);
@@ -36,6 +39,7 @@ export function useAsk() {
   const cancel = useCallback(() => {
     if (!resolver.current) return;
     setPending(undefined);
+    attentionCleared();
     resolver.current(undefined);
     resolver.current = undefined;
   }, []);

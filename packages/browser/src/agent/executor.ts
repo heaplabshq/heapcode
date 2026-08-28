@@ -1,10 +1,20 @@
 import type { ToolCall, ToolResult } from '@heapcode/core/agent';
 import { formatSnapshot, type Control, type PageSnapshot } from '../shared/snapshot.js';
 import { describeChanges } from '../shared/delta.js';
-import { currentTab, waitForLoad } from '../sidepanel/page.js';
+import { currentTab, tabTarget, waitForLoad } from '../sidepanel/page.js';
 import { DriverPool } from './driverPool.js';
-import { classifyClick, classifyNavigate, classifyType } from './destructive.js';
+import {
+  classifyClick,
+  classifyNavigate,
+  classifyPress,
+  classifyType,
+  worstOf,
+} from './destructive.js';
 import type { Classification } from './destructive.js';
+import { parseKey, KNOWN_KEYS } from './keys.js';
+import { matchAll, PROFILE_FIELDS, type UserProfile } from '../shared/profile.js';
+import { mergeTable, type Dataset } from '../shared/dataset.js';
+import { findNextControl, nextIsExhausted, nextPageUrl } from './pagination.js';
 
 /**
  * Runs the agent's tool calls against the page.
@@ -20,7 +30,30 @@ import type { Classification } from './destructive.js';
  * difference between a ten-step run costing ten pages and costing one.
  */
 export class BrowserToolExecutor {
-  #last?: PageSnapshot;
+  /**
+   * The last snapshot of each tab the run has read, keyed by tab.
+   *
+   * One field was enough while a run could only ever be in one tab. It is not
+   * now: handles are minted per tab, so `[12]` in the results tab and `[12]` in
+   * the product tab are different elements, and a single `#last` would hand the
+   * second tab's handle to the first tab's driver. Keeping them apart also means
+   * switching back to a tab restores what the agent already knew about it,
+   * instead of paying for a fresh read.
+   */
+  #snapshots = new Map<number, PageSnapshot>();
+  /** The tab the snapshots above are being read and written against. */
+  #tabId?: number;
+
+  get #last(): PageSnapshot | undefined {
+    return this.#tabId === undefined ? undefined : this.#snapshots.get(this.#tabId);
+  }
+
+  set #last(snapshot: PageSnapshot | undefined) {
+    if (this.#tabId === undefined) return;
+    if (snapshot) this.#snapshots.set(this.#tabId, snapshot);
+    else this.#snapshots.delete(this.#tabId);
+  }
+
   /** The user's request, used to rank controls so the relevant ones survive. */
   #intent: string;
   /** How long to wait for a navigation to land. Injectable so tests are fast. */
@@ -28,8 +61,26 @@ export class BrowserToolExecutor {
   #pool: DriverPool;
   /** Absolute paths the agent may attach, configured by the user. */
   #files: string[];
+  /**
+   * The user's saved details, held here and never passed to the model.
+   *
+   * The substitution happens inside the executor, after the permission decision
+   * and after the confirmation the user read. The model asks for "Email address"
+   * and is told an email address was filled in; it never learns which one.
+   */
+  #profile: UserProfile;
   /** Hands the panel a picture of the page. Shown to the user every read. */
   #onView?: (dataUrl: string) => void;
+  /** Hands the panel the accumulated rows. Shown to the user, never to the model. */
+  #onData?: (dataset: Dataset) => void;
+  /**
+   * Rows collected so far this run.
+   *
+   * Here rather than in the transcript, which is the whole point: page five is
+   * reasoned about against a count, not against a re-sent copy of pages one to
+   * four. The user gets the table; the model gets a receipt.
+   */
+  #dataset?: Dataset;
 
   constructor(
     intent: string,
@@ -37,14 +88,18 @@ export class BrowserToolExecutor {
       loadTimeoutMs?: number;
       pool?: DriverPool;
       files?: string[];
+      profile?: UserProfile;
       onView?: (dataUrl: string) => void;
+      onData?: (dataset: Dataset) => void;
     } = {},
   ) {
     this.#intent = intent;
     this.#loadTimeoutMs = options.loadTimeoutMs ?? 15_000;
     this.#pool = options.pool ?? new DriverPool(false);
     this.#files = options.files ?? [];
+    this.#profile = options.profile ?? {};
     this.#onView = options.onView;
+    this.#onData = options.onData;
   }
 
   /**
@@ -100,6 +155,26 @@ export class BrowserToolExecutor {
           return await this.#scroll(call.args, ok, fail);
         case 'wait':
           return await this.#wait(call.args, ok, fail);
+        case 'hover':
+          return await this.#hover(call.args, ok, fail);
+        case 'press_key':
+          return await this.#pressKey(call.args, ok, fail);
+        case 'drag':
+          return await this.#drag(call.args, ok, fail);
+        case 'fill_form':
+          return await this.#fillForm(call.args, ok, fail);
+        case 'autofill_form':
+          return await this.#autofill(ok, fail);
+        case 'next_page':
+          return await this.#nextPage(ok, fail);
+        case 'list_tabs':
+          return await this.#listTabs(ok);
+        case 'switch_tab':
+          return await this.#switchTab(call.args, ok, fail);
+        case 'open_tab':
+          return await this.#openTab(call.args, ok, fail);
+        case 'close_tab':
+          return await this.#closeTab(call.args, ok, fail);
         case 'click':
         case 'type':
         case 'select':
@@ -132,7 +207,7 @@ export class BrowserToolExecutor {
     // Requiring the latter turned any redirect to an ungranted site into a trap
     // with no way back.
     const leaving = call.name === 'navigate' || call.name === 'go_back';
-    const target = leaving ? await currentTab() : await this.#pool.forActiveTab();
+    const target = leaving ? await this.#addressOnly() : await this.#pool.forActiveTab();
     if (!target.ok) return fail(target.reason);
 
     if (call.name === 'go_back') {
@@ -260,20 +335,117 @@ export class BrowserToolExecutor {
    * Returned to the host so the confirmation and the audit record describe the
    * same thing the executor is about to do.
    */
-  async classify(call: ToolCall): Promise<{ classification: Classification; target?: Control; url?: string }> {
+  async classify(call: ToolCall): Promise<{
+    classification: Classification;
+    target?: Control;
+    url?: string;
+    /**
+     * What to show the user instead of the generic description.
+     *
+     * Needed once a call's real effect is decided here rather than being visible
+     * in its arguments: `autofill_form` takes no arguments at all, and a
+     * `fill_form` field may name a saved detail whose value the model does not
+     * have. The user still has to see exactly what is about to be typed, so the
+     * executor -- which does know -- writes that line.
+     */
+    describe?: string;
+  }> {
     // Only the address is needed here, and asking for read permission to
     // classify an action would make an ungranted page unclassifiable rather
     // than merely unreadable.
-    const page = await currentTab();
+    const page = await this.#addressOnly();
     const url = page.ok ? page.url : undefined;
 
-    if (call.name === 'navigate') {
+    if (call.name === 'navigate' || call.name === 'open_tab') {
+      // A new tab is a navigation that happens to keep the old page. Leaving the
+      // site is the part that matters, and it matters identically either way.
       return {
         classification: classifyNavigate(url ?? '', String(call.args.url ?? '')),
         url,
       };
     }
-    if (call.name === 'go_back') return { classification: { permission: 'write' }, url };
+    if (call.name === 'go_back' || call.name === 'close_tab') {
+      return { classification: { permission: 'write' }, url };
+    }
+
+    if (call.name === 'next_page') {
+      const control = findNextControl(this.#last?.controls ?? []);
+      return {
+        classification: control ? classifyClick(control) : { permission: 'write' },
+        target: control,
+        url,
+        describe: control ? `the next page, via "${control.name}"` : 'the next page',
+      };
+    }
+
+    if (call.name === 'press_key') {
+      const key = parseKey(String(call.args.key ?? ''))?.key ?? '';
+      const focused =
+        call.args.handle === undefined
+          ? undefined
+          : this.#last?.controls.find((c) => c.handle === Number(call.args.handle));
+      return {
+        classification: classifyPress(key, focused, this.#last?.controls ?? []),
+        target: focused,
+        url,
+      };
+    }
+
+    if (call.name === 'autofill_form') {
+      const matches = matchAll(this.#last?.controls ?? [], this.#profile);
+      if (matches.length === 0) {
+        return { classification: { permission: 'write' }, url, describe: 'nothing that matches' };
+      }
+      return {
+        classification: worstOf(matches.map((match) => classifyType(match.control))),
+        url,
+        // Every field and the actual value. This is the user's own data on the
+        // user's own screen, and "fills 6 fields from your details" is not
+        // something anyone can check before approving it.
+        describe: `${matches.length} field(s) from your saved details:\n${matches
+          .map((match) => `  "${match.control.name}" <- ${JSON.stringify(match.value)}`)
+          .join('\n')}`,
+      };
+    }
+
+    if (call.name === 'fill_form') {
+      const fields = Array.isArray(call.args.fields) ? call.args.fields : [];
+      const controls = fields.map((entry) => {
+        const handle = Number((entry as { handle?: unknown }).handle);
+        return this.#last?.controls.find((c) => c.handle === handle);
+      });
+      // One unknown field is enough to treat the whole batch as unknown: the
+      // user is approving the batch, and a batch is only as identified as its
+      // least identified member.
+      if (controls.some((control) => !control)) {
+        return {
+          classification: {
+            permission: 'destructive',
+            reason: 'one of the fields could not be identified from the last read of the page',
+          },
+          url,
+        };
+      }
+      const lines = fields.map((entry, index) => {
+        const field = entry as { handle?: unknown; value?: unknown; detail?: unknown };
+        const resolved =
+          typeof field.detail === 'string' ? this.#detail(field.detail) : undefined;
+        const shown = resolved ? resolved.value : String(field.value ?? '');
+        const name = controls[index]?.name;
+        return `  ${name ? JSON.stringify(name) : `[${String(field.handle)}]`} <- ${JSON.stringify(shown)}`;
+      });
+
+      return {
+        classification: worstOf(controls.map((control) => classifyType(control!))),
+        url,
+        describe: `${fields.length} field(s):\n${lines.join('\n')}`,
+      };
+    }
+
+    if (call.name === 'drag') {
+      const from = this.#last?.controls.find((c) => c.handle === Number(call.args.from));
+      return { classification: { permission: 'write' }, target: from, url };
+    }
 
     const control = this.#last?.controls.find((c) => c.handle === Number(call.args.handle));
     if (!control) {
@@ -295,6 +467,8 @@ export class BrowserToolExecutor {
   async #snapshot(): Promise<{ ok: true; snapshot: PageSnapshot } | { ok: false; reason: string }> {
     const target = await this.#pool.forActiveTab();
     if (!target.ok) return { ok: false, reason: target.reason };
+    // Everything read or written through `#last` from here belongs to this tab.
+    this.#tabId = target.tabId;
     try {
       return { ok: true, snapshot: await target.driver.snapshot() };
     } catch (error) {
@@ -354,6 +528,467 @@ export class BrowserToolExecutor {
     const result = await target.driver.attachFiles(handle, generation, [path]);
     if (!result.ok) return fail(result.error);
     return this.#observe(this.#last, target.tabId, result.note, ok);
+  }
+
+  /**
+   * The tab's address, without needing permission to read what is on it.
+   *
+   * Follows the run's pinned tab when there is one. Leaving a page must never
+   * need that page's consent, which is why this exists separately from
+   * `forActiveTab` -- an application that redirects to an ungranted portal
+   * would otherwise be a trap with no way back.
+   */
+  async #addressOnly(): Promise<{ ok: true; tabId: number; url: string } | { ok: false; reason: string }> {
+    const pinned = this.#pool.target;
+    if (pinned !== undefined) {
+      const target = await tabTarget(pinned);
+      if (target.ok) return target;
+    }
+    return currentTab();
+  }
+
+  async #hover(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const generation = this.#last?.generation;
+    if (generation === undefined) return fail('Read the page first -- handles only exist after a read.');
+    const handle = Number(args.handle);
+    if (!Number.isInteger(handle)) return fail(`"${args.handle}" is not a handle number.`);
+
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+
+    const before = this.#last;
+    const result = await target.driver.hover(handle, generation);
+    if (!result.ok) return fail(result.error);
+    // A hover that opened nothing is worth saying so: the model's next move is
+    // to click instead, not to hover again.
+    return this.#observe(before, target.tabId, result.note, ok);
+  }
+
+  async #pressKey(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const press = parseKey(String(args.key ?? ''));
+    if (!press) {
+      return fail(
+        `"${String(args.key ?? '')}" is not a key I can press. Use one of ${KNOWN_KEYS.join(', ')}, ` +
+          `a single character, or a chord such as "Ctrl+A".`,
+      );
+    }
+
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+
+    let handle: number | undefined;
+    if (args.handle !== undefined && args.handle !== null) {
+      const parsed = Number(args.handle);
+      if (!Number.isInteger(parsed)) return fail(`"${args.handle}" is not a handle number.`);
+      if (this.#last?.generation === undefined) return fail('Read the page first.');
+      handle = parsed;
+    }
+
+    const before = this.#last;
+    const result = await target.driver.press(press, handle, this.#last?.generation);
+    if (!result.ok) return fail(result.error);
+    return this.#observe(before, target.tabId, result.note, ok);
+  }
+
+  async #drag(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const generation = this.#last?.generation;
+    if (generation === undefined) return fail('Read the page first.');
+    const from = Number(args.from);
+    const to = Number(args.to);
+    if (!Number.isInteger(from) || !Number.isInteger(to)) {
+      return fail('drag needs a "from" handle and a "to" handle.');
+    }
+
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+    if (!target.driver.drag) {
+      return fail(
+        'Dragging needs the debugger, which is not active on this tab. A synthetic drag is ignored ' +
+          'by every implementation worth dragging in, so this is refused rather than pretended. ' +
+          'Ask the user to turn the debugger on in Settings, or to do the drag themselves.',
+      );
+    }
+
+    const before = this.#last;
+    const result = await target.driver.drag(from, to, generation);
+    if (!result.ok) return fail(result.error);
+    return this.#observe(before, target.tabId, result.note, ok);
+  }
+
+  /**
+   * Fill a batch of fields, stopping at the first one that fails.
+   *
+   * Stopping rather than pressing on, because the fields of a form are rarely
+   * independent: a country dropdown decides which state list exists, and
+   * carrying on past a failure fills the rest of the form against assumptions
+   * that no longer hold. What has already been entered is reported by name, so
+   * the model retries the remainder rather than the whole thing.
+   */
+  async #fillForm(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const fields = Array.isArray(args.fields) ? args.fields : [];
+    if (fields.length === 0) return fail('fill_form needs at least one field.');
+
+    const generation = this.#last?.generation;
+    if (generation === undefined) return fail('Read the page first -- handles only exist after a read.');
+
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+
+    const before = this.#last;
+    const filled: string[] = [];
+
+    for (const entry of fields) {
+      const field = entry as { handle?: unknown; value?: unknown; detail?: unknown };
+      const handle = Number(field.handle);
+      if (!Number.isInteger(handle)) {
+        return this.#partial(filled, `"${String(field.handle)}" is not a handle number.`, fail);
+      }
+
+      const control = this.#last?.controls.find((candidate) => candidate.handle === handle);
+
+      // A detail reference is resolved here and nowhere else. The model asked
+      // for "Email address" and never receives the address itself.
+      let value: string;
+      let from = '';
+      if (typeof field.detail === 'string' && field.detail.trim()) {
+        const resolved = this.#detail(field.detail);
+        if (!resolved) {
+          return this.#partial(
+            filled,
+            `There is no saved detail called "${field.detail}". Saved: ${this.#savedLabels().join(', ') || 'none'}.`,
+            fail,
+          );
+        }
+        value = resolved.value;
+        from = ` from your saved ${resolved.label.toLowerCase()}`;
+      } else {
+        value = String(field.value ?? '');
+      }
+
+      const result =
+        control?.role === 'select'
+          ? await target.driver.select(handle, generation, value)
+          : await target.driver.type(handle, generation, value);
+
+      if (!result.ok) return this.#partial(filled, result.error, fail);
+      filled.push(`${control?.name ? `"${control.name}"` : `[${handle}]`}${from}`);
+    }
+
+    return this.#observe(
+      before,
+      target.tabId,
+      `Filled ${filled.length} field(s): ${filled.join(', ')}.`,
+      ok,
+    );
+  }
+
+  /**
+   * Advance a list by one page.
+   *
+   * The control first when the page has a real one, because clicking what the
+   * page provides works on sites whose paging is entirely client-side and never
+   * touches the address. The URL second, which is the more precise route but
+   * only exists when the page put the number there in the first place.
+   *
+   * Saying "there is no next page" is a first-class outcome, not a failure. A
+   * collection loop needs a stop signal, and an error here reads to a model as
+   * something to work around.
+   */
+  async #nextPage(
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const snapshot = this.#last;
+    if (!snapshot) return fail('Read the page first, so I can see how this list paginates.');
+
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+
+    const control = findNextControl(snapshot.controls);
+    if (control) {
+      const before = this.#last;
+      const result = await target.driver.click(control.handle, snapshot.generation);
+      if (!result.ok) return fail(result.error);
+      // Paging usually replaces the list in place rather than navigating, so
+      // the wait matters more here than for an ordinary click.
+      await target.driver.settle(3);
+      return this.#observe(
+        before,
+        target.tabId,
+        `Went to the next page using "${control.name}". Call extract_data to add this page to what ` +
+          `you have collected.`,
+        ok,
+      );
+    }
+
+    if (nextIsExhausted(snapshot.controls)) {
+      return ok(
+        'This is the last page — the next control is there but disabled. Stop paginating and use ' +
+          'what you have collected.',
+      );
+    }
+
+    const url = nextPageUrl(snapshot.url, snapshot.tables[0]?.sample.length);
+    if (url) {
+      const before = this.#last;
+      await chrome.tabs.update(target.tabId, { url });
+      const loaded = await waitForLoad(target.tabId, this.#loadTimeoutMs);
+      if (!loaded) {
+        this.#last = undefined;
+        return ok(`Started loading ${url}, but it had not finished. Read the page to see where it got to.`);
+      }
+      return this.#observe(
+        before,
+        target.tabId,
+        `Went to the next page by changing the page number in the address (${url}). Call ` +
+          `extract_data to add it. If this page shows the same rows as the last one, the list has ` +
+          `ended.`,
+        ok,
+      );
+    }
+
+    return ok(
+      'This page has no next-page control and no page number in its address, so there is no next ' +
+        'page to go to. It may load more as you scroll — try scroll — or this may be the whole ' +
+        'list. Do not guess at a URL.',
+    );
+  }
+
+  /** A saved detail, by the label or key the model used to name it. */
+  #detail(name: string): { key: string; label: string; value: string } | undefined {
+    const wanted = name.trim().toLowerCase();
+    const field =
+      PROFILE_FIELDS.find((candidate) => candidate.key.toLowerCase() === wanted) ??
+      PROFILE_FIELDS.find((candidate) => candidate.label.toLowerCase() === wanted) ??
+      PROFILE_FIELDS.find((candidate) => candidate.label.toLowerCase().includes(wanted));
+    if (!field) return undefined;
+    const value = this.#profile[field.key];
+    if (!value) return undefined;
+    return { key: field.key, label: field.label, value };
+  }
+
+  #savedLabels(): string[] {
+    return PROFILE_FIELDS.filter((field) => this.#profile[field.key]).map((field) => field.label);
+  }
+
+  /**
+   * Fill everything the page has asked for that the user has already told us.
+   *
+   * The matching is local and so is the substitution: what comes back names the
+   * details that were used, never their values. Fields with no match are
+   * reported by name, because those are precisely the ones worth asking the
+   * user about, and reporting them is what stops the model inventing answers.
+   */
+  async #autofill(
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const snapshot = this.#last;
+    if (!snapshot) return fail('Read the page first -- handles only exist after a read.');
+    if (Object.keys(this.#profile).length === 0) {
+      return fail(
+        'The user has not saved any details. Ask them for what the form needs, or ask them to fill ' +
+          'in their details in Settings.',
+      );
+    }
+
+    const matches = matchAll(snapshot.controls, this.#profile);
+    const fillable = snapshot.controls.filter(
+      (control) =>
+        (control.role === 'input' || control.role === 'textarea' || control.role === 'select') &&
+        !control.disabled,
+    );
+
+    if (matches.length === 0) {
+      return ok(
+        `None of the ${fillable.length} field(s) on this page match the user's saved details ` +
+          `(${this.#savedLabels().join(', ')}). Fill them another way, or ask the user.`,
+      );
+    }
+
+    const target = await this.#pool.forActiveTab();
+    if (!target.ok) return fail(target.reason);
+
+    const before = this.#last;
+    const filled: string[] = [];
+
+    for (const match of matches) {
+      const result =
+        match.control.role === 'select'
+          ? await target.driver.select(match.control.handle, snapshot.generation, match.value)
+          : await target.driver.type(match.control.handle, snapshot.generation, match.value);
+      if (!result.ok) return this.#partial(filled, result.error, fail);
+      filled.push(`"${match.control.name}" <- your ${match.label.toLowerCase()}`);
+    }
+
+    const missed = fillable
+      .filter((control) => !matches.some((match) => match.control.handle === control.handle))
+      .filter((control) => !control.sensitive)
+      .map((control) => `[${control.handle}] "${control.name}"`);
+
+    const rest =
+      missed.length > 0
+        ? `\n\nStill empty, with no saved detail to match: ${missed.join(', ')}. Ask the user about ` +
+          `any of these the form requires -- do not guess a value.`
+        : '';
+
+    return this.#observe(
+      before,
+      target.tabId,
+      `Filled ${filled.length} field(s) from the user's saved details:\n${filled.map((line) => `  ${line}`).join('\n')}${rest}`,
+      ok,
+    );
+  }
+
+  #partial(filled: string[], error: string, fail: (s: string) => ToolResult): ToolResult {
+    const done =
+      filled.length > 0
+        ? `${filled.length} field(s) were filled first (${filled.join(', ')}) and are still filled in. `
+        : 'No fields were filled. ';
+    return fail(`${done}Then it stopped: ${error}`);
+  }
+
+  /**
+   * The user's open tabs.
+   *
+   * Titles and addresses only. That is enough to choose a tab and nothing of
+   * what is inside one -- reading a tab still needs that origin to have been
+   * granted, and this deliberately does not become a way around it.
+   */
+  async #listTabs(ok: (s: string) => ToolResult): Promise<ToolResult> {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const working = this.#pool.target;
+
+    const lines = tabs
+      .filter((tab) => tab.id !== undefined)
+      .map((tab) => {
+        const marks = [
+          tab.active ? 'in front' : undefined,
+          tab.id === working ? 'working here' : undefined,
+        ].filter(Boolean);
+        const suffix = marks.length > 0 ? `  (${marks.join(', ')})` : '';
+        return `  [${tab.id}] ${JSON.stringify(tab.title ?? '')} — ${tab.url ?? 'unknown address'}${suffix}`;
+      });
+
+    return ok(
+      lines.length > 0
+        ? `${lines.length} open tab(s):\n${lines.join('\n')}`
+        : 'There are no tabs in this window.',
+    );
+  }
+
+  async #switchTab(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const tabId = Number(args.tab);
+    if (!Number.isInteger(tabId)) return fail(`"${args.tab}" is not a tab number. Use list_tabs.`);
+
+    const target = await tabTarget(tabId);
+    if (!target.ok) return fail(target.reason);
+
+    this.#pool.focus(tabId);
+    this.#tabId = tabId;
+    // Bring it to the front. The user should be able to see where the agent is
+    // working; an agent operating a tab nobody can see is the thing this
+    // product most needs not to be.
+    await chrome.tabs.update(tabId, { active: true }).catch(() => {
+      // A tab that refuses to come forward is still a tab we can work in.
+    });
+
+    const known = this.#last;
+    return ok(
+      known
+        ? `Now working in tab ${tabId} (${target.url}). This tab was read earlier, so its handles ` +
+            `still apply -- read it again if it may have changed.`
+        : `Now working in tab ${tabId} (${target.url}). Read the page to see what is on it.`,
+    );
+  }
+
+  async #openTab(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const url = String(args.url ?? '');
+    if (!url) return fail('open_tab needs a url.');
+
+    const here = await this.#addressOnly();
+    let resolved: string;
+    try {
+      resolved = new URL(url, here.ok ? here.url : undefined).href;
+    } catch {
+      return fail(`"${url}" is not a URL that can be opened.`);
+    }
+
+    const tab = await chrome.tabs.create({ url: resolved, active: args.background !== true });
+    if (tab.id === undefined) return fail('Chrome did not open the tab.');
+
+    this.#pool.focus(tab.id);
+    this.#tabId = tab.id;
+
+    const loaded = await waitForLoad(tab.id, this.#loadTimeoutMs);
+    if (!loaded) {
+      return ok(
+        `Opened tab ${tab.id} at ${resolved}, but it had not finished loading. Read the page to ` +
+          `see where it got to. Work now happens in this tab until you switch.`,
+      );
+    }
+    // No `before` snapshot: this tab is new, so there is nothing to diff against
+    // and the model needs the whole page rather than a list of changes.
+    return this.#observe(
+      undefined,
+      tab.id,
+      `Opened tab ${tab.id} at ${resolved}. Work now happens in this tab until you switch.`,
+      ok,
+    );
+  }
+
+  async #closeTab(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const tabId = Number(args.tab);
+    if (!Number.isInteger(tabId)) return fail(`"${args.tab}" is not a tab number. Use list_tabs.`);
+
+    const target = await tabTarget(tabId);
+    if (!target.ok) return fail(target.reason);
+
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch (error) {
+      return fail(`Could not close tab ${tabId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    await this.#pool.forget(tabId);
+    this.#snapshots.delete(tabId);
+    if (this.#tabId === tabId) this.#tabId = undefined;
+
+    const back = this.#pool.target;
+    return ok(
+      `Closed tab ${tabId}. ` +
+        (back === undefined
+          ? 'Work now follows whichever tab the user is looking at; read the page to see it.'
+          : `Still working in tab ${back}.`),
+    );
   }
 
   async #readPage(
@@ -442,7 +1077,14 @@ export class BrowserToolExecutor {
     }
 
     const shot = await target.driver.screenshot();
-    if (!shot) return fail('The page could not be captured.');
+    if (!shot) {
+      return fail(
+        target.driver.kind === 'dom'
+          ? 'Without the debugger, Chrome will only photograph the tab that is in front, and this ' +
+              'one is not. Switch to it first, or read the page instead.'
+          : 'The page could not be captured.',
+      );
+    }
     this.#onView?.(shot);
     return {
       id: 'screenshot',
@@ -514,17 +1156,43 @@ export class BrowserToolExecutor {
 
     const limit = typeof args.limit === 'number' ? Math.min(args.limit, 200) : 50;
     const rows = table.sample.slice(0, limit);
-    const note =
+
+    // Accumulate. The user's copy of the data lives outside the transcript, so
+    // paginating through ten pages costs ten extractions rather than ten
+    // re-sends of everything seen so far.
+    const merged = mergeTable(this.#dataset, { ...table, sample: rows }, result.snapshot.url);
+    this.#dataset = merged.dataset;
+    this.#onData?.(merged.dataset);
+
+    const sampled =
       table.rows > rows.length
-        ? `\n(${rows.length} of ${table.rows} rows -- the snapshot samples the leading rows; scroll for more.)`
+        ? `\n(${rows.length} of ${table.rows} rows on this page -- the snapshot samples the leading rows; scroll for more.)`
         : '';
+
+    const collected =
+      merged.dataset.sources.length > 1 || merged.duplicates > 0
+        ? `\n\nCollected so far: ${merged.dataset.rows.length} row(s) across ` +
+          `${merged.dataset.sources.length} page(s). This call added ${merged.added}` +
+          (merged.duplicates > 0 ? `, and skipped ${merged.duplicates} already seen` : '') +
+          `. The user has the full set in the panel and can export it; you do not need to repeat ` +
+          `these rows back.`
+        : `\n\nCollected: ${merged.dataset.rows.length} row(s). Use next_page and extract_data ` +
+          `again to add more; the rows accumulate for the user and are de-duplicated.`;
+
+    const restarted = merged.restarted
+      ? `\n\nThis table has different columns from the one being collected, so the collection was ` +
+        `started again from here.`
+      : '';
 
     return ok(
       [
         `${table.label ?? 'table'}: ${table.rows} rows x ${table.columns} columns`,
         table.headers.join(' | '),
         ...rows.map((row) => row.join(' | ')),
-      ].join('\n') + note,
+      ].join('\n') +
+        sampled +
+        collected +
+        restarted,
     );
   }
 

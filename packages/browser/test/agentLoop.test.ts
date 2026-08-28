@@ -134,8 +134,11 @@ describe('core loop driving a browser', () => {
         'finish',
         'get_elements',
         'get_page_text',
+        'hover',
+        'list_tabs',
         'read_page',
         'scroll',
+        'switch_tab',
         'wait',
       ].sort(),
     );

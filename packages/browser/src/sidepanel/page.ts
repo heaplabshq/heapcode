@@ -71,6 +71,32 @@ export async function currentTab(): Promise<PageTarget> {
 export async function ensurePage(): Promise<PageTarget> {
   const tab = await activeTab();
   if (!tab?.id) return { ok: false, reason: 'No active tab to read.' };
+  return prepare(tab);
+}
+
+/**
+ * The same, for a tab the run is working in rather than the one in front.
+ *
+ * Once the agent has opened a second tab, "the active tab" is whatever the user
+ * clicked on last, which is not where the run is working. Everything else about
+ * reaching the page is identical, so the checks live in `prepare` and both
+ * entry points share them.
+ */
+export async function ensureTab(tabId: number): Promise<PageTarget> {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (!tab?.id) return { ok: false, reason: `Tab ${tabId} is no longer open.` };
+  return prepare(tab);
+}
+
+/** The address of a specific tab, without needing permission to read it. */
+export async function tabTarget(tabId: number): Promise<PageTarget> {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (!tab?.id) return { ok: false, reason: `Tab ${tabId} is no longer open.` };
+  return { ok: true, tabId: tab.id, url: tab.url ?? '' };
+}
+
+async function prepare(tab: chrome.tabs.Tab): Promise<PageTarget> {
+  if (!tab.id) return { ok: false, reason: 'No active tab to read.' };
 
   // A tab with no URL is not an absent tab -- it is one Chrome will not describe
   // to us. Saying "no active tab" here sent the user looking for the wrong
@@ -97,7 +123,16 @@ export async function ensurePage(): Promise<PageTarget> {
   }
 
   try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    // Every frame, not just the top one. A consent dialog, an embedded checkout
+    // and a payment field all live in iframes, and a script in the top document
+    // cannot see into a cross-origin one however much it is granted -- but a
+    // script Chrome injects into that frame can. Frames whose origin has not
+    // been granted are skipped by Chrome rather than failing the call, and the
+    // top frame reports them as unread.
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      files: ['content.js'],
+    });
   } catch (error) {
     return {
       ok: false,
@@ -130,7 +165,11 @@ export async function waitForLoad(tabId: number, timeoutMs = 15_000): Promise<bo
 /** One request to the content script, with a disconnect reported as what it means. */
 export async function sendToPage(tabId: number, request: ContentRequest): Promise<ContentResponse> {
   try {
-    return await chrome.tabs.sendMessage(tabId, request);
+    // Frame 0 explicitly. The script now runs in every frame, and a broadcast
+    // would be answered by whichever frame replied first -- a snapshot of a
+    // random advert instead of the page. The top frame gathers the others
+    // itself, over `postMessage`.
+    return await chrome.tabs.sendMessage(tabId, request, { frameId: 0 });
   } catch {
     // The usual cause is the document being replaced mid-call, which takes the
     // listener with it (PRD section 7.5).

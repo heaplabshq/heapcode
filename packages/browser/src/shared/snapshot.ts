@@ -62,6 +62,16 @@ export interface Control {
    */
   sensitive?: boolean;
   /**
+   * The field's `autocomplete` attribute, when it has one.
+   *
+   * Not for the model, which never sees it -- it is how the user's saved
+   * details are matched to the right box. A page saying `autocomplete="tel"` is
+   * the page stating outright what it wants, which beats any reading of the
+   * label next to it, and it is the difference between filling a form correctly
+   * and putting a phone number in the address line.
+   */
+  autocomplete?: string;
+  /**
    * Higher survives truncation. Computed at extraction from viewport
    * proximity and landmark role; `formatSnapshot` may add an intent boost.
    */
@@ -100,6 +110,15 @@ export interface PageSnapshot {
    * (PRD §4.2).
    */
   generation: number;
+  /**
+   * Things about the read itself, rather than about the page.
+   *
+   * Chiefly frames: an embedded frame that could not be read is not the same as
+   * a page with nothing in it, and the difference matters to the model. Without
+   * this, an agent looking for a consent button inside a frame it cannot see
+   * concludes the button does not exist and starts inventing other routes.
+   */
+  notes?: string[];
 }
 
 export interface FormatOptions {
@@ -222,6 +241,11 @@ export function formatSnapshot(snapshot: PageSnapshot, options: FormatOptions = 
     remaining -= block.length + 1;
   }
   if (tableLines.length > 0) sections.push(`[TABLES]\n${tableLines.join('\n')}`);
+
+  // Always rendered, never budgeted away: there are only ever a couple of these
+  // and each one exists to stop the model drawing a wrong conclusion from an
+  // absence.
+  if (snapshot.notes?.length) sections.push(`[NOTES]\n${snapshot.notes.join('\n')}`);
 
   return sections.join('\n\n');
 }

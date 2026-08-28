@@ -20,6 +20,7 @@ const PROFILE_KEY = 'heapbrowse.profile';
 const API_KEY = 'heapbrowse.apiKey';
 const DEBUGGER_KEY = 'heapbrowse.useDebugger';
 const FILES_KEY = 'heapbrowse.files';
+const ONBOARDED_KEY = 'heapbrowse.onboarded';
 
 /** The profile with no key attached — safe to log, safe to render. */
 export type StoredProfile = ProviderProfileConfig;
@@ -116,4 +117,20 @@ export async function loadFiles(): Promise<string[]> {
 
 export async function saveFiles(paths: string[]): Promise<void> {
   await chrome.storage.local.set({ [FILES_KEY]: paths.filter((p) => p.trim().length > 0) });
+}
+
+/**
+ * Whether the first-run explanation has been through.
+ *
+ * A flag rather than inferring it from "is a model configured": someone who
+ * skipped setup has decided something, and asking them again on every open
+ * would be the opposite of respecting it.
+ */
+export async function loadOnboarded(): Promise<boolean> {
+  const stored = await chrome.storage.local.get(ONBOARDED_KEY);
+  return stored[ONBOARDED_KEY] === true;
+}
+
+export async function saveOnboarded(value: boolean): Promise<void> {
+  await chrome.storage.local.set({ [ONBOARDED_KEY]: value });
 }

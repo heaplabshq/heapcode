@@ -1,6 +1,6 @@
 import { CdpDetached, CdpSession, debuggerAvailable } from './cdp.js';
 import { CdpDriver, DomDriver, type PageDriver } from './drivers.js';
-import { ensurePage } from '../sidepanel/page.js';
+import { ensurePage, ensureTab } from '../sidepanel/page.js';
 
 /**
  * Picks the driver for a tab, and copes with losing it.
@@ -33,18 +33,69 @@ export class DriverPool {
   #drivers = new Map<number, PageDriver>();
   #lost = new Set<number>();
   #onFallback?: (reason: string) => void;
+  /**
+   * The tab this run is working on, once it has opened or chosen one.
+   *
+   * Unset means "whatever the user is looking at", which is the right default:
+   * the panel is docked to a window and the user's attention is the context.
+   * Once the agent opens a second tab, though, "active" stops being a useful
+   * answer — the run is working in one tab while the user may click into
+   * another, and every read would follow them. So opening or switching pins the
+   * run to a tab, and it stays pinned until it is closed or switched again.
+   */
+  #target?: number;
 
   constructor(enabled: boolean, onFallback?: (reason: string) => void) {
     this.#enabled = enabled;
     this.#onFallback = onFallback;
   }
 
-  /** A driver for the active tab, plus the tab it belongs to. */
+  /** Which tab the run is pinned to, if any. */
+  get target(): number | undefined {
+    return this.#target;
+  }
+
+  /** Work in this tab from now on. */
+  focus(tabId: number): void {
+    this.#target = tabId;
+  }
+
+  /** Stop working in this tab — it has been closed, or the run is done with it. */
+  async forget(tabId: number): Promise<void> {
+    if (this.#target === tabId) this.#target = undefined;
+    this.#drivers.delete(tabId);
+    this.#lost.delete(tabId);
+    const session = this.#sessions.get(tabId);
+    this.#sessions.delete(tabId);
+    await session?.detach();
+  }
+
+  /**
+   * A driver for the tab the run is working on, plus the tab it belongs to.
+   *
+   * Named for the active tab because that is the usual answer and every call
+   * site reads better for it. When the run has pinned a tab, that one wins —
+   * including while the user is looking at something else, which is the whole
+   * point of pinning.
+   */
   async forActiveTab(): Promise<
     { ok: true; driver: PageDriver; tabId: number; url: string } | { ok: false; reason: string }
   > {
-    const page = await ensurePage();
-    if (!page.ok) return page;
+    const page = this.#target !== undefined ? await ensureTab(this.#target) : await ensurePage();
+    if (!page.ok) {
+      // A pinned tab that has gone is not a failure to report to the user; it is
+      // a reason to go back to following them.
+      if (this.#target !== undefined) {
+        await this.forget(this.#target);
+        const fallback = await ensurePage();
+        if (fallback.ok) {
+          const driver = await this.#driverFor(fallback.tabId);
+          return { ok: true, driver, tabId: fallback.tabId, url: fallback.url };
+        }
+        return fallback;
+      }
+      return page;
+    }
 
     const driver = await this.#driverFor(page.tabId);
     return { ok: true, driver, tabId: page.tabId, url: page.url };
@@ -93,6 +144,7 @@ export class DriverPool {
     const sessions = [...this.#sessions.values()];
     this.#sessions.clear();
     this.#drivers.clear();
+    this.#target = undefined;
     await Promise.all(sessions.map((session) => session.detach()));
   }
 

@@ -33,6 +33,14 @@ interface AxProperty {
 
 export interface AxNode {
   nodeId: string;
+  /**
+   * Which embedded frame this node came from, when it is not the page itself.
+   *
+   * Set while merging the per-frame trees. It reaches the model as the control's
+   * context, because "Accept" in a consent frame and "Accept" on the page are
+   * different buttons and the difference is not visible from the name.
+   */
+  frameLabel?: string;
   ignored?: boolean;
   role?: AxValue;
   name?: AxValue;
@@ -81,8 +89,15 @@ function prop(node: AxNode, name: string): unknown {
  * then still in the tree, and so is the page behind it.
  */
 function modalScope(nodes: AxNode[], byId: Map<string, AxNode>): Set<string> | undefined {
+  // Only a modal in the page itself scopes the snapshot. A dialog inside an
+  // embedded frame blocks that frame, not the page, and letting one scope
+  // everything would hide the whole page behind an advert's own overlay.
   const modal = nodes.find(
-    (node) => !node.ignored && prop(node, 'modal') === true && str(node.role) === 'dialog',
+    (node) =>
+      !node.ignored &&
+      !node.frameLabel &&
+      prop(node, 'modal') === true &&
+      str(node.role) === 'dialog',
   );
   if (!modal) return undefined;
 
@@ -102,6 +117,8 @@ export interface AxSnapshotInput {
   title: string;
   viewport: PageSnapshot['viewport'];
   generation: number;
+  /** Things about the read rather than the page — chiefly unreadable frames. */
+  notes?: string[];
   /** Assigns a handle and remembers how to reach the node again. */
   register(node: AxNode): number;
 }
@@ -148,6 +165,15 @@ export function snapshotFromAxTree(input: AxSnapshotInput): PageSnapshot {
     };
 
     if (description && description !== name) control.context = description.slice(0, 80);
+    if (node.frameLabel) {
+      control.context = control.context
+        ? `in frame ${node.frameLabel}: ${control.context}`
+        : `in frame ${node.frameLabel}`;
+      // A frame's controls rank below the page's own. They matter — a consent
+      // dialog blocks everything behind it — but on a page with hundreds of
+      // controls the user is usually pointing at the page, not the advert.
+      control.score = Math.max(0, control.score - 50);
+    }
     if (prop(node, 'disabled') === true) control.disabled = true;
     if (typeof prop(node, 'checked') === 'boolean') control.checked = prop(node, 'checked') as boolean;
 
@@ -169,6 +195,7 @@ export function snapshotFromAxTree(input: AxSnapshotInput): PageSnapshot {
     controls,
     tables: tablesFromAxTree(nodes, byId, scope),
     generation: input.generation,
+    notes: input.notes?.length ? input.notes : undefined,
   };
 }
 

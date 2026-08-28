@@ -40,6 +40,13 @@ function stubChrome(
             addListener: (fn: (source: chrome.debugger.Debuggee) => void) => listeners.push(fn),
             removeListener: () => {},
           },
+          // Protocol events. The session subscribes to these to know what the
+          // page is still waiting on, which is what makes `settle` wait for the
+          // page rather than for a fixed number of milliseconds.
+          onEvent: {
+            addListener: () => {},
+            removeListener: () => {},
+          },
         },
     permissions: {
       // Two different grants: host access lets us read the page at all, the

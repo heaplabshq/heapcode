@@ -207,6 +207,65 @@ export const ASK_USER: ToolDefinition = {
     'question at a time, and prefer a sensible default where one obviously exists.',
 };
 
+/**
+ * The user's other tabs.
+ *
+ * A browser agent without this is stuck comparing three sites by navigating one
+ * tab back and forth and losing its place each time. It is also the first tool
+ * here that reports something outside the page the user pointed at, which is
+ * why it reports only titles and addresses -- enough to choose a tab, and
+ * nothing of what is in one.
+ */
+export const LIST_TABS: ToolDefinition = {
+  name: 'list_tabs',
+  description:
+    'List the open tabs in this window, with their numbers, titles and addresses. Use this to find ' +
+    'a tab you opened earlier, or to check where you are working.',
+  parameters: { type: 'object', properties: {} },
+  permission: 'read',
+  untrustedOutput: true,
+};
+
+export const SWITCH_TAB: ToolDefinition = {
+  name: 'switch_tab',
+  description:
+    'Work in a different tab from now on. Reading and acting all follow the tab you switch to, ' +
+    'until you switch again. Use the tab number from list_tabs or open_tab.',
+  parameters: {
+    type: 'object',
+    properties: { tab: { type: 'number', description: 'The tab number, from list_tabs.' } },
+    required: ['tab'],
+  },
+  // Switching changes nothing on any page; it changes where this run is
+  // looking. Putting a confirmation in front of that would ask the user to
+  // approve the agent's bookkeeping.
+  permission: 'read',
+  untrustedOutput: true,
+};
+
+/**
+ * Hovering, which is how a large part of the web opens.
+ *
+ * Read-permission for the same reason `scroll` is: it reveals things without
+ * changing anything. A hover cannot submit, buy or delete -- the worst it does
+ * is open a menu, which is exactly what it is for.
+ */
+export const HOVER: ToolDefinition = {
+  name: 'hover',
+  description:
+    'Move the pointer onto a control without clicking it. Use this for menus, tooltips and ' +
+    'previews that only appear on hover. Read the page afterwards to see what opened.',
+  parameters: {
+    type: 'object',
+    properties: {
+      handle: { type: 'number', description: 'The handle number of the control to hover over.' },
+    },
+    required: ['handle'],
+  },
+  permission: 'read',
+  untrustedOutput: true,
+};
+
 /** The read-only belt, in the order the model should generally reach for them. */
 export const READ_ONLY_TOOLS: ToolDefinition[] = [
   READ_PAGE,
@@ -214,6 +273,9 @@ export const READ_ONLY_TOOLS: ToolDefinition[] = [
   GET_ELEMENTS,
   EXTRACT_DATA,
   SCROLL,
+  HOVER,
   WAIT,
+  LIST_TABS,
+  SWITCH_TAB,
   ASK_USER,
 ];

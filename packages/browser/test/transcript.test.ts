@@ -20,6 +20,7 @@ function render(turn: Turn): string[] {
   const out = (turn.steps ?? []).map((step) => {
     if (step.kind === 'tool') return `[tool ${step.tool.name}]`;
     if (step.kind === 'view') return '[view]';
+    if (step.kind === 'data') return `[data ${step.dataset.rows.length} rows]`;
     return step.text;
   });
   if (turn.content) out.push(`ANSWER: ${turn.content}`);

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>heapbrowse — Privacy</title>
+<meta name="description" content="What heapbrowse does with your data: page content goes to the model endpoint you configure and nowhere else, everything else stays on your device, and there is no analytics of any kind." />
+<link rel="canonical" href="https://browse.heaplabs.dev/privacy.html" />
+<link rel="icon" href="/icon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/_shared.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-row">
+    <a class="brand" href="/"><svg width="22" height="22" viewBox="0 0 128 128" aria-hidden="true"><defs><linearGradient id="m" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="url(#m)"/><g fill="#fff"><rect x="50" y="30" width="28" height="18" rx="6"/><rect x="38" y="55" width="52" height="18" rx="6"/><rect x="26" y="80" width="76" height="18" rx="6"/></g></svg> heapbrowse</a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="https://github.com/heaplabshq/heapcode">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero wrap">
+  <p class="eyebrow">Privacy &middot; last updated 29 August 2026</p>
+  <h1>heapbrowse has no server, and collects nothing.</h1>
+  <p class="lede">
+    This is the whole policy, not a summary of one. heapbrowse is a Chrome extension that runs
+    entirely on your device. There is no heapbrowse account, no heapbrowse backend, and no
+    telemetry, analytics or crash reporting of any kind.
+  </p>
+</section>
+
+<section class="panel wrap">
+  <h2>What leaves your device</h2>
+  <p>
+    One thing, to one place you choose: <strong>the text and structure of pages you point
+    heapbrowse at is sent to the model endpoint you configure in Settings</strong>, so the model
+    can answer questions about them. Nothing is sent anywhere else.
+  </p>
+  <p>
+    That endpoint is yours. If you configure Ollama or LM Studio on your own machine, nothing
+    leaves the machine at all. If you configure a hosted provider, your data is handled under
+    <em>that provider's</em> policy, and you should read it — heapbrowse is not a party to it and
+    cannot see what they do with it.
+  </p>
+  <p>
+    Page content is only read when a question needs it, and only for sites you have granted
+    access to, one site at a time. A screenshot is sent to the model only if the model explicitly
+    requests one; screenshots taken to show you what it is doing are never sent anywhere.
+  </p>
+</section>
+
+<section class="panel wrap">
+  <h2>What stays on your device</h2>
+  <table class="spec-table">
+    <tr>
+      <th>API keys</th>
+      <td>Stored in <code>chrome.storage.local</code>, which does not sync through your Chrome profile. Written when you save and never read back into the form, so a stored key cannot be recovered from the interface or captured in a screenshot.</td>
+    </tr>
+    <tr>
+      <th>Your saved details</th>
+      <td>Name, email, address, résumé text and the rest of the form-filling details. <strong>The model never receives their values.</strong> It is told which fields exist — &ldquo;there is an email address on file&rdquo; — and asks for one to be filled; the substitution happens locally, after you approve the action.</td>
+    </tr>
+    <tr>
+      <th>Conversations</th>
+      <td>The current conversation is kept in session storage so the panel survives being closed and reopened. Cleared with the new-conversation button.</td>
+    </tr>
+    <tr>
+      <th>Task history and audit log</th>
+      <td>What you have asked and what heapbrowse did about it, including every action and who approved it. Both are on the device and both can be cleared from the panel at any time.</td>
+    </tr>
+    <tr>
+      <th>Settings</th>
+      <td>Endpoints, models, profiles and preferences. Local, not synced.</td>
+    </tr>
+  </table>
+</section>
+
+<section class="panel wrap">
+  <h2>What heapbrowse never does</h2>
+  <ul class="plain">
+    <li>It makes no network request to any address except the model endpoint you configured.</li>
+    <li>It has no analytics, no telemetry, no crash reporting and no update pings of its own.</li>
+    <li>It never types into a password field, and never asks you to tell it a password or a
+        one-time code so that it can type one. When a step needs a person, it stops and hands the
+        page back to you.</li>
+    <li>It refuses to act on banks, brokerages and password managers, in every mode.</li>
+    <li>It does not sync anything through your Chrome profile.</li>
+  </ul>
+</section>
+
+<section class="panel wrap">
+  <h2>Permissions</h2>
+  <p>
+    Site access is granted one site at a time, by you, and is revocable from Chrome's own
+    extension settings at any time. heapbrowse requests no host permissions at install.
+  </p>
+  <p>
+    It holds Chrome's <code>debugger</code> permission, which is how it reads pages accurately and
+    clicks with genuine input events. Chrome shows a &ldquo;being debugged&rdquo; banner whenever a
+    run is attached; that banner cannot be suppressed and is not suppressed. The debugger can be
+    switched off entirely in Settings.
+  </p>
+</section>
+
+<section class="panel wrap">
+  <h2>Removing your data</h2>
+  <p>
+    Uninstalling the extension removes everything: Chrome deletes an extension's local and session
+    storage with it. Individual pieces — history, the audit log, saved tasks, your details, a
+    stored key — can be cleared from the panel before that, and site permissions revoked from
+    <code>chrome://extensions</code>.
+  </p>
+</section>
+
+<section class="panel wrap">
+  <h2>Changes and contact</h2>
+  <p>
+    heapbrowse is source-available under PolyForm Noncommercial 1.0. If this page and the code ever
+    disagree, the code is the truth and the page is a bug — raise it on
+    <a href="https://github.com/heaplabshq/heapcode">GitHub</a>, which is also where any change to
+    this policy will appear in the history.
+  </p>
+</section>
+
+<footer>
+  <div class="wrap footer-row">
+    <span class="mono">HEAPBROWSE &middot; POLYFORM-NC-1.0 &middot; A HEAP LABS PROJECT</span>
+    <div class="cta-row" style="margin:0;">
+      <a class="btn btn-ghost" href="/">Back to heapbrowse</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

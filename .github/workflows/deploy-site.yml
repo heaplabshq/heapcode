@@ -1,4 +1,4 @@
-name: Deploy site
+name: Deploy sites
 
 # The marketing site is a Worker serving static assets, and until now it was
 # only ever deployed by someone running `wrangler deploy` by hand. That held up
@@ -15,15 +15,24 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+      - 'website-browse/**'
       - '.github/workflows/deploy-site.yml'
   # Lets a stale site be redeployed without an empty commit.
   workflow_dispatch:
 
+# Two products, two domains, two assets-only Workers. A matrix rather than two
+# jobs: they differ only by directory, and a copy-pasted job is where the second
+# one quietly stops matching the first.
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      # Neither site should be held back because the other failed to deploy.
+      fail-fast: false
+      matrix:
+        site: [website, website-browse]
     steps:
       - uses: actions/checkout@v7
 
@@ -40,5 +49,5 @@ jobs:
       - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: website
+          workingDirectory: ${{ matrix.site }}
           wranglerVersion: "4.121.0"

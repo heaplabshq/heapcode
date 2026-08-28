@@ -1,0 +1,144 @@
+/*
+ * heapbrowse's site, in Heap Labs' house style.
+ *
+ * The blueprint base is heapcode's — same grid, same IBM Plex, same panels —
+ * because they are two products from one place and should look it. The accent
+ * is the difference: heapcode is copper, heapbrowse is the indigo-to-violet of
+ * its own mark, so the family is visible and the products are not confused.
+ */
+:root {
+  --bg: #081524;
+  --bg-deep: #050d17;
+  --bg-panel: #12233a;
+  --line: #8fb9d1;
+  --line-dim: #2f5674;
+  --ink: #f3f8fa;
+  --ink-dim: #b9d0de;
+  --accent: #a78bfa;
+  --accent-deep: #6366f1;
+  --accent-ink: #150a2b;
+  --cyan: #7fc4d9;
+  --radius: 3px;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  background-image:
+    linear-gradient(rgba(143, 185, 209, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(143, 185, 209, 0.08) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: "IBM Plex Sans", sans-serif;
+  line-height: 1.5;
+}
+
+.mono { font-family: "IBM Plex Mono", monospace; }
+a { color: inherit; }
+
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------- nav ---------- */
+.nav {
+  border-bottom: 1px solid var(--line-dim);
+  background: rgba(5, 13, 23, 0.82);
+  backdrop-filter: blur(6px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.nav-row { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; }
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 600; letter-spacing: 0.04em;
+  text-decoration: none; font-size: 15px;
+}
+.brand svg { display: block; }
+.nav-links {
+  display: flex; gap: 28px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px; letter-spacing: 0.03em;
+}
+.nav-links a {
+  text-decoration: none; color: var(--ink-dim);
+  border-bottom: 1px solid transparent; padding-bottom: 2px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.nav-links a:hover, .nav-links a:focus-visible { color: var(--accent); border-color: var(--accent); }
+
+/* ---------- type ---------- */
+.eyebrow {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--accent); margin: 0 0 14px;
+}
+h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.12; letter-spacing: -0.02em; margin: 0 0 18px; font-weight: 600; }
+h2 { font-size: clamp(22px, 3vw, 28px); line-height: 1.2; letter-spacing: -0.015em; margin: 0 0 14px; font-weight: 600; }
+h3 { font-size: 16px; margin: 0 0 6px; font-weight: 600; }
+p { margin: 0 0 14px; }
+.lede { font-size: 18px; color: var(--ink-dim); max-width: 62ch; }
+.fine { font-size: 13px; color: var(--ink-dim); }
+
+/* ---------- panels ---------- */
+.panel { padding: 60px 24px; border-top: 1px solid var(--line-dim); }
+.hero { padding: 76px 24px 60px; }
+
+/* 340 rather than 260: four cards at 260 fit three across on a desktop and
+   leave the fourth stranded on a row of its own. At 340 they land two-by-two. */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; margin-top: 26px; }
+.card {
+  border: 1px solid var(--line-dim);
+  background: var(--bg-panel);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.card p { margin: 0; color: var(--ink-dim); font-size: 14px; }
+.card .tag {
+  font-family: "IBM Plex Mono", monospace; font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
+  display: block; margin-bottom: 10px;
+}
+
+/* ---------- buttons ---------- */
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px; }
+.btn {
+  display: inline-block; text-decoration: none;
+  font-family: "IBM Plex Mono", monospace; font-size: 13px; letter-spacing: 0.03em;
+  padding: 11px 20px; border-radius: var(--radius); border: 1px solid var(--line-dim);
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn-primary:hover { background: #c4b5fd; border-color: #c4b5fd; }
+.btn-ghost { color: var(--ink-dim); }
+.btn-ghost:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ---------- tables and lists ---------- */
+.spec-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 22px; }
+.spec-table th, .spec-table td {
+  text-align: left; padding: 12px 14px;
+  border-bottom: 1px solid var(--line-dim); vertical-align: top;
+}
+.spec-table th {
+  font-family: "IBM Plex Mono", monospace; font-size: 12px;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); width: 32%;
+}
+.spec-table td { color: var(--ink-dim); }
+.spec-table code { font-family: "IBM Plex Mono", monospace; color: var(--cyan); font-size: 13px; }
+
+.plain { padding-left: 20px; color: var(--ink-dim); }
+.plain li { margin-bottom: 8px; }
+
+/* ---------- footer ---------- */
+footer { border-top: 1px solid var(--line-dim); background: var(--bg-deep); padding: 26px 0; }
+.footer-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
+.footer-row .mono { font-size: 12px; color: var(--ink-dim); letter-spacing: 0.06em; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { transition-duration: 0.001ms !important; }
+}

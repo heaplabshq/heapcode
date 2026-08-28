@@ -31,7 +31,32 @@ export default defineManifest({
   version: pkg.version,
   description: pkg.description,
   minimum_chrome_version: '116', // chrome.sidePanel landed in 114; 116 for sidePanel.setOptions
-  action: { default_title: 'Open heapbrowse' },
+  /*
+   * The mark, at the four sizes Chrome asks for.
+   *
+   * `icons` is the extension itself -- the management page, the store listing,
+   * the permission prompts; `action` is the toolbar button, which is drawn at
+   * 16 and at 32 on a hidpi screen. Without either, Chrome draws a grey puzzle
+   * piece, and a store submission is rejected for the missing 128.
+   *
+   * Rendered from `public/icons/icon.svg` by `scripts/icons.mjs`. The PNGs are
+   * committed, so building needs no rasteriser.
+   */
+  icons: {
+    16: 'icons/16.png',
+    32: 'icons/32.png',
+    48: 'icons/48.png',
+    128: 'icons/128.png',
+  },
+  action: {
+    default_title: 'Open heapbrowse',
+    default_icon: {
+      16: 'icons/16.png',
+      32: 'icons/32.png',
+      48: 'icons/48.png',
+      128: 'icons/128.png',
+    },
+  },
   /**
    * Opening the panel from the keyboard.
    *

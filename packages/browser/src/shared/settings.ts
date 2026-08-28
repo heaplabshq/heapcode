@@ -17,7 +17,11 @@ import type { ProviderProfileConfig } from '@heapcode/core/providers';
  */
 
 const PROFILE_KEY = 'heapbrowse.profile';
+const PROFILES_KEY = 'heapbrowse.profiles';
+const ACTIVE_KEY = 'heapbrowse.activeProfile';
 const API_KEY = 'heapbrowse.apiKey';
+/** Per-profile keys. The bare `API_KEY` above is the pre-profiles single key. */
+const apiKeyFor = (name: string) => `${API_KEY}.${name}`;
 const DEBUGGER_KEY = 'heapbrowse.useDebugger';
 const FILES_KEY = 'heapbrowse.files';
 const ONBOARDED_KEY = 'heapbrowse.onboarded';
@@ -35,14 +39,107 @@ export function defaultProfile(): StoredProfile {
   };
 }
 
-export async function loadProfile(): Promise<StoredProfile> {
-  const stored = await chrome.storage.local.get(PROFILE_KEY);
-  const profile = stored[PROFILE_KEY] as StoredProfile | undefined;
-  return profile ?? defaultProfile();
+/**
+ * Every configured profile, and which one is in use.
+ *
+ * One stored profile was fine until it wasn't: the whole point of being
+ * local-first *and* bring-your-own-key is that people run a small model at home
+ * and a large one in the cloud, and switching meant retyping an endpoint, a
+ * model name and a key every time. The shape is core's, and the CLI already had
+ * this concept -- this is the extension catching up rather than inventing
+ * anything.
+ *
+ * Migration is silent and happens on first read: a single stored profile
+ * becomes a list of one, keeping its name, and its key moves to that name's
+ * slot. Nobody should have to reconfigure because the storage layout changed.
+ */
+export async function loadProfiles(): Promise<StoredProfile[]> {
+  const stored = await chrome.storage.local.get([PROFILES_KEY, PROFILE_KEY]);
+  const profiles = stored[PROFILES_KEY] as StoredProfile[] | undefined;
+  if (Array.isArray(profiles) && profiles.length > 0) return profiles;
+
+  const single = stored[PROFILE_KEY] as StoredProfile | undefined;
+  const migrated = [single ?? defaultProfile()];
+  await chrome.storage.local.set({ [PROFILES_KEY]: migrated });
+
+  // The old single key belongs to the migrated profile, and only to it.
+  const legacy = (await chrome.storage.local.get(API_KEY))[API_KEY] as string | undefined;
+  if (legacy) await chrome.storage.local.set({ [apiKeyFor(migrated[0]!.name)]: legacy });
+
+  return migrated;
 }
 
+export async function saveProfiles(profiles: StoredProfile[]): Promise<void> {
+  await chrome.storage.local.set({ [PROFILES_KEY]: profiles });
+}
+
+export async function activeProfileName(): Promise<string | undefined> {
+  const stored = await chrome.storage.local.get(ACTIVE_KEY);
+  const name = stored[ACTIVE_KEY];
+  return typeof name === 'string' ? name : undefined;
+}
+
+export async function setActiveProfile(name: string): Promise<void> {
+  await chrome.storage.local.set({ [ACTIVE_KEY]: name });
+}
+
+/** The profile in use: the chosen one, or the first, or an empty default. */
+export async function loadProfile(): Promise<StoredProfile> {
+  const [profiles, active] = await Promise.all([loadProfiles(), activeProfileName()]);
+  return profiles.find((profile) => profile.name === active) ?? profiles[0] ?? defaultProfile();
+}
+
+/**
+ * Save the active profile, replacing the entry with the same name.
+ *
+ * Renaming is a rename, not a new profile: the entry at the active name is
+ * updated in place and the active pointer follows it, so editing the name field
+ * does not silently leave a duplicate behind.
+ */
 export async function saveProfile(profile: StoredProfile): Promise<void> {
+  const [profiles, active] = await Promise.all([loadProfiles(), activeProfileName()]);
+  const current = active ?? profiles[0]?.name;
+  const index = profiles.findIndex((candidate) => candidate.name === current);
+
+  const next = index >= 0 ? profiles.map((p, i) => (i === index ? profile : p)) : [...profiles, profile];
+  await saveProfiles(next);
+  await setActiveProfile(profile.name);
+  // Kept in step so anything still reading the old single key sees the truth.
   await chrome.storage.local.set({ [PROFILE_KEY]: profile });
+}
+
+/** Add a profile and make it the active one. Names are made unique. */
+export async function addProfile(base?: StoredProfile): Promise<StoredProfile[]> {
+  const profiles = await loadProfiles();
+  const seed = base ?? defaultProfile();
+
+  let name = seed.name === 'default' ? 'new profile' : `${seed.name} copy`;
+  let suffix = 2;
+  while (profiles.some((profile) => profile.name === name)) name = `${seed.name} copy ${suffix++}`;
+
+  const created = { ...seed, name };
+  const next = [...profiles, created];
+  await saveProfiles(next);
+  await setActiveProfile(name);
+  return next;
+}
+
+/**
+ * Delete a profile, and its key with it.
+ *
+ * The last profile is never deleted -- there would be nothing to fall back to,
+ * and an extension with no endpoint configured is indistinguishable from a
+ * broken one.
+ */
+export async function deleteProfile(name: string): Promise<StoredProfile[]> {
+  const profiles = await loadProfiles();
+  if (profiles.length <= 1) return profiles;
+
+  const next = profiles.filter((profile) => profile.name !== name);
+  await saveProfiles(next);
+  await chrome.storage.local.remove(apiKeyFor(name));
+  if ((await activeProfileName()) === name) await setActiveProfile(next[0]!.name);
+  return next;
 }
 
 /**
@@ -50,15 +147,19 @@ export async function saveProfile(profile: StoredProfile): Promise<void> {
  * profile — keeping the two apart is what makes it possible to render or log a
  * profile without a redaction step that someone will eventually forget.
  */
-export async function loadApiKey(): Promise<string | undefined> {
-  const stored = await chrome.storage.local.get(API_KEY);
-  const key = stored[API_KEY] as string | undefined;
+export async function loadApiKey(profileName?: string): Promise<string | undefined> {
+  const name = profileName ?? (await loadProfile()).name;
+  const stored = await chrome.storage.local.get([apiKeyFor(name), API_KEY]);
+  // The per-profile key first, falling back to the pre-profiles single key so
+  // an install that has not yet re-saved anything still authenticates.
+  const key = (stored[apiKeyFor(name)] ?? stored[API_KEY]) as string | undefined;
   return key && key.length > 0 ? key : undefined;
 }
 
-export async function saveApiKey(key: string): Promise<void> {
-  if (key.length === 0) await chrome.storage.local.remove(API_KEY);
-  else await chrome.storage.local.set({ [API_KEY]: key });
+export async function saveApiKey(key: string, profileName?: string): Promise<void> {
+  const name = profileName ?? (await loadProfile()).name;
+  if (key.length === 0) await chrome.storage.local.remove(apiKeyFor(name));
+  else await chrome.storage.local.set({ [apiKeyFor(name)]: key });
 }
 
 /** Presets offered in the UI, in the order they are shown. */

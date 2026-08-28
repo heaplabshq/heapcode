@@ -3,6 +3,7 @@ import { formatSnapshot, type Control, type PageSnapshot } from '../shared/snaps
 import { describeChanges } from '../shared/delta.js';
 import { currentTab, tabTarget, waitForLoad } from '../sidepanel/page.js';
 import { DriverPool } from './driverPool.js';
+import type { PageDriver } from './drivers.js';
 import {
   classifyClick,
   classifyNavigate,
@@ -167,6 +168,8 @@ export class BrowserToolExecutor {
           return await this.#autofill(ok, fail);
         case 'next_page':
           return await this.#nextPage(ok, fail);
+        case 'download':
+          return await this.#download(call.args, ok, fail);
         case 'list_tabs':
           return await this.#listTabs(ok);
         case 'switch_tab':
@@ -366,6 +369,19 @@ export class BrowserToolExecutor {
     }
     if (call.name === 'go_back' || call.name === 'close_tab') {
       return { classification: { permission: 'write' }, url };
+    }
+
+    if (call.name === 'download') {
+      const control =
+        call.args.handle === undefined
+          ? undefined
+          : this.#last?.controls.find((c) => c.handle === Number(call.args.handle));
+      return {
+        classification: { permission: 'write' },
+        target: control,
+        url,
+        describe: `download ${control?.href ?? String(call.args.url ?? '')}`,
+      };
     }
 
     if (call.name === 'next_page') {
@@ -763,11 +779,119 @@ export class BrowserToolExecutor {
       );
     }
 
+    // Third route: the list has no pages at all and simply grows as you reach
+    // the bottom. Left to the model this was the worst of the three -- "scroll
+    // and see" has no stopping rule, so it either gave up after one screen or
+    // scrolled a feed forever. Growth is measurable, so measure it.
+    const grew = await this.#scrollForMore(target.driver, snapshot);
+    if (grew.added > 0) {
+      this.#last = grew.snapshot;
+      await this.#capture();
+      return ok(
+        `This list has no pages — it loads more as you scroll. Scrolled down and ${grew.added} more ` +
+          `control(s) appeared. Call extract_data to add what is now on the page, then next_page ` +
+          `again for more.`,
+      );
+    }
+
+    this.#last = grew.snapshot;
     return ok(
-      'This page has no next-page control and no page number in its address, so there is no next ' +
-        'page to go to. It may load more as you scroll — try scroll — or this may be the whole ' +
-        'list. Do not guess at a URL.',
+      'There is no next page: no pagination control, no page number in the address, and scrolling ' +
+        'to the bottom loaded nothing new. This is the whole list. Stop paginating and use what you ' +
+        'have collected.',
     );
+  }
+
+  /**
+   * Scroll to the bottom and see whether the page put anything there.
+   *
+   * Two scrolls, not one. A single scroll to the bottom fires the page's
+   * loader and returns before it has finished, so the measurement is taken
+   * against a page that is still fetching and reports no growth on a list that
+   * was about to grow. The settle between them is the fix, and it is the same
+   * network-and-DOM-quiet wait every other action uses.
+   *
+   * Growth is counted in controls rather than in pixels: a page whose height
+   * changed because a footer advert loaded has not given us more list.
+   */
+  async #scrollForMore(
+    driver: { scroll: PageDriver['scroll']; settle: PageDriver['settle'] },
+    before: PageSnapshot,
+  ): Promise<{ snapshot: PageSnapshot; added: number }> {
+    const seen = new Set(before.controls.map((control) => control.handle));
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const scrolled = await driver.scroll('bottom', 1);
+      await driver.settle(3);
+      if ('ok' in scrolled) continue;
+
+      const added = scrolled.controls.filter((control) => !seen.has(control.handle)).length;
+      if (added > 0) return { snapshot: scrolled, added };
+      // Keep the newest view even when nothing arrived, so the caller is not
+      // holding a snapshot from before the scroll.
+      if (attempt === 1) return { snapshot: scrolled, added: 0 };
+    }
+
+    return { snapshot: before, added: 0 };
+  }
+
+  /**
+   * Save something the page is offering.
+   *
+   * Resolved from the page, never from the model's imagination: a handle
+   * becomes that element's own `href`, and a bare URL is made absolute against
+   * the page it came from. Chrome names the file from the response, which is
+   * both more accurate than anything guessable here and one less thing the
+   * model gets to choose.
+   */
+  async #download(
+    args: Record<string, unknown>,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const here = await this.#addressOnly();
+    const base = here.ok ? here.url : undefined;
+
+    let raw: string | undefined;
+    if (args.handle !== undefined && args.handle !== null) {
+      const handle = Number(args.handle);
+      if (!Number.isInteger(handle)) return fail(`"${args.handle}" is not a handle number.`);
+      const control = this.#last?.controls.find((candidate) => candidate.handle === handle);
+      if (!control) return fail(`No element with handle [${handle}]. Read the page first.`);
+      if (!control.href) {
+        return fail(
+          `"${control.name}" is not a link to a file. If it downloads by script rather than by ` +
+            `address, click it instead.`,
+        );
+      }
+      raw = control.href;
+    } else if (typeof args.url === 'string' && args.url.trim()) {
+      raw = args.url.trim();
+    } else {
+      return fail('download needs the handle of a link, or a url.');
+    }
+
+    let resolved: string;
+    try {
+      resolved = new URL(raw, base).href;
+    } catch {
+      return fail(`"${raw}" is not a URL that can be downloaded.`);
+    }
+    if (!/^https?:$/.test(new URL(resolved).protocol)) {
+      return fail('Only http and https addresses can be downloaded.');
+    }
+
+    try {
+      const id = await chrome.downloads.download({ url: resolved });
+      return ok(
+        `Started downloading ${resolved} (download ${id}). It goes to the user's usual downloads ` +
+          `folder; you cannot read it back.`,
+      );
+    } catch (error) {
+      return fail(
+        `The download was refused: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /** A saved detail, by the label or key the model used to name it. */

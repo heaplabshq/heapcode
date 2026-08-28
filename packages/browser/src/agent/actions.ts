@@ -263,6 +263,34 @@ export const DRAG: ToolDefinition = {
 };
 
 /**
+ * Save a file the page is offering.
+ *
+ * The gap this fills is narrow and constant: the agent finds the invoice, the
+ * report, the CSV the site already publishes — and then has to tell the user to
+ * click the link themselves, which is the entire class of answer this product
+ * exists to avoid.
+ *
+ * It downloads what is already there. It cannot name an arbitrary destination
+ * and cannot write anything the page did not offer: a handle resolves to that
+ * element's own link, and a URL is fetched with the user's session exactly as
+ * clicking it would be. The filename is Chrome's, from the response.
+ */
+export const DOWNLOAD: ToolDefinition = {
+  name: 'download',
+  description:
+    'Save a file the page links to — an invoice, a report, an export. Give the handle of the link ' +
+    'or button, or the URL directly. It goes to the usual downloads folder.',
+  parameters: {
+    type: 'object',
+    properties: {
+      handle: { type: 'number', description: 'The handle of the link to download.' },
+      url: { type: 'string', description: 'The address to download, if you have it instead.' },
+    },
+  },
+  permission: 'write',
+};
+
+/**
  * Attach a file the user has already configured.
  *
  * Not offered unless the debugger is active: `HTMLInputElement.files` cannot be
@@ -303,4 +331,5 @@ export const MUTATING_TOOLS: ToolDefinition[] = [
   NEXT_PAGE,
   OPEN_TAB,
   CLOSE_TAB,
+  DOWNLOAD,
 ];

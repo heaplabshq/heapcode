@@ -32,6 +32,15 @@ export default defineManifest({
   description: pkg.description,
   minimum_chrome_version: '116', // chrome.sidePanel landed in 114; 116 for sidePanel.setOptions
   action: { default_title: 'Open heapbrowse' },
+  // Opening the panel from the keyboard. `_execute_action` is the action click,
+  // and the worker sets `openPanelOnActionClick`, so this opens the side panel
+  // without needing a popup that does not exist.
+  commands: {
+    _execute_action: {
+      suggested_key: { default: 'Ctrl+Shift+H', mac: 'Command+Shift+H' },
+      description: 'Open heapbrowse',
+    },
+  },
   side_panel: { default_path: 'src/sidepanel/index.html' },
   background: {
     service_worker: 'src/background/index.ts',
@@ -55,7 +64,27 @@ export default defineManifest({
   // file attachment — the three things a content script cannot do, and the
   // source of every per-site failure this product has had. Using it is still a
   // setting; holding the permission is not.
-  permissions: ['sidePanel', 'storage', 'activeTab', 'scripting', 'tabs', 'debugger'],
+  //
+  // `contextMenus` and `commands` are free at the prompt: neither produces a
+  // warning line, and between them they are how a browser extension is normally
+  // reached — a right-click on what you are looking at, and a key that opens the
+  // panel without going to the toolbar.
+  //
+  // `downloads` does show a line ("Manage your downloads"). It buys the one
+  // thing a page-reading agent otherwise cannot do with a file it has found:
+  // save it. Kept because the alternative is telling the user to click the link
+  // themselves, which is the whole class of answer this product exists to avoid.
+  permissions: [
+    'sidePanel',
+    'storage',
+    'activeTab',
+    'scripting',
+    'tabs',
+    'debugger',
+    'contextMenus',
+    'commands',
+    'downloads',
+  ],
   host_permissions: [],
   optional_host_permissions: ['http://*/*', 'https://*/*'],
 });

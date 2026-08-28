@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { defaultProfile, loadOnboarded, loadProfile, type StoredProfile } from '../shared/settings.js';
-import { PORT_NAME, type WorkerMessage } from '../shared/messages.js';
+import { PENDING_PROMPT_KEY, PORT_NAME, type WorkerMessage } from '../shared/messages.js';
 import { useChat } from './useChat.js';
 import { MessageList } from './components/MessageList.js';
 import { Composer } from './components/Composer.js';
@@ -64,9 +64,30 @@ export function App() {
     const port = chrome.runtime.connect({ name: PORT_NAME });
     port.onMessage.addListener((message: WorkerMessage) => {
       if (message.type === 'origin') setOrigin(message.origin);
+      // A right-click on the page, while this panel was already open.
+      if (message.type === 'prompt') setDraft(message.text);
     });
     port.postMessage({ type: 'origin' });
     return () => port.disconnect();
+  }, []);
+
+  /**
+   * A request left by a right-click, picked up once.
+   *
+   * The panel may be opening *because* of that click, in which case there was
+   * no port to send it on when the menu fired — so it is also written to
+   * session storage, read here, and cleared. It lands in the composer rather
+   * than being sent: selected text is page content, and page content must not
+   * reach the model carrying the user's authority without the user having read
+   * it first.
+   */
+  useEffect(() => {
+    void chrome.storage.session.get(PENDING_PROMPT_KEY).then((stored) => {
+      const pending = stored[PENDING_PROMPT_KEY];
+      if (typeof pending !== 'string' || !pending) return;
+      setDraft(pending);
+      void chrome.storage.session.remove(PENDING_PROMPT_KEY);
+    });
   }, []);
 
   /**
@@ -112,7 +133,7 @@ export function App() {
     <div className="app">
       <header>
         <span className="title">heapbrowse</span>
-        <span className="model" title={profile.baseUrl}>
+        <span className="model" title={`${profile.name} — ${profile.baseUrl}`}>
           {configured ? profile.model : 'not configured'}
         </span>
         <ContextMeter tokens={tokens} window={contextWindow} />

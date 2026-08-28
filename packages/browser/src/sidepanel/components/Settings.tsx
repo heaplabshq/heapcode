@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { PresetId } from '@heapcode/core/providers';
 import {
+  addProfile,
+  deleteProfile,
   loadFiles,
+  loadProfiles,
   loadUseDebugger,
   needsApiKey,
   presetById,
@@ -10,6 +13,7 @@ import {
   saveFiles,
   saveProfile,
   saveUseDebugger,
+  setActiveProfile,
   type StoredProfile,
 } from '../../shared/settings.js';
 import { debuggerAvailable } from '../../agent/cdp.js';
@@ -45,11 +49,30 @@ export function Settings({
   const [result, setResult] = useState<Diagnosis | undefined>();
   const [useDebugger, setUseDebugger] = useState(false);
   const [files, setFiles] = useState('');
+  const [profiles, setProfiles] = useState<StoredProfile[]>([]);
 
   useEffect(() => {
     void loadUseDebugger().then(setUseDebugger);
     void loadFiles().then((paths) => setFiles(paths.join('\n')));
+    void loadProfiles().then(setProfiles);
   }, []);
+
+  /**
+   * Switch to another configured endpoint.
+   *
+   * The draft is replaced wholesale and the key field cleared: a key typed
+   * against one profile must never be saved into another, and the field is
+   * write-only so there is nothing to carry across anyway.
+   */
+  const choose = async (name: string) => {
+    const wanted = profiles.find((profile) => profile.name === name);
+    if (!wanted) return;
+    await setActiveProfile(name);
+    setDraft(wanted);
+    setApiKey('');
+    setResult(undefined);
+    onSaved(wanted);
+  };
 
   /**
    * Just a preference now.
@@ -96,9 +119,12 @@ export function Settings({
     await ensureAccess();
     await saveProfile(draft);
     if (apiKey.length > 0) {
-      await saveApiKey(apiKey);
+      // Named explicitly: the key belongs to the profile being saved, which is
+      // not necessarily the one that was active when the field was typed into.
+      await saveApiKey(apiKey, draft.name);
       setApiKey('');
     }
+    setProfiles(await loadProfiles());
     onSaved(draft);
   };
 
@@ -117,6 +143,63 @@ export function Settings({
 
   return (
     <div className="settings">
+      {profiles.length > 0 && (
+        <div className="profiles">
+          <label>
+            Profile
+            <select value={draft.name} onChange={(e) => void choose(e.target.value)}>
+              {profiles.map((profile) => (
+                <option key={profile.name} value={profile.name}>
+                  {profile.name}
+                  {profile.model ? ` — ${profile.model}` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="row">
+            <button
+              type="button"
+              className="ghost"
+              onClick={async () => {
+                const next = await addProfile(draft);
+                setProfiles(next);
+                const created = next[next.length - 1]!;
+                setDraft(created);
+                setApiKey('');
+                onSaved(created);
+              }}
+            >
+              Duplicate
+            </button>
+            {profiles.length > 1 && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={async () => {
+                  const next = await deleteProfile(draft.name);
+                  setProfiles(next);
+                  setDraft(next[0]!);
+                  setApiKey('');
+                  onSaved(next[0]!);
+                }}
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <label>
+        Name
+        <input
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          placeholder="local, work, big model…"
+          spellCheck={false}
+        />
+      </label>
+
       <label>
         Provider
         <select value={draft.preset} onChange={(e) => choosePreset(e.target.value as PresetId)}>

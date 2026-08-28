@@ -21,6 +21,18 @@ export type PanelMessage =
 /** Worker → panel. */
 export type WorkerMessage =
   | { type: 'pong' }
-  | { type: 'origin'; origin: string };
+  | { type: 'origin'; origin: string }
+  /**
+   * Something to put in the composer, from a right-click on the page.
+   *
+   * Sent over the port when a panel is already open, and left in
+   * `chrome.storage.session` regardless — the panel may be opening for the
+   * first time in response to this very click, in which case there was no port
+   * to send it on when the menu fired.
+   */
+  | { type: 'prompt'; text: string };
 
 export const PORT_NAME = 'heapbrowse';
+
+/** Where a right-click leaves its request for the panel to pick up. */
+export const PENDING_PROMPT_KEY = 'heapbrowse.pendingPrompt';

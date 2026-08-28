@@ -286,6 +286,18 @@ Four gaps that showed up as "the agent is stuck" rather than as a missing featur
 
 Confirmed working manually on live sites (2026-08-28).
 
+### And then
+
+- [x] Right-click → "Ask heapbrowse about this" on a selection, a link, or the page. The request
+      lands in the composer rather than being sent: selected text is page content, and page content
+      must not reach the model wearing the user's authority without the user having read it
+- [x] A keyboard shortcut that opens the panel (Ctrl/Cmd+Shift+H)
+- [x] `download` — save a file the page is offering. It downloads what is already there: a handle
+      resolves to that element's own link, and it cannot name a destination
+- [x] Multiple provider profiles, with per-profile keys and silent migration of the single one
+- [x] `next_page` handles infinite scroll as its third route, measuring growth in controls rather
+      than pixels — a page whose height changed because an advert loaded has not given us more list
+
 ### Then
 
 - [x] `screenshot` works without the debugger too, via `captureVisibleTab` — which can only
@@ -301,7 +313,13 @@ Confirmed working manually on live sites (2026-08-28).
 
 Park ideas here. Do not start.
 
+- **PDFs.** A PDF in a tab has no DOM and no accessibility tree, so the agent is blind on one.
+  The biggest remaining hole, parked deliberately (2026-08-28)
 - Vision fallback: screenshot + coordinates for canvas/WebGL pages where DOM extraction is empty
+- **Shadow DOM on the content-script path.** `querySelectorAll` does not cross shadow boundaries,
+  so controls inside web components are invisible to the fallback driver. The CDP path is fine —
+  the accessibility tree includes shadow content — so this only bites when the debugger is off or
+  DevTools took it, which is exactly the path meant to be the safety net
 - Shared session with heapcode (browser agent hands findings to the coding agent)
 - Recorded macros → replayable deterministic scripts, LLM only on failure
 - Per-site adapters for high-traffic sites where generic extraction underperforms

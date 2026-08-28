@@ -110,7 +110,10 @@ export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome
 async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   const { profile, task, history, events, signal, mode, trustedHosts, confirm } = request;
 
-  const apiKey = await loadApiKey();
+  // Named, not implied. The run holds the profile it was started with, and
+  // asking for "the active profile's key" would fetch a different one if the
+  // user switched profiles while a run was in flight.
+  const apiKey = await loadApiKey(profile.name);
   const provider = createProvider(profile, apiKey);
 
   const [useDebugger, files, profileEnabled, savedProfile] = await Promise.all([

@@ -646,3 +646,12 @@ button.stop { border-color: var(--danger); color: var(--danger); }
 }
 
 .chip:hover { border-color: var(--muted); }
+
+/* Which endpoint is in use, above the fields that describe it. */
+.profiles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}

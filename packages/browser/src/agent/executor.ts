@@ -1465,8 +1465,14 @@ export class BrowserToolExecutor {
       return fail(`There is no table ${index}. The page has ${tables.length}.`);
     }
 
+    // The whole table, not the preview. `sample` is five rows because it is
+    // rendered into `read_page`; this tool exists to return all of them, and
+    // reading `sample` here is why "compare these forty listings" answered with
+    // five and then advised scrolling for the rest of a table that was already
+    // complete on the page.
+    const available = table.body ?? table.sample;
     const limit = typeof args.limit === 'number' ? Math.min(args.limit, 200) : 50;
-    const rows = table.sample.slice(0, limit);
+    const rows = available.slice(0, limit);
 
     // Accumulate. The user's copy of the data lives outside the transcript, so
     // paginating through ten pages costs ten extractions rather than ten
@@ -1475,9 +1481,16 @@ export class BrowserToolExecutor {
     this.#dataset = merged.dataset;
     this.#onData?.(merged.dataset);
 
+    // Say which of the two reasons stopped it, because they have different
+    // answers: a limit the model set is raised by asking again, and a page that
+    // genuinely holds more is advanced with next_page.
     const sampled =
       table.rows > rows.length
-        ? `\n(${rows.length} of ${table.rows} rows on this page -- the snapshot samples the leading rows; scroll for more.)`
+        ? rows.length < available.length
+          ? `\n(${rows.length} of ${table.rows} rows, limited by this call. Ask again with a ` +
+            `higher limit for the rest.)`
+          : `\n(${rows.length} of ${table.rows} rows -- the page holds more than was captured. ` +
+            `Use next_page, or scroll, then extract_data again.)`
         : '';
 
     const collected =

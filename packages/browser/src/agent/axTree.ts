@@ -201,6 +201,8 @@ export function snapshotFromAxTree(input: AxSnapshotInput): PageSnapshot {
 
 const MAX_SAMPLE_ROWS = 5;
 const MAX_TABLES = 5;
+/** Every row, for `extract_data`. Never rendered into a prompt. */
+const MAX_TABLE_ROWS = 200;
 
 function tablesFromAxTree(
   nodes: AxNode[],
@@ -242,6 +244,7 @@ function tablesFromAxTree(
       columns: headers.length,
       headers,
       sample: body.slice(0, MAX_SAMPLE_ROWS).map(cellsOf),
+      body: body.slice(0, MAX_TABLE_ROWS).map(cellsOf),
     });
     if (tables.length >= MAX_TABLES) break;
   }

@@ -84,8 +84,24 @@ export interface TableSummary {
   rows: number;
   columns: number;
   headers: string[];
-  /** Leading rows, already truncated by the extractor. */
+  /**
+   * Leading rows, for the snapshot the model reads.
+   *
+   * Five of them, because this is rendered into `read_page` and a forty-row
+   * table would spend the whole budget on data nobody asked for yet.
+   */
   sample: string[][];
+  /**
+   * Every row, for the tool whose whole purpose is every row.
+   *
+   * `extract_data` used to read `sample`, which meant "compare these forty
+   * listings" returned five and then told the model to scroll for the rest --
+   * of a table that was already complete in the DOM. The preview and the
+   * extraction want different amounts of the same thing, so they are different
+   * fields. This one is never rendered into a prompt: it lives in the snapshot
+   * the panel holds in memory, and only `extract_data` reads it.
+   */
+  body?: string[][];
 }
 
 export interface Viewport {

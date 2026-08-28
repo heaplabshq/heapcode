@@ -36,6 +36,15 @@ const SKIP_FOR_TEXT = `${NON_CONTENT},nav,footer,[role="navigation"],[role="cont
 
 const MAX_CONTROLS = 300;
 const MAX_TABLE_SAMPLE_ROWS = 5;
+/**
+ * The cap on the rows carried for `extract_data`.
+ *
+ * Not rendered into any prompt -- it crosses one `sendMessage` and lives in the
+ * panel's own copy of the snapshot. Two hundred is above any table a person
+ * would ask to be put in a spreadsheet in one go, and far below the point where
+ * carrying it costs anything.
+ */
+const MAX_TABLE_ROWS = 200;
 const MAX_TABLES = 5;
 
 function roleOf(element: Element): ControlRole | undefined {
@@ -188,6 +197,7 @@ function extractTables(root: Document | Element): TableSummary[] {
       columns: headers.length,
       headers,
       sample: bodyRows.slice(0, MAX_TABLE_SAMPLE_ROWS).map((row) => [...row.cells].map(cellText)),
+      body: bodyRows.slice(0, MAX_TABLE_ROWS).map((row) => [...row.cells].map(cellText)),
     });
     if (tables.length >= MAX_TABLES) break;
   }

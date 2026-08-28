@@ -169,3 +169,45 @@ describe('main text extraction', () => {
     expect(text).toBe('Real');
   });
 });
+
+/**
+ * The preview and the extraction want different amounts of the same table.
+ *
+ * `sample` is five rows because it is rendered into `read_page`, where a forty-
+ * row table would spend the whole budget on data nobody has asked for yet.
+ * `extract_data` exists to return all of them, and it was reading `sample` --
+ * so "compare these forty listings", the request this whole feature was built
+ * for, answered with five and advised scrolling for the rest of a table that
+ * was already complete in the DOM.
+ */
+describe('how much of a table is captured', () => {
+  function bigTable(rows: number): string {
+    const body = Array.from(
+      { length: rows },
+      (_, i) => `<tr><td>Item ${i}</td><td>${i * 100}</td></tr>`,
+    ).join('');
+    return `<table><thead><tr><th>Name</th><th>Price</th></tr></thead><tbody>${body}</tbody></table>`;
+  }
+
+  it('previews five rows, for the snapshot the model reads', () => {
+    const [table] = snapshot(bigTable(40)).tables;
+    expect(table?.sample).toHaveLength(5);
+  });
+
+  it('carries every row, for the tool that wants every row', () => {
+    const [table] = snapshot(bigTable(40)).tables;
+    expect(table?.body).toHaveLength(40);
+    expect(table?.rows).toBe(40);
+  });
+
+  it('agrees with itself about what the first rows are', () => {
+    const [table] = snapshot(bigTable(40)).tables;
+    expect(table?.body?.slice(0, 5)).toEqual(table?.sample);
+  });
+
+  /** Never rendered into a prompt, but it still crosses a message. */
+  it('stops well short of carrying an unbounded page', () => {
+    const [table] = snapshot(bigTable(500)).tables;
+    expect(table?.body).toHaveLength(200);
+  });
+});

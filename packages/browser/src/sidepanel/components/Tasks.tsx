@@ -194,9 +194,9 @@ export function SavedTaskChips({ onRun }: { onRun: (prompt: string) => void }) {
   if (tasks.length === 0) return null;
 
   return (
-    <div className="empty-group">
+    <div className="empty-group left">
       <span className="empty-label">Saved</span>
-      <div className="pills">
+      <div className="pills left">
         {tasks.slice(0, 6).map((task) => (
           <button
             key={task.id}

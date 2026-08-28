@@ -4,6 +4,7 @@ import type { Step, Turn } from '../useChat.js';
 import { RunSteps } from './RunSteps.js';
 import { DataTable } from './DataTable.js';
 import { SavedTaskChips } from './Tasks.js';
+import { Icon, type IconName } from './Icon.js';
 
 /**
  * The steps worth rendering, which is not quite all of them.
@@ -58,11 +59,19 @@ const ASKED_FOR_DATA =
  * exactly once. A blank panel is the screen they see most, and it is the moment
  * the question "what do I even type" is actually being asked — so the answers
  * belong here, as things to press rather than things to read.
+ *
+ * Each carries an icon, because the icon is the category of the question —
+ * read it, summarise it, tabulate it — and the category is the part of the
+ * answer that transfers to the next question they think of themselves.
+ *
+ * Keep prompts under ~30 characters: the card text is single-line with
+ * ellipsis (see .empty-card-text), and the longest here is 29 against ~34
+ * available at the narrowest panel width. Longer prompts truncate silently.
  */
-const SUGGESTIONS = [
-  'What can I do on this page?',
-  'Summarise this in five points',
-  'Compare these on price',
+const SUGGESTIONS: { icon: IconName; prompt: string }[] = [
+  { icon: 'read', prompt: 'What can I do on this page?' },
+  { icon: 'sparkle', prompt: 'Summarise this in five points' },
+  { icon: 'table', prompt: 'Compare these on price' },
 ];
 
 /**
@@ -105,7 +114,11 @@ export function MessageList({
   if (turns.length === 0) {
     return (
       <div className="empty">
-        <span className="empty-mark" aria-hidden="true" />
+        <span className="empty-hero" aria-hidden="true">
+          <span className="empty-mark">
+            <Icon name="brand" size={20} />
+          </span>
+        </span>
         <h2 className="empty-title">Ask about the page you are on.</h2>
         <p className="empty-sub">
           heapbrowse reads the page only when a question needs it, and shows you every action
@@ -113,17 +126,30 @@ export function MessageList({
         </p>
         {ready && (
           <>
-            <div className="empty-group">
+            <div className="empty-group left">
               <span className="empty-label">Try</span>
-              <div className="pills">
-                {SUGGESTIONS.map((prompt) => (
-                  <button key={prompt} type="button" className="pill" onClick={() => onRun(prompt)}>
-                    {prompt}
+              <div className="empty-cards">
+                {SUGGESTIONS.map(({ icon, prompt }) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    className="empty-card"
+                    onClick={() => onRun(prompt)}
+                  >
+                    <span className="empty-card-icon">
+                      <Icon name={icon} />
+                    </span>
+                    <span className="empty-card-text">{prompt}</span>
+                    <Icon name="navigate" size={13} className="empty-card-go" />
                   </button>
                 ))}
               </div>
             </div>
             <SavedTaskChips onRun={onRun} />
+            <p className="empty-hint">
+              <Icon name="pointer" size={12} />
+              Right-click anything on a page to ask about it.
+            </p>
           </>
         )}
       </div>

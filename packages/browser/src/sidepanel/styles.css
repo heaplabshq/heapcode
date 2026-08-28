@@ -715,6 +715,11 @@ button.danger:hover:not(:disabled) {
 /*
  * A blank panel is the most-seen screen in the product, so it does the work an
  * empty box cannot: says what this is for, and offers three things to press.
+ *
+ * The layout is a centred head over a left-aligned body. The head is the
+ * promise; the body is the things to press, and things to press are read
+ * left-to-right, so they start at the left edge like everything else the
+ * user clicks in this panel.
  */
 .empty {
   flex: 1;
@@ -723,21 +728,41 @@ button.danger:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* `safe` so a centred column that outgrows the viewport falls back to
+     start-alignment instead of overflowing unreachably at the top. Chrome 93+;
+     the manifest floor is 116. */
+  justify-content: safe center;
   gap: var(--s3);
   padding: var(--s7) var(--s5);
   text-align: center;
   animation: rise var(--d3) var(--ease);
 }
 
-.empty-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
-  background: var(--brand-gradient);
-  box-shadow: 0 6px 18px -6px rgba(99, 102, 241, 0.65);
-  margin-bottom: var(--s1);
+/* The mark, with a halo. The gradient square alone read as a bullet; the
+   ring makes it read as a product mark, and the ring is the only decoration
+   the head gets — the title carries the rest. */
+.empty-hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: var(--s2);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
   animation: mark-in var(--d3) var(--spring);
+}
+
+.empty-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: var(--brand-gradient);
+  color: #fff;
+  box-shadow: 0 6px 18px -6px rgba(99, 102, 241, 0.65);
 }
 
 @keyframes mark-in {
@@ -749,9 +774,9 @@ button.danger:hover:not(:disabled) {
 
 .empty-title {
   margin: 0;
-  font-size: var(--t-lg);
+  font-size: var(--t-xl);
   font-weight: 600;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
 }
 
 .empty-sub {
@@ -761,6 +786,8 @@ button.danger:hover:not(:disabled) {
   font-size: var(--t-sm);
 }
 
+/* The body: suggestions and saved tasks, left-aligned under the centred
+   head. `align-self: stretch` beats the parent's `align-items: center`. */
 .empty-group {
   width: 100%;
   margin-top: var(--s3);
@@ -769,11 +796,112 @@ button.danger:hover:not(:disabled) {
   gap: var(--s2);
 }
 
+.empty-group.left {
+  align-self: stretch;
+  text-align: left;
+}
+
 .empty-label {
   color: var(--faint);
   font-size: var(--t-xs);
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+/* A suggestion, as a card rather than a pill. A pill is one press among
+   equals; a card is a thing with a category (the icon) and a direction (the
+   arrow), which is what a first-time question actually looks like. */
+.empty-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.empty-card {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  width: 100%;
+  padding: var(--s4) var(--s5);
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--fg);
+  text-align: left;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition:
+    background var(--d1) var(--ease),
+    border-color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
+}
+
+.empty-card:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  transform: translateY(-1px);
+}
+
+.empty-card:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.empty-card-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  transition: background var(--d1) var(--ease);
+}
+
+.empty-card:hover:not(:disabled) .empty-card-icon {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* Single-line by design: the three fixed suggestions fit with ~5 characters to
+   spare at the narrowest panel width. A longer suggestion will ellipsize
+   silently — keep prompts under ~30 characters or revisit this rule. */
+.empty-card-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The affordance: quiet until hovered, so the card reads as text at rest and
+   as a button when it is being considered. */
+.empty-card-go {
+  flex: none;
+  color: var(--faint);
+  transition:
+    color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
+}
+
+.empty-card:hover:not(:disabled) .empty-card-go {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
+/* The one tip worth the space: a real feature nobody finds unaided. Left-
+   aligned with the cards above it, which are the body it belongs to. */
+.empty-hint {
+  margin: var(--s2) 0 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--faint);
+  font-size: var(--t-xs);
+  text-align: left;
 }
 
 /* ================================================================= pills == */

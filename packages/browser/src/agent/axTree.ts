@@ -1,4 +1,5 @@
 import type { Control, ControlRole, PageSnapshot, TableSummary } from '../shared/snapshot.js';
+import { tableFromList, type ListItem } from '../shared/listTable.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
 
 /**
@@ -249,5 +250,138 @@ function tablesFromAxTree(
     if (tables.length >= MAX_TABLES) break;
   }
 
+  for (const list of listsFromAxTree(nodes, byId, scope)) {
+    if (tables.length >= MAX_TABLES) break;
+    const table = tableFromList(list.items, list.label);
+    if (table) tables.push(table);
+  }
+
   return tables;
+}
+
+/** Fewer than this is a coincidence, not a list. */
+const MIN_LIST_ITEMS = 3;
+/** An item saying less than this is a spacer, an icon or a divider. */
+const MIN_ITEM_TEXT = 20;
+const MAX_LISTS = 2;
+const MAX_LIST_ITEMS = 200;
+
+/**
+ * The repeated block a page uses instead of a table, in the accessibility tree.
+ *
+ * The same idea as the content script's version and necessarily a different
+ * implementation: this side has roles rather than tags, and no elements to ask
+ * about visibility -- Chrome has already dropped what is not there. Grouping is
+ * on the set of roles inside an item, which is what stays the same across a
+ * sponsored result and an ordinary one while the class names do not.
+ *
+ * There is no Link column here. The accessibility tree names a link and does
+ * not carry its address, and inventing one from the name would be worse than
+ * leaving it out.
+ */
+function listsFromAxTree(
+  nodes: AxNode[],
+  byId: Map<string, AxNode>,
+  scope: Set<string> | undefined,
+): { label?: string; items: ListItem[]; score: number }[] {
+  const live = (id: string): AxNode | undefined => {
+    const node = byId.get(id);
+    if (!node || node.ignored) return undefined;
+    if (scope && !scope.has(id)) return undefined;
+    return node;
+  };
+
+  /** The roles inside a node, order-independent and depth-limited. */
+  const shape = (node: AxNode, depth = 3): string => {
+    const roles = new Set<string>();
+    const walk = (current: AxNode, left: number) => {
+      for (const id of current.childIds ?? []) {
+        const child = live(id);
+        if (!child) continue;
+        roles.add(str(child.role));
+        if (left > 1) walk(child, left - 1);
+      }
+    };
+    walk(node, depth);
+    return [...roles].sort().join(',');
+  };
+
+  /** Every piece of text inside a node, in order. */
+  const linesOf = (node: AxNode): string[] => {
+    const lines: string[] = [];
+    const walk = (current: AxNode) => {
+      if (lines.length >= 40) return;
+      const name = str(current.name);
+      if (name && TEXT_ROLES.has(str(current.role))) lines.push(name);
+      for (const id of current.childIds ?? []) {
+        const child = live(id);
+        if (child) walk(child);
+      }
+    };
+    walk(node);
+    return lines;
+  };
+
+  const titleOf = (node: AxNode): string | undefined => {
+    let heading: string | undefined;
+    let longestLink = '';
+    const walk = (current: AxNode) => {
+      const role = str(current.role);
+      const name = str(current.name);
+      if (!heading && role === 'heading' && name) heading = name;
+      if (role === 'link' && name.length > longestLink.length) longestLink = name;
+      for (const id of current.childIds ?? []) {
+        const child = live(id);
+        if (child) walk(child);
+      }
+    };
+    walk(node);
+    return heading ?? (longestLink.length >= 3 ? longestLink : undefined);
+  };
+
+  const found: { label?: string; items: ListItem[]; score: number }[] = [];
+
+  for (const parent of nodes) {
+    if (parent.ignored) continue;
+    if (scope && !scope.has(parent.nodeId)) continue;
+    const children = (parent.childIds ?? [])
+      .map(live)
+      .filter((child): child is AxNode => child !== undefined);
+    if (children.length < MIN_LIST_ITEMS) continue;
+
+    const byRole = new Map<string, AxNode[]>();
+    for (const child of children) {
+      const role = str(child.role);
+      const group = byRole.get(role);
+      if (group) group.push(child);
+      else byRole.set(role, [child]);
+    }
+
+    for (const group of byRole.values()) {
+      if (group.length < MIN_LIST_ITEMS) continue;
+      const shapes = group.map((node) => shape(node));
+      const counts = new Map<string, number>();
+      for (const value of shapes) counts.set(value, (counts.get(value) ?? 0) + 1);
+      let common = { value: '', count: 0 };
+      for (const [value, count] of counts) if (count > common.count) common = { value, count };
+      if (common.count < MIN_LIST_ITEMS) continue;
+
+      const members = group.filter((node, index) => shapes[index] === common.value);
+      const items = members
+        .slice(0, MAX_LIST_ITEMS)
+        .map((node) => ({ title: titleOf(node), lines: linesOf(node) }))
+        .filter((item) => item.lines.join(' ').length >= MIN_ITEM_TEXT);
+      if (items.length < MIN_LIST_ITEMS) continue;
+
+      const words = items.reduce((total, item) => total + item.lines.join(' ').length, 0);
+      found.push({
+        label: str(parent.name) || undefined,
+        items,
+        score: items.length * Math.min(words / items.length, 400),
+      });
+    }
+  }
+
+  found.sort((a, b) => b.score - a.score);
+  return found.slice(0, MAX_LISTS);
 }

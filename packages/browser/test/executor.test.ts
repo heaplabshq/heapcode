@@ -173,10 +173,13 @@ describe('extract_data', () => {
     expect(result.content).toMatch(/1 of 24 rows/);
   });
 
-  it('points at read_page when the page has no real table', async () => {
+  // It reads repeated blocks as well as real tables now, so the empty answer
+  // has to mean "neither", or a model told "no table" will go looking for the
+  // list it can see on screen and be told the same thing again.
+  it('points at reading the page when there is neither a table nor a list', async () => {
     stubChrome([{ ok: true, kind: 'snapshot', snapshot: snapshot() }]);
     const result = await new BrowserToolExecutor('x').execute(call('extract_data'));
-    expect(result.content).toMatch(/no table with column headers/);
+    expect(result.content).toMatch(/neither a table nor|no table|repeated list/i);
     expect(result.content).toMatch(/read_page/);
   });
 });

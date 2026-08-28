@@ -4,6 +4,8 @@ import { isDisabled, isVisible, positionScore } from './visibility.js';
 import type { HandleRegistry } from './registry.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
 import { moneyContext } from './money.js';
+import { findLists } from './lists.js';
+import { tableFromList } from '../shared/listTable.js';
 import { findScroller } from './scroll.js';
 import { openModal } from './modal.js';
 
@@ -205,6 +207,26 @@ function extractTables(root: Document | Element): TableSummary[] {
 }
 
 /**
+ * The page's tables, real and improvised.
+ *
+ * Real markup first, because a `<table>` with declared headers says what its
+ * columns are and a detected list only guesses. Then the repeated blocks that
+ * every shop, job board and search results page uses instead -- without which
+ * `extract_data` sees nothing at all on the pages people actually point it at.
+ */
+function allTables(scope: Document | Element, doc: Document): TableSummary[] {
+  const tables = extractTables(scope);
+  if (tables.length >= MAX_TABLES) return tables;
+
+  for (const list of findLists(scope, doc.baseURI)) {
+    const table = tableFromList(list.items, list.label);
+    if (table) tables.push(table);
+    if (tables.length >= MAX_TABLES) break;
+  }
+  return tables;
+}
+
+/**
  * The `[TEXT]` block: the page's main content, without its furniture.
  *
  * A real Readability port is a large dependency and MV3 forbids loading one at
@@ -269,7 +291,7 @@ export function extractSnapshot(doc: Document, registry: HandleRegistry): PageSn
     },
     text: extractText(doc, modal),
     controls: extractControls(scope, registry),
-    tables: extractTables(scope),
+    tables: allTables(scope, doc),
     generation,
   };
 }

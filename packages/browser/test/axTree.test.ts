@@ -145,3 +145,71 @@ describe('tables', () => {
     expect(table.sample[0]).toEqual(['Frontend', '60 LPA']);
   });
 });
+
+/**
+ * The repeated block a page uses instead of a table, seen through the
+ * accessibility tree.
+ *
+ * The same idea as the content script's version and necessarily a different
+ * implementation: this side has roles rather than tags, and no elements to ask
+ * about visibility — Chrome has already dropped what is not there. It matters
+ * that both paths find the same list, because the debugger is on by default and
+ * this is the path most runs actually take.
+ */
+describe('a list that is not a table', () => {
+  /** One search result, as Chrome describes a product card. */
+  function result(id: number, name: string, price: string, rating: string): AxNode[] {
+    const base = id * 10;
+    return [
+      node({ nodeId: `${base}`, role: text('listitem'), childIds: [`${base + 1}`, `${base + 3}`, `${base + 4}`] }),
+      node({ nodeId: `${base + 1}`, role: text('heading'), name: text(name), childIds: [`${base + 2}`] }),
+      node({ nodeId: `${base + 2}`, role: text('StaticText'), name: text(name) }),
+      node({ nodeId: `${base + 3}`, role: text('StaticText'), name: text(price) }),
+      node({ nodeId: `${base + 4}`, role: text('StaticText'), name: text(`${rating} out of 5 stars`) }),
+    ];
+  }
+
+  const results = [
+    node({ nodeId: '1', role: text('list'), name: text('Results'), childIds: ['10', '20', '30', '40'] }),
+    ...result(1, 'Apple iPhone 16e 128 GB', '₹59,900', '4.5'),
+    ...result(2, 'Apple iPhone 16 128 GB', '₹64,900', '4.6'),
+    ...result(3, 'Apple iPhone 16 Plus 256 GB', '₹89,900', '4.4'),
+    ...result(4, 'Apple iPhone Air 256 GB', '₹1,01,900', '4.2'),
+  ];
+
+  it('becomes a table', () => {
+    const [table] = build(results).tables;
+    expect(table?.headers).toEqual(['Name', 'Price', 'Rating']);
+    expect(table?.rows).toBe(4);
+  });
+
+  it('reads the values off each item', () => {
+    const [table] = build(results).tables;
+    expect(table?.body?.[0]).toEqual(['Apple iPhone 16e 128 GB', '₹59,900', '4.5']);
+  });
+
+  it('names the list from the container the page named', () => {
+    const [table] = build(results).tables;
+    expect(table?.label).toBe('Results');
+  });
+
+  /**
+   * There is no Link column here on purpose: the accessibility tree names a
+   * link and does not carry its address, and inventing one from the name would
+   * be worse than leaving it out.
+   */
+  it('does not invent an address it was not given', () => {
+    const [table] = build(results).tables;
+    expect(table?.headers).not.toContain('Link');
+  });
+
+  it('is not fooled by three of anything', () => {
+    const page = build([
+      node({ nodeId: '1', role: text('list'), childIds: ['2', '3', '4'] }),
+      node({ nodeId: '2', role: text('listitem'), name: text('One') }),
+      node({ nodeId: '3', role: text('listitem'), name: text('Two') }),
+      node({ nodeId: '4', role: text('listitem'), name: text('Three') }),
+    ]);
+    expect(page.tables).toHaveLength(0);
+  });
+})

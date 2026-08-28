@@ -1454,8 +1454,8 @@ export class BrowserToolExecutor {
     const tables = result.snapshot.tables;
     if (tables.length === 0) {
       return ok(
-        'This page has no table with column headers. Use read_page and pull the values out of the ' +
-          'text and controls instead.',
+        'Nothing on this page reads as a table or as a repeated list of items. Use read_page or ' +
+          'get_page_text and pull the values out of the text and controls instead.',
       );
     }
 

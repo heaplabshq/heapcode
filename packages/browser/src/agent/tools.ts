@@ -70,8 +70,11 @@ export const GET_ELEMENTS: ToolDefinition = {
 export const EXTRACT_DATA: ToolDefinition = {
   name: 'extract_data',
   description:
-    'Pull the page tables out as structured rows — use this for "list every…", "compare…" or ' +
-    '"put these in a table" requests rather than reading the whole page.',
+    'Pull the page\'s data out as structured rows — use this for "list every…", "compare…" or ' +
+    '"put these in a table" requests rather than reading the whole page. It reads real tables and ' +
+    'also the repeated blocks a page uses instead of one: search results, product grids, job ' +
+    'listings. Rows accumulate across pages, de-duplicated, and the user gets the whole set to ' +
+    'read and export — so do not repeat them back in your answer.',
   parameters: {
     type: 'object',
     properties: {

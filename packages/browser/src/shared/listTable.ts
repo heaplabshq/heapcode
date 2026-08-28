@@ -72,15 +72,35 @@ function ratingIn(lines: string[]): string | undefined {
  * that is not a price or a rating, because on a card without a heading the
  * title is reliably the longest piece of prose in it.
  */
-function nameIn(item: ListItem): string | undefined {
+function nameIn(item: ListItem, useTitle = true): string | undefined {
   // Any length, when the structure named it: the page said this is the heading
   // or the link, and a product genuinely called "TV" is not a parse error. The
   // length floor below is for the guess, which needs one.
   const titled = item.title?.trim();
-  if (titled) return titled;
+  if (useTitle && titled) return titled;
   const candidates = item.lines.filter((line) => line.length >= 3 && !isValue(line));
   if (candidates.length === 0) return undefined;
   return candidates.reduce((best, line) => (line.length > best.length ? line : best));
+}
+
+/**
+ * A name that is the same on every row is not a name.
+ *
+ * Whatever produced it -- a shared label, a template string, a hidden error
+ * placeholder a page keeps in every card against the day it needs one -- a
+ * column that does not tell one row from another is worse than no column,
+ * because it looks like data. Fifty rows of "An error occurred, please try
+ * again in a moment" is a table nobody can use and everybody can see.
+ */
+function tooAlike(names: (string | undefined)[]): boolean {
+  const counts = new Map<string, number>();
+  for (const name of names) {
+    const key = name?.trim();
+    if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  let most = 0;
+  for (const count of counts.values()) most = Math.max(most, count);
+  return most > names.length / 2;
 }
 
 /** How much of a column has to be filled in before it is worth a column. */
@@ -105,8 +125,17 @@ function clip(value: string): string {
 export function tableFromList(items: ListItem[], label?: string): TableSummary | undefined {
   if (items.length < MIN_ITEMS) return undefined;
 
-  const rows = items.slice(0, MAX_ROWS).map((item) => ({
-    name: nameIn(item),
+  const trimmed = items.slice(0, MAX_ROWS);
+  let names = trimmed.map((item) => nameIn(item));
+  // The structure's own answer was the same on every row, so it was not naming
+  // the row -- fall back to the longest line each item actually says.
+  if (tooAlike(names)) names = trimmed.map((item) => nameIn(item, false));
+  // Still identical, so there is nothing here that distinguishes one item from
+  // another and a table of it would be a table of nothing.
+  if (tooAlike(names)) return undefined;
+
+  const rows = trimmed.map((item, index) => ({
+    name: names[index],
     price: priceIn(item.lines),
     rating: ratingIn(item.lines),
     link: item.href,

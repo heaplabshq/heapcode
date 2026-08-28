@@ -65,54 +65,92 @@ function textOf(element: Element): string {
 }
 
 /**
- * One line per element that carries its own text.
+ * What one item says, reading only what is actually on screen.
  *
- * `innerText` would be the right tool and does not exist outside a rendering
- * engine, so this reproduces the part that matters: a block's own words, kept
- * apart from its children's. Without the separation a card collapses to one
- * run-on string and the price ends up glued to the end of the title.
+ * One walk for all three answers, and every branch of it checked for
+ * visibility. Pages keep a great deal of text in the DOM that nobody can see --
+ * collapsed panels, offscreen carousels, templates, and, the case that produced
+ * this: a hidden error placeholder inside every card. Amazon puts "An error
+ * occurred, please try again in a moment" in each wish-list item against the
+ * day it needs it, and reading the DOM without looking at what is rendered made
+ * that the name of all fifty rows.
+ *
+ * The check is on the way down and short-circuits: a hidden container costs one
+ * test, not one per element inside it. `textContent` is deliberately not used
+ * for the lines, because it cannot tell a rendered string from a waiting one.
  */
-function linesOf(element: Element): string[] {
+function readItem(element: Element, base: string): ListItem {
   const lines: string[] = [];
+  let heading: string | undefined;
+  let longestLink = '';
+  let described = '';
+  let href: string | undefined;
+
   const walk = (node: Element) => {
     if (lines.length >= MAX_LINES) return;
+    if (!isVisible(node)) return;
+
+    // `innerText` would be the right tool and does not exist outside a
+    // rendering engine, so this reproduces the part that matters: a block's own
+    // words, kept apart from its children's. Without the separation a card
+    // collapses to one run-on string and the price is glued to the title.
     let own = '';
     for (const child of node.childNodes) {
       if (child.nodeType === 3) own += child.nodeValue ?? '';
     }
     const cleaned = own.replace(/\s+/g, ' ').trim();
     if (cleaned) lines.push(cleaned);
+
+    if (!heading && /^H[1-6]$/.test(node.tagName)) {
+      const text = textOf(node);
+      if (text.length >= 3) heading = text;
+    } else if (!heading && node.getAttribute('role') === 'heading') {
+      const text = textOf(node);
+      if (text.length >= 3) heading = text;
+    }
+
+    /*
+     * The name a card carries in an attribute rather than in text.
+     *
+     * A product card names itself in its image's `alt` -- that is what alt text
+     * is for, so it is both reliably present and reliably correct -- and often
+     * again in a `title`. Worth reading because the visible name is the part
+     * that fails: a card whose title has not rendered yet, or has been replaced
+     * by an error placeholder, still has both. The accessibility tree gets this
+     * for free, since Chrome computes an image's name from its alt; this is the
+     * content-script path catching up.
+     */
+    const described_ = node.getAttribute('alt') ?? node.getAttribute('title') ?? '';
+    const cleanedDescription = described_.replace(/\s+/g, ' ').trim();
+    if (cleanedDescription.length > described.length) described = cleanedDescription;
+
+    if (node.tagName === 'A') {
+      const text = textOf(node);
+      // The card's title is a link to the thing; the other links on it are
+      // "add to basket" and "compare", which are shorter.
+      if (text.length > longestLink.length) longestLink = text;
+      const raw = node.getAttribute('href');
+      if (!href && raw && !raw.startsWith('#') && !raw.startsWith('javascript:')) {
+        try {
+          href = new URL(raw, base).toString();
+        } catch {
+          href = raw;
+        }
+      }
+    }
+
     for (const child of node.children) walk(child);
   };
   walk(element);
-  return lines;
-}
 
-/** What the page itself considers this item to be called. */
-function titleOf(element: Element): string | undefined {
-  const heading = element.querySelector('h1, h2, h3, h4, h5, h6, [role="heading"]');
-  const headingText = heading ? textOf(heading) : '';
-  if (headingText.length >= 3) return headingText;
-
-  // Failing a heading, the longest link text: a card's title is a link to the
-  // thing, and the other links on it are "add to basket" and "compare".
-  let longest = '';
-  for (const anchor of element.querySelectorAll('a')) {
-    const text = textOf(anchor);
-    if (text.length > longest.length) longest = text;
-  }
-  return longest.length >= 3 ? longest : undefined;
-}
-
-function hrefOf(element: Element, base: string): string | undefined {
-  const anchor = element.querySelector('a[href]');
-  const href = anchor?.getAttribute('href');
-  if (!href || href.startsWith('#') || href.startsWith('javascript:')) return undefined;
-  try {
-    return new URL(href, base).toString();
-  } catch {
-    return href;
-  }
+  return {
+    title:
+      heading ??
+      (longestLink.length >= 3 ? longestLink : undefined) ??
+      (described.length >= 3 ? described : undefined),
+    lines,
+    href,
+  };
 }
 
 function inFurniture(element: Element): boolean {
@@ -138,7 +176,15 @@ export interface DetectedList {
  * either of them having to be recognised.
  */
 export function findLists(root: Document | Element, base: string): DetectedList[] {
-  const found: DetectedList[] = [];
+  /*
+   * Candidates carry their elements, not their contents.
+   *
+   * Reading an item is the expensive half -- a visibility test per node, on
+   * every node of every card -- and a page offers far more candidate groups
+   * than it has lists. Everything below scores and discards on cheap signals,
+   * and only what survives is actually read.
+   */
+  const found: (Omit<DetectedList, 'items'> & { members: Element[] })[] = [];
   let seen = 0;
 
   const containers = root.querySelectorAll('*');
@@ -168,16 +214,10 @@ export function findLists(root: Document | Element, base: string): DetectedList[
         .filter((element) => textOf(element).length >= MIN_ITEM_TEXT);
       if (members.length < MIN_ITEMS) continue;
 
-      const items = members.slice(0, MAX_ITEMS).map((element) => ({
-        title: titleOf(element),
-        lines: linesOf(element),
-        href: hrefOf(element, base),
-      }));
-
       const words = members.reduce((total, element) => total + textOf(element).length, 0);
       found.push({
         label: labelFor(container),
-        items,
+        members: members.slice(0, MAX_ITEMS),
         score: members.length * Math.min(words / members.length, 400),
         container,
       });
@@ -191,7 +231,12 @@ export function findLists(root: Document | Element, base: string): DetectedList[
   const kept: DetectedList[] = [];
   for (const candidate of found) {
     if (kept.some((other) => contains(other.container, candidate.container))) continue;
-    kept.push(candidate);
+    kept.push({
+      label: candidate.label,
+      container: candidate.container,
+      score: candidate.score,
+      items: candidate.members.map((element) => readItem(element, base)),
+    });
     if (kept.length >= MAX_LISTS) break;
   }
   return kept;

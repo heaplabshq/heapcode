@@ -14,6 +14,7 @@ import {
 import type { Classification } from './destructive.js';
 import { parseKey, KNOWN_KEYS } from './keys.js';
 import { matchAll, PROFILE_FIELDS, type UserProfile } from '../shared/profile.js';
+import { canDownload } from '../shared/settings.js';
 import { mergeTable, sameHeaders, type Dataset } from '../shared/dataset.js';
 import { RepetitionGuard } from './repetition.js';
 import { findNextControl, nextIsExhausted, nextPageUrl } from './pagination.js';
@@ -1015,6 +1016,16 @@ export class BrowserToolExecutor {
     }
     if (!/^https?:$/.test(new URL(resolved).protocol)) {
       return fail('Only http and https addresses can be downloaded.');
+    }
+
+    // Optional, and asked for in Settings. The model cannot ask on its own --
+    // `permissions.request` needs a user gesture and a tool call is not one --
+    // so the failure names where the switch is rather than pretending it can.
+    if (!(await canDownload())) {
+      return fail(
+        'heapbrowse has not been allowed to save files. Ask the user to turn on "Let it save ' +
+          'files" in Settings, or give them the link and let them save it themselves.',
+      );
     }
 
     try {

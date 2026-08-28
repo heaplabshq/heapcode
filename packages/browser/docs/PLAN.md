@@ -245,8 +245,18 @@ Goal: earn the "operates it for you" claim on tasks people actually have.
 - [x] Privacy disclosure ("page content goes to the endpoint you configure, and nowhere else") —
       in onboarding step 1 and under Settings
 - [ ] Telemetry: register `heapbrowse` in `heaplabs-telemetry` `KNOWN_APPS`, opt-in, anonymous counts only
-- [ ] Permission minimisation pass — `activeTab` + per-site grants over `<all_urls>` wherever UX survives
-- [ ] Landing page at `browse.heaplabs.dev`
+- [x] Permission minimisation pass. `host_permissions` was already empty with per-site optional
+      grants; this pass removed `activeTab`, which nothing ever used (every read and inject path
+      checks `permissions.contains` for the origin, which activeTab does not satisfy), and moved
+      `downloads` to `optional_permissions` — Chrome allows that one to be optional, unlike
+      `debugger`, so "Manage your downloads" no longer appears at install for a tool most people
+      never reach for. It is a switch in Settings instead, because `permissions.request` needs a
+      user gesture and a tool call is not one. What is left at install is `debugger` and `tabs`
+      ("read your browsing history"), both load-bearing and both explained on the site
+- [x] Icons — the Heap Labs mark in heapbrowse's own gradient, at 16/32/48/128, rendered from one
+      SVG by `scripts/icons.mjs` and committed so a submission needs no rasteriser
+- [x] Landing page and privacy policy at `browse.heaplabs.dev` — a second assets-only Worker beside
+      heapcode's, deployed by the same workflow over a matrix
 - [ ] Chrome Web Store submission (budget calendar time for review — PRD §7.6)
 
 **Exit criteria:** listed on the Chrome Web Store; a new user gets from install to a successful page question in under 3 minutes with no docs.

@@ -235,3 +235,25 @@ export async function loadOnboarded(): Promise<boolean> {
 export async function saveOnboarded(value: boolean): Promise<void> {
   await chrome.storage.local.set({ [ONBOARDED_KEY]: value });
 }
+
+/**
+ * Whether heapbrowse may save files.
+ *
+ * A Chrome permission rather than a stored preference, so the answer is
+ * Chrome's and the user can revoke it from the extension's own settings page
+ * without heapbrowse being involved. It was a required permission, which meant
+ * every install prompt carried "Manage your downloads" for a tool most people
+ * will never reach for.
+ */
+export async function canDownload(): Promise<boolean> {
+  return chrome.permissions.contains({ permissions: ['downloads'] });
+}
+
+/** Must be called from a user gesture; Chrome refuses otherwise. */
+export async function requestDownloads(): Promise<boolean> {
+  return chrome.permissions.request({ permissions: ['downloads'] });
+}
+
+export async function dropDownloads(): Promise<boolean> {
+  return chrome.permissions.remove({ permissions: ['downloads'] });
+}

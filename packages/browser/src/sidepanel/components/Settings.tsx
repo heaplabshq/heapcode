@@ -5,8 +5,11 @@ import {
   deleteProfile,
   loadFiles,
   loadProfiles,
+  canDownload,
+  dropDownloads,
   loadUseDebugger,
   needsApiKey,
+  requestDownloads,
   presetById,
   presets,
   saveApiKey,
@@ -61,6 +64,8 @@ export function Settings({
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<Diagnosis | undefined>();
   const [useDebugger, setUseDebugger] = useState(false);
+  /** Chrome's answer, not a stored preference — see `canDownload`. */
+  const [downloads, setDownloads] = useState(false);
   const [files, setFiles] = useState('');
   const [profiles, setProfiles] = useState<StoredProfile[]>([]);
   /**
@@ -84,6 +89,7 @@ export function Settings({
 
   useEffect(() => {
     void loadUseDebugger().then(setUseDebugger);
+    void canDownload().then(setDownloads);
     void loadFiles().then((paths) => setFiles(paths.join('\n')));
     void loadProfiles().then(setProfiles);
   }, []);
@@ -120,6 +126,20 @@ export function Settings({
   const toggleDebugger = async (wanted: boolean) => {
     setUseDebugger(wanted);
     await saveUseDebugger(wanted);
+  };
+
+  /**
+   * Ask Chrome, or hand it back.
+   *
+   * `permissions.request` must run inside a user gesture, which is why this
+   * hangs off the switch and not off an effect — and why the agent cannot ask
+   * for it mid-run. The state is whatever Chrome says afterwards rather than
+   * what was clicked: a user who dismisses the prompt has not granted it, and a
+   * switch that showed on regardless would be lying.
+   */
+  const toggleDownloads = async (wanted: boolean) => {
+    const now = wanted ? await requestDownloads() : !(await dropDownloads());
+    setDownloads(now);
   };
 
   const preset = presetById(draft.preset);
@@ -367,6 +387,35 @@ export function Settings({
               way.
             </p>
           )}
+
+          <hr className="rule" />
+
+          <div className="switch-row">
+            <label className="switch">
+              <input
+                type="checkbox"
+                aria-label="Let heapbrowse save files"
+                checked={downloads}
+                onChange={(e) => void toggleDownloads(e.target.checked)}
+              />
+              Let it save files
+            </label>
+            <span className={downloads ? 'state on' : 'state'} aria-hidden="true">
+              {downloads ? (
+                <>
+                  <Icon name="check" size={11} />
+                  on
+                </>
+              ) : (
+                'off'
+              )}
+            </span>
+          </div>
+          <p className="muted">
+            Lets it save a file a page links to — an invoice, an export — to your downloads folder.
+            Off by default, so the install prompt does not ask every user for something most will
+            never need. Chrome asks when you turn it on.
+          </p>
 
           {useDebugger && (
             <label>

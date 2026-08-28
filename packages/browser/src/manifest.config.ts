@@ -106,20 +106,22 @@ export default defineManifest({
   // are already looking at. (`commands` is a manifest key, not a permission.
   // Listing it here was why Chrome reported an unknown permission on load.)
   //
-  // `downloads` does show a line ("Manage your downloads"). It buys the one
-  // thing a page-reading agent otherwise cannot do with a file it has found:
-  // save it. Kept because the alternative is telling the user to click the link
-  // themselves, which is the whole class of answer this product exists to avoid.
-  permissions: [
-    'sidePanel',
-    'storage',
-    'activeTab',
-    'scripting',
-    'tabs',
-    'debugger',
-    'contextMenus',
-    'downloads',
-  ],
+  // `activeTab` is gone. It grants temporary access to the tab the user
+  // invoked the extension on, and nothing here ever relied on it: every path
+  // that reads or scripts a page checks `permissions.contains` for that origin
+  // first, which activeTab does not satisfy. A declared permission with no
+  // caller is a question to answer at review with no good answer.
+  permissions: ['sidePanel', 'storage', 'scripting', 'tabs', 'debugger', 'contextMenus'],
+  // `downloads` is the one line on the install prompt that could be removed,
+  // and it is now: "Manage your downloads" was shown to every user at install
+  // for a tool most of them will never invoke. Chrome allows this one to be
+  // optional -- unlike `debugger` -- so it is asked for in Settings, by someone
+  // who wants it, at the moment they say so.
+  //
+  // In Settings rather than at the moment the agent first needs it, because
+  // `permissions.request` requires a user gesture and a tool call is not one.
+  // A switch is a gesture; a model deciding to save a file is not.
+  optional_permissions: ['downloads'],
   host_permissions: [],
   optional_host_permissions: ['http://*/*', 'https://*/*'],
 });

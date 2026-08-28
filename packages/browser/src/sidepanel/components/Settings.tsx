@@ -142,7 +142,7 @@ export function Settings({
   };
 
   return (
-    <div className="settings">
+    <div className="pane">
       {profiles.length > 0 && (
         <div className="profiles">
           <label>
@@ -189,6 +189,8 @@ export function Settings({
           </div>
         </div>
       )}
+
+      <h3 className="section-title">Model endpoint</h3>
 
       <label>
         Name
@@ -250,6 +252,8 @@ export function Settings({
 
       <hr className="rule" />
 
+      <h3 className="section-title">How it reads the page</h3>
+
       <label className="switch">
         <input
           type="checkbox"
@@ -274,6 +278,7 @@ export function Settings({
         <label>
           Files the agent may attach — one full path per line
           <textarea
+            className="code"
             value={files}
             onChange={(e) => setFiles(e.target.value)}
             onBlur={() => void saveFiles(files.split('\n').map((line) => line.trim()))}
@@ -303,7 +308,9 @@ export function Settings({
       </details>
 
       <div className="row">
-        <button type="button" onClick={save}>Save</button>
+        <button type="button" className="primary" onClick={save}>
+          Save
+        </button>
         <button type="button" onClick={check} disabled={checking}>
           {checking ? 'Checking…' : 'Test connection'}
         </button>

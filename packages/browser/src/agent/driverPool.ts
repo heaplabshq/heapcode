@@ -1,7 +1,7 @@
 import { CdpDetached, CdpSession, debuggerAvailable } from './cdp.js';
 import { CdpDriver, DomDriver, type PageDriver } from './drivers.js';
 import { ensurePage, ensureTab } from '../sidepanel/page.js';
-import { hideActivity, showActivity } from './activity.js';
+import { hideActivity, noteActivity, showActivity } from './activity.js';
 
 /**
  * Picks the driver for a tab, and copes with losing it.
@@ -54,6 +54,16 @@ export class DriverPool {
    */
   #marked = new Set<number>();
 
+  /**
+   * What the bar on the page currently says.
+   *
+   * Held so a tab marked halfway through a run opens on the step in progress
+   * rather than on the generic opening line -- the agent opening a second tab
+   * mid-task is the common case, and "heapbrowse is working" there while the
+   * first tab says "Filling in the form" reads as two different things running.
+   */
+  #note: { label: string; detail: string } = { label: 'heapbrowse is working', detail: '' };
+
   constructor(enabled: boolean, onFallback?: (reason: string) => void) {
     this.#enabled = enabled;
     this.#onFallback = onFallback;
@@ -74,7 +84,20 @@ export class DriverPool {
     // Injected on its own channel, and not awaited: the driver protocol is
     // strictly one request and one answer, and slipping an extra round trip in
     // front of every acquisition desynchronises anything counting them.
-    void showActivity(tabId);
+    void showActivity(tabId, this.#note.label, this.#note.detail);
+  }
+
+  /**
+   * Say what the run is doing, on every tab it has marked.
+   *
+   * Every tab, not just the one in front: the agent may be working in a
+   * background tab while the user reads another, and a bar left saying
+   * "Reading the page" on a tab the run finished with three steps ago is worse
+   * than one that says nothing.
+   */
+  note(label: string, detail = ''): void {
+    this.#note = { label, detail };
+    for (const tabId of this.#marked) void noteActivity(tabId, label, detail);
   }
 
   async unmarkAll(): Promise<void> {

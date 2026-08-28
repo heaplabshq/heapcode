@@ -4,6 +4,7 @@ import type { Step, Turn } from '../useChat.js';
 import { ToolChip } from './ToolChip.js';
 import { DataTable } from './DataTable.js';
 import { Thinking } from './Thinking.js';
+import { SavedTaskChips } from './Tasks.js';
 
 /**
  * The steps worth rendering, which is not quite all of them.
@@ -23,14 +24,26 @@ function visibleSteps(turn: Turn): Step[] {
   const answer = turn.content.trim();
   if (!answer) return steps;
   const normalized = normalize(answer);
-  return steps.filter(
-    (step) => step.kind !== 'note' || normalize(step.text) !== normalized,
-  );
+  return steps.filter((step) => step.kind !== 'note' || normalize(step.text) !== normalized);
 }
 
 function normalize(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase();
 }
+
+/**
+ * Things worth asking on a page you have just landed on.
+ *
+ * They lived in the last onboarding step, which is a screen each user sees
+ * exactly once. A blank panel is the screen they see most, and it is the moment
+ * the question "what do I even type" is actually being asked — so the answers
+ * belong here, as things to press rather than things to read.
+ */
+const SUGGESTIONS = [
+  'What can I do on this page?',
+  'Summarise this in five points',
+  'Compare these on price',
+];
 
 /**
  * The transcript.
@@ -47,7 +60,16 @@ function normalize(text: string): string {
  * renders text that originated on an arbitrary web page, and it does so inside
  * an extension origin that holds the user's provider key.
  */
-export function MessageList({ turns }: { turns: Turn[] }) {
+export function MessageList({
+  turns,
+  ready,
+  onRun,
+}: {
+  turns: Turn[];
+  /** Whether there is a provider to send to. No suggestions if there is not. */
+  ready: boolean;
+  onRun: (prompt: string) => void;
+}) {
   const end = useRef<HTMLDivElement>(null);
 
   // Follow the stream, but only from the bottom — yanking the view down while
@@ -62,12 +84,28 @@ export function MessageList({ turns }: { turns: Turn[] }) {
 
   if (turns.length === 0) {
     return (
-      <div className="transcript empty">
-        <p>Ask about the page you are on.</p>
-        <p className="muted">
-          It reads the page itself when a question needs it. Allow the site first, then ask
-          something like &ldquo;what can I do here?&rdquo; or &ldquo;compare these on price&rdquo;.
+      <div className="empty">
+        <span className="empty-mark" aria-hidden="true" />
+        <h2 className="empty-title">Ask about the page you are on.</h2>
+        <p className="empty-sub">
+          heapbrowse reads the page only when a question needs it, and shows you every action
+          before it takes one.
         </p>
+        {ready && (
+          <>
+            <div className="empty-group">
+              <span className="empty-label">Try</span>
+              <div className="pills">
+                {SUGGESTIONS.map((prompt) => (
+                  <button key={prompt} type="button" className="pill" onClick={() => onRun(prompt)}>
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <SavedTaskChips onRun={onRun} />
+          </>
+        )}
       </div>
     );
   }
@@ -83,30 +121,34 @@ export function MessageList({ turns }: { turns: Turn[] }) {
               {/* The run, in the order it happened: what the agent said, and
                   what it did, interleaved. The narration usually explains the
                   call that follows it, so the order carries meaning. */}
-              {visibleSteps(turn).map((step, s) => {
-                if (step.kind === 'tool') return <ToolChip key={step.tool.id} tool={step.tool} />;
-                if (step.kind === 'thinking') {
-                  return <Thinking key={`think-${s}`} text={step.text} streaming={step.streaming} />;
-                }
-                if (step.kind === 'data') {
-                  return <DataTable key={`data-${s}`} dataset={step.dataset} />;
-                }
-                if (step.kind === 'view') {
+              <div className="steps">
+                {visibleSteps(turn).map((step, s) => {
+                  if (step.kind === 'tool') return <ToolChip key={step.tool.id} tool={step.tool} />;
+                  if (step.kind === 'thinking') {
+                    return (
+                      <Thinking key={`think-${s}`} text={step.text} streaming={step.streaming} />
+                    );
+                  }
+                  if (step.kind === 'data') {
+                    return <DataTable key={`data-${s}`} dataset={step.dataset} />;
+                  }
+                  if (step.kind === 'view') {
+                    return (
+                      <img
+                        key={`view-${s}`}
+                        className="view"
+                        src={step.dataUrl}
+                        alt="What the agent is looking at"
+                      />
+                    );
+                  }
                   return (
-                    <img
-                      key={`view-${s}`}
-                      className="view"
-                      src={step.dataUrl}
-                      alt="What the agent is looking at"
-                    />
+                    <p key={`note-${s}`} className="note">
+                      {step.text}
+                    </p>
                   );
-                }
-                return (
-                  <p key={`note-${s}`} className="note">
-                    {step.text}
-                  </p>
-                );
-              })}
+                })}
+              </div>
               {turn.content && (
                 <div
                   className="assistant-text"

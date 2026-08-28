@@ -22,6 +22,7 @@ import { recordAudit } from './audit.js';
 import { ATTACH_FILE, AUTOFILL_FORM, DRAG, MUTATING_TOOLS } from './actions.js';
 import { RunBudget } from './limits.js';
 import type { Dataset } from '../shared/dataset.js';
+import { toolLabel } from '../shared/toolLabels.js';
 
 /**
  * Runs one agent task in the side panel.
@@ -217,9 +218,20 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     const page = pool.target !== undefined ? await ensureTab(pool.target) : await ensurePage();
     const generation = executor.lastSnapshot?.generation;
     const handle = Number(call.args.handle);
+    const asked = describe ?? describeTarget(call, target?.name);
     if (page.ok && generation !== undefined && Number.isInteger(handle)) {
-      await sendToPage(page.tabId, { type: 'highlight', handle, generation });
+      // The label is drawn beside the ring, so the description in the panel and
+      // the thing on the page can be checked against each other without the
+      // user's eyes leaving the element.
+      await sendToPage(page.tabId, {
+        type: 'highlight',
+        handle,
+        generation,
+        label: `${call.name} — ${asked}`.replace(/\s+/g, ' ').slice(0, 120),
+      });
     }
+
+    pool.note('Waiting for you', asked);
 
     let answer: ConfirmAnswer;
     try {
@@ -228,7 +240,7 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
         permission: classification.permission,
         // The executor's own description when it has one: some calls decide
         // what they will do rather than carrying it in their arguments.
-        target: describe ?? describeTarget(call, target?.name),
+        target: asked,
         host,
         reason: classification.reason,
         mayAlwaysAllow: mayOfferAlwaysAllow(classification.permission, host),
@@ -280,6 +292,11 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
           ],
     nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
     execute: async (call) => {
+      // The bar heapbrowse draws along the bottom of the page it is driving.
+      // Named from the same table the transcript uses, in the present tense:
+      // this one is reporting what is happening, not what happened.
+      pool.note(toolLabel(call.name).present, activityDetail(call));
+
       // `ask_user` is answered by the panel, not by the page, so it never
       // reaches the browser executor.
       if (call.name === 'ask_user') {
@@ -350,6 +367,39 @@ The user has saved these details for filling in forms: ${labels.join(', ')}.
 You cannot see their values and never will. To use one, call autofill_form -- which matches the page's fields to them for you -- or name it in a fill_form field's "detail" argument. The value is filled in locally after the user approves the action.
 
 Do not ask the user for anything in that list; it is already known. Do ask about anything that is not, rather than guessing.`;
+}
+
+/**
+ * The second line on the page's own bar: which thing, in the user's terms.
+ *
+ * Deliberately short and deliberately not the model's own description. It is
+ * rendered on a page the model can read, so it must not become a channel for
+ * the model to write text of its choosing onto that page -- these come from the
+ * call's arguments, truncated, and nothing else.
+ */
+function activityDetail(call: ToolCall): string {
+  const cut = (text: string) => (text.length > 60 ? `${text.slice(0, 59)}…` : text);
+  const text = (key: string): string | undefined =>
+    typeof call.args[key] === 'string' && call.args[key] ? (call.args[key] as string) : undefined;
+
+  if (call.name === 'navigate' || call.name === 'open_tab') {
+    const url = text('url');
+    if (!url) return '';
+    try {
+      return new URL(url).host;
+    } catch {
+      return cut(url);
+    }
+  }
+  if (call.name === 'type') return cut(text('text') ?? '');
+  if (call.name === 'select') return cut(text('option') ?? '');
+  if (call.name === 'get_elements') return cut(text('filter') ?? text('role') ?? '');
+  if (call.name === 'fill_form') {
+    const count = Array.isArray(call.args.fields) ? call.args.fields.length : 0;
+    return count ? `${count} field${count === 1 ? '' : 's'}` : '';
+  }
+  if (call.name === 'scroll') return cut(text('direction') ?? '');
+  return '';
 }
 
 function safeHost(url: string): string {

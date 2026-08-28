@@ -1,5 +1,6 @@
 import { useState, type KeyboardEvent } from 'react';
 import type { AgentQuestion } from '../useAsk.js';
+import { Icon } from './Icon.js';
 
 /**
  * The agent asking for something only the user knows.
@@ -32,13 +33,17 @@ export function Ask({
   };
 
   return (
-    <div className="ask" role="dialog">
+    <div className="prompt-sheet" role="dialog" aria-label="The agent has a question">
+      <p className="confirm-head">
+        <Icon name="ask" size={13} />
+        heapbrowse is asking
+      </p>
       <p className="ask-question">{question.question}</p>
 
       {question.options && question.options.length > 0 && (
-        <div className="ask-options">
+        <div className="pills ask-options">
           {question.options.map((option) => (
-            <button key={option} type="button" onClick={() => onAnswer(option)}>
+            <button key={option} type="button" className="pill" onClick={() => onAnswer(option)}>
               {option}
             </button>
           ))}

@@ -1,58 +1,122 @@
 /*
- * The side panel is narrow — Chrome opens it around 320–400px — and it sits
- * beside a page it does not own, so it follows the browser's theme rather than
- * imposing one.
+ * heapbrowse, as a surface.
  *
- * The constraint that shapes everything here is width. At 350px there is room
- * for one column and no room at all for decoration that does not carry
- * information: every border earns its place by separating two things that would
- * otherwise be confused, and anything wide (a table, a code block, a URL)
- * scrolls inside its own box rather than making the conversation scroll
- * sideways.
+ * Chrome opens a side panel at around 320-400px and it sits beside a page it
+ * does not own, so this follows the browser's theme rather than imposing one.
+ * Width is the constraint that shapes every decision below: at 350px there is
+ * one column and no room for decoration that does not carry information. Every
+ * border earns its place by separating two things that would otherwise be
+ * confused, and anything wide -- a table, a code block, a URL -- scrolls inside
+ * its own box rather than making the conversation scroll sideways.
+ *
+ * Everything is expressed in tokens, and the tokens come in four groups:
+ * colour, space, radius and motion. A value that is not in one of them is a
+ * value someone will pick differently next time.
  */
 
 :root {
+  /* ---- colour: light --------------------------------------------------- */
   --bg: #ffffff;
-  --fg: #16181d;
-  --muted: #6b7280;
-  --faint: #9ca3af;
-  --line: #e6e8ec;
-  --line-strong: #d4d7dd;
-  --accent: #2563eb;
-  --accent-soft: rgba(37, 99, 235, 0.1);
-  --danger: #c02626;
-  --danger-soft: rgba(192, 38, 38, 0.09);
-  --surface: #f7f8fa;
-  --surface-2: #eef0f4;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
-  --radius: 8px;
-  --radius-sm: 6px;
+  --surface-1: #f6f7f9;
+  --surface-2: #eceef2;
 
-  /* One spacing scale, so nothing is 7px because 7px looked right that day. */
+  --fg: #14161a;
+  --muted: #5f6672;
+  --faint: #949aa6;
+
+  --line: #e7e9ee;
+  --line-strong: #d5d9e1;
+
+  /* One accent, keyed to the mark. Generic blue read as "a dialog"; this reads
+     as a product. */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: rgba(79, 70, 229, 0.09);
+  --accent-line: rgba(79, 70, 229, 0.35);
+  --accent-fg: #ffffff;
+
+  --positive: #157f3c;
+  --positive-soft: rgba(21, 127, 60, 0.1);
+  --warn: #a45a08;
+  --warn-soft: rgba(164, 90, 8, 0.11);
+  --danger: #bf2a20;
+  --danger-soft: rgba(191, 42, 32, 0.09);
+  --danger-line: rgba(191, 42, 32, 0.4);
+
+  --brand-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+
+  --shadow-1:
+    0 1px 2px rgba(16, 24, 40, 0.05),
+    0 1px 3px rgba(16, 24, 40, 0.04);
+  --ring: 0 0 0 3px var(--accent-soft);
+
+  /* ---- space ----------------------------------------------------------- */
+  /* One scale, so nothing is 7px because 7px looked right that day. */
   --s1: 4px;
   --s2: 6px;
   --s3: 8px;
   --s4: 10px;
   --s5: 14px;
+  --s6: 18px;
+  --s7: 24px;
+
+  /* ---- radius ---------------------------------------------------------- */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 13px;
+  --r-full: 999px;
+
+  /* ---- motion ---------------------------------------------------------- */
+  /* Two curves. `--ease` for anything that moves because state changed;
+     `--spring` only for something arriving, where a little overshoot reads as
+     the thing having been placed rather than having appeared. */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --d1: 110ms;
+  --d2: 190ms;
+  --d3: 300ms;
+
+  /* ---- type ------------------------------------------------------------ */
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-md: 13px;
+  --t-lg: 15px;
+  --t-xl: 18px;
 
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #17181c;
-    --fg: #e9eaec;
-    --muted: #9aa0a6;
-    --faint: #71767d;
-    --line: #2c2e34;
-    --line-strong: #3a3d45;
-    --accent: #6ea8fe;
-    --accent-soft: rgba(110, 168, 254, 0.14);
-    --danger: #f27272;
-    --danger-soft: rgba(242, 114, 114, 0.13);
-    --surface: #202127;
-    --surface-2: #282a31;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --bg: #131418;
+    --surface-1: #1a1c21;
+    --surface-2: #22252b;
+
+    --fg: #e8eaed;
+    --muted: #9aa1ad;
+    --faint: #6f7683;
+
+    --line: #282b32;
+    --line-strong: #383c45;
+
+    --accent: #8b93ff;
+    --accent-hover: #a3a9ff;
+    --accent-soft: rgba(139, 147, 255, 0.14);
+    --accent-line: rgba(139, 147, 255, 0.4);
+    --accent-fg: #14161a;
+
+    --positive: #4ade80;
+    --positive-soft: rgba(74, 222, 128, 0.13);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.13);
+    --danger: #f87171;
+    --danger-soft: rgba(248, 113, 113, 0.12);
+    --danger-line: rgba(248, 113, 113, 0.42);
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
   }
 }
 
@@ -64,8 +128,10 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 13px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font: var(--t-md) / 1.55 var(--font);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
 }
 
 /* A scrollbar that does not shout in a 350px column. */
@@ -77,7 +143,7 @@ body {
   background: var(--line-strong);
   border: 2px solid transparent;
   background-clip: padding-box;
-  border-radius: 999px;
+  border-radius: var(--r-full);
 }
 *::-webkit-scrollbar-thumb:hover {
   background: var(--faint);
@@ -87,24 +153,40 @@ body {
   background: transparent;
 }
 
+.icon {
+  flex: none;
+  display: block;
+}
+
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  min-height: 0;
 }
 
-/* ---------------------------------------------------------------- header -- */
+/* ================================================================ topbar == */
 
-.app-header {
+/*
+ * Identity and state on the first row, controls on the second.
+ *
+ * Eight things competing for one 350px row meant every one of them was
+ * truncated to an ambiguous stub, and the model name -- the thing you most
+ * often want to check -- lost every time. The permission mode moved out of here
+ * entirely and now lives in the composer, next to the send button, because it
+ * describes the run you are about to start rather than the panel you are in.
+ */
+.topbar {
   display: flex;
   flex-direction: column;
-  gap: var(--s2);
-  padding: var(--s3) var(--s4);
+  gap: var(--s3);
+  padding: var(--s4) var(--s4) var(--s3);
   border-bottom: 1px solid var(--line);
   background: var(--bg);
+  flex: none;
 }
 
-.header-row {
+.topbar-row {
   display: flex;
   align-items: center;
   gap: var(--s3);
@@ -116,126 +198,180 @@ body {
   align-items: center;
   gap: var(--s2);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: var(--t-md);
+  letter-spacing: -0.012em;
   flex: none;
 }
 
-/* A mark rather than an icon file: one gradient dot, no asset to load. */
+/* A mark rather than an icon file: one gradient chip, no asset to load. */
 .brand-mark {
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  background: linear-gradient(135deg, var(--accent), #7c3aed);
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  background: var(--brand-gradient);
+  flex: none;
+  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.4);
 }
 
+/* Which model is answering. A chip rather than plain text, so it reads as a
+   value that could be something else rather than as part of the title. */
 .model {
   flex: 1;
   min-width: 0;
+  padding: 2px var(--s3);
+  border-radius: var(--r-full);
+  background: var(--surface-1);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--t-xs);
+  font-family: var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: center;
 }
 
-.header-spacer {
-  flex: 1;
+.model.unset {
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-family: var(--font);
 }
 
-.header-controls {
-  gap: var(--s1);
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
 }
 
-/* ---------------------------------------------------------------- buttons -- */
+/* ================================================================ buttons == */
 
 button {
   font: inherit;
-  padding: 5px 10px;
+  padding: 5px var(--s4);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
   transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    color 0.12s ease;
+    background var(--d1) var(--ease),
+    border-color var(--d1) var(--ease),
+    color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
 }
 
 button:hover:not(:disabled) {
-  background: var(--surface);
+  background: var(--surface-1);
+  border-color: var(--faint);
 }
 
 button:active:not(:disabled) {
   background: var(--surface-2);
+  transform: translateY(0.5px);
 }
 
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
-summary:focus-visible {
+summary:focus-visible,
+[tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.42;
   cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 500;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 button.ghost {
   background: none;
   border-color: transparent;
   color: var(--muted);
-  padding: 4px 7px;
-  font-size: 12px;
+  padding: 4px var(--s3);
+  font-size: var(--t-sm);
 }
 
 button.ghost:hover:not(:disabled) {
-  background: var(--surface);
+  background: var(--surface-1);
+  border-color: transparent;
   color: var(--fg);
 }
 
-/* A panel that is open should look open, not identical to the three that are not. */
-button.ghost.on {
+button.danger {
+  border-color: var(--danger-line);
+  color: var(--danger);
+  background: var(--bg);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+/* A square target for a glyph. 26px is the smallest that still hits reliably
+   with a trackpad, and four of them fit beside the site pill. */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted);
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--surface-1);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+/* A pane that is open should look open, not identical to the three that are
+   not. */
+.icon-button.on {
   background: var(--accent-soft);
   color: var(--accent);
 }
 
-button.stop {
-  border-color: var(--danger);
-  color: var(--danger);
-}
+/* ================================================================== site == */
 
-button.stop:hover:not(:disabled) {
-  background: var(--danger-soft);
-}
-
-.mode {
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 6px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--muted);
-  max-width: 132px;
-}
-
-/* ------------------------------------------------------------------ site -- */
-
-/* Which site the panel is pointed at, and whether it may be read. Above the
-   transcript because it is a permission fact, not a chat message. */
+/*
+ * Which site the panel is pointed at, and whether it may be read.
+ *
+ * A permission fact, not a chat message, so it lives in the chrome. An inset
+ * pill rather than a full-bleed bar: a second bordered strip under the header
+ * made the top of a 350px panel read as three separate toolbars.
+ */
 .site {
   display: flex;
   align-items: center;
   gap: var(--s2);
-  padding: var(--s2) var(--s4);
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  min-width: 0;
+  flex: 1;
+  padding: 3px var(--s3) 3px var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  background: var(--surface-1);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
 .site-dot {
@@ -244,10 +380,12 @@ button.stop:hover:not(:disabled) {
   border-radius: 50%;
   background: var(--faint);
   flex: none;
+  transition: background var(--d2) var(--ease);
 }
 
 .site-granted .site-dot {
-  background: #16a34a;
+  background: var(--positive);
+  box-shadow: 0 0 0 3px var(--positive-soft);
 }
 
 .site-host {
@@ -260,51 +398,116 @@ button.stop:hover:not(:disabled) {
 }
 
 .site-ok {
-  color: var(--muted);
   flex: none;
+  color: var(--faint);
+  font-size: var(--t-xs);
 }
 
-/* The one call to action in the header area, so it does not read as a label. */
+/* The one call to action up here, so it does not read as a label. */
 .grant {
   flex: none;
-  padding: 3px 9px;
-  font-size: 12px;
-  border-color: var(--accent);
+  padding: 2px var(--s3);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  border-radius: var(--r-full);
+  border-color: var(--accent-line);
   color: var(--accent);
   background: var(--bg);
 }
 
 .grant:hover:not(:disabled) {
   background: var(--accent-soft);
+  border-color: var(--accent);
 }
 
-/* ------------------------------------------------------------- transcript -- */
+/* ================================================================= stage == */
+
+/* The transcript and anything layered over it share one box, so a pane can
+   cover the conversation instead of shoving it down the screen. */
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ================================================================ sheets == */
+
+/*
+ * Settings, saved tasks and the log, as one thing.
+ *
+ * They used to push the transcript down, which meant opening Settings scrolled
+ * away whatever you had opened it to check. A sheet covers the conversation
+ * instead: one layer, one way out, and the transcript is exactly where it was
+ * when the sheet closes.
+ */
+.sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  animation: sheet-in var(--d2) var(--ease);
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s3) var(--s3) var(--s5);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.sheet-title {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  flex: 1;
+  min-width: 0;
+}
+
+.sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ============================================================ transcript == */
 
 .transcript {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: var(--s4);
+  overscroll-behavior: contain;
+  padding: var(--s5) var(--s4) var(--s4);
   scroll-behavior: smooth;
 }
 
-.transcript.empty {
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: var(--s5);
+.turn {
+  margin-bottom: var(--s6);
+  animation: rise var(--d2) var(--ease);
 }
 
-.turn {
-  margin-bottom: var(--s5);
-  animation: rise 0.16s ease-out;
+.turn:last-child {
+  margin-bottom: var(--s3);
 }
 
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(3px);
+    transform: translateY(4px);
   }
 }
 
@@ -312,17 +515,31 @@ button.stop:hover:not(:disabled) {
 .turn.user {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: var(--s4);
+  margin-bottom: var(--s5);
 }
 
 .turn.user .user-text {
   margin: 0;
-  padding: 7px var(--s4);
+  padding: var(--s3) var(--s5);
   max-width: 88%;
   background: var(--accent-soft);
-  border-radius: 12px 12px 3px 12px;
+  color: var(--fg);
+  border-radius: var(--r-lg) var(--r-lg) var(--r-xs) var(--r-lg);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* The steps of a run, tightened against each other so the sequence reads as one
+   block and the answer beneath it reads as the reply. */
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin-bottom: var(--s4);
+}
+
+.steps:empty {
+  display: none;
 }
 
 .assistant-text {
@@ -340,80 +557,95 @@ button.stop:hover:not(:disabled) {
 .assistant-text h1,
 .assistant-text h2,
 .assistant-text h3 {
-  font-size: 14px;
-  margin: var(--s4) 0 var(--s2);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: var(--s5) 0 var(--s2);
+}
+
+.assistant-text p {
+  margin: var(--s3) 0;
 }
 
 .assistant-text ul,
 .assistant-text ol {
   padding-left: 20px;
-  margin: var(--s2) 0;
+  margin: var(--s3) 0;
 }
 
 .assistant-text li + li {
-  margin-top: 2px;
+  margin-top: 3px;
 }
 
 .assistant-text a {
   color: var(--accent);
+  text-underline-offset: 2px;
 }
 
 .assistant-text blockquote {
-  margin: var(--s2) 0;
+  margin: var(--s3) 0;
   padding-left: var(--s4);
   border-left: 2px solid var(--line-strong);
   color: var(--muted);
+}
+
+.assistant-text hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: var(--s5) 0;
 }
 
 /* Wide content scrolls inside itself; the panel is too narrow to give up its
    layout to one long line. */
 .assistant-text pre {
   overflow-x: auto;
-  padding: var(--s3);
-  background: var(--surface);
+  padding: var(--s4);
+  background: var(--surface-1);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
+  border-radius: var(--r-md);
+  font-size: var(--t-sm);
+  line-height: 1.5;
 }
 
 .assistant-text code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.92em;
 }
 
 .assistant-text :not(pre) > code {
   background: var(--surface-2);
-  padding: 1px 4px;
-  border-radius: 4px;
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
 }
 
 .assistant-text table {
   display: block;
   overflow-x: auto;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
 .assistant-text th,
 .assistant-text td {
   border: 1px solid var(--line);
-  padding: 3px 7px;
+  padding: 4px var(--s3);
   text-align: left;
 }
 
 .assistant-text img {
   max-width: 100%;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-md);
 }
 
 .cursor {
   display: inline-block;
-  width: 6px;
-  height: 1em;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1px;
   background: var(--accent);
   border-radius: 1px;
   vertical-align: text-bottom;
-  animation: blink 1s steps(2, start) infinite;
+  animation: blink 1.05s steps(2, start) infinite;
 }
 
 @keyframes blink {
@@ -423,48 +655,159 @@ button.stop:hover:not(:disabled) {
 }
 
 .turn-error {
-  margin: var(--s2) 0 0;
-  padding: var(--s2) var(--s3);
+  display: flex;
+  gap: var(--s2);
+  margin: var(--s3) 0 0;
+  padding: var(--s3) var(--s4);
   background: var(--danger-soft);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-md);
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
 /* Narration between steps. Quieter than the answer on purpose: it is the agent
    thinking aloud, not the thing the user asked for. */
 .note {
-  margin: 0 0 var(--s2);
+  margin: 0;
+  padding: 0 var(--s1);
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
-/* --------------------------------------------------------------- thinking -- */
+/* =========================================================== empty state == */
 
-/* Reasoning models produce pages of this and none of it is addressed to the
-   user, so it collapses to one quiet line. It is not hidden, because when it
-   matters it matters a great deal — an agent that did something surprising
-   usually talked itself into it here first. */
-.thinking {
-  margin: 0 0 var(--s2);
+/*
+ * A blank panel is the most-seen screen in the product, so it does the work an
+ * empty box cannot: says what this is for, and offers three things to press.
+ */
+.empty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s3);
+  padding: var(--s7) var(--s5);
+  text-align: center;
+  animation: rise var(--d3) var(--ease);
 }
 
+.empty-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--brand-gradient);
+  box-shadow: 0 6px 18px -6px rgba(99, 102, 241, 0.65);
+  margin-bottom: var(--s1);
+  animation: mark-in var(--d3) var(--spring);
+}
+
+@keyframes mark-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-12deg);
+  }
+}
+
+.empty-title {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.empty-sub {
+  margin: 0;
+  max-width: 30ch;
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+
+.empty-group {
+  width: 100%;
+  margin-top: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.empty-label {
+  color: var(--faint);
+  font-size: var(--t-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ================================================================= pills == */
+
+/* One shape for anything one-press: a suggestion, a saved task, an option in a
+   question the agent asked. */
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  justify-content: center;
+}
+
+/* Under left-aligned prose, rather than under a centred title. */
+.pills.left {
+  justify-content: flex-start;
+}
+
+.pill {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--muted);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  padding: 4px var(--s4);
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    color var(--d1) var(--ease),
+    background var(--d1) var(--ease),
+    border-color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
+}
+
+.pill:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+/* ============================================================== thinking == */
+
+/*
+ * Reasoning models produce pages of this and none of it is addressed to the
+ * user, so it collapses to one quiet line. Not hidden, because when it matters
+ * it matters a great deal -- an agent that did something surprising usually
+ * talked itself into it here first.
+ */
 .thinking-head {
   display: flex;
   align-items: center;
   gap: var(--s2);
   width: 100%;
   padding: 3px var(--s2);
-  border: none;
+  border: 1px solid transparent;
   background: none;
   color: var(--faint);
-  font-size: 12px;
+  font-size: var(--t-sm);
   text-align: left;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
 }
 
 .thinking-head:hover {
-  background: var(--surface);
+  background: var(--surface-1);
+  border-color: transparent;
   color: var(--muted);
 }
 
@@ -477,91 +820,130 @@ button.stop:hover:not(:disabled) {
 }
 
 .thinking.live .thinking-glyph {
-  animation: pulse 1.1s ease-in-out infinite;
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+/* The one place a label animates: three dots that are actually moving say
+   "still going" in a way a static ellipsis cannot. */
+.thinking.live .thinking-label::after {
+  content: '';
+  animation: ellipsis 1.4s steps(4, end) infinite;
+}
+
+@keyframes ellipsis {
+  0% {
+    content: '';
+  }
+  25% {
+    content: '.';
+  }
+  50% {
+    content: '..';
+  }
+  75% {
+    content: '...';
+  }
 }
 
 .thinking-caret {
   margin-left: auto;
-  font-size: 10px;
+  transition: transform var(--d2) var(--ease);
+}
+
+.thinking[data-open='true'] .thinking-caret {
+  transform: rotate(-180deg);
 }
 
 .thinking-body {
-  margin: var(--s1) 0 0 var(--s2);
+  margin: var(--s1) 0 0 var(--s3);
   padding: var(--s2) var(--s4);
   border-left: 2px solid var(--line);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--t-sm);
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 300px;
   overflow-y: auto;
+  animation: open-down var(--d2) var(--ease);
 }
 
-/* ------------------------------------------------------------- tool chips -- */
-
-/* What the agent did. Collapsed by default: the summary line is what most
-   people read, and "what did it just do?" is this product's core question. */
-.chip {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  margin-bottom: var(--s2);
-  overflow: hidden;
-  background: var(--bg);
+@keyframes open-down {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
 }
 
-.chip-error {
-  border-color: var(--danger);
+/* ============================================================ tool chips == */
+
+/*
+ * What the agent did, inline in the transcript.
+ *
+ * Collapsed to a single line with no box around it: a run is ten of these, and
+ * ten bordered cards in a 350px column is a wall. The border appears only when
+ * one is opened, which is when it has a body to contain.
+ */
+.tool-chip {
+  border-radius: var(--r-md);
+  transition: background var(--d1) var(--ease);
 }
 
-.chip-head {
+.tool-chip[data-open='true'] {
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.tool-head {
   display: flex;
   align-items: center;
   gap: var(--s2);
   width: 100%;
-  padding: 5px var(--s3);
-  border: none;
-  border-radius: 0;
-  background: var(--surface);
+  padding: 4px var(--s3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: none;
   color: var(--fg);
   text-align: left;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--t-sm);
   cursor: pointer;
 }
 
-.chip-head:hover {
-  background: var(--surface-2);
+.tool-head:hover {
+  background: var(--surface-1);
+  border-color: transparent;
 }
 
-.chip-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
+.tool-icon {
   flex: none;
+  color: var(--accent);
+  transition:
+    color var(--d2) var(--ease),
+    opacity var(--d2) var(--ease);
 }
 
-.chip-error .chip-dot {
-  background: var(--danger);
+.tool-chip.running .tool-icon {
+  animation: pulse 1.15s ease-in-out infinite;
 }
 
-.chip-dot.spinning {
-  animation: pulse 1s ease-in-out infinite;
+.tool-chip.failed .tool-icon,
+.tool-chip.failed .tool-name {
+  color: var(--danger);
 }
 
 @keyframes pulse {
   50% {
-    opacity: 0.25;
+    opacity: 0.3;
   }
 }
 
-.chip-name {
+.tool-name {
   flex: none;
   font-weight: 500;
 }
 
-.chip-detail {
+.tool-detail {
   flex: 1;
   min-width: 0;
   color: var(--muted);
@@ -570,47 +952,52 @@ button.stop:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.chip-toggle {
+.tool-caret {
   color: var(--faint);
-  flex: none;
-  font-size: 10px;
+  margin-left: auto;
+  transition: transform var(--d2) var(--ease);
 }
 
-/* Tool results are page content, so plain text only — never markdown, which
+.tool-chip[data-open='true'] .tool-caret {
+  transform: rotate(-180deg);
+}
+
+/* Tool results are page content, so plain text only -- never markdown, which
    would give an untrusted page a way to shape the panel. */
-.chip-body {
+.tool-body {
   margin: 0;
-  padding: var(--s3);
+  padding: var(--s3) var(--s4) var(--s4);
   max-height: 260px;
   overflow: auto;
-  background: var(--bg);
-  border-top: 1px solid var(--line);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.5;
+  color: var(--muted);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  animation: open-down var(--d2) var(--ease);
 }
 
-/* What the agent is looking at. Shown to the user only — it never reaches the
+/* What the agent is looking at. Shown to the user only -- it never reaches the
    model, because a screenshot in the context is carried for every turn after. */
 .view {
   display: block;
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  margin-bottom: var(--s2);
+  border-radius: var(--r-md);
+  animation: rise var(--d2) var(--ease);
 }
 
-/* ------------------------------------------------------- collected tables -- */
+/* ==================================================== collected datasets == */
 
 /* The deliverable for a comparison task, so it gets to be a real table rather
    than prose the model wrote about one. */
 .dataset {
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  margin-bottom: var(--s2);
+  border-radius: var(--r-md);
   overflow: hidden;
+  background: var(--bg);
+  box-shadow: var(--shadow-1);
 }
 
 .dataset-head {
@@ -618,9 +1005,10 @@ button.stop:hover:not(:disabled) {
   justify-content: space-between;
   align-items: baseline;
   gap: var(--s3);
-  padding: var(--s2) var(--s3);
-  background: var(--surface);
-  font-size: 12px;
+  padding: var(--s3) var(--s4);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-sm);
 }
 
 /* The panel is narrow and the data is not. Scroll inside the box, never the
@@ -633,7 +1021,7 @@ button.stop:hover:not(:disabled) {
 
 .dataset table {
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--t-sm);
   width: max-content;
   min-width: 100%;
 }
@@ -641,7 +1029,7 @@ button.stop:hover:not(:disabled) {
 .dataset th,
 .dataset td {
   border-top: 1px solid var(--line);
-  padding: 4px var(--s3);
+  padding: 5px var(--s4);
   text-align: left;
   vertical-align: top;
   max-width: 260px;
@@ -650,7 +1038,7 @@ button.stop:hover:not(:disabled) {
 }
 
 .dataset tbody tr:nth-child(even) {
-  background: var(--surface);
+  background: var(--surface-1);
 }
 
 .dataset th {
@@ -658,6 +1046,7 @@ button.stop:hover:not(:disabled) {
   font-weight: 600;
   position: sticky;
   top: 0;
+  border-top: none;
 }
 
 .dataset-actions {
@@ -668,52 +1057,206 @@ button.stop:hover:not(:disabled) {
   border-top: 1px solid var(--line);
 }
 
-/* --------------------------------------------------------------- composer -- */
+/* ============================================================== composer == */
 
-.composer-area {
-  border-top: 1px solid var(--line);
+.footer {
+  flex: none;
   background: var(--bg);
+  border-top: 1px solid var(--line);
 }
 
 .composer {
-  display: flex;
-  gap: var(--s2);
-  align-items: flex-end;
-  padding: var(--s3);
-  border-top: none;
+  padding: var(--s3) var(--s4) var(--s4);
 }
 
-.composer textarea {
-  flex: 1;
+/*
+ * One surface holding the text and everything that acts on it.
+ *
+ * The permission mode lives in here rather than in the header because it is a
+ * property of the run you are about to start, and this is where you start one.
+ */
+.composer-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  transition:
+    border-color var(--d2) var(--ease),
+    box-shadow var(--d2) var(--ease);
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.composer-box textarea {
+  width: 100%;
   resize: none;
   font: inherit;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  padding: var(--s2) var(--s3);
-  transition: border-color 0.12s ease;
+  background: none;
+  border: none;
+  padding: 2px var(--s2);
+  max-height: 160px;
+  overflow-y: auto;
 }
 
-.composer textarea:focus {
-  border-color: var(--accent);
+.composer-box textarea:focus {
   outline: none;
 }
 
-.composer textarea::placeholder {
+.composer-box textarea::placeholder {
   color: var(--faint);
 }
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* Round, filled, and the only filled control on the screen. */
+.send {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex: none;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.send:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.send:disabled {
+  background: var(--surface-2);
+  border-color: var(--surface-2);
+  color: var(--faint);
+  opacity: 1;
+}
+
+.send.stop {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 var(--danger-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+
+/* ------------------------------------------------------------ mode select -- */
+
+/*
+ * The ceiling on what a run may do, always in view.
+ *
+ * A dot carries the reading at a glance -- neutral, accent, amber, red -- so
+ * the setting is legible without reading the words. There is no full-auto: even
+ * the most permissive setting still asks before anything irreversible.
+ */
+.mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  position: relative;
+  min-width: 0;
+  padding: 3px var(--s2) 3px var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: var(--t-xs);
+  transition:
+    border-color var(--d1) var(--ease),
+    background var(--d1) var(--ease);
+}
+
+.mode:hover {
+  border-color: var(--line-strong);
+}
+
+.mode:focus-within {
+  border-color: var(--accent);
+}
+
+.mode-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--faint);
+  transition: background var(--d2) var(--ease);
+}
+
+.mode-read .mode-dot {
+  background: var(--faint);
+}
+.mode-confirm .mode-dot {
+  background: var(--accent);
+}
+.mode-approve .mode-dot {
+  background: var(--warn);
+}
+.mode-auto .mode-dot {
+  background: var(--danger);
+}
+
+.mode-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-caret {
+  color: var(--faint);
+  flex: none;
+}
+
+/* The real control, invisible over the top of the pretty one. Keeping the
+   native select is what keeps the keyboard, the screen reader and Chrome's own
+   menu placement working. */
+.mode select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* ================================================================ notice == */
 
 .notice {
   display: flex;
   align-items: center;
   gap: var(--s2);
   margin: 0;
-  padding: var(--s2) var(--s4);
+  padding: var(--s2) var(--s5);
   color: var(--muted);
-  font-size: 12px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
+  font-size: var(--t-xs);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
+  animation: rise var(--d2) var(--ease);
 }
 
 .notice-dot {
@@ -722,57 +1265,51 @@ button.stop:hover:not(:disabled) {
   border-radius: 50%;
   background: var(--accent);
   flex: none;
-  animation: pulse 1.1s ease-in-out infinite;
+  animation: pulse 1.15s ease-in-out infinite;
 }
 
-/* Saved tasks in front of the user on a blank panel, where the decision is. */
-.task-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s2);
-  padding: 0 var(--s4) var(--s3);
-}
-
-.task-chip {
-  font: inherit;
-  font-size: 12px;
-  color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 4px var(--s4);
-  cursor: pointer;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-chip:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
-/* ------------------------------------------------------ asking the person -- */
+/* ==================================================== asking the person == */
 
 /* The confirmation. Sits above the composer, in the way, on purpose. */
-.confirm {
-  padding: var(--s4);
+.prompt-sheet {
+  padding: var(--s5);
   border-top: 2px solid var(--accent);
-  background: var(--surface);
-  animation: rise 0.16s ease-out;
+  background: var(--surface-1);
+  animation: slide-up var(--d2) var(--ease);
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
 }
 
 /* An irreversible action must not look like an ordinary one, or the
    confirmation stops carrying information. */
-.confirm-destructive {
+.prompt-sheet.destructive {
   border-top-color: var(--danger);
   background: var(--danger-soft);
 }
 
+.confirm-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 0 var(--s2);
+  color: var(--accent);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.destructive .confirm-head {
+  color: var(--danger);
+}
+
 .confirm-what {
-  margin: 0 0 3px;
+  margin: 0 0 var(--s1);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -780,33 +1317,27 @@ button.stop:hover:not(:disabled) {
 .confirm-where {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
 .confirm-why {
-  margin: var(--s2) 0 0;
+  margin: var(--s3) 0 0;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
 .confirm-actions {
   display: flex;
   gap: var(--s2);
-  margin-top: var(--s4);
+  margin-top: var(--s5);
 }
 
 .confirm-actions button {
   flex: 1;
-}
-
-.confirm-actions .primary {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.confirm-actions .danger {
-  border-color: var(--danger);
-  color: var(--danger);
+  justify-content: center;
 }
 
 .confirm-actions .deny {
@@ -816,23 +1347,14 @@ button.stop:hover:not(:disabled) {
 /* The agent asking for a fact. Deliberately not styled like the permission
    confirmation: that one asks "may I", and its safe answer is no; this one asks
    "what", and has no safe default at all. */
-.ask {
-  padding: var(--s4);
-  border-top: 2px solid var(--accent);
-  background: var(--surface);
-  animation: rise 0.16s ease-out;
-}
-
 .ask-question {
-  margin: 0 0 var(--s3);
+  margin: 0 0 var(--s4);
   overflow-wrap: anywhere;
 }
 
 .ask-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s2);
-  margin-bottom: var(--s3);
+  justify-content: flex-start;
+  margin-bottom: var(--s4);
 }
 
 .ask-entry {
@@ -842,100 +1364,76 @@ button.stop:hover:not(:disabled) {
 
 .ask-entry input {
   flex: 1;
+  min-width: 0;
   font: inherit;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  padding: 5px 7px;
+  border-radius: var(--r-sm);
+  padding: 5px var(--s3);
+}
+
+.ask-entry input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: var(--ring);
 }
 
 .ask-skip {
-  margin-top: var(--s2);
+  margin-top: var(--s3);
   padding-left: 0;
 }
 
-/* ------------------------------------------------------------- form panes -- */
+/* =========================================================== form panes == */
 
-.settings,
-.details,
-.onboarding,
-.tasks,
-.audit {
-  padding: var(--s4);
-  border-bottom: 1px solid var(--line);
+.pane {
+  padding: var(--s5);
   display: flex;
   flex-direction: column;
-  gap: var(--s3);
-  background: var(--bg);
+  gap: var(--s4);
 }
 
-.settings,
-.tasks,
-.audit {
-  max-height: 62vh;
-  overflow-y: auto;
-}
-
-/* The onboarding is the whole panel while it is up, and longer than the panel
-   is tall on every step but the first. */
-.onboarding {
-  overflow-y: auto;
-  flex: 1;
-  border-bottom: none;
-  max-height: none;
-}
-
-.settings label,
-.details label,
-.onboarding label {
+.pane label {
   display: flex;
   flex-direction: column;
   gap: 3px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
-.settings input,
-.settings select,
-.settings textarea,
-.details input,
-.details textarea,
-.onboarding input,
-.onboarding select,
-.onboarding textarea {
+.pane input,
+.pane select,
+.pane textarea {
   font: inherit;
-  font-size: 13px;
+  font-size: var(--t-md);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  padding: 5px 7px;
-  transition: border-color 0.12s ease;
+  border-radius: var(--r-sm);
+  padding: 6px var(--s3);
+  transition:
+    border-color var(--d1) var(--ease),
+    box-shadow var(--d1) var(--ease);
 }
 
-.settings input:focus,
-.details input:focus,
-.details textarea:focus,
-.onboarding input:focus {
+.pane input:focus,
+.pane select:focus,
+.pane textarea:focus {
   border-color: var(--accent);
   outline: none;
+  box-shadow: var(--ring);
 }
 
-.settings textarea,
-.details textarea,
-.onboarding textarea {
+.pane textarea {
   resize: vertical;
 }
 
-.settings textarea {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+.pane .code {
+  font-family: var(--mono);
+  font-size: var(--t-sm);
 }
 
-.settings .row,
-.onboarding .row,
-.tasks .row {
+.row {
   display: flex;
   gap: var(--s3);
   flex-wrap: wrap;
@@ -947,62 +1445,101 @@ button.stop:hover:not(:disabled) {
   cursor: pointer;
   color: var(--fg);
   font-weight: 500;
-  padding: 3px 0;
-  font-size: 12px;
+  padding: var(--s2) 0;
+  font-size: var(--t-sm);
   list-style-position: inside;
+  border-radius: var(--r-sm);
+}
+
+.disclosure > summary:hover {
+  color: var(--accent);
 }
 
 .disclosure[open] > summary {
   margin-bottom: var(--s2);
 }
 
-.disclosure .details {
-  padding: var(--s2) 0 0;
-  border-bottom: none;
+.disclosure .pane {
+  padding: 0;
 }
 
 /* Which endpoint is in use, above the fields that describe it. */
 .profiles {
   display: flex;
   flex-direction: column;
-  gap: var(--s2);
-  padding-bottom: var(--s3);
-  border-bottom: 1px solid var(--line);
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
 }
 
 .rule {
   border: none;
   border-top: 1px solid var(--line);
-  margin: var(--s1) 0;
+  margin: 0;
   width: 100%;
 }
 
 .switch {
   flex-direction: row !important;
   align-items: center;
-  gap: 7px !important;
+  gap: var(--s3) !important;
   color: var(--fg) !important;
-  font-size: 13px !important;
+  font-size: var(--t-md) !important;
   cursor: pointer;
+}
+
+.switch input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex: none;
 }
 
 .muted {
   color: var(--muted);
   margin: 0;
-  font-size: 12px;
+  font-size: var(--t-sm);
   line-height: 1.5;
 }
 
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.section-title {
+  margin: 0;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
 .diagnosis {
-  border-radius: var(--radius-sm);
-  padding: var(--s3);
-  background: var(--surface);
-  font-size: 12px;
+  border-radius: var(--r-md);
+  padding: var(--s4);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  font-size: var(--t-sm);
+  animation: rise var(--d2) var(--ease);
+}
+
+.diagnosis p {
+  margin: 0;
+}
+
+.diagnosis p + p {
+  margin-top: var(--s2);
 }
 
 .diagnosis.ok {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--positive);
+  background: var(--positive-soft);
+  border-color: transparent;
 }
 
 .diagnosis.origin-blocked,
@@ -1010,31 +1547,122 @@ button.stop:hover:not(:disabled) {
 .diagnosis.http-error {
   color: var(--danger);
   background: var(--danger-soft);
+  border-color: transparent;
 }
 
 .diagnosis pre {
   overflow-x: auto;
-  margin: var(--s2) 0 0;
-  padding: 7px;
+  margin: var(--s3) 0 0;
+  padding: var(--s3);
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
   color: var(--fg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
+  font-size: var(--t-sm);
 }
 
-/* ------------------------------------------------------------- onboarding -- */
+/* ============================================================ onboarding == */
+
+/*
+ * The first three minutes.
+ *
+ * The whole panel while it is up, and one idea per step. Someone who has not
+ * built the thing has no way to know that page text goes to an endpoint they
+ * choose, that a local Ollama refuses an extension until an environment
+ * variable is set, that reading a site is granted one site at a time, or what
+ * the "being debugged" banner across the top of their browser means -- and each
+ * of those is a question asked once and then never again, which is exactly what
+ * an onboarding is for and exactly what a settings page is bad at.
+ */
+.onboarding {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.onboarding-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  flex: none;
+}
+
+.onboarding-track {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.onboarding-track .seg {
+  height: 3px;
+  flex: 1;
+  border-radius: var(--r-full);
+  background: var(--line);
+  transition: background var(--d3) var(--ease);
+}
+
+.onboarding-track .seg.done {
+  background: var(--accent-line);
+}
+
+.onboarding-track .seg.on {
+  background: var(--accent);
+}
+
+.onboarding-count {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.onboarding-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s3) var(--s5) var(--s6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  animation: step-in var(--d3) var(--ease);
+}
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+}
+
+.onboarding-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  flex: none;
+}
+
+.onboarding-foot .grow {
+  flex: 1;
+}
 
 .onboarding h2 {
-  font-size: 15px;
+  font-size: var(--t-xl);
+  font-weight: 600;
   margin: 0;
-  line-height: 1.4;
-  letter-spacing: -0.01em;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
 }
 
 .onboarding h3 {
-  font-size: 13px;
-  margin: var(--s2) 0 0;
+  font-size: var(--t-md);
+  font-weight: 600;
+  margin: 0;
   color: var(--fg);
 }
 
@@ -1042,6 +1670,7 @@ button.stop:hover:not(:disabled) {
   margin: 0;
   line-height: 1.55;
   color: var(--muted);
+  font-size: var(--t-md);
 }
 
 .onboarding p strong {
@@ -1049,36 +1678,101 @@ button.stop:hover:not(:disabled) {
   font-weight: 600;
 }
 
-.onboarding .suggestions {
+.hero-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--brand-gradient);
+  box-shadow: 0 10px 26px -8px rgba(99, 102, 241, 0.7);
+  animation: mark-in 420ms var(--spring);
+}
+
+/* Three claims, one line each, with the glyph carrying the category. Prose in
+   its place read as a paragraph nobody finishes. */
+.value-list {
+  list-style: none;
   margin: 0;
-  padding-left: 18px;
-  color: var(--muted);
-  line-height: 1.8;
-}
-
-/* Which of the four steps this is. Decorative, and hidden from the reader that
-   would otherwise announce four bullets with no text in them. */
-.onboarding-steps {
+  padding: 0;
   display: flex;
-  gap: 5px;
+  flex-direction: column;
+  gap: var(--s4);
 }
 
-.onboarding-steps .dot {
-  width: 20px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--line);
-  transition: background 0.2s ease;
+.value-list li {
+  display: flex;
+  gap: var(--s4);
+  align-items: flex-start;
+  font-size: var(--t-md);
+  color: var(--muted);
 }
 
-.onboarding-steps .dot.on {
-  background: var(--accent);
+.value-list .value-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-top: 1px;
 }
 
-/* ------------------------------------------------------- tasks and history -- */
+.value-list strong {
+  display: block;
+  color: var(--fg);
+  font-weight: 600;
+}
 
-.tasks-head,
-.audit-head {
+/* A permission, as a thing with a state. */
+.perm-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+
+.perm-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.perm-head h3 {
+  flex: 1;
+  min-width: 0;
+}
+
+.state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--s3);
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.state.on {
+  background: var(--positive-soft);
+  color: var(--positive);
+}
+
+.state.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* ==================================================== tasks and history == */
+
+.pane-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
@@ -1100,6 +1794,13 @@ button.stop:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: var(--s1);
+  padding: 2px;
+  border-radius: var(--r-sm);
+  transition: background var(--d1) var(--ease);
+}
+
+.task-list li:hover {
+  background: var(--surface-1);
 }
 
 .task-run {
@@ -1109,11 +1810,13 @@ button.stop:hover:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  border-color: transparent;
+  background: none;
 }
 
 .history-list li {
   border-top: 1px solid var(--line);
-  padding-top: var(--s2);
+  padding-top: var(--s3);
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1122,9 +1825,10 @@ button.stop:hover:not(:disabled) {
 .history-line {
   display: flex;
   gap: var(--s3);
-  font-size: 11px;
+  font-size: var(--t-xs);
   color: var(--faint);
   flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .history-outcome {
@@ -1133,41 +1837,45 @@ button.stop:hover:not(:disabled) {
 
 .history-task {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--t-md);
 }
 
 .history-summary {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--t-sm);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-/* ------------------------------------------------------------- audit log -- */
+/* =============================================================== audit == */
 
 .audit-row {
-  padding: var(--s2) 0 var(--s2) var(--s3);
+  padding: var(--s2) 0 var(--s2) var(--s4);
   border-left: 2px solid var(--line);
 }
 
 /* The decision is the thing worth seeing at a glance, so it is what colours the
-   row — not the action. */
+   row -- not the action. */
 .audit-blocked,
 .audit-denied {
   border-left-color: var(--danger);
 }
 
 .audit-allowed {
-  border-left-color: var(--accent);
+  border-left-color: var(--positive);
+}
+
+.audit-auto-allowed {
+  border-left-color: var(--warn);
 }
 
 .audit-line {
   display: flex;
   gap: var(--s2);
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
 .audit-tool {
@@ -1180,49 +1888,56 @@ button.stop:hover:not(:disabled) {
 
 .audit-meta {
   color: var(--muted);
+  font-size: var(--t-xs);
 }
 
 .audit-reason {
   color: var(--muted);
   font-style: italic;
-  font-size: 12px;
+  font-size: var(--t-sm);
 }
 
-.audit-actions {
-  display: flex;
-  gap: var(--s2);
-  margin-top: var(--s3);
-}
+/* ======================================================= context meter == */
 
-/* ---------------------------------------------------------- context meter -- */
-
+/* How much of the model's window the last prompt used. Worth surfacing because
+   the number moves for a reason the user can act on: a page snapshot is by far
+   the largest thing that enters the context. */
 .meter {
   display: flex;
   align-items: center;
   gap: 5px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--t-xs);
   font-variant-numeric: tabular-nums;
   flex: none;
 }
 
 .meter-bar {
-  width: 34px;
+  width: 30px;
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--r-full);
   background: var(--line);
   overflow: hidden;
 }
 
 .meter-fill {
   height: 100%;
+  border-radius: var(--r-full);
   background: var(--accent);
-  transition: width 0.3s ease;
+  transition:
+    width var(--d3) var(--ease),
+    background var(--d3) var(--ease);
+}
+
+.meter-fill.warm {
+  background: var(--warn);
 }
 
 .meter-fill.hot {
   background: var(--danger);
 }
+
+/* ========================================================== reduced motion */
 
 /* Someone who has asked for less movement should get less of it. Every
    animation here is decoration on information that is already in the text. */

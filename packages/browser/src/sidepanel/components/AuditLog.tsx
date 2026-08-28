@@ -20,7 +20,7 @@ const DECISION_LABEL: Record<AuditEntry['decision'], string> = {
   blocked: 'blocked',
 };
 
-export function AuditLog({ onClose }: { onClose: () => void }) {
+export function AuditLog() {
   const [entries, setEntries] = useState<AuditEntry[]>();
   const [copied, setCopied] = useState(false);
 
@@ -35,14 +35,7 @@ export function AuditLog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="audit">
-      <div className="audit-head">
-        <strong>What heapbrowse has done</strong>
-        <button type="button" className="ghost" onClick={onClose}>
-          Close
-        </button>
-      </div>
-
+    <div className="pane">
       {entries === undefined && <p className="muted">Loading…</p>}
       {entries?.length === 0 && (
         <p className="muted">Nothing yet. Actions on a page are recorded here as they happen.</p>
@@ -65,13 +58,13 @@ export function AuditLog({ onClose }: { onClose: () => void }) {
               </li>
             ))}
           </ul>
-          <div className="audit-actions">
+          <div className="row">
             <button type="button" onClick={() => void copy()}>
               {copied ? 'Copied' : 'Copy all'}
             </button>
             <button
               type="button"
-              className="deny"
+              className="danger"
               onClick={async () => {
                 await clearAudit();
                 setEntries([]);

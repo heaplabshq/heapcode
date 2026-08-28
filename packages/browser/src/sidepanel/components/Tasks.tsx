@@ -36,6 +36,7 @@ export function Tasks({
   currentDraft: string;
   host?: string;
   onRun: (prompt: string) => void;
+  /** Running something closes the pane; the title bar's own close is the sheet's. */
   onClose: () => void;
 }) {
   const [tasks, setTasks] = useState<SavedTask[]>([]);
@@ -55,23 +56,19 @@ export function Tasks({
   };
 
   return (
-    <div className="tasks">
-      <div className="tasks-head">
-        <strong>Saved tasks</strong>
-        <button type="button" className="ghost" onClick={onClose}>
-          Close
-        </button>
+    <div className="pane">
+      <div className="pane-head">
+        <h3 className="section-title">Saved tasks</h3>
+        {currentDraft.trim().length > 0 && (
+          <button
+            type="button"
+            className="ghost"
+            onClick={async () => setTasks(await saveTask(currentDraft, undefined, host))}
+          >
+            Save what you typed
+          </button>
+        )}
       </div>
-
-      {currentDraft.trim().length > 0 && (
-        <button
-          type="button"
-          className="ghost"
-          onClick={async () => setTasks(await saveTask(currentDraft, undefined, host))}
-        >
-          Save what you have typed
-        </button>
-      )}
 
       {tasks.length === 0 && (
         <p className="muted">
@@ -124,8 +121,10 @@ export function Tasks({
         ))}
       </ul>
 
-      <div className="tasks-head">
-        <strong>Earlier runs</strong>
+      <hr className="rule" />
+
+      <div className="pane-head">
+        <h3 className="section-title">Earlier runs</h3>
         {history.length > 0 && (
           <button
             type="button"
@@ -185,7 +184,7 @@ export function Tasks({
  * moment they are deciding what to do, which is a blank conversation — not
  * behind a button they would have to remember to press.
  */
-export function TaskChips({ onRun }: { onRun: (prompt: string) => void }) {
+export function SavedTaskChips({ onRun }: { onRun: (prompt: string) => void }) {
   const [tasks, setTasks] = useState<SavedTask[]>([]);
 
   useEffect(() => {
@@ -195,21 +194,24 @@ export function TaskChips({ onRun }: { onRun: (prompt: string) => void }) {
   if (tasks.length === 0) return null;
 
   return (
-    <div className="task-chips">
-      {tasks.slice(0, 6).map((task) => (
-        <button
-          key={task.id}
-          type="button"
-          className="task-chip"
-          title={task.prompt}
-          onClick={async () => {
-            await markTaskRun(task.id);
-            onRun(task.prompt);
-          }}
-        >
-          {task.name}
-        </button>
-      ))}
+    <div className="empty-group">
+      <span className="empty-label">Saved</span>
+      <div className="pills">
+        {tasks.slice(0, 6).map((task) => (
+          <button
+            key={task.id}
+            type="button"
+            className="pill"
+            title={task.prompt}
+            onClick={async () => {
+              await markTaskRun(task.id);
+              onRun(task.prompt);
+            }}
+          >
+            {task.name}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

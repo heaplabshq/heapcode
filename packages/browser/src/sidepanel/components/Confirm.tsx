@@ -1,4 +1,6 @@
 import type { ConfirmAnswer, ConfirmRequest } from '../../agent/run.js';
+import { Icon } from './Icon.js';
+import { toolLabel } from '../../shared/toolLabels.js';
 
 /**
  * The question the user answers before anything happens to the page.
@@ -33,7 +35,15 @@ export function Confirm({
             : 'Go back to';
 
   return (
-    <div className={`confirm${destructive ? ' confirm-destructive' : ''}`} role="alertdialog">
+    <div
+      className={`prompt-sheet${destructive ? ' destructive' : ''}`}
+      role="alertdialog"
+      aria-label={destructive ? 'Confirm an action that cannot be undone' : 'Confirm an action'}
+    >
+      <p className="confirm-head">
+        <Icon name={destructive ? 'shield' : toolLabel(request.tool).icon} size={13} />
+        {destructive ? 'Cannot be undone' : 'Waiting for you'}
+      </p>
       <p className="confirm-what">
         <strong>{verb}</strong> {request.target}
       </p>
@@ -49,12 +59,12 @@ export function Confirm({
         </p>
       )}
       <div className="confirm-actions">
-        <button type="button" className="deny" onClick={() => onAnswer('deny')}>
+        <button type="button" className="ghost deny" onClick={() => onAnswer('deny')}>
           No
         </button>
         {request.mayAlwaysAllow && (
           <button type="button" onClick={() => onAnswer('always')}>
-            Always on this site
+            Always here
           </button>
         )}
         <button

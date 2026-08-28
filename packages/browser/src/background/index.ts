@@ -1,6 +1,7 @@
 import {
   PENDING_PROMPT_KEY,
   PORT_NAME,
+  type PageStopMessage,
   type PanelMessage,
   type WorkerMessage,
 } from '../shared/messages.js';
@@ -112,13 +113,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         // above still reaches the panel.
       });
     }
-    for (const panel of panels) {
-      try {
-        panel.postMessage({ type: 'prompt', text: prompt } satisfies WorkerMessage);
-      } catch {
-        // A port that has gone. The next connect cleans it up.
-      }
-    }
+    broadcast({ type: 'prompt', text: prompt });
   });
 });
 
@@ -139,6 +134,32 @@ chrome.commands.onCommand.addListener((command, tab) => {
   ).catch((error: unknown) => {
     console.error('heapbrowse: could not open the side panel', error);
   });
+});
+
+/** Tell every open panel something. There is at most one run, in one panel. */
+function broadcast(message: WorkerMessage): void {
+  for (const panel of panels) {
+    try {
+      panel.postMessage(message);
+    } catch {
+      // A port that has gone. The next connect cleans it up.
+    }
+  }
+}
+
+/**
+ * Stop, pressed on the page instead of in the panel.
+ *
+ * The only message this worker accepts from a driven page, and it is accepted
+ * only from our own extension: `chrome.runtime.onMessage` without an external
+ * counterpart never hears from a web page directly, and the sender check makes
+ * that explicit rather than implied. It carries no data and can cause nothing
+ * but a run ending, which is the safe direction for anything a page is near.
+ */
+chrome.runtime.onMessage.addListener((message: PageStopMessage, sender) => {
+  if (message?.__heapbrowse !== 'stop') return;
+  if (sender.id !== chrome.runtime.id) return;
+  broadcast({ type: 'stop' });
 });
 
 chrome.runtime.onConnect.addListener((port) => {

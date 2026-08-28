@@ -40,7 +40,7 @@ export function Details() {
   const filled = PROFILE_FIELDS.filter((field) => profile[field.key]?.trim()).length;
 
   return (
-    <div className="details">
+    <div className="pane">
       <label className="switch">
         <input
           type="checkbox"

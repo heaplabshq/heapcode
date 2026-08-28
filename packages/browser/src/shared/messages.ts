@@ -30,7 +30,22 @@ export type WorkerMessage =
    * first time in response to this very click, in which case there was no port
    * to send it on when the menu fired.
    */
-  | { type: 'prompt'; text: string };
+  | { type: 'prompt'; text: string }
+  /**
+   * Stop the run, asked for from the page rather than from the panel.
+   *
+   * The bar heapbrowse draws along the bottom of a page it is driving carries a
+   * stop button, because that is where the user is looking when they decide to
+   * stop it. A content script cannot reach the panel document, so it goes to the
+   * worker and the worker hands it to every open panel — there is at most one
+   * run, in one panel, so a broadcast is exact rather than merely convenient.
+   */
+  | { type: 'stop' };
+
+/** Page → worker. The one thing a driven page may ask for. */
+export interface PageStopMessage {
+  __heapbrowse: 'stop';
+}
 
 export const PORT_NAME = 'heapbrowse';
 

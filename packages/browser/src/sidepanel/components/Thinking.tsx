@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Icon } from './Icon.js';
 
 /**
  * The model thinking, collapsed.
@@ -14,6 +15,8 @@ import { useState } from 'react';
  *
  * It expands while streaming if the user opens it, and never auto-expands —
  * a block that grows on its own pushes the answer off the screen as it arrives.
+ * The trailing dots on "Thinking" are drawn in CSS rather than written here, so
+ * the label is one stable word for a screen reader and still visibly alive.
  */
 export function Thinking({ text, streaming }: { text: string; streaming?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -21,7 +24,7 @@ export function Thinking({ text, streaming }: { text: string; streaming?: boolea
   if (!trimmed) return null;
 
   return (
-    <div className={`thinking${streaming ? ' live' : ''}`}>
+    <div className={`thinking${streaming ? ' live' : ''}`} data-open={open}>
       <button
         type="button"
         className="thinking-head"
@@ -29,10 +32,8 @@ export function Thinking({ text, streaming }: { text: string; streaming?: boolea
         aria-expanded={open}
       >
         <span className="thinking-glyph" aria-hidden="true" />
-        {streaming ? 'Thinking…' : 'Thought'}
-        <span className="thinking-caret" aria-hidden="true">
-          {open ? '▾' : '▸'}
-        </span>
+        <span className="thinking-label">{streaming ? 'Thinking' : 'Thought'}</span>
+        <Icon name="chevron" size={12} className="thinking-caret" />
       </button>
       {open && <div className="thinking-body">{trimmed}</div>}
     </div>

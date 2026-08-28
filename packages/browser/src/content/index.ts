@@ -231,8 +231,14 @@ export type ContentRequest =
   | { type: 'settle'; seconds: number }
   /** What is at this handle, for a confirmation the user can actually check. */
   | { type: 'describe'; handle: number; generation: number }
-  /** Outline it on the page, so the user sees the real element, not a name. */
-  | { type: 'highlight'; handle: number; generation: number }
+  /**
+   * Outline it on the page, so the user sees the real element, not a name.
+   *
+   * `label` is what the panel is asking the user to approve, drawn beside the
+   * ring. Having it on the page as well as in the panel is what lets someone
+   * check the two against each other without moving their eyes off the thing.
+   */
+  | { type: 'highlight'; handle: number; generation: number; label?: string }
   | { type: 'clearHighlight' }
   | { type: 'click'; handle: number; generation: number }
   | { type: 'type'; handle: number; generation: number; text: string }
@@ -304,31 +310,130 @@ function describeHandle(handle: number): Control | undefined {
  * of it. That is the point of PRD section 6.1.4: a page can name a button one
  * thing and have it do another, so the human is shown our extraction and the
  * real thing on screen.
+ *
+ * Everything lives in a closed shadow root: the page's CSS cannot restyle it,
+ * and its own keyframes cannot leak out and animate something on the page the
+ * agent is in the middle of reading. It tracks the element rather than being
+ * drawn once at fixed coordinates -- the user is being asked a question and may
+ * well scroll to look around before answering, and a ring left behind at the
+ * old offset points at whatever happens to be there now.
  */
 const HIGHLIGHT_ID = '__heapbrowse_highlight';
+
+/** Cancels the frame loop that keeps the ring on the element. */
+let untrack: (() => void) | undefined;
+
 function clearHighlight(): void {
+  untrack?.();
+  untrack = undefined;
   document.getElementById(HIGHLIGHT_ID)?.remove();
 }
 
-function highlight(element: Element): void {
+const HIGHLIGHT_CSS = `
+  :host { all: initial; }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 12, 18, 0.34);
+    pointer-events: none;
+    opacity: 0;
+    animation: hb-scrim 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+  }
+  /* The hole is the ring's own outer shadow, so the scrim and the cut-out can
+     never disagree about where the element is. */
+  .ring {
+    position: fixed;
+    border: 2px solid #6366f1;
+    border-radius: 6px;
+    box-shadow:
+      0 0 0 9999px rgba(10, 12, 18, 0.34),
+      0 0 0 5px rgba(99, 102, 241, 0.28);
+    pointer-events: none;
+    animation: hb-ring 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+  }
+  .tag {
+    position: fixed;
+    max-width: min(320px, calc(100vw - 24px));
+    padding: 4px 9px;
+    border-radius: 7px;
+    background: #6366f1;
+    color: #fff;
+    font: 500 12px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.5);
+    animation: hb-tag 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+  }
+  .tag:empty { display: none; }
+  @keyframes hb-scrim { to { opacity: 1; } }
+  @keyframes hb-ring { from { opacity: 0; transform: scale(1.05); } }
+  @keyframes hb-tag { from { opacity: 0; transform: translateY(4px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .scrim { animation: none; opacity: 1; }
+    .ring, .tag { animation: none; }
+  }
+`;
+
+function highlight(element: Element, label?: string): void {
   clearHighlight();
   element.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior });
-  const rect = element.getBoundingClientRect();
-  const box = document.createElement('div');
-  box.id = HIGHLIGHT_ID;
-  Object.assign(box.style, {
+
+  const host = document.createElement('div');
+  host.id = HIGHLIGHT_ID;
+  Object.assign(host.style, {
     position: 'fixed',
-    left: `${rect.left - 3}px`,
-    top: `${rect.top - 3}px`,
-    width: `${rect.width + 6}px`,
-    height: `${rect.height + 6}px`,
-    border: '2px solid #2563eb',
-    borderRadius: '4px',
-    boxShadow: '0 0 0 9999px rgba(0,0,0,0.28)',
+    inset: '0',
     zIndex: '2147483647',
     pointerEvents: 'none',
   } satisfies Partial<CSSStyleDeclaration>);
-  document.body.appendChild(box);
+  const root = host.attachShadow({ mode: 'closed' });
+
+  const style = document.createElement('style');
+  style.textContent = HIGHLIGHT_CSS;
+
+  const ring = document.createElement('div');
+  ring.className = 'ring';
+
+  const tag = document.createElement('div');
+  tag.className = 'tag';
+  // `textContent`, never `innerHTML`: this string describes an element the page
+  // supplied the name of, and it is being written back onto that page.
+  if (label) tag.textContent = label;
+
+  root.append(style, ring, tag);
+  document.documentElement.appendChild(host);
+
+  /**
+   * Keep the ring on the element.
+   *
+   * A rAF loop rather than scroll and resize listeners: the element can also
+   * move because the page animated it, because a sticky header collapsed, or
+   * because a layout settled after a font loaded -- and none of those fire a
+   * scroll event. It runs only while a confirmation is on screen, and it writes
+   * nothing unless the rectangle actually changed.
+   */
+  let last = '';
+  const place = () => {
+    const rect = element.getBoundingClientRect();
+    const key = `${rect.left},${rect.top},${rect.width},${rect.height}`;
+    if (key !== last) {
+      last = key;
+      ring.style.left = `${rect.left - 3}px`;
+      ring.style.top = `${rect.top - 3}px`;
+      ring.style.width = `${rect.width + 6}px`;
+      ring.style.height = `${rect.height + 6}px`;
+      // Above the element when there is room, below it when there is not, so
+      // the label never covers the thing it is naming.
+      const above = rect.top > 34;
+      tag.style.top = above ? `${rect.top - 31}px` : `${rect.bottom + 9}px`;
+      tag.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 16))}px`;
+    }
+    frame = requestAnimationFrame(place);
+  };
+  let frame = requestAnimationFrame(place);
+  untrack = () => cancelAnimationFrame(frame);
 }
 
 /**
@@ -383,11 +488,14 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         return { ok: true, kind: 'control', control };
       }
       case 'highlight': {
-        const delegated = await delegate(request.handle, { op: 'highlight' });
+        const delegated = await delegate(request.handle, {
+          op: 'highlight',
+          text: request.label,
+        });
         if (delegated) return delegated;
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
-        highlight(found.element);
+        highlight(found.element, request.label);
         return { ok: true, kind: 'ok' };
       }
       case 'clearHighlight': {
@@ -486,7 +594,7 @@ async function handleFrameRequest(data: FrameEnvelope): Promise<FrameReply> {
     case 'highlight': {
       const found = resolveLocal();
       if (!found.ok) return { kind: 'error', error: found.error };
-      highlight(found.element);
+      highlight(found.element, typeof data.text === 'string' ? data.text : undefined);
       return { kind: 'ok' };
     }
     case 'clearHighlight':

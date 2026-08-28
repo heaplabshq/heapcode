@@ -108,7 +108,10 @@ export const GET_PAGE_TEXT: ToolDefinition = {
     'Read the full text of the page, without the control list. Use this to answer questions about ' +
     'what the page says — specifications, descriptions, policies, prices, small print — especially ' +
     'when the detail is likely below the fold or in a table. Prefer this over read_page when you ' +
-    'need to know something rather than do something.',
+    'need to know something rather than do something. It is the largest thing you can put in the ' +
+    'conversation, so read a page once: if it has not changed you will be told so rather than ' +
+    'handed it twice. To pull one detail out of a page you have already read, pass find instead — ' +
+    'it returns the matching lines and costs almost nothing.',
   parameters: {
     type: 'object',
     properties: {

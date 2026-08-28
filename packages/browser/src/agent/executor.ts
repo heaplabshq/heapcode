@@ -62,6 +62,29 @@ export class BrowserToolExecutor {
    * instead of paying for a fresh read.
    */
   #snapshots = new Map<number, PageSnapshot>();
+  /**
+   * The page text already handed to the model, per tab.
+   *
+   * `get_page_text` returns up to sixty thousand characters and had no memory
+   * of having done so, so a run that read a page, looked at it another way, and
+   * came back paid for the same sixty thousand characters twice. That is by far
+   * the largest thing that enters the context on this product, and it was the
+   * one entering it repeatedly -- a page read three times cost more than every
+   * other step of the run put together.
+   *
+   * Keyed by tab for the same reason the snapshots are: two tabs are two pages,
+   * and having read one says nothing about the other.
+   */
+  #delivered = new Map<number, string>();
+  /**
+   * Tabs whose model has been told it already has the text.
+   *
+   * Told once, then given it. The context can be compacted out from under a
+   * long run, and a model that has genuinely lost the page must be able to get
+   * it back -- being refused twice with "you already have this" when it demonstrably
+   * does not is how a run stalls with nothing to work from.
+   */
+  #reminded = new Set<number>();
   /** The tab the snapshots above are being read and written against. */
   #tabId?: number;
 
@@ -1222,6 +1245,9 @@ export class BrowserToolExecutor {
     if (full || !previous) {
       return ok(formatSnapshot(result.snapshot, { intent: this.#intent }));
     }
+    // The delta is what keeps a ten-step run from costing ten pages: after the
+    // first read the model is told what changed rather than being handed the
+    // page again (PRD section 4.2).
     return ok(describeChanges(previous, result.snapshot, { intent: this.#intent }));
   }
 
@@ -1231,6 +1257,17 @@ export class BrowserToolExecutor {
    * Ten times `read_page`'s text allowance, because this is the tool for
    * answering questions rather than choosing what to click, and the detail
    * wanted is usually the part ranking would discard.
+   *
+   * And exactly once per version of a page. The allowance is what makes this
+   * tool worth having and also what makes repeating it ruinous: a model that
+   * reads a page, reads it another way, and comes back to check pays sixty
+   * thousand characters each time for text that has not changed a byte. So the
+   * text is remembered, and an unchanged page is answered with the fact that it
+   * is unchanged -- which is a true answer to the question that was asked, and
+   * a hundred times smaller than repeating it.
+   *
+   * A filtered read always runs: a search over text the model already has is
+   * new information, and it is a handful of lines rather than a page.
    */
   async #pageText(
     args: Record<string, unknown>,
@@ -1248,6 +1285,26 @@ export class BrowserToolExecutor {
     }
 
     const find = typeof args.find === 'string' ? args.find.trim() : '';
+
+    // Unchanged, and already sent. Say so rather than sending it again -- once.
+    // Asking a second time gets the text: see `#reminded`.
+    const tabId = this.#tabId;
+    if (
+      !find &&
+      tabId !== undefined &&
+      this.#delivered.get(tabId) === text &&
+      !this.#reminded.has(tabId)
+    ) {
+      this.#reminded.add(tabId);
+      return ok(
+        `This page has not changed since you read it, so its text is the same text you already ` +
+          `have — use that rather than re-reading. If you want something specific out of it, call ` +
+          `get_page_text with a find argument and you will get the matching lines. If you expected ` +
+          `the page to have changed, act on it or scroll first. If you genuinely no longer have ` +
+          `the text, ask again and you will get it.`,
+      );
+    }
+
     if (find) {
       const lines = text.split('\n');
       const needle = find.toLowerCase();
@@ -1265,6 +1322,13 @@ export class BrowserToolExecutor {
         );
       }
       return ok(`${hits.length} match(es) for "${find}":\n\n${hits.join('\n---\n')}`);
+    }
+
+    // Recorded only where the whole text was handed over, so a filtered read
+    // never makes the model look as though it has seen the page.
+    if (tabId !== undefined) {
+      this.#delivered.set(tabId, text);
+      this.#reminded.delete(tabId);
     }
 
     const BUDGET = 60_000;

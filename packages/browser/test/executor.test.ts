@@ -303,3 +303,101 @@ describe('taking a picture', () => {
     expect(shot.content).not.toContain('Answer from what you read');
   });
 });
+
+/**
+ * Reading a page you have already read.
+ *
+ * `get_page_text` returns up to sixty thousand characters and had no memory of
+ * having done so, so a run that read a page, looked at it another way, and came
+ * back paid for the same sixty thousand characters twice. On a real run against
+ * Amazon that was more than every other step put together, and it is the single
+ * largest thing that enters the context on this product.
+ *
+ * Told once and then given it. The context can be compacted out from under a
+ * long run, and a model that has genuinely lost the page has to be able to get
+ * it back -- refused twice with "you already have this" when it demonstrably
+ * does not is how a run stalls with nothing to work from.
+ */
+describe('reading the same page twice', () => {
+  const wordy = snapshot({ text: 'Seat height 17 inches. Weight 4.2kg. Ships from Bengaluru.' });
+
+  it('hands the text over the first time', async () => {
+    stubChrome([{ ok: true, kind: 'snapshot', snapshot: wordy }]);
+    const result = await new BrowserToolExecutor('how tall').execute(call('get_page_text'));
+    expect(result.content).toContain('Seat height 17 inches');
+  });
+
+  it('does not send it again when nothing has changed', async () => {
+    stubChrome([
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+    ]);
+    const executor = new BrowserToolExecutor('how tall');
+
+    await executor.execute(call('get_page_text'));
+    const again = await executor.execute(call('get_page_text'));
+
+    expect(again.content).not.toContain('Seat height 17 inches');
+    expect(again.content).toContain('has not changed');
+    expect(again.isError).toBeFalsy();
+  });
+
+  it('gives it back when the model insists, in case the context was compacted', async () => {
+    stubChrome([
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+    ]);
+    const executor = new BrowserToolExecutor('how tall');
+
+    await executor.execute(call('get_page_text'));
+    await executor.execute(call('get_page_text'));
+    const third = await executor.execute(call('get_page_text'));
+
+    expect(third.content).toContain('Seat height 17 inches');
+  });
+
+  /** A search over text the model already has is new information, and it is small. */
+  it('always runs a filtered read, however often the page was read', async () => {
+    stubChrome([
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+    ]);
+    const executor = new BrowserToolExecutor('how heavy');
+
+    await executor.execute(call('get_page_text'));
+    const found = await executor.execute(call('get_page_text', { find: 'Weight' }));
+
+    expect(found.content).toContain('Weight 4.2kg');
+  });
+
+  /**
+   * A filtered read must not make the model look as though it has seen the
+   * whole page -- it has seen three lines of it.
+   */
+  it('does not count a filtered read as having read the page', async () => {
+    stubChrome([
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+    ]);
+    const executor = new BrowserToolExecutor('how heavy');
+
+    await executor.execute(call('get_page_text', { find: 'Weight' }));
+    const full = await executor.execute(call('get_page_text'));
+
+    expect(full.content).toContain('Seat height 17 inches');
+  });
+
+  it('sends the new text when the page has actually changed', async () => {
+    stubChrome([
+      { ok: true, kind: 'snapshot', snapshot: wordy },
+      { ok: true, kind: 'snapshot', snapshot: snapshot({ text: 'Out of stock in Bengaluru.' }) },
+    ]);
+    const executor = new BrowserToolExecutor('is it in stock');
+
+    await executor.execute(call('get_page_text'));
+    const after = await executor.execute(call('get_page_text'));
+
+    expect(after.content).toContain('Out of stock');
+  });
+});

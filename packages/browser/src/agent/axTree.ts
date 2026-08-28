@@ -283,10 +283,24 @@ function listsFromAxTree(
   nodes: AxNode[],
   byId: Map<string, AxNode>,
   scope: Set<string> | undefined,
-): { label?: string; items: ListItem[]; score: number }[] {
-  const live = (id: string): AxNode | undefined => {
+): { label?: string; items: ListItem[]; score: number; covers: string[] }[] {
+  /**
+   * Walk through a node, whether or not it counts as content.
+   *
+   * `ignored` is not "not there" -- it is "carries no meaning of its own", and
+   * Chrome marks every generic wrapper that way. A real results grid is several
+   * such wrappers deep, so a traversal that stops at the first one finds every
+   * item empty, drops them all for having no text, and reports no list. That is
+   * exactly what happened on Amazon: the content-script path found the grid and
+   * this one found nothing, because this one is the one with an accessibility
+   * tree full of ignored scaffolding in it.
+   *
+   * So structure and content are separated: everything is walked through, and
+   * only named nodes are read.
+   */
+  const within = (id: string): AxNode | undefined => {
     const node = byId.get(id);
-    if (!node || node.ignored) return undefined;
+    if (!node) return undefined;
     if (scope && !scope.has(id)) return undefined;
     return node;
   };
@@ -296,9 +310,12 @@ function listsFromAxTree(
     const roles = new Set<string>();
     const walk = (current: AxNode, left: number) => {
       for (const id of current.childIds ?? []) {
-        const child = live(id);
+        const child = within(id);
         if (!child) continue;
-        roles.add(str(child.role));
+        // Scaffolding is walked through but does not describe the shape: two
+        // cards that differ only in how many wrappers Chrome collapsed are the
+        // same card.
+        if (!child.ignored) roles.add(str(child.role));
         if (left > 1) walk(child, left - 1);
       }
     };
@@ -312,9 +329,9 @@ function listsFromAxTree(
     const walk = (current: AxNode) => {
       if (lines.length >= 40) return;
       const name = str(current.name);
-      if (name && TEXT_ROLES.has(str(current.role))) lines.push(name);
+      if (!current.ignored && name && TEXT_ROLES.has(str(current.role))) lines.push(name);
       for (const id of current.childIds ?? []) {
-        const child = live(id);
+        const child = within(id);
         if (child) walk(child);
       }
     };
@@ -328,10 +345,12 @@ function listsFromAxTree(
     const walk = (current: AxNode) => {
       const role = str(current.role);
       const name = str(current.name);
-      if (!heading && role === 'heading' && name) heading = name;
-      if (role === 'link' && name.length > longestLink.length) longestLink = name;
+      if (!current.ignored) {
+        if (!heading && role === 'heading' && name) heading = name;
+        if (role === 'link' && name.length > longestLink.length) longestLink = name;
+      }
       for (const id of current.childIds ?? []) {
-        const child = live(id);
+        const child = within(id);
         if (child) walk(child);
       }
     };
@@ -339,19 +358,22 @@ function listsFromAxTree(
     return heading ?? (longestLink.length >= 3 ? longestLink : undefined);
   };
 
-  const found: { label?: string; items: ListItem[]; score: number }[] = [];
+  const found: { label?: string; items: ListItem[]; score: number; covers: string[] }[] = [];
 
   for (const parent of nodes) {
-    if (parent.ignored) continue;
+    // A grid's own container is very often ignored scaffolding too.
     if (scope && !scope.has(parent.nodeId)) continue;
     const children = (parent.childIds ?? [])
-      .map(live)
+      .map(within)
       .filter((child): child is AxNode => child !== undefined);
     if (children.length < MIN_LIST_ITEMS) continue;
 
+    // Grouped on role *and* whether the node is scaffolding, so a run of
+    // ignored wrappers each holding one card still groups together -- which is
+    // the shape a real results grid arrives in.
     const byRole = new Map<string, AxNode[]>();
     for (const child of children) {
-      const role = str(child.role);
+      const role = child.ignored ? 'generic' : str(child.role);
       const group = byRole.get(role);
       if (group) group.push(child);
       else byRole.set(role, [child]);
@@ -375,13 +397,46 @@ function listsFromAxTree(
 
       const words = items.reduce((total, item) => total + item.lines.join(' ').length, 0);
       found.push({
-        label: str(parent.name) || undefined,
+        label: parent.ignored ? undefined : str(parent.name) || undefined,
         items,
         score: items.length * Math.min(words / items.length, 400),
+        covers: members.flatMap((node) => subtree(node)),
       });
     }
   }
 
   found.sort((a, b) => b.score - a.score);
-  return found.slice(0, MAX_LISTS);
+
+  /*
+   * One list per region.
+   *
+   * Now that scaffolding is walked through rather than stopped at, a grid
+   * matches at every wrapper depth it is nested in -- and those matches are the
+   * same list described three times over. Kept by best score; a candidate built
+   * from nodes an earlier one already covers is that same list again.
+   */
+  const kept: typeof found = [];
+  const taken = new Set<string>();
+  for (const candidate of found) {
+    const overlap = candidate.covers.filter((id) => taken.has(id)).length;
+    if (overlap > candidate.covers.length / 2) continue;
+    for (const id of candidate.covers) taken.add(id);
+    kept.push(candidate);
+    if (kept.length >= MAX_LISTS) break;
+  }
+  return kept;
+
+  /** Every node id under this one, so overlap between candidates is visible. */
+  function subtree(node: AxNode): string[] {
+    const ids: string[] = [];
+    const walk = (current: AxNode) => {
+      ids.push(current.nodeId);
+      for (const id of current.childIds ?? []) {
+        const child = within(id);
+        if (child) walk(child);
+      }
+    };
+    walk(node);
+    return ids;
+  }
 }

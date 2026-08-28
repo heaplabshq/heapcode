@@ -203,6 +203,70 @@ describe('a list that is not a table', () => {
     expect(table?.headers).not.toContain('Link');
   });
 
+  /**
+   * The tree Chrome actually produces, rather than the tidy one.
+   *
+   * `ignored` does not mean "not there" -- it means "carries no meaning of its
+   * own", and Chrome marks every generic wrapper that way. A real results grid
+   * arrives several such wrappers deep. The first version of this walked with a
+   * filter that dropped them, so it never reached any text, found every item
+   * empty and reported no list at all: on Amazon the content-script path found
+   * the grid and this one found nothing, which is the wrong way round, because
+   * this is the path a run takes by default.
+   */
+  it('walks through the scaffolding Chrome marks ignored', () => {
+    const card = (id: number, name: string, price: string): AxNode[] => {
+      const b = id * 10;
+      return [
+        // The card itself: an anonymous wrapper, ignored.
+        node({ nodeId: `${b}`, ignored: true, childIds: [`${b + 1}`] }),
+        // And another one inside it, because that is how deep these go.
+        node({ nodeId: `${b + 1}`, ignored: true, childIds: [`${b + 2}`, `${b + 4}`] }),
+        node({ nodeId: `${b + 2}`, role: text('heading'), name: text(name), childIds: [`${b + 3}`] }),
+        node({ nodeId: `${b + 3}`, role: text('StaticText'), name: text(name) }),
+        node({ nodeId: `${b + 4}`, role: text('StaticText'), name: text(price) }),
+      ];
+    };
+
+    const page = build([
+      node({ nodeId: '1', ignored: true, childIds: ['10', '20', '30', '40'] }),
+      ...card(1, 'Samsung Galaxy M07 (Black, 4GB/64GB)', '₹11,499'),
+      ...card(2, 'OnePlus Nord CE6 Lite 8GB+128GB', '₹30,999'),
+      ...card(3, 'Apple iPhone Air 256GB, Sky Blue', '₹1,01,900'),
+      ...card(4, 'Motorola G57 Power 5G, 8GB/128GB', '₹21,999'),
+    ]);
+
+    const [table] = page.tables;
+    expect(table?.headers).toEqual(['Name', 'Price']);
+    expect(table?.rows).toBe(4);
+    expect(table?.body?.[2]).toEqual(['Apple iPhone Air 256GB, Sky Blue', '₹1,01,900']);
+  });
+
+  /**
+   * A grid nested in wrappers matches at every depth it is wrapped in, and
+   * those matches are the same list described several times. Two identical
+   * tables in one snapshot is budget spent saying the same thing twice.
+   */
+  it('reports a deeply wrapped grid once, not once per wrapper', () => {
+    const card = (id: number, name: string, price: string): AxNode[] => {
+      const b = id * 10;
+      return [
+        node({ nodeId: `${b}`, ignored: true, childIds: [`${b + 1}`] }),
+        node({ nodeId: `${b + 1}`, ignored: true, childIds: [`${b + 2}`, `${b + 3}`] }),
+        node({ nodeId: `${b + 2}`, role: text('heading'), name: text(name) }),
+        node({ nodeId: `${b + 3}`, role: text('StaticText'), name: text(price) }),
+      ];
+    };
+    const page = build([
+      node({ nodeId: '1', ignored: true, childIds: ['2'] }),
+      node({ nodeId: '2', ignored: true, childIds: ['10', '20', '30'] }),
+      ...card(1, 'Samsung Galaxy M07 (Black, 4GB/64GB)', '₹11,499'),
+      ...card(2, 'OnePlus Nord CE6 Lite 8GB+128GB', '₹30,999'),
+      ...card(3, 'Apple iPhone Air 256GB, Sky Blue', '₹1,01,900'),
+    ]);
+    expect(page.tables).toHaveLength(1);
+  });
+
   it('is not fooled by three of anything', () => {
     const page = build([
       node({ nodeId: '1', role: text('list'), childIds: ['2', '3', '4'] }),

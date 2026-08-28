@@ -235,3 +235,71 @@ describe('acting without having read', () => {
     expect(result.content).toMatch(/Read the page first/);
   });
 });
+
+/**
+ * The camera is the most expensive tool on the belt.
+ *
+ * The image goes into the conversation and is carried for every turn after it,
+ * and the model reaches for one out of habit -- right after a read that already
+ * answered the question. Being told so in the prompt is not enough; models take
+ * the picture anyway. So the first such request is turned down and the model is
+ * reminded of what it is holding.
+ *
+ * Turned down once, not twice. A chart, a canvas or a layout question is a real
+ * reason to look, and a tool that can be refused indefinitely is one the model
+ * stops trusting and stops reaching for when it genuinely needs it.
+ */
+describe('taking a picture', () => {
+  it('is refused right after a read, because the text is the same page', async () => {
+    stubChrome([{ ok: true, kind: 'snapshot', snapshot: snapshot() }]);
+    const executor = new BrowserToolExecutor('what does it cost');
+
+    await executor.execute(call('read_page'));
+    const shot = await executor.execute(call('screenshot'));
+
+    expect(shot.isError).toBe(true);
+    expect(shot.content).toContain('Answer from what you read');
+    expect(shot.images).toBeUndefined();
+  });
+
+  it('goes through when the model asks again, having been told why', async () => {
+    stubChrome([{ ok: true, kind: 'snapshot', snapshot: snapshot() }]);
+    const executor = new BrowserToolExecutor('what does the chart show');
+
+    await executor.execute(call('read_page'));
+    await executor.execute(call('screenshot'));
+    const second = await executor.execute(call('screenshot'));
+
+    // It gets as far as the driver, which without the debugger cannot take one.
+    // What matters is that it was not turned away on the same grounds twice.
+    expect(second.content).not.toContain('Answer from what you read');
+  });
+
+  it('is not refused before anything has been read', async () => {
+    stubChrome([]);
+    const executor = new BrowserToolExecutor('what is on screen');
+    const shot = await executor.execute(call('screenshot'));
+
+    expect(shot.content).not.toContain('Answer from what you read');
+  });
+
+  /**
+   * After an action the page is not the page that was read, so the reason for
+   * refusing does not hold. This is the case a naive "have we read once?" flag
+   * gets wrong.
+   */
+  it('is allowed again once the page has changed under it', async () => {
+    stubChrome([
+      { ok: true, kind: 'snapshot', snapshot: snapshot() },
+      { ok: true, kind: 'acted', note: 'Clicked "Add to cart".' },
+      { ok: true, kind: 'snapshot', snapshot: snapshot({ text: 'In your basket.' }) },
+    ]);
+    const executor = new BrowserToolExecutor('add it');
+
+    await executor.execute(call('read_page'));
+    await executor.execute(call('click', { handle: 1, generation: 1 }));
+    const shot = await executor.execute(call('screenshot'));
+
+    expect(shot.content).not.toContain('Answer from what you read');
+  });
+});

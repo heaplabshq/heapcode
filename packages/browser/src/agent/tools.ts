@@ -138,10 +138,12 @@ export const GET_PAGE_TEXT: ToolDefinition = {
 export const SCREENSHOT: ToolDefinition = {
   name: 'screenshot',
   description:
-    'Take a picture of what is currently on screen. Use it only when reading the page has not ' +
-    'answered the question — for something shown in an image, a chart or a canvas, or when you ' +
-    'need to see how the page is laid out. Prefer read_page and get_page_text first; they are ' +
-    'cheaper and more precise.',
+    'Take a picture of what is currently on screen. The most expensive tool here by a wide ' +
+    'margin: the image stays in the conversation for every turn after it. Use it only when ' +
+    'reading has already failed to answer the question — something shown only in an image, a ' +
+    'chart or a canvas, or a layout you have to see. Never use it to check what a page says, to ' +
+    'confirm an action worked, or to look at a page you have just read; read_page and ' +
+    'get_page_text are cheaper, more precise, and give you addressable handles.',
   parameters: { type: 'object', properties: {} },
   permission: 'read',
   untrustedOutput: true,

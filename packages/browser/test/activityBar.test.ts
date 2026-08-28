@@ -24,6 +24,11 @@ function stubChrome() {
         sent.push(message);
       }),
     },
+    tabs: {
+      onUpdated: { addListener: vi.fn(), removeListener: vi.fn() },
+      query: vi.fn(async () => [{ id: 1, url: 'https://example.com/' }]),
+    },
+    permissions: { contains: vi.fn(async () => true) },
     scripting: {
       executeScript: vi.fn(
         async ({ func, args }: { func: (...a: never[]) => void; args?: unknown[] }) => {
@@ -204,5 +209,44 @@ describe('the bar on the page', () => {
     await expect(showActivity(9)).resolves.toBeUndefined();
     await expect(noteActivity(9, 'Clicking')).resolves.toBeUndefined();
     await expect(hideActivity(9)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * The mark lives in the page's own DOM, so a navigation destroys it along with
+ * the document -- and an agent that searches a site navigates constantly. The
+ * first version of `mark` skipped the injection when the tab was already in its
+ * set, which meant the glow went out the moment the agent submitted a search
+ * and did not come back until the run happened to touch a different tab.
+ */
+describe('a page that navigates under the mark', () => {
+  it('is painted again, rather than skipped for having been marked once', async () => {
+    stubChrome();
+    const { DriverPool } = await import('../src/agent/driverPool.js');
+    const pool = new DriverPool(false);
+
+    pool.mark(1);
+    expect(host()).toBeTruthy();
+
+    // What a navigation does: the document, and everything in it, goes.
+    host()!.remove();
+    roots.length = 0;
+
+    pool.mark(1);
+    expect(host()).toBeTruthy();
+  });
+
+  it('carries the step it was on across the navigation', async () => {
+    stubChrome();
+    const { DriverPool } = await import('../src/agent/driverPool.js');
+    const pool = new DriverPool(false);
+
+    pool.mark(1);
+    pool.note('Filling in the form', '3 fields');
+    host()!.remove();
+    roots.length = 0;
+
+    pool.mark(1);
+    expect(shadow().querySelector('.label')?.textContent).toBe('Filling in the form');
   });
 });

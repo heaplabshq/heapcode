@@ -92,6 +92,19 @@ export class BrowserToolExecutor {
   #profile: UserProfile;
   /** Hands the panel a picture of the page. Shown to the user every read. */
   #onView?: (dataUrl: string) => void;
+  /**
+   * Whether the page has been read since it last changed.
+   *
+   * The camera is the most expensive tool on the belt -- an image goes into the
+   * context and is carried for every turn after it -- and the model reaches for
+   * it out of habit, right after a read that already answered the question. So
+   * the first such request is turned down with a reminder of what it already
+   * has. Asking again goes through: a chart, a canvas or a layout question is a
+   * real reason, and a tool that can be refused twice is a tool the model stops
+   * trusting and stops using when it genuinely needs it.
+   */
+  #readSinceAction = false;
+  #pictureRefused = false;
   /** Hands the panel the accumulated rows. Shown to the user, never to the model. */
   #onData?: (dataset: Dataset) => void;
   /**
@@ -132,7 +145,15 @@ export class BrowserToolExecutor {
   }
 
   /**
-   * Show the user what the agent is looking at.
+   * Show the user what the agent just did.
+   *
+   * After an action, and no longer after a read. A read produces a photograph
+   * of the page the user already has open in front of them, and it was being
+   * taken on every `read_page` and every `get_page_text` -- several hundred
+   * kilobytes of CDP capture per step, for a picture that now sits behind a
+   * collapsed chip inside a collapsed run. What a picture is actually for here
+   * is the product's core question, "what did it just do", and that has an
+   * answer only where the page changed.
    *
    * Best-effort and fire-and-forget: a missing picture is a cosmetic loss, and
    * waiting on one would slow every step of the run.
@@ -356,6 +377,11 @@ export class BrowserToolExecutor {
     note: string,
     ok: (s: string) => ToolResult,
   ): Promise<ToolResult> {
+    // The action has happened, so whatever was read before it is stale --
+    // including on the paths below that never get a fresh snapshot.
+    this.#readSinceAction = false;
+    this.#pictureRefused = false;
+
     // Give the page a moment to react before judging it. Without this every
     // action looks like a no-op on anything that re-renders asynchronously.
     const settling = await this.#pool.forActiveTab();
@@ -848,6 +874,10 @@ export class BrowserToolExecutor {
     const grew = await this.#scrollForMore(target.driver, snapshot);
     if (grew.added > 0) {
       this.#last = grew.snapshot;
+      // More of the list exists than the model has read, so it is not reading
+      // a page it has already seen.
+      this.#readSinceAction = false;
+      this.#pictureRefused = false;
       await this.#capture();
       return ok(
         `This list has no pages — it loads more as you scroll. Scrolled down and ${grew.added} more ` +
@@ -1187,7 +1217,7 @@ export class BrowserToolExecutor {
 
     const previous = this.#last;
     this.#last = result.snapshot;
-    await this.#capture();
+    this.#readSinceAction = true;
 
     if (full || !previous) {
       return ok(formatSnapshot(result.snapshot, { intent: this.#intent }));
@@ -1210,7 +1240,7 @@ export class BrowserToolExecutor {
     const result = await this.#snapshot();
     if (!result.ok) return fail(result.reason);
     this.#last = result.snapshot;
-    await this.#capture();
+    this.#readSinceAction = true;
 
     const text = result.snapshot.text;
     if (!text.trim()) {
@@ -1253,6 +1283,17 @@ export class BrowserToolExecutor {
     _ok: (s: string) => ToolResult,
     fail: (s: string) => ToolResult,
   ): Promise<ToolResult> {
+    if (this.#readSinceAction && !this.#pictureRefused) {
+      this.#pictureRefused = true;
+      return fail(
+        'You have already read this page and nothing has changed since, so the text you have is ' +
+          'the same page this picture would show — and a picture costs far more, because it stays ' +
+          'in the conversation for every turn after this one. Answer from what you read. If the ' +
+          'thing you need is genuinely only in an image, a chart or a canvas, or you need to see ' +
+          'how the page is laid out, ask again and you will get it.',
+      );
+    }
+
     const target = await this.#pool.forActiveTab();
     if (!target.ok) return fail(target.reason);
     if (!target.driver.screenshot) {

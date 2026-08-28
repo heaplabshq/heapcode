@@ -93,12 +93,62 @@ export class DriverPool {
    * the user can tell, on the page itself, that something is driving it.
    */
   mark(tabId: number): void {
-    if (this.#marked.has(tabId)) return;
     this.#marked.add(tabId);
-    // Injected on its own channel, and not awaited: the driver protocol is
-    // strictly one request and one answer, and slipping an extra round trip in
-    // front of every acquisition desynchronises anything counting them.
+    this.#watchNavigation();
+    // Asserted every time, not only the first.
+    //
+    // The mark lives in the page's own DOM, so a navigation destroys it along
+    // with the document -- and an agent that searches a site navigates
+    // constantly. Skipping the call because the tab was already in the set is
+    // why the glow went out the moment the agent submitted a search and did not
+    // come back until the run happened to touch a different tab.
+    //
+    // Cheap to repeat: `paint` returns immediately when the mark is already
+    // there, so this is one no-op message next to an LLM round trip. Injected
+    // on its own channel and not awaited, because the driver protocol is
+    // strictly one request and one answer and an extra round trip in front of
+    // every acquisition desynchronises anything counting them.
     void showActivity(tabId, this.#note.label, this.#note.detail);
+  }
+
+  /**
+   * Repaint a marked tab as soon as its new document exists.
+   *
+   * `mark` alone leaves a gap: nothing repaints between the navigation and the
+   * next tool call, which on a slow page is several seconds of a page being
+   * driven with nothing on it to say so. Chrome reports `loading` once the new
+   * document is scriptable, which is the earliest honest moment to put the mark
+   * back.
+   *
+   * Registered on the first mark and removed in `release`, so a panel with no
+   * run in flight is listening to nothing.
+   */
+  #navigation?: (tabId: number, change: chrome.tabs.OnUpdatedInfo, tab: chrome.tabs.Tab) => void;
+
+  #watchNavigation(): void {
+    if (this.#navigation) return;
+    this.#navigation = (tabId, change) => {
+      if (!this.#marked.has(tabId)) return;
+      if (change.status !== 'loading' && change.status !== 'complete') return;
+      void showActivity(tabId, this.#note.label, this.#note.detail);
+    };
+    // Absent in a test renderer, and a missing indicator is never worth
+    // failing a run over.
+    try {
+      chrome.tabs?.onUpdated?.addListener(this.#navigation);
+    } catch {
+      this.#navigation = undefined;
+    }
+  }
+
+  #stopWatchingNavigation(): void {
+    if (!this.#navigation) return;
+    try {
+      chrome.tabs?.onUpdated?.removeListener(this.#navigation);
+    } catch {
+      // As above.
+    }
+    this.#navigation = undefined;
   }
 
   /**
@@ -216,6 +266,7 @@ export class DriverPool {
 
   /** Take the banner down. Always call this when a run ends, however it ended. */
   async release(): Promise<void> {
+    this.#stopWatchingNavigation();
     const sessions = [...this.#sessions.values()];
     this.#sessions.clear();
     this.#drivers.clear();

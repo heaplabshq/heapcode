@@ -200,6 +200,27 @@ export class BrowserToolExecutor {
     return this.#last;
   }
 
+  /**
+   * Forget everything read so far, because someone else changed the page.
+   *
+   * Called after the user has taken a turn at the keyboard. They may have
+   * logged in, dismissed a wall, picked a file, or navigated somewhere else
+   * entirely -- and every snapshot, every handle in it, and every claim about
+   * what the page text says belongs to a page that no longer exists.
+   *
+   * Cheaper alternatives are all wrong. Keeping the snapshot leaves the model
+   * addressing controls by handles that now point at different elements or at
+   * nothing; keeping the delivered text means the next `get_page_text` answers
+   * "this has not changed" about a page that has changed completely.
+   */
+  forgetPage(): void {
+    this.#snapshots.clear();
+    this.#delivered.clear();
+    this.#reminded.clear();
+    this.#readSinceAction = false;
+    this.#pictureRefused = false;
+  }
+
   async execute(call: ToolCall): Promise<ToolResult> {
     const fail = (content: string): ToolResult => ({
       id: call.id,

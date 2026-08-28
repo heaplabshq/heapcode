@@ -125,6 +125,11 @@ export interface RunRequest {
    * undefined if they chose to let it decide.
    */
   ask(question: { question: string; options?: string[]; blocksAction: boolean }): Promise<string | undefined>;
+  /**
+   * Hand the page to the user for one step. Resolves true when they say they
+   * have done it, false if they gave up on it.
+   */
+  handOver(request: { what: string }): Promise<boolean>;
 }
 
 export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome> {
@@ -315,6 +320,34 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
       // Named from the same table the transcript uses, in the present tense:
       // this one is reporting what is happening, not what happened.
       pool.note(toolLabel(call.name).present, activityDetail(call));
+
+      /*
+       * The user takes a turn at their own keyboard.
+       *
+       * Answered by the panel like `ask_user`, and unlike it the page is
+       * expected to be different afterwards -- they may have signed in,
+       * dismissed a wall, picked a file, or navigated away. So everything read
+       * before this is dropped rather than merely mistrusted: a handle from the
+       * old snapshot now addresses a different element or none at all, and a
+       * "nothing has changed" answer about the page text would be a lie.
+       */
+      if (call.name === 'hand_over') {
+        const what = String(call.args.what ?? '').trim();
+        pool.note('Over to you', what);
+        const done = await request.handOver({ what: what || 'Take over on the page.' });
+        executor.forgetPage();
+        pool.note('heapbrowse is working');
+        return {
+          id: call.id,
+          name: call.name,
+          content: done
+            ? 'The user says they have done it. The page is not the page you read before: every ' +
+              'handle you were given is stale and any text you read may be out of date. Call ' +
+              'read_page before doing anything else, and do not assume the step worked — check.'
+            : 'The user did not do it. Do not try to get past this yourself and do not ask again. ' +
+              'Finish, and tell them what you did manage and what is left for them.',
+        };
+      }
 
       // `ask_user` is answered by the panel, not by the page, so it never
       // reaches the browser executor.

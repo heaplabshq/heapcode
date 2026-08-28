@@ -134,6 +134,10 @@ describe('core loop driving a browser', () => {
         'finish',
         'get_elements',
         'get_page_text',
+        // Offered in every mode, read-only included: a login wall stops a
+        // reading run exactly as dead as it stops an acting one, and the user
+        // is the one who gets past it either way.
+        'hand_over',
         'hover',
         'list_tabs',
         'read_page',

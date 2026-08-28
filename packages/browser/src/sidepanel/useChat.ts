@@ -218,6 +218,9 @@ export interface ChatDeps {
   requestGrant(needed: GrantNeeded): Promise<boolean>;
   /** Abandon a pending ask, when the run it belongs to is stopped. */
   cancelGrant(): void;
+  /** Hand the page to the user for one step. Resolves when they are done. */
+  handOver(request: { what: string }): Promise<boolean>;
+  cancelHandOver(): void;
 }
 
 export function useChat(profile: StoredProfile, deps: ChatDeps) {
@@ -277,8 +280,9 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
     deps.cancelConfirm();
     deps.cancelAsk();
     // A permission asked for by a run that is being stopped is not a question
-    // anyone still needs answered.
+    // anyone still needs answered, and neither is a step it was waiting on.
     deps.cancelGrant();
+    deps.cancelHandOver();
   }, [deps]);
 
   const send = useCallback(
@@ -372,6 +376,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
               steps: [...(turn.steps ?? []), { kind: 'note', text: reason }],
             })),
           requestGrant: deps.requestGrant,
+          handOver: deps.handOver,
           events: {
             // The finish summary. Core sends it here, separately from the
             // streamed narration -- it is the answer the model meant to give.

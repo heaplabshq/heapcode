@@ -24,6 +24,8 @@ import { Ask } from './components/Ask.js';
 import { DEFAULT_BROWSER_MODE, type BrowserMode } from '../agent/originPolicy.js';
 import { activeSite, grantActiveSite, grantPattern, type ActiveSite } from './page.js';
 import { useGrant } from './useGrant.js';
+import { useHandOver } from './useHandOver.js';
+import { HandOver } from './components/HandOver.js';
 import { listModels } from '../shared/ollamaDiagnostic.js';
 import { loadApiKey } from '../shared/settings.js';
 
@@ -52,6 +54,8 @@ export function App() {
    * it is answered.
    */
   const grant = useGrant();
+  /** A step only the person at the keyboard can do: a login, a code, a file. */
+  const handover = useHandOver();
   const confirmation = useConfirm();
   const question = useAsk();
   const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile, {
@@ -63,6 +67,8 @@ export function App() {
     cancelAsk: question.cancel,
     requestGrant: grant.request,
     cancelGrant: grant.cancel,
+    handOver: handover.request,
+    cancelHandOver: handover.cancel,
   });
 
   /**
@@ -324,7 +330,7 @@ export function App() {
         {/* Closing the panel ends the run. Say so rather than letting it be
             discovered — the loop lives in this document, so there is nowhere for
             it to continue (PRD §7.1). */}
-        {busy && !confirmation.pending && !question.pending && !grant.pending && (
+        {busy && !confirmation.pending && !question.pending && !grant.pending && !handover.pending && (
           <p className="notice">
             <span className="notice-dot" aria-hidden="true" />
             Working — keep this panel open, the run stops if it closes.
@@ -336,6 +342,10 @@ export function App() {
         )}
 
         {question.pending && <Ask question={question.pending} onAnswer={question.answer} />}
+
+        {/* The run is stopped, and the next move is the user's own hands on
+            their own page. */}
+        {handover.pending && <HandOver request={handover.pending} onAnswer={handover.answer} />}
 
         {/* The run is stopped here until this is answered. The permission is
             offered where the run stopped, rather than described in a sentence

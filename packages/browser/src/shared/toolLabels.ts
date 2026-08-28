@@ -65,6 +65,7 @@ const TOOLS: Record<string, ToolLabel> = {
   download: { past: 'Saved a file', present: 'Saving a file', icon: 'download' },
   attach_file: { past: 'Attached a file', present: 'Attaching a file', icon: 'attach' },
   ask_user: { past: 'Asked you', present: 'Waiting for your answer', icon: 'ask' },
+  hand_over: { past: 'Handed over to you', present: 'Waiting for you to do it', icon: 'pointer' },
   finish: { past: 'Finished', present: 'Finishing', icon: 'done' },
 };
 

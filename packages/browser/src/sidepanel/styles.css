@@ -1446,6 +1446,32 @@ button.danger:hover:not(:disabled) {
   color: var(--muted);
 }
 
+/*
+ * The agent stepping aside.
+ *
+ * The instruction is the loudest thing on the sheet, because the one way this
+ * goes wrong is someone pressing Done before they have done it. Amber rather
+ * than accent: nothing is at risk, but nothing is happening either, and the run
+ * stays stopped until a person acts.
+ */
+.prompt-sheet.handover {
+  border-top-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.handover .confirm-head {
+  color: var(--warn);
+}
+
+.handover-what {
+  margin: 0 0 var(--s2);
+  font-size: var(--t-lg);
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
 /* The agent asking for a fact. Deliberately not styled like the permission
    confirmation: that one asks "may I", and its safe answer is no; this one asks
    "what", and has no safe default at all. */

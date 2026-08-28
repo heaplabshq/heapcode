@@ -274,6 +274,53 @@ export const HOVER: ToolDefinition = {
   untrustedOutput: true,
 };
 
+/**
+ * Handing the page back to the person sitting at it.
+ *
+ * The hardest category of real web task is not reasoning -- it is the wall that
+ * was deliberately built to require a human. Logging in, a one-time code, a
+ * CAPTCHA, a file that has to come off this machine. Web Bench, which is the
+ * benchmark that bothers to separate reading from doing, finds those are where
+ * agents fail, and an entire product category exists to hand a cloud browser
+ * back to a person for that one step and resume without losing the session.
+ *
+ * heapbrowse does not have that problem to solve. It is already in the user's
+ * browser, in the user's session, on the tab they are looking at -- the human
+ * is not somewhere else, they are right there. So the agent stops, says what is
+ * needed in one sentence, and waits. The person does it on the page in front of
+ * them, presses a button, and the run continues from where it stopped.
+ *
+ * Deliberately not `ask_user`. That one asks for a *fact* and gets a string
+ * back; this asks for an *act* and gets the page changed underneath it, which
+ * is why the result says in as many words that everything read before it is now
+ * stale.
+ */
+export const HAND_OVER: ToolDefinition = {
+  name: 'hand_over',
+  description:
+    'Stop and let the user do one step themselves on the page, then carry on. Use this the moment ' +
+    'you meet something built to need a person: a login or password, a one-time code, a CAPTCHA, ' +
+    'a bank or card confirmation, choosing a file to upload, or any wall you cannot get past. Say ' +
+    'in one plain sentence what they should do — they are looking at this page. Never try to work ' +
+    'around such a wall, and never ask for a password or a code so you can type it: ask them to do ' +
+    'it. Everything you read before this is stale afterwards, so read the page again.',
+  parameters: {
+    type: 'object',
+    properties: {
+      what: {
+        type: 'string',
+        description:
+          'What the user should do, in one plain sentence addressed to them. For example: "Sign in ' +
+          'to your account, then press Done." or "Choose your CV in the file picker, then press Done."',
+      },
+    },
+    required: ['what'],
+  },
+  // It touches nothing. The user is the one acting, on their own page, by hand.
+  permission: 'read',
+  untrustedOutput: false,
+};
+
 /** The read-only belt, in the order the model should generally reach for them. */
 export const READ_ONLY_TOOLS: ToolDefinition[] = [
   READ_PAGE,
@@ -286,4 +333,5 @@ export const READ_ONLY_TOOLS: ToolDefinition[] = [
   LIST_TABS,
   SWITCH_TAB,
   ASK_USER,
+  HAND_OVER,
 ];

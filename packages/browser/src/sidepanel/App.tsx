@@ -24,6 +24,9 @@ import { Ask } from './components/Ask.js';
 import { DEFAULT_BROWSER_MODE, type BrowserMode } from '../agent/originPolicy.js';
 import { activeSite, grantActiveSite, grantPattern, type ActiveSite } from './page.js';
 import { useGrant } from './useGrant.js';
+import { loadWorkflows, saveWorkflow, type SavedTask } from '../shared/tasks.js';
+import { learnWorkflow } from '../agent/learn.js';
+import type { Command } from './components/SlashMenu.js';
 import { useHandOver } from './useHandOver.js';
 import { HandOver } from './components/HandOver.js';
 import { listModels } from '../shared/ollamaDiagnostic.js';
@@ -54,11 +57,15 @@ export function App() {
    * it is answered.
    */
   const grant = useGrant();
+  /** Saved workflows, which are what a slash mostly offers. */
+  const [workflows, setWorkflows] = useState<SavedTask[]>([]);
+  /** What `/save` is doing, so the panel can say so rather than looking idle. */
+  const [saving, setSaving] = useState<string>();
   /** A step only the person at the keyboard can do: a login, a code, a file. */
   const handover = useHandOver();
   const confirmation = useConfirm();
   const question = useAsk();
-  const { turns, busy, send, stop, clear, tokens, contextWindow } = useChat(profile, {
+  const { turns, busy, send, stop, clear, tokens, lastRun, contextWindow } = useChat(profile, {
     mode,
     host: site?.host,
     confirm: confirmation.request,
@@ -180,8 +187,98 @@ export function App() {
     };
   }, [profile.baseUrl, profile.name]);
 
+  useEffect(() => {
+    void loadWorkflows().then(setWorkflows);
+  }, []);
+
   const configured = profile.model.length > 0 && profile.baseUrl.length > 0;
   const toggle = (which: Pane) => setPane((open) => (open === which ? undefined : which));
+
+  /**
+   * Everything a slash reaches: the one built-in, then the saved workflows.
+   *
+   * `/save` first because it is the only one that exists before the user has
+   * made any, and an empty menu teaches nobody that the feature is there.
+   */
+  const commands: Command[] = [
+    {
+      slug: 'save',
+      name: 'save',
+      hint: turns.length > 0 ? 'keep the last run as a workflow' : 'run something first',
+      builtin: true,
+    },
+    ...workflows.map((task) => ({
+      slug: task.slug!,
+      name: task.name,
+      hint: task.workflow?.varies ? `add ${task.workflow.varies}` : task.name,
+    })),
+  ];
+
+  /**
+   * Keep the last run, in the model's own account of it.
+   *
+   * Deliberately after the fact and deliberately asked for. Learning from every
+   * run would produce a library of things nobody wants; "do that again" is a
+   * judgement only the person who asked has.
+   */
+  const saveLastRun = async () => {
+    const run = lastRun();
+    if (!run) {
+      setSaving('Nothing to save yet — run something first.');
+      return;
+    }
+    setSaving('Writing down what it did…');
+    const learned = await learnWorkflow(
+      profile,
+      run.task,
+      run.steps.map((step) =>
+        step.kind === 'tool' ? { kind: 'tool', tool: step.tool } : { kind: step.kind },
+      ),
+    );
+    if (!learned) {
+      setSaving('Could not work out what that run did. Nothing saved.');
+      return;
+    }
+    const next = await saveWorkflow({
+      name: learned.name,
+      prompt: run.task,
+      host: site?.host,
+      workflow: learned,
+    });
+    setWorkflows(next.filter((task) => task.workflow && task.slug));
+    const saved = next.find((task) => task.workflow?.learnedAt === learned.learnedAt);
+    setSaving(`Saved as /${saved?.slug ?? learned.name}. Type it to run this again.`);
+  };
+
+  /**
+   * Send, resolving a leading slash first.
+   *
+   * A workflow is invoked as `/name whatever is different this time`, and the
+   * words after the name are the whole of what varies — which is why nothing
+   * here has to guess which part of last time's run was incidental. The user
+   * says.
+   */
+  const submit = (text: string) => {
+    const trimmed = text.trim();
+    setSaving(undefined);
+
+    if (trimmed === '/save' || trimmed.startsWith('/save ')) {
+      void saveLastRun();
+      return;
+    }
+
+    const invoked = /^\/([a-z0-9-]+)(?:\s+([\s\S]*))?$/i.exec(trimmed);
+    const match = invoked && workflows.find((task) => task.slug === invoked[1]!.toLowerCase());
+    if (match) {
+      const detail = invoked![2]?.trim();
+      // The saved request, plus whatever the user added. Both, because the
+      // saved one carries the intent and the new words carry the difference.
+      void send(detail ? `${match.prompt}\n\nThis time: ${detail}` : match.prompt, match.workflow);
+      return;
+    }
+
+    void send(trimmed);
+  };
   const start = (prompt: string) => void send(prompt);
   const runAndClose = (prompt: string) => {
     setPane(undefined);
@@ -333,6 +430,13 @@ export function App() {
         {/* Closing the panel ends the run. Say so rather than letting it be
             discovered — the loop lives in this document, so there is nowhere for
             it to continue (PRD §7.1). */}
+        {saving && !busy && (
+          <p className="notice">
+            <Icon name="sparkle" size={12} />
+            {saving}
+          </p>
+        )}
+
         {busy && !confirmation.pending && !question.pending && !grant.pending && !handover.pending && (
           <p className="notice">
             <span className="notice-dot" aria-hidden="true" />
@@ -394,10 +498,11 @@ export function App() {
           disabled={!configured}
           text={draft}
           onText={setDraft}
-          onSend={start}
+          onSend={submit}
           onStop={stop}
           mode={mode}
           onMode={setMode}
+          commands={commands}
           model={configured ? profile.model : undefined}
           models={models}
           onModel={(model) => {

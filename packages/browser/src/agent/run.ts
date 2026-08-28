@@ -29,6 +29,8 @@ import { ATTACH_FILE, AUTOFILL_FORM, DRAG, MUTATING_TOOLS } from './actions.js';
 import { RunBudget } from './limits.js';
 import type { Dataset } from '../shared/dataset.js';
 import { toolLabel } from '../shared/toolLabels.js';
+import { describeWorkflow } from './learn.js';
+import type { Workflow } from '../shared/tasks.js';
 
 /**
  * Runs one agent task in the side panel.
@@ -99,6 +101,17 @@ export type ConfirmAnswer = 'allow' | 'always' | 'deny';
 export interface RunRequest {
   profile: StoredProfile;
   task: string;
+  /**
+   * How this task was done last time, when the user is running a saved
+   * workflow.
+   *
+   * Guidance in the system prompt rather than a script the executor replays.
+   * The expensive part of a repeat run is the deciding -- which control, which
+   * order, when to stop -- and that is what this removes. Looking at the page
+   * is the cheap part and the part that must still happen, because the page is
+   * the only thing that knows what is true today.
+   */
+  workflow?: Workflow;
   history: ChatMessage[];
   events: RunEvents;
   signal: AbortSignal;
@@ -289,7 +302,9 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     task,
     history,
     workspaceName: site ? `the web page at ${site.host}` : 'the current web page',
-    systemPrompt: `${BROWSER_AGENT_PROMPT}${savedDetails(availableLabels(userProfile))}`,
+    systemPrompt:
+      `${BROWSER_AGENT_PROMPT}${savedDetails(availableLabels(userProfile))}` +
+      (request.workflow ? describeWorkflow(request.workflow) : ''),
     // Read-only mode does not merely refuse the mutating tools -- it does not
     // offer them, so the model spends no turns proposing what it cannot do.
     tools:

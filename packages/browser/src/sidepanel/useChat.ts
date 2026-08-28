@@ -7,6 +7,7 @@ import { runBrowserAgent, type ConfirmAnswer, type ConfirmRequest } from '../age
 import type { BrowserMode } from '../agent/originPolicy.js';
 import { clearSession, loadSession, saveSession } from '../shared/session.js';
 import type { GrantNeeded } from './page.js';
+import type { Workflow } from '../shared/tasks.js';
 import type { Dataset } from '../shared/dataset.js';
 import { recordRun } from '../shared/tasks.js';
 import { ThinkSplitter } from './thinkStream.js';
@@ -294,7 +295,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
   }, [deps]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, workflow?: Workflow) => {
       if (busy || text.trim().length === 0) return;
 
       // Only completed prose turns become history. Tool traffic belongs to the
@@ -373,6 +374,7 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
           task: text,
           history,
           signal: controller.signal,
+          workflow,
           mode: deps.mode,
           trustedHosts: trustedHosts.current,
           confirm: deps.confirm,
@@ -517,5 +519,31 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
     void clearSession();
   }, []);
 
-  return { turns, busy, send, stop, clear, tokens, contextWindow: resolveContextWindow(profile) };
+  /**
+   * The steps of the last finished run, for `/save`.
+   *
+   * Read off state rather than kept separately: the transcript already holds
+   * exactly what happened, and a second copy is a second thing to keep in step.
+   */
+  const lastRun = useCallback(() => {
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      const turn = turns[i]!;
+      if (turn.role !== 'assistant' || turn.streaming) continue;
+      const task = turns[i - 1]?.role === 'user' ? turns[i - 1]!.content : undefined;
+      if (!task) return undefined;
+      return { task, steps: turn.steps ?? [] };
+    }
+    return undefined;
+  }, [turns]);
+
+  return {
+    turns,
+    busy,
+    send,
+    stop,
+    clear,
+    tokens,
+    lastRun,
+    contextWindow: resolveContextWindow(profile),
+  };
 }

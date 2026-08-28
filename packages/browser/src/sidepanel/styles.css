@@ -1563,6 +1563,65 @@ button.danger:hover:not(:disabled) {
   font: inherit;
 }
 
+/*
+ * What a slash offers.
+ *
+ * Above the composer, because the composer is already at the bottom of the
+ * panel and a menu below it would open off the screen. It floats over the
+ * transcript rather than pushing it, so the conversation does not jump every
+ * time someone types a slash and changes their mind.
+ */
+.slash {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 var(--s1) var(--s2);
+  padding: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-1);
+  animation: slide-up var(--d1) var(--ease);
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Highlighted by the arrow keys, so hover must not fight it: the keyboard is
+   what is driving, and two highlights would say two different things. */
+.slash-item.on {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.slash-icon { color: var(--accent); }
+
+.slash-text { display: flex; align-items: baseline; gap: var(--s3); min-width: 0; flex: 1; }
+
+.slash-name { font-family: var(--mono); flex: none; }
+
+.slash-hint {
+  color: var(--faint);
+  font-size: var(--t-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ================================================================ notice == */
 
 .notice {

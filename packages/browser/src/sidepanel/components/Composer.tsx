@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { SlashMenu, type Command } from './SlashMenu.js';
 import type { BrowserMode } from '../../agent/originPolicy.js';
 import { Icon } from './Icon.js';
 
@@ -48,6 +49,7 @@ export function Composer({
   onStop,
   mode,
   onMode,
+  commands,
   model,
   models,
   onModel,
@@ -67,6 +69,8 @@ export function Composer({
   onStop: () => void;
   mode: BrowserMode;
   onMode: (mode: BrowserMode) => void;
+  /** What a slash can reach: the built-ins, plus every saved workflow. */
+  commands: Command[];
   /** Which model answers. Undefined until a provider has been configured. */
   model?: string;
   /** Everything the configured endpoint says it can run. */
@@ -78,6 +82,33 @@ export function Composer({
   meter: ReactNode;
 }) {
   const box = useRef<HTMLTextAreaElement>(null);
+  /**
+   * Which row the arrow keys are on, and whether the menu is up at all.
+   *
+   * Open is derived from the text rather than stored: a menu whose visibility
+   * is separate state is a menu that stays up after the slash has been deleted.
+   * `dismissed` is the one thing that cannot be derived — Escape means "not
+   * this time", which the text alone cannot say.
+   */
+  const [active, setActive] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
+
+  // Everything typed so far, when it is a slash and no space has been typed
+  // yet. After the space the user is writing arguments, not choosing.
+  const typed = /^\/([a-z0-9-]*)$/i.exec(text)?.[1];
+  const matches =
+    typed === undefined || dismissed
+      ? []
+      : commands.filter((command) => command.slug.startsWith(typed.toLowerCase())).slice(0, 6);
+  const menu = matches.length > 0;
+
+  /** Put the command in the box and leave the cursor after it, ready for detail. */
+  const pick = (command: Command) => {
+    onText(`/${command.slug} `);
+    setDismissed(false);
+    setActive(0);
+    box.current?.focus();
+  };
 
   /**
    * Grow with the text, up to the cap the stylesheet sets.
@@ -116,6 +147,31 @@ export function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // The menu takes the keys it needs and passes on the rest, so typing
+    // carries on working while it is up.
+    if (menu) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setActive((index) => (index + 1) % matches.length);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActive((index) => (index - 1 + matches.length) % matches.length);
+        return;
+      }
+      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+        event.preventDefault();
+        pick(matches[Math.min(active, matches.length - 1)]!);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setDismissed(true);
+        return;
+      }
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -129,11 +185,19 @@ export function Composer({
     // when a question needs the page. What gates it is the per-site grant, which
     // is shown in the header and is the thing that actually controls exposure.
     <div className="composer">
+      {menu && (
+        <SlashMenu commands={matches} active={Math.min(active, matches.length - 1)} onPick={pick} />
+      )}
       <div className="composer-box">
         <textarea
           ref={box}
           value={text}
-          onChange={(e) => onText(e.target.value)}
+          onChange={(e) => {
+            onText(e.target.value);
+            // A new slash is a new question; whatever was dismissed is stale.
+            setDismissed(false);
+            setActive(0);
+          }}
           onKeyDown={onKeyDown}
           placeholder={disabled ? 'Configure a provider first' : 'Ask about this page…'}
           rows={1}

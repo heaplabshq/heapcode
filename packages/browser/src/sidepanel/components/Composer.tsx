@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent } from 'react';
+import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import type { BrowserMode } from '../../agent/originPolicy.js';
 import { Icon } from './Icon.js';
 
@@ -15,6 +15,10 @@ import { Icon } from './Icon.js';
  * and in the header it was one of eight controls fighting for a 350px row —
  * where a four-option select truncated to an ambiguous stub. Next to the send
  * button it is unambiguous and it is where the decision is being made.
+ *
+ * The model and the context meter sit beneath the box for the same reason, and
+ * because they are reference rather than navigation: worth being able to check,
+ * never worth a line at the top of the panel.
  */
 
 const MODES: { value: BrowserMode; label: string; tone: string }[] = [
@@ -23,6 +27,9 @@ const MODES: { value: BrowserMode; label: string; tone: string }[] = [
   { value: 'auto-approve', label: 'Ask if risky', tone: 'mode-approve' },
   { value: 'auto', label: "Don't ask", tone: 'mode-auto' },
 ];
+
+/** Matches `max-height` on `.composer-box textarea`. About eight lines. */
+const MAX_HEIGHT = 160;
 
 const MODE_HELP =
   'Read only: never acts.\n' +
@@ -41,6 +48,9 @@ export function Composer({
   onStop,
   mode,
   onMode,
+  model,
+  endpoint,
+  meter,
 }: {
   busy: boolean;
   disabled: boolean;
@@ -55,6 +65,11 @@ export function Composer({
   onStop: () => void;
   mode: BrowserMode;
   onMode: (mode: BrowserMode) => void;
+  /** Which model answers. Undefined until a provider has been configured. */
+  model?: string;
+  /** Profile and base URL, for the tooltip on the model name. */
+  endpoint: string;
+  meter: ReactNode;
 }) {
   const box = useRef<HTMLTextAreaElement>(null);
 
@@ -62,14 +77,30 @@ export function Composer({
    * Grow with the text, up to the cap the stylesheet sets.
    *
    * A fixed two-row box meant a request longer than about fifteen words was
-   * being written into a slot that showed a third of it. Reset to `auto` first,
-   * or the box can only ever get taller.
+   * being written into a slot that showed a third of it.
+   *
+   * The empty case clears the inline height rather than measuring it, and that
+   * is the whole of a real bug: measuring an empty textarea before the panel has
+   * settled its layout returned a `scrollHeight` from a mid-layout pass, which
+   * got written back as an inline height and stuck. Reopening the panel on a
+   * finished conversation gave a composer four lines tall with nothing in it.
+   * With no text there is nothing to measure, and `rows={1}` already says how
+   * tall an empty box should be, so the honest answer is to say nothing.
+   *
+   * `useLayoutEffect`, so the measurement happens before the browser paints and
+   * the box never appears at one size and jumps to another.
    */
-  useEffect(() => {
+  useLayoutEffect(() => {
     const area = box.current;
     if (!area) return;
+    if (!text) {
+      area.style.height = '';
+      return;
+    }
+    // Reset first, or the box can only ever get taller. Capped here as well as
+    // in CSS: the inline value is what a later measurement reads back.
     area.style.height = 'auto';
-    area.style.height = `${area.scrollHeight}px`;
+    area.style.height = `${Math.min(area.scrollHeight, MAX_HEIGHT)}px`;
   }, [text]);
 
   const submit = () => {
@@ -136,6 +167,15 @@ export function Composer({
             </button>
           )}
         </div>
+      </div>
+
+      {/* Which model is answering, and how full its window is. Quiet, because
+          it is a thing to check rather than a thing to do. */}
+      <div className="composer-meta">
+        <span className="meta-model" title={endpoint}>
+          {model ?? 'no model configured'}
+        </span>
+        {meter}
       </div>
     </div>
   );

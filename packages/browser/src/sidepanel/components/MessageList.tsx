@@ -1,9 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { renderMarkdown } from '@heapcode/web-ui/markdown';
 import type { Step, Turn } from '../useChat.js';
-import { ToolChip } from './ToolChip.js';
+import { RunSteps } from './RunSteps.js';
 import { DataTable } from './DataTable.js';
-import { Thinking } from './Thinking.js';
 import { SavedTaskChips } from './Tasks.js';
 
 /**
@@ -29,6 +28,11 @@ function visibleSteps(turn: Turn): Step[] {
 
 function normalize(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/** The steps that belong behind the fold: everything except collected rows. */
+function hidden(turn: Turn): Step[] {
+  return visibleSteps(turn).filter((step) => step.kind !== 'data');
 }
 
 /**
@@ -118,37 +122,21 @@ export function MessageList({
             <p className="user-text">{turn.content}</p>
           ) : (
             <>
-              {/* The run, in the order it happened: what the agent said, and
-                  what it did, interleaved. The narration usually explains the
-                  call that follows it, so the order carries meaning. */}
-              <div className="steps">
-                {visibleSteps(turn).map((step, s) => {
-                  if (step.kind === 'tool') return <ToolChip key={step.tool.id} tool={step.tool} />;
-                  if (step.kind === 'thinking') {
-                    return (
-                      <Thinking key={`think-${s}`} text={step.text} streaming={step.streaming} />
-                    );
-                  }
-                  if (step.kind === 'data') {
-                    return <DataTable key={`data-${s}`} dataset={step.dataset} />;
-                  }
-                  if (step.kind === 'view') {
-                    return (
-                      <img
-                        key={`view-${s}`}
-                        className="view"
-                        src={step.dataUrl}
-                        alt="What the agent is looking at"
-                      />
-                    );
-                  }
-                  return (
-                    <p key={`note-${s}`} className="note">
-                      {step.text}
-                    </p>
-                  );
-                })}
-              </div>
+              {/* Everything it did, behind one line. The answer is what the
+                  user asked for; the run is what they may want to check. */}
+              <RunSteps steps={hidden(turn)} streaming={turn.streaming} />
+              {/* Except the rows it collected, which are not a step at all --
+                  they are the deliverable for a comparison task, and the whole
+                  point of collecting them was to stop the answer being prose
+                  the model wrote about a table. Behind a fold they would be
+                  worse than the prose. */}
+              {visibleSteps(turn)
+                .filter((step) => step.kind === 'data')
+                .map((step, s) =>
+                  step.kind === 'data' ? (
+                    <DataTable key={`data-${s}`} dataset={step.dataset} />
+                  ) : null,
+                )}
               {turn.content && (
                 <div
                   className="assistant-text"

@@ -168,19 +168,20 @@ body {
 /* ================================================================ topbar == */
 
 /*
- * Identity and state on the first row, controls on the second.
+ * One row, and none of it is the product's name.
  *
- * Eight things competing for one 350px row meant every one of them was
- * truncated to an ambiguous stub, and the model name -- the thing you most
- * often want to check -- lost every time. The permission mode moved out of here
- * entirely and now lives in the composer, next to the send button, because it
- * describes the run you are about to start rather than the panel you are in.
+ * Chrome draws "heapbrowse" in the side panel's own title bar immediately above
+ * this, so a brand row here was the same word twice in fifty pixels. Eight
+ * things competing for one 350px row also meant every one was truncated to an
+ * ambiguous stub -- so the permission mode went to the composer, next to the
+ * send button, and the model and context meter went underneath it. What is left
+ * is the two things a header is for: what is in scope, and where to go.
  */
 .topbar {
   display: flex;
   flex-direction: column;
   gap: var(--s3);
-  padding: var(--s4) var(--s4) var(--s3);
+  padding: var(--s3) var(--s4);
   border-bottom: 1px solid var(--line);
   background: var(--bg);
   flex: none;
@@ -193,17 +194,8 @@ body {
   min-width: 0;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  font-weight: 600;
-  font-size: var(--t-md);
-  letter-spacing: -0.012em;
-  flex: none;
-}
-
-/* A mark rather than an icon file: one gradient chip, no asset to load. */
+/* A mark rather than an icon file: one gradient chip, no asset to load. Used by
+   the onboarding, which is the one screen with room to introduce itself. */
 .brand-mark {
   width: 14px;
   height: 14px;
@@ -211,29 +203,6 @@ body {
   background: var(--brand-gradient);
   flex: none;
   box-shadow: 0 1px 3px rgba(99, 102, 241, 0.4);
-}
-
-/* Which model is answering. A chip rather than plain text, so it reads as a
-   value that could be something else rather than as part of the title. */
-.model {
-  flex: 1;
-  min-width: 0;
-  padding: 2px var(--s3);
-  border-radius: var(--r-full);
-  background: var(--surface-1);
-  color: var(--muted);
-  font-size: var(--t-xs);
-  font-family: var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: center;
-}
-
-.model.unset {
-  background: var(--warn-soft);
-  color: var(--warn);
-  font-family: var(--font);
 }
 
 .tool-group {
@@ -529,13 +498,80 @@ button.danger:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
-/* The steps of a run, tightened against each other so the sequence reads as one
-   block and the answer beneath it reads as the reply. */
+/*
+ * Everything the agent did, behind one line.
+ *
+ * A run is ten to thirty steps and the user asked one question. Laid out in
+ * full, the answer arrives below a screen and a half of narration, thinking and
+ * screenshots of a page the user is already looking at. Collapsed, the answer
+ * sits directly under the question and the work is one press away.
+ */
+.run {
+  margin-bottom: var(--s4);
+}
+
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: 3px var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+}
+
+.run-head:hover {
+  background: var(--surface-1);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+.run-glyph {
+  color: var(--faint);
+  transition: color var(--d2) var(--ease);
+}
+
+.run.live .run-glyph {
+  color: var(--accent);
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+.run-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run.live .run-label {
+  color: var(--fg);
+}
+
+.run-caret {
+  margin-left: auto;
+  color: var(--faint);
+  transition: transform var(--d2) var(--ease);
+}
+
+.run[data-open='true'] .run-caret {
+  transform: rotate(-180deg);
+}
+
+/* The steps themselves, on a rail. Indented under the line that summarises
+   them, so an open run reads as its detail rather than as a second thread. */
 .steps {
   display: flex;
   flex-direction: column;
   gap: var(--s2);
-  margin-bottom: var(--s4);
+  margin: var(--s2) 0 0 var(--s4);
+  padding-left: var(--s4);
+  border-left: 1px solid var(--line);
+  animation: open-down var(--d2) var(--ease);
 }
 
 .steps:empty {
@@ -979,13 +1015,15 @@ button.danger:hover:not(:disabled) {
 }
 
 /* What the agent is looking at. Shown to the user only -- it never reaches the
-   model, because a screenshot in the context is carried for every turn after. */
+   model, because a screenshot in the context is carried for every turn after.
+   Inside a chip rather than loose in the transcript: on a page-reading agent a
+   run was otherwise mostly pictures of a page the user has open in front of
+   them. */
 .view {
   display: block;
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  animation: rise var(--d2) var(--ease);
+  border-radius: var(--r-sm);
 }
 
 /* ==================================================== collected datasets == */
@@ -998,6 +1036,7 @@ button.danger:hover:not(:disabled) {
   overflow: hidden;
   background: var(--bg);
   box-shadow: var(--shadow-1);
+  margin-bottom: var(--s4);
 }
 
 .dataset-head {
@@ -1161,6 +1200,31 @@ button.danger:hover:not(:disabled) {
   70% {
     box-shadow: 0 0 0 7px transparent;
   }
+}
+
+/*
+ * Which model is answering, and how full its window is.
+ *
+ * Under the box rather than in the header. Both are reference — worth being
+ * able to check, never worth a line at the top of a 350px column — and the
+ * header already had the site and four panes in it.
+ */
+.composer-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3) 0;
+  color: var(--faint);
+  font-size: var(--t-xs);
+}
+
+.meta-model {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------ mode select -- */

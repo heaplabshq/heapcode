@@ -60,6 +60,38 @@ function detail(tool: ToolActivity): string | undefined {
   return undefined;
 }
 
+/**
+ * What the agent is looking at, on the same collapsed line as everything else.
+ *
+ * It used to be a full-width image dropped straight into the transcript, which
+ * on a page-reading agent meant a run was mostly screenshots of a page the user
+ * is already looking at. It is still shown to the user and still never sent to
+ * the model -- a picture costs a few hundred kilobytes and would sit in the
+ * context for every remaining turn.
+ */
+export function ViewChip({ dataUrl }: { dataUrl: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="tool-chip done" data-open={open}>
+      <button
+        type="button"
+        className="tool-head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <Icon name="camera" className="tool-icon" />
+        <span className="tool-name">Took a picture</span>
+        <Icon name="chevron" size={12} className="tool-caret" />
+      </button>
+      {open && (
+        <div className="tool-body">
+          <img className="view" src={dataUrl} alt="What the agent is looking at" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ToolChip({ tool }: { tool: ToolActivity }) {
   const [open, setOpen] = useState(false);
   const running = tool.result === undefined;

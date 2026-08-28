@@ -157,28 +157,17 @@ export function App() {
   return (
     <div className="app">
       {/*
-        Two rows, not one. Eight controls competing for a 350px header meant
-        every one of them was truncated to an ambiguous stub, and the model name
-        — the thing you most often want to check — lost every time. Identity and
-        state on top; the site and the panes beneath them. The permission mode
-        is no longer here at all: it belongs to the run you are about to start,
-        so it sits beside the send button.
+        One row, and none of it is the product's name.
+        
+        Chrome already draws "heapbrowse" in the side panel's own title bar
+        directly above this, so a brand row here was the word twice in fifty
+        pixels. What is left is the two things the header is actually for:
+        which site is in scope, and the panes. The model and the context meter
+        moved under the composer -- they describe the run you are about to
+        start, they are reference rather than navigation, and down there they
+        cost nothing at the top of a 350px column.
       */}
       <header className="topbar">
-        <div className="topbar-row">
-          <span className="brand">
-            <span className="brand-mark" aria-hidden="true" />
-            heapbrowse
-          </span>
-          <span
-            className={configured ? 'model' : 'model unset'}
-            title={`${profile.name} — ${profile.baseUrl}`}
-          >
-            {configured ? profile.model : 'not configured'}
-          </span>
-          <ContextMeter tokens={tokens} window={contextWindow} />
-        </div>
-
         <div className="topbar-row">
           {site && (
             <div className={site.granted ? 'site site-granted' : 'site'}>
@@ -310,6 +299,9 @@ export function App() {
           onStop={stop}
           mode={mode}
           onMode={setMode}
+          model={configured ? profile.model : undefined}
+          endpoint={`${profile.name} — ${profile.baseUrl}`}
+          meter={<ContextMeter tokens={tokens} window={contextWindow} />}
         />
       </div>
     </div>

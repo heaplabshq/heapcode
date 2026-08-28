@@ -10,12 +10,13 @@
  * naming the step in progress, and a stop button that works from the page
  * rather than requiring a trip back to the side panel.
  *
- * The design is deliberately quiet. A 2px border breathing around the whole
- * viewport -- what this used to be -- boxes the content in and reads as an
- * error state; a soft inset glow plus a moving beam along the top edge says
- * "running" without arguing with the page's own design. The bar is dark glass
- * in both themes, because it has to sit legibly on a page whose colours it
- * cannot know.
+ * The design is deliberately quiet, and it is one element. A border breathing
+ * around the whole viewport -- what this used to be -- boxes the content in and
+ * reads as an error state, and even a soft wash with a beam along the top edge
+ * is a second thing moving on a page the user is trying to read. The bar says
+ * everything the wash said and says what step it is on as well, so the wash is
+ * gone. Dark glass in both themes, because it has to sit legibly on a page
+ * whose colours it cannot know.
  *
  * Injected with `chrome.scripting.executeScript` rather than sent to the
  * content script. It shares no channel with the driver, which matters more than
@@ -43,50 +44,6 @@ function paint(id: string, label: string, detail: string): void {
   style.textContent = `
     :host { all: initial; }
     * { box-sizing: border-box; }
-
-    /* The ambient state. A soft inset wash rather than a hard border: the
-       border version boxed the page in and read as a failure. */
-    .aura {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 2147483646;
-      box-shadow:
-        inset 0 0 0 1px rgba(99, 102, 241, 0.28),
-        inset 0 0 60px -18px rgba(99, 102, 241, 0.55);
-      opacity: 0;
-      animation: hb-aura-in 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
-    }
-
-    /* The one moving part. An indeterminate beam along the top edge is the
-       universally read "something is running", and it costs the page nothing:
-       it is a transform on a single element, off the main thread. */
-    .beam {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 2px;
-      overflow: hidden;
-      pointer-events: none;
-      z-index: 2147483647;
-    }
-    .beam::after {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: linear-gradient(
-        90deg,
-        transparent 0%,
-        rgba(99, 102, 241, 0) 15%,
-        #6366f1 45%,
-        #a855f7 55%,
-        rgba(168, 85, 247, 0) 85%,
-        transparent 100%
-      );
-      transform: translateX(-100%);
-      animation: hb-beam 1.9s cubic-bezier(0.5, 0, 0.5, 1) infinite;
-    }
 
     .bar {
       position: fixed;
@@ -162,9 +119,7 @@ function paint(id: string, label: string, detail: string): void {
     .stop:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
     .stop svg { display: block; }
 
-    @keyframes hb-aura-in { to { opacity: 1; } }
     @keyframes hb-bar-in { to { transform: translate(-50%, 0); } }
-    @keyframes hb-beam { to { transform: translateX(100%); } }
     @keyframes hb-breathe {
       0%, 100% { transform: scale(0.86); opacity: 0.7; }
       50% { transform: scale(1); opacity: 1; }
@@ -177,18 +132,10 @@ function paint(id: string, label: string, detail: string): void {
     /* Someone who has asked for less movement gets a bar that simply is there.
        Nothing above carries information that is not also in the text. */
     @media (prefers-reduced-motion: reduce) {
-      .aura { animation: none; opacity: 1; }
-      .beam { display: none; }
       .bar { animation: none; transform: translate(-50%, 0); }
       .mark, .swap { animation: none; }
     }
   `;
-
-  const aura = document.createElement('div');
-  aura.className = 'aura';
-
-  const beam = document.createElement('div');
-  beam.className = 'beam';
 
   const bar = document.createElement('div');
   bar.className = 'bar';
@@ -229,7 +176,7 @@ function paint(id: string, label: string, detail: string): void {
   });
 
   bar.append(mark, text, stop);
-  root.append(style, aura, beam, bar);
+  root.append(style, bar);
 
   // Updating without re-injecting: the setter is hung off the host element,
   // which is the only handle a later `executeScript` has on this shadow root.

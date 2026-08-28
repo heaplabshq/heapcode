@@ -1,4 +1,3 @@
-import type { TableSummary } from './snapshot.js';
 
 /**
  * Rows the agent has collected, accumulated across pages.
@@ -26,8 +25,16 @@ export interface Dataset {
   label?: string;
 }
 
-/** Headers are the same set if they read the same, ignoring case and padding. */
-function sameShape(a: string[], b: string[]): boolean {
+/**
+ * Headers are the same set if they read the same, ignoring case and padding.
+ *
+ * Exported because two callers have to agree about it. `mergeTable` uses it to
+ * decide whether an incoming table continues the collection or replaces it, and
+ * `extract_data` uses it to pick which of a page's tables is the one being
+ * collected. If those two used different comparisons, the picker would choose a
+ * table the merger then threw the collection away over.
+ */
+export function sameHeaders(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((header, index) => header.trim().toLowerCase() === b[index]?.trim().toLowerCase());
 }
@@ -50,14 +57,29 @@ export interface MergeResult {
   restarted: boolean;
 }
 
+/**
+ * The rows to fold in, named for what they are.
+ *
+ * This took a `TableSummary` and merged its `sample`, which is the five-row
+ * preview meant for the snapshot -- so a caller passing a table straight in
+ * collected five rows per page and no error said so. The caller now says which
+ * rows it means, because there is no shape of `TableSummary` that makes the
+ * wrong answer impossible.
+ */
+export interface IncomingRows {
+  headers: string[];
+  rows: string[][];
+  label?: string;
+}
+
 export function mergeTable(
   existing: Dataset | undefined,
-  table: TableSummary,
+  table: IncomingRows,
   source: string,
 ): MergeResult {
-  const incoming = table.sample.map((row) => row.map((cell) => cell.trim()));
+  const incoming = table.rows.map((row) => row.map((cell) => cell.trim()));
 
-  if (!existing || !sameShape(existing.headers, table.headers)) {
+  if (!existing || !sameHeaders(existing.headers, table.headers)) {
     const seen = new Set<string>();
     const rows: string[][] = [];
     for (const row of incoming) {

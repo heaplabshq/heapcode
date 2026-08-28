@@ -14,7 +14,7 @@ import {
 import type { Classification } from './destructive.js';
 import { parseKey, KNOWN_KEYS } from './keys.js';
 import { matchAll, PROFILE_FIELDS, type UserProfile } from '../shared/profile.js';
-import { mergeTable, type Dataset } from '../shared/dataset.js';
+import { mergeTable, sameHeaders, type Dataset } from '../shared/dataset.js';
 import { RepetitionGuard } from './repetition.js';
 import { findNextControl, nextIsExhausted, nextPageUrl } from './pagination.js';
 
@@ -1459,8 +1459,24 @@ export class BrowserToolExecutor {
       );
     }
 
-    const index = typeof args.table === 'number' ? args.table : 0;
-    const table = tables[index];
+    // Which table, when the caller did not say.
+    //
+    // Not simply the first. A collection in progress has a shape, and the page
+    // it has just moved to may rank a different block above the one being
+    // collected -- a sponsored carousel, a "customers also bought" strip. Taking
+    // the first would hand `mergeTable` a table with different columns, and its
+    // answer to that is to start again: every row gathered so far, silently
+    // discarded, halfway through the one task this feature exists for.
+    //
+    // So an explicit index is obeyed, and otherwise a collection already under
+    // way keeps to its own shape.
+    const asked = typeof args.table === 'number' ? args.table : undefined;
+    const continuing =
+      asked === undefined && this.#dataset
+        ? tables.find((candidate) => sameHeaders(candidate.headers, this.#dataset!.headers))
+        : undefined;
+    const index = asked ?? 0;
+    const table = continuing ?? tables[index];
     if (!table) {
       return fail(`There is no table ${index}. The page has ${tables.length}.`);
     }
@@ -1477,7 +1493,11 @@ export class BrowserToolExecutor {
     // Accumulate. The user's copy of the data lives outside the transcript, so
     // paginating through ten pages costs ten extractions rather than ten
     // re-sends of everything seen so far.
-    const merged = mergeTable(this.#dataset, { ...table, sample: rows }, result.snapshot.url);
+    const merged = mergeTable(
+      this.#dataset,
+      { headers: table.headers, rows, label: table.label },
+      result.snapshot.url,
+    );
     this.#dataset = merged.dataset;
     this.#onData?.(merged.dataset);
 

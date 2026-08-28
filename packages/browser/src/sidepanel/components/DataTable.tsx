@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Icon } from './Icon.js';
 import {
   suggestedFilename,
   toCsv,
@@ -18,10 +19,20 @@ import {
  * Rendered in a side panel about 400 pixels wide, so it scrolls in both
  * directions inside its own box rather than making the conversation scroll
  * sideways.
+ *
+ * Folded away unless it was asked for. Collecting rows is worth doing whenever
+ * the page has them -- it costs a call the agent was making anyway, and the set
+ * is there if it turns out to be wanted. Putting a hundred rows on screen is a
+ * different decision, and the honest answer to "what is in my saved list" is a
+ * sentence, not a spreadsheet nobody asked to see. So it opens itself when the
+ * request sounds like data and stays a single line when it does not, and either
+ * way it is one press from the other.
  */
-export function DataTable({ dataset }: { dataset: Dataset }) {
+export function DataTable({ dataset, wanted }: { dataset: Dataset; wanted?: boolean }) {
+  const [choice, setChoice] = useState<boolean>();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<string | undefined>();
+  const shownTable = choice ?? Boolean(wanted);
 
   if (dataset.rows.length === 0) return null;
 
@@ -54,16 +65,28 @@ export function DataTable({ dataset }: { dataset: Dataset }) {
     URL.revokeObjectURL(url);
   };
 
+  const count = `${dataset.rows.length} row${dataset.rows.length === 1 ? '' : 's'}`;
+  const from = dataset.sources.length > 1 ? ` from ${dataset.sources.length} pages` : '';
+
   return (
-    <div className="dataset">
-      <div className="dataset-head">
+    <div className="dataset" data-open={shownTable}>
+      <button
+        type="button"
+        className="dataset-head"
+        onClick={() => setChoice(!shownTable)}
+        aria-expanded={shownTable}
+      >
+        <Icon name="table" size={13} className="dataset-icon" />
         <strong>{dataset.label ?? 'Collected rows'}</strong>
         <span className="muted">
-          {dataset.rows.length} row{dataset.rows.length === 1 ? '' : 's'}
-          {dataset.sources.length > 1 ? ` from ${dataset.sources.length} pages` : ''}
+          {count}
+          {from}
         </span>
-      </div>
+        <Icon name="chevron" size={12} className="dataset-caret" />
+      </button>
 
+      {shownTable && (
+        <>
       <div className="dataset-scroll">
         <table>
           <thead>
@@ -101,6 +124,8 @@ export function DataTable({ dataset }: { dataset: Dataset }) {
           {copied === 'csv' ? 'Copied' : 'Copy'}
         </button>
       </div>
+        </>
+      )}
     </div>
   );
 }

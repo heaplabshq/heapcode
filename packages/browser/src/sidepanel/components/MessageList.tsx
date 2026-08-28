@@ -36,6 +36,22 @@ function hidden(turn: Turn): Step[] {
 }
 
 /**
+ * Whether the person asked for the data itself, rather than an answer about it.
+ *
+ * Collecting rows is worth doing whenever a page has them: it costs a call the
+ * agent was making anyway, and the set is there if it turns out to be wanted.
+ * Showing a hundred of them is a different decision. "What is in my saved list"
+ * wants a sentence; "put these in a spreadsheet" wants the spreadsheet.
+ *
+ * A word test, and a deliberately shallow one. It only chooses which way the
+ * table starts -- it is one press from the other either way -- so being wrong
+ * costs a click, and something cleverer would cost a wrong guess that is harder
+ * to notice.
+ */
+const ASKED_FOR_DATA =
+  /\b(table|tabulate|csv|json|spread ?sheet|export|download|columns?|compare|comparison|list (?:them|every|all)|every (?:row|item|result))\b/i;
+
+/**
  * Things worth asking on a page you have just landed on.
  *
  * They lived in the last onboarding step, which is a screen each user sees
@@ -125,24 +141,28 @@ export function MessageList({
               {/* Everything it did, behind one line. The answer is what the
                   user asked for; the run is what they may want to check. */}
               <RunSteps steps={hidden(turn)} streaming={turn.streaming} />
-              {/* Except the rows it collected, which are not a step at all --
-                  they are the deliverable for a comparison task, and the whole
-                  point of collecting them was to stop the answer being prose
-                  the model wrote about a table. Behind a fold they would be
-                  worse than the prose. */}
-              {visibleSteps(turn)
-                .filter((step) => step.kind === 'data')
-                .map((step, s) =>
-                  step.kind === 'data' ? (
-                    <DataTable key={`data-${s}`} dataset={step.dataset} />
-                  ) : null,
-                )}
               {turn.content && (
                 <div
                   className="assistant-text"
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.content) }}
                 />
               )}
+              {/* The rows it collected. Not a step -- they are the deliverable
+                  for a comparison task, and the point of collecting them was to
+                  stop the answer being prose the model wrote about a table. So
+                  they sit under the answer rather than behind the run's fold,
+                  and open themselves only when the request sounded like data. */}
+              {visibleSteps(turn)
+                .filter((step) => step.kind === 'data')
+                .map((step, s) =>
+                  step.kind === 'data' ? (
+                    <DataTable
+                      key={`data-${s}`}
+                      dataset={step.dataset}
+                      wanted={ASKED_FOR_DATA.test(turns[i - 1]?.content ?? '')}
+                    />
+                  ) : null,
+                )}
             </>
           )}
           {turn.streaming && <span className="cursor" aria-label="responding" />}

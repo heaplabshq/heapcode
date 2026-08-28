@@ -19,7 +19,9 @@ Read a page once. Its text is the largest thing you can put in this conversation
 
 get_elements finds a specific control without re-reading everything.
 
-extract_data pulls a table off the page, and it accumulates: call it on each page of a list and the rows build up, de-duplicated, into one set the user can read and export. It tells you the running total. Do not repeat the collected rows back in your answer -- the user already has them in full, and re-listing fifty rows you were given is the slowest and least useful thing you can do with them. Answer the question they actually asked about the data.
+extract_data pulls a table off the page, and it accumulates: call it on each page of a list and the rows build up, de-duplicated, into one set the user can read and export. It tells you the running total, and the user gets the set itself to open and export.
+
+Answer the question they actually asked. If they asked what is in a list, describe it -- the themes, the notable items, the count -- the way you would tell a person. If they asked for a few specific things, name those few. What you must not do is transcribe every row back at them: fifty rows you were just handed, repeated in prose, is the slowest and least useful thing you can do with them, and they have the set already.
 
 next_page moves through a list, whichever way that list advances: a pagination control, a page number in the address, or scrolling a feed that loads more at the bottom. Call it, then extract_data again, until it tells you there is no next page. Believe it when it does -- it has checked all three and scrolled to the end.
 

@@ -1039,15 +1039,50 @@ button.danger:hover:not(:disabled) {
   margin-bottom: var(--s4);
 }
 
+/* Closed it is one line; open it grows a body. The border between them only
+   exists when there are two things to separate. */
 .dataset-head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: var(--s3);
+  width: 100%;
   padding: var(--s3) var(--s4);
+  border: none;
+  border-radius: var(--r-md);
   background: var(--surface-1);
-  border-bottom: 1px solid var(--line);
+  color: var(--fg);
+  font: inherit;
   font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dataset-head:hover {
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+.dataset[data-open='true'] .dataset-head {
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.dataset-icon {
+  color: var(--accent);
+}
+
+.dataset-head .muted {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.dataset-caret {
+  color: var(--faint);
+  transition: transform var(--d2) var(--ease);
+}
+
+.dataset[data-open='true'] .dataset-caret {
+  transform: rotate(-180deg);
 }
 
 /* The panel is narrow and the data is not. Scroll inside the box, never the
@@ -1056,6 +1091,7 @@ button.danger:hover:not(:disabled) {
   overflow-x: auto;
   max-height: 320px;
   overflow-y: auto;
+  animation: open-down var(--d2) var(--ease);
 }
 
 .dataset table {

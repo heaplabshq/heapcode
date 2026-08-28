@@ -69,6 +69,15 @@ export function RunSteps({ steps, streaming }: { steps: Step[]; streaming?: bool
             }
             if (step.kind === 'data') return <DataTable key={`data-${s}`} dataset={step.dataset} />;
             if (step.kind === 'view') return <ViewChip key={`view-${s}`} dataUrl={step.dataUrl} />;
+            if (step.kind === 'compacted') {
+              return (
+                <p key={`compact-${s}`} className="compacted">
+                  <Icon name="wait" size={12} />
+                  The run outgrew the model&rsquo;s memory, so everything up to here was condensed
+                  into a summary.
+                </p>
+              );
+            }
             return (
               <p key={`note-${s}`} className="note">
                 {step.text}

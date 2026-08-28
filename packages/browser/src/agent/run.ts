@@ -390,6 +390,24 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     // stopping — the run keeps its transcript, which a follow-up message would
     // not (core's own reasoning at the limit).
     askToContinueAtLimit: true,
+    /*
+     * What a browsing run is made of, for the summary written when one outgrows
+     * the context window.
+     *
+     * Core's default is written for the coding agent: keep the files changed
+     * and the commands run. A browser run has neither, so the summary was being
+     * asked to preserve things that do not exist and never asked for the things
+     * that do -- and it fires on exactly the long runs where losing them hurts,
+     * the ones walking a list across ten pages gathering rows.
+     */
+    compaction: {
+      kind: 'browser-agent',
+      preserve:
+        'the pages visited and what each turned out to contain, what has been collected so far ' +
+        'and how much, which handles or elements were being worked with, actions taken and ' +
+        'whether they worked, anything the user was asked and answered, and exactly what is done ' +
+        'and what is left',
+    },
     contextWindow: resolveContextWindow(profile),
     temperature: profile.temperature,
     maxTokens: profile.maxTokens,

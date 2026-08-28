@@ -1039,6 +1039,31 @@ button.danger:hover:not(:disabled) {
   }
 }
 
+/*
+ * The point where the run was made to forget.
+ *
+ * Quieter than a note and set apart from one: it is not something the agent
+ * said, it is something that happened to it. Amber because nothing is broken
+ * and nothing needs answering -- but an agent that gets vaguer after this line
+ * has a reason, and this is it.
+ */
+.compacted {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+}
+
+.compacted .icon {
+  margin-top: 1px;
+}
+
 /* ============================================================ tool chips == */
 
 /*

@@ -57,7 +57,15 @@ export type Step =
    * a five-page collection should leave one table that grew, not five snapshots
    * of it growing.
    */
-  | { kind: 'data'; dataset: Dataset };
+  | { kind: 'data'; dataset: Dataset }
+  /**
+   * The point where the run outgrew the model's window and its middle was
+   * summarized away.
+   *
+   * Carries nothing: the token counts are already on the meter, and what
+   * matters here is only that it happened and where.
+   */
+  | { kind: 'compacted' };
 
 export interface Turn {
   role: 'user' | 'assistant';
@@ -451,7 +459,22 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
                 return { ...turn, steps };
               }),
             onContextUsage: (used) => setTokens(used),
-            onCompaction: () => {},
+            /*
+             * The run outgrew the model's window, so the middle of it was
+             * replaced by a summary.
+             *
+             * Worth saying out loud. It is the one moment a run quietly stops
+             * knowing something it knew a minute ago, and an agent that gets
+             * vaguer halfway through a long job looks like a worse model rather
+             * than one that has just been made to forget. Recorded as a step so
+             * it sits in the run at the point it happened, rather than as a
+             * banner that would outlive the moment it describes.
+             */
+            onCompaction: () =>
+              patch((turn) => ({
+                ...turn,
+                steps: [...(turn.steps ?? []), { kind: 'compacted' }],
+              })),
           },
         });
 

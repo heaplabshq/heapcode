@@ -21,6 +21,7 @@ function render(turn: Turn): string[] {
     if (step.kind === 'tool') return `[tool ${step.tool.name}]`;
     if (step.kind === 'view') return '[view]';
     if (step.kind === 'data') return `[data ${step.dataset.rows.length} rows]`;
+    if (step.kind === 'compacted') return '[compacted]';
     return step.text;
   });
   if (turn.content) out.push(`ANSWER: ${turn.content}`);

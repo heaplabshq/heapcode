@@ -721,6 +721,64 @@ describe('runAgent — native tool calls', () => {
     expect(lastReq.messages.some((m) => m.content.includes('[Earlier work compacted'))).toBe(true);
     expect(lastReq.messages.some((m) => m.content.includes('Compact summary'))).toBe(true);
   });
+
+  /**
+   * What compaction is told to keep decides what the agent still knows for the
+   * rest of the run, and it was hard-coded for this host. A browser agent has
+   * no files and no commands, so it was being asked to preserve things that do
+   * not exist and never asked for the pages it had visited or the rows it had
+   * gathered -- on exactly the long runs where compaction fires.
+   */
+  const compactionRequest = (provider: { requests: { messages: { content: string }[] }[] }) =>
+    provider.requests.find((r) => r.messages.some((m) => m.content.includes('Summarize this transcript')))!;
+
+  const overflowing = () => {
+    const toolTurn = { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: { path: 'a.ts' } }] };
+    return scriptedProvider([
+      ...Array.from({ length: 6 }, () => toolTurn),
+      { content: 'Summary.' },
+      { content: '', toolCalls: [{ id: 'f', name: 'finish', args: { summary: 'did it' } }] },
+    ]);
+  };
+
+  const overflowingHarness = () =>
+    harness({
+      execute: (call: ToolCall) => Promise.resolve({ id: call.id, name: call.name, content: 'x'.repeat(3000) }),
+      events: { onText: () => {}, onToolCall: () => {}, onToolResult: () => {}, onCompaction: () => {} },
+    });
+
+  it('summarizes as a coding agent when the host has not said otherwise', async () => {
+    const provider = overflowing();
+    await runAgent({
+      ...overflowingHarness().options,
+      provider,
+      nativeToolCalls: true,
+      contextWindow: 4_000,
+      maxTokens: 1_000,
+    });
+
+    const asked = compactionRequest(provider);
+    expect(asked.messages[0]!.content).toContain('coding-agent');
+    expect(asked.messages[1]!.content).toContain('files read/modified');
+    expect(asked.messages[1]!.content).toContain('commands run');
+  });
+
+  it('summarizes as whatever the host says its work is made of', async () => {
+    const provider = overflowing();
+    await runAgent({
+      ...overflowingHarness().options,
+      provider,
+      nativeToolCalls: true,
+      contextWindow: 4_000,
+      maxTokens: 1_000,
+      compaction: { kind: 'browser-agent', preserve: 'the pages visited and what was collected' },
+    });
+
+    const asked = compactionRequest(provider);
+    expect(asked.messages[0]!.content).toContain('browser-agent');
+    expect(asked.messages[1]!.content).toContain('the pages visited and what was collected');
+    expect(asked.messages[1]!.content).not.toContain('files read/modified');
+  });
 });
 
 describe('runAgent — memory distillation', () => {

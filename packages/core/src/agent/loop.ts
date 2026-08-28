@@ -135,8 +135,45 @@ export interface AgentOptions {
   maxTokens?: number;
   /** Model context window in tokens; drives usage reporting and compaction. */
   contextWindow?: number;
+  /**
+   * What this agent's work is made of, for the summary written when a run
+   * outgrows the context window.
+   *
+   * Compaction throws away the middle of a transcript and keeps a summary, so
+   * the instruction deciding what to preserve decides what the agent still
+   * knows for the rest of the run. That instruction was hard-coded for a coding
+   * agent -- keep the files changed and the commands run -- and a host whose
+   * work has neither was being told to remember things that do not exist,
+   * exactly when it could least afford to lose the things that do.
+   *
+   * Left unset it stays the coding wording, so nothing changes for a host that
+   * has not thought about it.
+   */
+  compaction?: CompactionShape;
   signal?: AbortSignal;
 }
+
+/** How to summarize one kind of work, when a run has to be compacted. */
+export interface CompactionShape {
+  /** What the agent is, in the summarizer's system line. E.g. 'browser-agent'. */
+  kind: string;
+  /**
+   * What must survive, most important first.
+   *
+   * Written as the things themselves rather than as advice: "pages visited and
+   * what each one turned out to contain" tells a summarizer what to look for,
+   * where "be thorough" does not.
+   */
+  preserve: string;
+}
+
+/** The wording every host got before any of them could say otherwise. */
+const CODING_COMPACTION: CompactionShape = {
+  kind: 'coding-agent',
+  preserve:
+    'files read/modified (and what was learned or changed in each), commands run with their ' +
+    'outcomes, decisions made, errors hit, and exact current progress on the task',
+};
 
 const PLAN_REQUEST =
   'Before doing anything, write a concise plan for this task, scaled to what it actually ' +
@@ -574,6 +611,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
    * exchanges verbatim) and splice the summary in. Best-effort — on failure
    * the session continues and the provider's own error surfaces later.
    */
+  const shape = opts.compaction ?? CODING_COMPACTION;
+
   const compactIfNeeded = async (): Promise<void> => {
     const before = estimateMessagesTokens(messages);
     events.onContextUsage?.(before, contextWindow);
@@ -598,15 +637,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         messages: [
           {
             role: 'system',
-            content: 'You compress coding-agent transcripts. Reply with only the summary.',
+            content: `You compress ${shape.kind} transcripts. Reply with only the summary.`,
           },
           {
             role: 'user',
             content:
-              'Summarize this transcript so the agent can continue seamlessly. Preserve: files ' +
-              'read/modified (and what was learned or changed in each), commands run with their ' +
-              'outcomes, decisions made, errors hit, and exact current progress on the task. ' +
-              `Max 500 words.\n\n${transcript}`,
+              'Summarize this transcript so the agent can continue seamlessly. Preserve: ' +
+              `${shape.preserve}. Max 500 words.\n\n${transcript}`,
           },
         ],
         maxTokens: 1_000,

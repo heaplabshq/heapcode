@@ -1,9 +1,36 @@
 import { useEffect, useRef } from 'react';
 import { renderMarkdown } from '@heapcode/web-ui/markdown';
-import type { Turn } from '../useChat.js';
+import type { Step, Turn } from '../useChat.js';
 import { ToolChip } from './ToolChip.js';
 import { DataTable } from './DataTable.js';
 import { Thinking } from './Thinking.js';
+
+/**
+ * The steps worth rendering, which is not quite all of them.
+ *
+ * A model that streams its answer and then repeats it as the finish summary
+ * puts the same text on screen twice — once as raw narration and once
+ * rendered — and so does a run with no summary at all, where the narration is
+ * promoted to *be* the answer and then still shown above it.
+ *
+ * `settle` in `useChat` resolves both when a turn ends, and this is the same
+ * rule applied at render. Deliberately in both places: the state version is
+ * what gets checkpointed to session storage, and this one cannot be reached
+ * around by a path that forgets to call it. It costs a string compare per turn.
+ */
+function visibleSteps(turn: Turn): Step[] {
+  const steps = turn.steps ?? [];
+  const answer = turn.content.trim();
+  if (!answer) return steps;
+  const normalized = normalize(answer);
+  return steps.filter(
+    (step) => step.kind !== 'note' || normalize(step.text) !== normalized,
+  );
+}
+
+function normalize(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
 
 /**
  * The transcript.
@@ -56,7 +83,7 @@ export function MessageList({ turns }: { turns: Turn[] }) {
               {/* The run, in the order it happened: what the agent said, and
                   what it did, interleaved. The narration usually explains the
                   call that follows it, so the order carries meaning. */}
-              {turn.steps?.map((step, s) => {
+              {visibleSteps(turn).map((step, s) => {
                 if (step.kind === 'tool') return <ToolChip key={step.tool.id} tool={step.tool} />;
                 if (step.kind === 'thinking') {
                   return <Thinking key={`think-${s}`} text={step.text} streaming={step.streaming} />;

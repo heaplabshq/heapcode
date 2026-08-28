@@ -115,6 +115,36 @@ export function answerFrom(turn: Turn): string {
 }
 
 /**
+ * Settle a finished turn: pick the answer, and stop showing it twice.
+ *
+ * There are two ways the same text ends up on screen in both places, and they
+ * need opposite treatment -- which is why the first attempt at this fixed only
+ * one of them and the duplicate stayed exactly where it was.
+ *
+ * Either the model called `finish` with a summary repeating what it had already
+ * streamed -- both are real, core reports them separately and correctly, and
+ * the narration is the copy to drop (see `withoutEchoedAnswer` for how
+ * carefully).
+ *
+ * Or the model produced no summary at all and `answerFrom` promoted the
+ * narration to be the answer. Then the promotion *itself* is the duplication:
+ * those notes are now the turn's content and are still sitting above it as
+ * steps. This is the older of the two bugs and the one that was actually
+ * showing -- every run ending without a finish summary hits it.
+ *
+ * Promotion drops every note rather than only the last, because `answerFrom`
+ * joins all of them into the answer. Nothing is lost; it moves.
+ */
+export function settle(turn: Turn): Turn {
+  const summarised = turn.content.trim().length > 0;
+  const next: Turn = { ...turn, content: answerFrom(turn) };
+
+  if (summarised) return withoutEchoedAnswer(next);
+  const steps = (next.steps ?? []).filter((step) => step.kind !== 'note');
+  return steps.length === (next.steps ?? []).length ? next : { ...next, steps };
+}
+
+/**
  * Whitespace-insensitive, for comparing two copies of the same prose.
  *
  * Not markdown-insensitive: both strings being compared are markdown *source* —
@@ -408,17 +438,9 @@ export function useChat(profile: StoredProfile, deps: ChatDeps) {
         flushNote();
         let answer = '';
         patch((turn) => {
-          // Whether the model actually called finish. When it did not, the
-          // narration *is* the answer and must not be treated as an echo of it.
-          const summarised = turn.content.trim().length > 0;
-          answer = answerFrom(turn);
-          const next: Turn = {
-            ...turn,
-            streaming: false,
-            error: outcomeNote(outcome),
-            content: answer,
-          };
-          return summarised ? withoutEchoedAnswer(next) : next;
+          const settled = settle(turn);
+          answer = settled.content;
+          return { ...settled, streaming: false, error: outcomeNote(outcome) };
         });
         // Recorded after the fact, with what it produced, so the list is useful
         // for finding the wording of something that worked rather than being a

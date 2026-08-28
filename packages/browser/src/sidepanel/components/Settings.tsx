@@ -20,6 +20,7 @@ import { debuggerAvailable } from '../../agent/cdp.js';
 import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnostic.js';
 import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
 import { Details } from './Details.js';
+import { Icon } from './Icon.js';
 import { ModelField } from './ModelField.js';
 
 /**
@@ -34,6 +35,14 @@ import { ModelField } from './ModelField.js';
  * The key field is write-only. It is stored on save and never read back into
  * the form, so a stored key cannot be exfiltrated by anything that gets to
  * render this panel, and it never appears in a screenshot.
+ *
+ * Laid out as a stack of cards rather than a flat form: the panel is 320–400px
+ * wide and a flat list of labelled fields buries the thing someone opened
+ * Settings for. Each concern — which profile, which endpoint, how the page is
+ * read — is its own card with an icon and a title, the same shape the
+ * onboarding's permission cards already taught. The two long-form sections
+ * that are rarely edited stay as disclosures, so they do not push the fields
+ * above them off the screen.
  */
 export function Settings({
   profile,
@@ -54,6 +63,16 @@ export function Settings({
   const [useDebugger, setUseDebugger] = useState(false);
   const [files, setFiles] = useState('');
   const [profiles, setProfiles] = useState<StoredProfile[]>([]);
+  /**
+   * Which saved profile the form is editing.
+   *
+   * Held apart from `draft.name` because the two answer different questions:
+   * this one is which profile you are on, and `draft.name` is what you are in
+   * the middle of calling it. Binding the switcher to the draft meant that the
+   * moment you started renaming, its value matched no option and the dropdown
+   * rendered blank until you finished typing.
+   */
+  const [editing, setEditing] = useState(profile.name);
   /**
    * What the endpoint says it can run.
    *
@@ -80,6 +99,7 @@ export function Settings({
     const wanted = profiles.find((profile) => profile.name === name);
     if (!wanted) return;
     await setActiveProfile(name);
+    setEditing(name);
     setDraft(wanted);
     setApiKey('');
     setResult(undefined);
@@ -140,6 +160,8 @@ export function Settings({
       setApiKey('');
     }
     setProfiles(await loadProfiles());
+    // The rename is committed, so the switcher now belongs to the new name.
+    setEditing(draft.name);
     onSaved(draft);
   };
 
@@ -163,161 +185,210 @@ export function Settings({
   };
 
   return (
-    <div className="pane">
+    <div className="pane settings-pane">
       {profiles.length > 0 && (
-        <div className="profiles">
-          <label>
-            Profile
-            <select value={draft.name} onChange={(e) => void choose(e.target.value)}>
-              {profiles.map((profile) => (
-                <option key={profile.name} value={profile.name}>
-                  {profile.name}
-                  {profile.model ? ` — ${profile.model}` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="row">
-            <button
-              type="button"
-              className="ghost"
-              onClick={async () => {
-                const next = await addProfile(draft);
-                setProfiles(next);
-                const created = next[next.length - 1]!;
-                setDraft(created);
-                setApiKey('');
-                onSaved(created);
-              }}
-            >
-              Duplicate
-            </button>
-            {profiles.length > 1 && (
+        <section className="settings-card">
+          <header className="settings-card-head">
+            <span className="settings-card-icon" aria-hidden="true">
+              <Icon name="settings" />
+            </span>
+            <h3 className="section-title">Profile</h3>
+          </header>
+          <div className="settings-card-body">
+            {/* Which one, then what it is called. The other order reads as two
+                controls for the same thing with no way to tell which switches
+                and which renames. */}
+            <label>
+              Editing
+              <span className="picker">
+                <select value={editing} onChange={(e) => void choose(e.target.value)}>
+                  {profiles.map((profile) => (
+                    <option key={profile.name} value={profile.name}>
+                      {profile.name}
+                      {profile.model ? ` — ${profile.model}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <Icon name="chevron" size={12} className="picker-caret" />
+              </span>
+            </label>
+            <label>
+              Name
+              <input
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                placeholder="local, work, big model…"
+                spellCheck={false}
+              />
+              {draft.name !== editing && (
+                <span className="hint">Renames “{editing}” when you save.</span>
+              )}
+            </label>
+            <div className="row">
               <button
                 type="button"
                 className="ghost"
                 onClick={async () => {
-                  const next = await deleteProfile(draft.name);
+                  const next = await addProfile(draft);
                   setProfiles(next);
-                  setDraft(next[0]!);
+                  const created = next[next.length - 1]!;
+                  setEditing(created.name);
+                  setDraft(created);
                   setApiKey('');
-                  onSaved(next[0]!);
+                  onSaved(created);
                 }}
               >
-                Delete
+                Duplicate
               </button>
-            )}
+              {profiles.length > 1 && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={async () => {
+                    // By the saved name, not the draft's -- a half-typed
+                    // rename must not decide which profile is deleted.
+                    const next = await deleteProfile(editing);
+                    setProfiles(next);
+                    setEditing(next[0]!.name);
+                    setDraft(next[0]!);
+                    setApiKey('');
+                    onSaved(next[0]!);
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        </section>
       )}
 
-      <h3 className="section-title">Model endpoint</h3>
+      <section className="settings-card">
+        <header className="settings-card-head">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="plug" />
+          </span>
+          <h3 className="section-title">Model endpoint</h3>
+        </header>
+        <div className="settings-card-body">
+          <label>
+            Provider
+            <select
+              value={draft.preset}
+              onChange={(e) => choosePreset(e.target.value as PresetId)}
+            >
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                  {p.local ? ' (local)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
 
-      <label>
-        Name
-        <input
-          value={draft.name}
-          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-          placeholder="local, work, big model…"
-          spellCheck={false}
-        />
-      </label>
+          <label>
+            Base URL
+            <input
+              value={draft.baseUrl}
+              onChange={(e) => {
+                setDraft({ ...draft, baseUrl: e.target.value });
+                setModels([]);
+              }}
+              spellCheck={false}
+            />
+          </label>
 
-      <label>
-        Provider
-        <select value={draft.preset} onChange={(e) => choosePreset(e.target.value as PresetId)}>
-          {presets.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-              {p.local ? ' (local)' : ''}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label>
-        Base URL
-        <input
-          value={draft.baseUrl}
-          onChange={(e) => {
-            setDraft({ ...draft, baseUrl: e.target.value });
-            setModels([]);
-          }}
-          spellCheck={false}
-        />
-      </label>
-
-      <ModelField
-        value={draft.model}
-        models={models}
-        onChange={(model) => setDraft({ ...draft, model })}
-        placeholder={draft.preset === 'ollama' ? 'llama3.1' : 'gpt-4o-mini'}
-      />
-
-      <label>
-        API key {needsApiKey(draft) ? '' : '(not needed for this provider)'}
-        <input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder="stored locally, never synced"
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </label>
-      {preset.apiKeyUrl && (
-        <p className="muted">
-          Get a key at <a href={preset.apiKeyUrl} target="_blank" rel="noreferrer noopener">{preset.apiKeyUrl}</a>
-        </p>
-      )}
-
-      <hr className="rule" />
-
-      <h3 className="section-title">How it reads the page</h3>
-
-      <label className="switch">
-        <input
-          type="checkbox"
-          aria-label="Use Chrome's debugger"
-          checked={useDebugger}
-          onChange={(e) => void toggleDebugger(e.target.checked)}
-        />
-        Use Chrome&rsquo;s debugger
-      </label>
-      <p className="muted">
-        Reads the page the way the browser itself does, clicks with real input events, and can
-        attach files. Chrome shows a &ldquo;being debugged&rdquo; banner while a run is going, and
-        opening DevTools on the tab switches it back off.
-      </p>
-      {useDebugger && !debuggerAvailable() && (
-        <p className="turn-error">
-          This build does not have the debugger permission, so the page will be read the older way.
-        </p>
-      )}
-
-      {useDebugger && (
-        <label>
-          Files the agent may attach — one full path per line
-          <textarea
-            className="code"
-            value={files}
-            onChange={(e) => setFiles(e.target.value)}
-            onBlur={() => void saveFiles(files.split('\n').map((line) => line.trim()))}
-            placeholder="/Users/you/Documents/CV.pdf"
-            rows={2}
-            spellCheck={false}
+          <ModelField
+            value={draft.model}
+            models={models}
+            onChange={(model) => setDraft({ ...draft, model })}
+            placeholder={draft.preset === 'ollama' ? 'llama3.1' : 'gpt-4o-mini'}
           />
-        </label>
-      )}
 
-      <hr className="rule" />
+          <label>
+            API key {needsApiKey(draft) ? '' : '(not needed for this provider)'}
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="stored locally, never synced"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          {preset.apiKeyUrl && (
+            <p className="muted">
+              Get a key at{' '}
+              <a href={preset.apiKeyUrl} target="_blank" rel="noreferrer noopener">
+                {preset.apiKeyUrl}
+              </a>
+            </p>
+          )}
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <header className="settings-card-head">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="read" />
+          </span>
+          <h3 className="section-title">How it reads the page</h3>
+        </header>
+        <div className="settings-card-body">
+          <div className="switch-row">
+            <label className="switch">
+              <input
+                type="checkbox"
+                aria-label="Use Chrome's debugger"
+                checked={useDebugger}
+                onChange={(e) => void toggleDebugger(e.target.checked)}
+              />
+              Use Chrome&rsquo;s debugger
+            </label>
+            <span className={useDebugger ? 'state on' : 'state'} aria-hidden="true">
+              {useDebugger ? (
+                <>
+                  <Icon name="check" size={11} />
+                  on
+                </>
+              ) : (
+                'off'
+              )}
+            </span>
+          </div>
+          <p className="muted">
+            Reads the page the way the browser itself does, clicks with real input events, and can
+            attach files. Chrome shows a &ldquo;being debugged&rdquo; banner while a run is going,
+            and opening DevTools on the tab switches it back off.
+          </p>
+          {useDebugger && !debuggerAvailable() && (
+            <p className="turn-error">
+              This build does not have the debugger permission, so the page will be read the older
+              way.
+            </p>
+          )}
+
+          {useDebugger && (
+            <label>
+              Files the agent may attach — one full path per line
+              <textarea
+                className="code"
+                value={files}
+                onChange={(e) => setFiles(e.target.value)}
+                onBlur={() => void saveFiles(files.split('\n').map((line) => line.trim()))}
+                placeholder="/Users/you/Documents/CV.pdf"
+                rows={2}
+                spellCheck={false}
+              />
+            </label>
+          )}
+        </div>
+      </section>
 
       <details className="disclosure">
         <summary>Your details</summary>
         <Details />
       </details>
-
-      <hr className="rule" />
 
       <details className="disclosure">
         <summary>Where your data goes</summary>
@@ -328,7 +399,7 @@ export function Settings({
         </p>
       </details>
 
-      <div className="row">
+      <div className="settings-actions">
         <button type="button" className="primary" onClick={save}>
           Save
         </button>

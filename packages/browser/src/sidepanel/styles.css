@@ -1763,17 +1763,6 @@ button.danger:hover:not(:disabled) {
   padding: 0;
 }
 
-/* Which endpoint is in use, above the fields that describe it. */
-.profiles {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s3);
-  padding: var(--s4);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--surface-1);
-}
-
 .rule {
   border: none;
   border-top: 1px solid var(--line);
@@ -1860,6 +1849,89 @@ button.danger:hover:not(:disabled) {
   color: var(--fg);
   font-family: var(--mono);
   font-size: var(--t-sm);
+}
+
+/* ============================================================ settings cards == */
+/*
+ * Settings as a stack of cards, not a flat form. The panel is 320–400px wide;
+ * a flat list of labelled fields buries the thing someone opened Settings for.
+ * Each concern is its own card with an icon and a title — the same shape the
+ * onboarding's permission cards already taught, so the two surfaces read as
+ * one product. The card body keeps the existing `.pane label` field styling, so
+ * nothing about the inputs themselves changes.
+ */
+.settings-pane {
+  gap: var(--s4);
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* The icon badge: the same 26px accent-soft square the onboarding's value-list
+   uses, so a settings card and an onboarding claim at the same width read as
+   the same kind of thing. */
+.settings-card-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.settings-card-head .section-title {
+  /* The card title is the section title, kept in the same uppercase tracking
+     so it reads as a label rather than a heading competing with the sheet's
+     own title above it. */
+  margin: 0;
+}
+
+.settings-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+/* The debugger toggle and its on/off state, side by side. The state pill is
+   the same `.state` shape the onboarding's permission cards use, so "on" reads
+   the same here as "allowed" does there. */
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.switch-row .switch {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The actions sit at the bottom of the stack, full-width and in priority order,
+   the same way the onboarding footer lays its primary action out. */
+.settings-actions {
+  display: flex;
+  gap: var(--s3);
+}
+
+.settings-actions button {
+  flex: 1;
+  justify-content: center;
 }
 
 /*

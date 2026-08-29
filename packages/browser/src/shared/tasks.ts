@@ -105,9 +105,46 @@ export async function saveTask(prompt: string, name?: string, host?: string): Pr
   return next;
 }
 
+/**
+ * Rename a task, and its shortcut with it.
+ *
+ * A workflow has two names -- the one you read and the one you type -- and this
+ * used to change only the first, because it was written before the second
+ * existed. Renaming "phone prices" to "weekly check" left it answering to
+ * `/phone-prices`, which is a workflow you can no longer find by its own name
+ * and nothing anywhere saying why.
+ *
+ * The shortcut moves. Someone who has been typing the old one for a week does
+ * lose it, which is a real cost -- but a name that finds nothing is a worse one,
+ * and the sheet shows the shortcut beside the name so the change is visible
+ * rather than discovered later.
+ *
+ * Only for tasks that have one: a plain saved task has no shortcut and is not
+ * given one by being renamed.
+ */
 export async function renameTask(id: string, name: string): Promise<SavedTask[]> {
   const tasks = await loadTasks();
-  const next = tasks.map((task) => (task.id === id ? { ...task, name: name.trim().slice(0, 80) } : task));
+  const trimmed = name.trim().slice(0, 80);
+
+  // Every slug except this task's own, so a rename can keep its own shortcut
+  // when the name has not really changed, and cannot take another's.
+  const taken = new Set(
+    tasks.filter((task) => task.id !== id && task.slug).map((task) => task.slug!),
+  );
+
+  const next = tasks.map((task) => {
+    if (task.id !== id) return task;
+    if (!task.slug) return { ...task, name: trimmed };
+
+    let slug = slugFor(trimmed);
+    if (taken.has(slug)) {
+      let n = 2;
+      while (taken.has(`${slug}-${n}`)) n += 1;
+      slug = `${slug}-${n}`;
+    }
+    return { ...task, name: trimmed, slug };
+  });
+
   await chrome.storage.local.set({ [TASKS_KEY]: next });
   return next;
 }

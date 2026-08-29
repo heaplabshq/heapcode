@@ -2415,6 +2415,14 @@ button.danger:hover:not(:disabled) {
   font-variant-numeric: tabular-nums;
 }
 
+/* What you type to run it. Accent-coloured because it is the one thing on the
+   row that is an instruction rather than a fact about it. */
+.task-slug {
+  flex: none;
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
 .task-host {
   overflow: hidden;
   text-overflow: ellipsis;

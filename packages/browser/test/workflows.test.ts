@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { describeWorkflow, parseWorkflow } from '../src/agent/learn.js';
-import { slugFor } from '../src/shared/tasks.js';
+import {
+  renameTask,
+  saveTask,
+  saveWorkflow,
+  slugFor,
+  type SavedTask,
+} from '../src/shared/tasks.js';
 
 /**
  * Reading back what the model says a run did.
@@ -67,5 +73,73 @@ describe('the name a workflow is typed as', () => {
   it('never comes back empty, however unusable the name', () => {
     expect(slugFor('!!!')).toBe('workflow');
     expect(slugFor('')).toBe('workflow');
+  });
+});
+
+/**
+ * Renaming a workflow.
+ *
+ * A workflow has two names — the one you read and the one you type — and rename
+ * was written before the second existed, so it changed only the first. Renaming
+ * "phone prices" to "weekly check" left it answering to `/phone-prices`: a
+ * workflow you can no longer find by its own name, with nothing anywhere saying
+ * why.
+ */
+describe('renaming a workflow', () => {
+  const store: Record<string, unknown> = {};
+  const stub = () => {
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (k: string) => ({ [k]: store[k] })),
+          set: vi.fn(async (v: Record<string, unknown>) => Object.assign(store, v)),
+        },
+      },
+    });
+  };
+  const tasks = () => store['heapbrowse.tasks'] as SavedTask[];
+
+  afterEach(() => {
+    for (const k of Object.keys(store)) delete store[k];
+    vi.unstubAllGlobals();
+  });
+
+  it('moves the shortcut with the name', async () => {
+    stub();
+    const [saved] = await saveWorkflow({
+      name: 'phone prices',
+      prompt: 'find phone prices',
+      workflow: { steps: ['search'], learnedAt: 1 },
+    });
+    expect(saved!.slug).toBe('phone-prices');
+
+    await renameTask(saved!.id, 'Weekly check');
+
+    expect(tasks()[0]!.slug).toBe('weekly-check');
+  });
+
+  /** Two workflows answering to one shortcut is one of them unreachable. */
+  it('will not take a shortcut another workflow is using', async () => {
+    stub();
+    await saveWorkflow({ name: 'weekly check', prompt: 'a', workflow: { steps: ['x'], learnedAt: 1 } });
+    const after = await saveWorkflow({ name: 'phone prices', prompt: 'b', workflow: { steps: ['y'], learnedAt: 2 } });
+    const phones = after.find((t) => t.slug === 'phone-prices')!;
+
+    await renameTask(phones.id, 'Weekly check');
+
+    const slugs = tasks().map((t) => t.slug);
+    expect(new Set(slugs).size).toBe(slugs.length);
+    expect(slugs).toContain('weekly-check-2');
+  });
+
+  /** A plain saved task has no shortcut, and renaming must not invent one. */
+  it('gives a plain task no shortcut', async () => {
+    stub();
+    const [plain] = await saveTask('just a prompt');
+
+    await renameTask(plain!.id, 'Something else');
+
+    expect(tasks()[0]!.slug).toBeUndefined();
+    expect(tasks()[0]!.name).toBe('Something else');
   });
 });

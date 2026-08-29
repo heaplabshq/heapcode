@@ -101,8 +101,12 @@ export function Tasks({
             ) : (
               <button type="button" className="task-run" onClick={() => void run(task)} title={task.prompt}>
                 <span className="task-run-name">{task.name}</span>
-                {(task.host || task.lastRunAt) && (
+                {(task.slug || task.host || task.lastRunAt) && (
                   <span className="task-meta">
+                    {/* The shortcut, beside the name it is made from. Renaming
+                        moves it, and a shortcut that changes somewhere nobody
+                        can see is one people go on typing the old version of. */}
+                    {task.slug && <span className="task-slug">/{task.slug}</span>}
                     {task.host && <span className="task-host">{task.host}</span>}
                     {task.lastRunAt && (
                       <span className="task-last">last run {relative(task.lastRunAt)}</span>

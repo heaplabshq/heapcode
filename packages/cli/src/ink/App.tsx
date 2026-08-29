@@ -73,6 +73,7 @@ import {
 import {
   DELEGATE_TASK_TOOL,
   configFile,
+  createContextWindowResolver,
   listPermissionGrants,
   listSkillsFormatted,
   permissionsFile,
@@ -593,6 +594,26 @@ export function App({
    * the split docs/phase3-protocol-design.md §7 describes, and the same
    * shape headless.ts already uses.
    */
+  /**
+   * The window the model really has, asked of the endpoint through the daemon.
+   *
+   * The prop from cli.tsx is the preset's number, and a preset is a guess
+   * about a family of endpoints. Too small only wastes context by compacting
+   * early; too large is worse — the loop never compacts, the endpoint drops
+   * the oldest part of the prompt instead, and the agent forgets what it just
+   * read and reads it again.
+   */
+  const contextWindowFor = useRef(
+    createContextWindowResolver(async (profileName, m) => {
+      const { peer } = await ensureConnection();
+      const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
+        profileName,
+        model: m,
+      } satisfies ListModelsParams);
+      return models;
+    }),
+  ).current;
+
   async function ensureConnection(): Promise<ServerConnection> {
     const existing = connectionRef.current;
     if (existing && connectedProfile.current === active.profile.name) return existing;
@@ -1338,7 +1359,7 @@ export function App({
           model,
           temperature: active.profile.temperature,
           maxTokens: active.profile.maxTokens,
-          contextWindow: active.contextWindow,
+          contextWindow: contextWindowFor.known(active.profile, model).window,
           tools,
           client: CLI_REVIEW_CLIENT,
           deep: mode === 'deep',
@@ -1604,6 +1625,9 @@ export function App({
 
     try {
       const { peer } = await ensureConnection();
+      // Read after the connection exists, so the first turn of a session can
+      // already have the endpoint's real answer rather than the preset's.
+      const runWindow = contextWindowFor.known(active.profile, model).window;
       const runId = randomUUID();
       // Cancellation stays on the existing Esc / Ctrl+C wiring above: the
       // controller is still what the UI aborts, but aborting now sends one
@@ -1681,7 +1705,11 @@ export function App({
         workspaceName,
         tools: offered,
         nativeToolCalls: effectiveNativeToolCalls,
-        contextWindow: active.contextWindow,
+        // What the endpoint says its window is, where it has said so — the
+        // preset's guess until then, which is what this always used to send.
+        // Never awaited: sizing a window must not delay a turn, still less
+        // hang one behind an endpoint that has stopped answering.
+        contextWindow: runWindow,
         subAgents: subAgentsEnabled,
         persona: effectivePersona,
         maxIterations,

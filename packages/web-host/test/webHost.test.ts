@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -676,7 +676,9 @@ describe('web host — tool protocol', () => {
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
     await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'go' }).catch(() => {});
 
-    const body = mock!.requests[0]?.body as { tools?: unknown[] } | undefined;
+    // The chat call specifically. The host also asks `/models` what context
+    // length this model really has, and that lands first.
+    const body = chatRequest()?.body as { tools?: unknown[] } | undefined;
     expect(Array.isArray(body?.tools)).toBe(true);
     expect((body!.tools as Array<{ function?: { name: string } }>).length).toBeGreaterThan(0);
 
@@ -1499,6 +1501,79 @@ describe('web host — switching workspace', () => {
   });
 });
 
+describe('web host — a run that was stopped', () => {
+  /**
+   * Stopping a run must not erase it.
+   *
+   * `persistTurn` sits on the success path, and this host is the only one of
+   * the three that hands its own AbortSignal to `agent/run` — so Stop rejected
+   * the request rather than letting the daemon answer `outcome: 'stopped'`,
+   * and the turn was dropped whole. Everything the agent read or changed
+   * vanished from the conversation at the moment you stopped it, and from the
+   * next turn's history with it, so the model could not be told what it had
+   * just been doing.
+   */
+  /**
+   * Found rather than computed: the state directory is keyed by a hash of the
+   * root, and two packages spell that helper differently. What matters is
+   * that a file was written at all.
+   */
+  async function storedMessages(): Promise<Array<Record<string, unknown>>> {
+    const projects = join(home, 'projects');
+    const dirs = await readdir(projects);
+    for (const d of dirs) {
+      const file = join(projects, d, 'conversations.json');
+      const raw = await readFile(file, 'utf8').catch(() => undefined);
+      if (!raw) continue;
+      const convos = JSON.parse(raw) as Array<{ messages: Array<Record<string, unknown>> }>;
+      return convos.flatMap((c) => c.messages);
+    }
+    throw new Error('no conversation was written');
+  }
+
+  it('keeps what it did up to the moment it was stopped', async () => {
+    // An endless read loop, so there is real work in flight to lose.
+    const { root, host } = await boot([
+      { kind: 'sse', chunks: ['<tool name="read_file">\n{"path":"a.ts"}\n</tool>'] },
+    ]);
+    await writeFile(join(root, 'a.ts'), 'export const a = 1;\n', 'utf8');
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const running = browser.peer
+      .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'read forever', runId: 'stopped' })
+      .catch(() => undefined);
+    // Specifically a tool call: that is the work worth keeping, and the
+    // earlier events (text deltas) leave nothing behind to assert on.
+    while (!browser.events.some((e) => e.type === 'tool_call')) await new Promise((r) => setTimeout(r, 10));
+    await browser.peer.request(UI_METHODS.cancel, { runId: 'stopped' });
+    await running;
+
+    const messages = await storedMessages();
+    expect(messages.some((m) => m.role === 'user' && m.content === 'read forever')).toBe(true);
+    // The tool chips too — the record of what it actually did, which is the
+    // part a follow-up turn needs and the part that was being thrown away.
+    expect(messages.some((m) => JSON.stringify(m.ui ?? {}).includes('read_file'))).toBe(true);
+    browser.close();
+  }, 30_000);
+
+  it('writes nothing for a run that never got started', async () => {
+    // A request that never reached the daemon is not an exchange. Recording
+    // one would leave an unanswered prompt in the history for the next turn.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await daemon.close();
+
+    await browser.peer
+      .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'go', runId: 'doomed' })
+      .catch(() => undefined);
+
+    await expect(storedMessages()).rejects.toThrow();
+    browser.close();
+  }, 30_000);
+});
+
 describe('web host — model roles', () => {
   it('round-trips every role model and its cross-profile override', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
@@ -1920,15 +1995,74 @@ describe('web host — context breakdown', () => {
     browser.close();
   });
 
-  it('says when the window size is the preset default rather than a choice', async () => {
-    const { host } = await boot(WRITE_THEN_FINISH); // no contextWindow on the profile
+  it('admits when nothing reported a window size', async () => {
+    // No `contextWindow` on the profile, and the `custom` preset carries no
+    // maxContext either — so this number is a conservative fallback, and the
+    // one question the breakdown exists to answer is whether to trust it.
+    const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
     const ctx = await browser.peer.request<UiContextResult>(UI_METHODS.context);
-    expect(ctx.windowSource).toBe('preset');
+    expect(ctx.windowSource).toBe('default');
+    browser.close();
+  });
+
+  it('prefers what the endpoint says its window is', async () => {
+    // The tier that was missing everywhere but the extension. A preset default
+    // that overstates the real window is the dangerous direction: the meter
+    // never fills, compaction never fires, and the endpoint silently drops the
+    // front of the prompt instead — so the agent forgets what it read and
+    // reads it again.
+    mock = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { data: [{ id: 'mock-model', context_length: 8_000 }] },
+    });
+    daemon = new HeapcodeServer({ home, address: join(home, 'win.sock'), idleShutdownMs: 0 });
+    await daemon.listen();
+    const configPath = join(home, 'config.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        activeProfile: 'mock',
+        profiles: [{ name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model' }],
+      }),
+      'utf8',
+    );
+    web = await startWebHost({
+      root: realpathSync(workspace),
+      config: new ConfigStore(configPath),
+      secrets: new SecretsStore(join(home, 'secrets.json')),
+      nativeToolCalls: false,
+      port: 0,
+      token: 'test-token',
+      connect: (hello): Promise<ServerConnection> =>
+        connectToServer(
+          { client: { name: 'web-host-test' }, ...hello },
+          { address: daemon.address, token: daemon.token, autostart: false },
+        ),
+    });
+
+    const browser = await openBrowser(web);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    const ctx = await browser.peer.request<UiContextResult>(UI_METHODS.context);
+
+    expect(ctx.window).toBe(8_000);
+    expect(ctx.windowSource).toBe('model');
     browser.close();
   });
 });
+
+/**
+ * The chat completion the host sent, ignoring the `/models` lookups around it.
+ *
+ * Indexing `requests[0]` used to mean "the chat call" because it was the only
+ * call. It is not any more: the host asks the endpoint what context length a
+ * model really has rather than trusting the preset's guess.
+ */
+function chatRequest(): MockServer['requests'][number] | undefined {
+  return mock?.requests.find((r) => !r.path.includes('/models'));
+}
 
 /** A promise plus its resolve — for waiting on a callback the host makes. */
 function deferred(): { promise: Promise<void>; resolve(): void } {

@@ -1,4 +1,10 @@
-import type { AgentEvent, AgentOutcome, PermissionChoice, PermissionClass } from '@heapcode/core';
+import type {
+  AgentEvent,
+  AgentOutcome,
+  ContextWindowSource,
+  PermissionChoice,
+  PermissionClass,
+} from '@heapcode/core';
 
 /**
  * The wire protocol between the **browser** and the **web host**.
@@ -410,8 +416,13 @@ export interface UiContextResult {
   slices: UiContextSlice[];
   /** Fraction of the window at which the loop starts compacting. */
   compactionThreshold: number;
-  /** What the window size was read from, for the "is this number right" question. */
-  windowSource: 'profile' | 'preset';
+  /**
+   * What the window size was read from, for the "is this number right"
+   * question. `model` means the endpoint told us; `preset` means it did not
+   * and this is a default for a family of endpoints, which is exactly when
+   * the number is worth doubting.
+   */
+  windowSource: ContextWindowSource;
 }
 
 /**

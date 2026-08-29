@@ -475,6 +475,79 @@ describe('OpenAICompatibleProvider.listModels', () => {
   });
 });
 
+/**
+ * How big the window really is.
+ *
+ * Getting this wrong in the generous direction is the expensive one: the loop
+ * sizes compaction off this number, so a 128k guess against an endpoint
+ * serving less means compaction never fires and the endpoint quietly drops the
+ * oldest part of the prompt instead. The agent then forgets what it read a
+ * moment ago and reads it again — an apparently unstoppable loop, with nothing
+ * anywhere reporting a problem.
+ */
+describe('OpenAICompatibleProvider.contextLengthFor', () => {
+  it('takes the length /models reports', async () => {
+    server = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { data: [{ id: 'glm', context_length: 131_072 }] },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl });
+    expect(await provider.contextLengthFor('glm')).toBe(131_072);
+  });
+
+  it("asks Ollama's own API when /models omits it", async () => {
+    // Ollama reports nothing in the OpenAI-compatible catalogue — which is
+    // exactly the endpoint people run local models on.
+    server = await startMockServer({
+      kind: 'route',
+      routes: {
+        '/v1/models': { status: 200, body: { data: [{ id: 'glm' }] } },
+        '/api/show': { status: 200, body: { model_info: { 'llama.context_length': 32_768 } } },
+      },
+    });
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: `${server.baseUrl}`,
+      preset: 'ollama',
+    });
+    expect(await provider.contextLengthFor('glm')).toBe(32_768);
+  });
+
+  it('sends the key with that probe, so a hosted Ollama answers too', async () => {
+    // The reason this lives on the provider rather than in a host: the probe
+    // it replaced ran extension-side with no credentials, so it could only
+    // ever work against a local endpoint.
+    server = await startMockServer({
+      kind: 'route',
+      routes: {
+        '/v1/models': { status: 200, body: { data: [{ id: 'glm' }] } },
+        '/api/show': { status: 200, body: { model_info: { 'glm.context_length': 65_536 } } },
+      },
+    });
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: `${server.baseUrl}`,
+      preset: 'ollama-cloud',
+      apiKey: 'sk-test',
+    });
+    expect(await provider.contextLengthFor('glm')).toBe(65_536);
+    const probe = server.requests.find((r) => r.path.includes('/api/show'))!;
+    expect(probe.headers.authorization).toBe('Bearer sk-test');
+  });
+
+  it('leaves other providers alone rather than guessing at their URLs', async () => {
+    server = await startMockServer({ kind: 'json', status: 200, body: { data: [{ id: 'gpt' }] } });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl, preset: 'openai' });
+    expect(await provider.contextLengthFor('gpt')).toBeUndefined();
+    expect(server.requests.some((r) => r.path.includes('/api/show'))).toBe(false);
+  });
+
+  it('answers undefined rather than throwing when the endpoint is unhelpful', async () => {
+    server = await startMockServer({ kind: 'json', status: 500, body: { error: 'nope' } });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl, preset: 'ollama' });
+    expect(await provider.contextLengthFor('glm')).toBeUndefined();
+  });
+});
+
 describe('vision message serialization', () => {
   it('sends images as image_url content parts next to the text', async () => {
     server = await startMockServer({

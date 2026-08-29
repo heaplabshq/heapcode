@@ -129,6 +129,19 @@ function Ring({ pct, size = 14 }: { pct: number; size?: number }): JSX.Element {
   );
 }
 
+/**
+ * Where the window size came from — worth saying, because only two of these
+ * four are a number anyone measured. A preset default is a guess about a whole
+ * family of endpoints, and when it is too generous the loop never compacts and
+ * the endpoint truncates the prompt instead.
+ */
+const WINDOW_SOURCE: Record<UiContextResult['windowSource'], string> = {
+  profile: 'Window size set on the profile.',
+  model: 'Window size reported by the endpoint.',
+  preset: "Window size from the preset's default — the endpoint did not report one.",
+  default: 'Window size is a conservative fallback — nothing reported one.',
+};
+
 /** Distinct fills for the stacked bar and its legend, in slice order. */
 const SLICE_COLOR: Record<UiContextSlice['key'], string> = {
   system: 'var(--accent)',
@@ -218,9 +231,7 @@ function ContextModal({
                     {Math.round(pct * 100)}% of the window · compacts at{' '}
                     {Math.round(data.compactionThreshold * 100)}%
                   </div>
-                  <div className="hint">
-                    Window size from the {data.windowSource === 'profile' ? 'profile' : "preset's default"}.
-                  </div>
+                  <div className="hint">{WINDOW_SOURCE[data.windowSource]}</div>
                 </div>
               </div>
 

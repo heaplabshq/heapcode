@@ -47,6 +47,7 @@ import {
   type RpcPeer,
   type ServerConnection,
   type SnapshotBeforeParams,
+  type ModelInfo,
   type StoredMessage,
   type ToolCall,
   type ToolExecuteParams,
@@ -63,6 +64,7 @@ import {
   listSkillsFormatted,
   permissionsFile,
   projectStateDir,
+  createContextWindowResolver,
   profileContextWindow,
   trimHistoryForAgent,
   type ConfigStore,
@@ -299,6 +301,19 @@ export class WebSession {
    * `refreshDaemonProfile`.
    */
   private profileRefreshPending = false;
+
+  /**
+   * The window a model really has, asked of the endpoint through the daemon
+   * and cached. This host used to size everything off the preset's number,
+   * which for a hosted endpoint is a guess about a family of them.
+   */
+  private readonly contextWindowFor = createContextWindowResolver((profileName, model) =>
+    this.connection
+      ? this.connection.peer
+          .request<{ models: ModelInfo[] }>(METHODS.listModels, { profileName, model })
+          .then((r) => r.models)
+      : Promise.resolve([]),
+  );
   /** Per-run event log, for replay when a browser reattaches mid-run. */
   private readonly buffers = new Map<string, UiEventParams[]>();
 
@@ -687,7 +702,12 @@ export class WebSession {
     const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
     const history = trimHistoryForAgent(this.conversation?.messages ?? []);
 
-    const window = profileContextWindow(profile);
+    // The one place that waits: the breakdown is opened on purpose to ask
+    // "is this number right", and answering it with the guess we happen to
+    // have cached would be answering a different question.
+    const resolved = await this.contextWindowFor.resolve(profile, this.model);
+    const window = resolved.window;
+    const windowSource = resolved.source;
     const slices: UiContextSlice[] = [
       {
         key: 'system',
@@ -727,7 +747,7 @@ export class WebSession {
       window,
       slices,
       compactionThreshold: COMPACTION_THRESHOLD,
-      windowSource: profile.contextWindow ? 'profile' : 'preset',
+      windowSource,
     };
   }
 
@@ -977,6 +997,11 @@ export class WebSession {
           active: p.name === this.profile?.name,
           nativeToolCalls: resolveCapabilities(p).nativeToolCalls,
           contextWindow: p.contextWindow,
+          // The preset's number, deliberately: this is a column for every
+          // configured profile and it is rebuilt on every state push, so
+          // asking each endpoint what it really serves would be one request
+          // per profile per push. The active profile's real window is
+          // resolved where it matters — the run, the meter, the breakdown.
           effectiveContextWindow: profileContextWindow(p),
           maxTokens: p.maxTokens,
         })),
@@ -1254,7 +1279,7 @@ export class WebSession {
       // The meter's denominator before any run has reported usage — otherwise
       // the window is invisible until the first turn, which is exactly when
       // someone wants to check it.
-      contextWindow: this.profile ? profileContextWindow(this.profile) : undefined,
+      contextWindow: this.profile ? this.contextWindowFor.known(this.profile, this.model).window : undefined,
       profiles,
       daemon: this.connection ? 'up' : 'down',
       runId: this.activeRunId,
@@ -1276,6 +1301,8 @@ export class WebSession {
     this.activeRunId = runId;
     this.abort = new AbortController();
     this.buffers.set(runId, []);
+    /** Whether the success path already wrote this turn — see the `finally`. */
+    let persisted = false;
 
     const persona = applyModeToPersona(getPersona(this.personaId), this.mode);
     // CREATE_ARTIFACT_TOOL is added HERE, by this host only — the CLI and the
@@ -1334,7 +1361,10 @@ export class WebSession {
           // narrated what it would do instead of calling anything: no tool
           // chips, no edits. `deps` stays as an override for tests only.
           nativeToolCalls: this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls,
-          contextWindow: profileContextWindow(profile),
+          // The endpoint's own number where it has one. A preset default that
+          // overstates the real window means the loop never compacts and the
+          // endpoint truncates the prompt instead, silently.
+          contextWindow: this.contextWindowFor.known(profile, this.model).window,
           // Was missing entirely, so a profile's maxTokens was honoured by the
           // CLI (App.tsx) and ignored here — replies got truncated at the
           // provider default with no way to raise it from the browser.
@@ -1349,13 +1379,45 @@ export class WebSession {
         this.abort.signal,
       );
       await this.persistTurn(task, images?.length);
+      persisted = true;
       return { runId, outcome, maxIterations };
     } finally {
+      if (!persisted) await this.persistUnfinishedTurn(task, images?.length);
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
       this.flushProfileRefresh();
       void this.pushState();
+    }
+  }
+
+  /**
+   * Keep a turn that did not finish cleanly.
+   *
+   * `persistTurn` sits on the success path, and this host -- alone among the
+   * three -- hands its own AbortSignal to `agent/run`. So Stop rejects the
+   * request here instead of letting the daemon answer `outcome: 'stopped'`,
+   * which is what the CLI and the extension get (both only notify
+   * `agent/cancel`, and both persist normally afterwards). The turn was
+   * therefore discarded whole: every file it read, every edit it made, gone
+   * from the conversation at the moment you stopped it -- and gone from the
+   * next turn's history, so the model could not be told what it had just
+   * done and started over.
+   *
+   * The local abort stays, because it is what makes Stop work against a
+   * daemon that has stopped answering. It just no longer costs the transcript.
+   *
+   * A run that produced nothing writes nothing: a request that never reached
+   * the daemon is not an exchange, and recording it would leave an
+   * unanswered prompt in the history for the next turn to puzzle over.
+   */
+  private async persistUnfinishedTurn(task: string, imageCount?: number): Promise<void> {
+    if (!this.conversation) return;
+    if (this.turnEntries.length === 0 && !this.lastText.trim() && !this.reasoningAcc.trim()) return;
+    try {
+      await this.persistTurn(task, imageCount);
+    } catch {
+      /* Losing the write is bad; losing the error that caused it is worse. */
     }
   }
 
@@ -1396,7 +1458,7 @@ export class WebSession {
           model: this.model,
           temperature: profile.temperature,
           maxTokens: profile.maxTokens,
-          contextWindow: profileContextWindow(profile),
+          contextWindow: this.contextWindowFor.known(profile, this.model).window,
           // The review filters this to the read-only tools itself
           // (prReview.ts:457); handing it the full list is what every host does.
           tools: [...session.tools, ...session.mcpManager.getToolDefinitions()],

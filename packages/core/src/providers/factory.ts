@@ -10,6 +10,7 @@ export function createProvider(profile: ProviderProfileConfig, apiKey?: string):
     apiKey,
     headers: { ...profile.headers },
     timeoutMs: profile.timeoutMs,
+    preset: profile.preset,
   };
 
   switch (profile.preset) {

@@ -305,11 +305,19 @@ export class ServerLink {
     return message;
   }
 
-  /** Model list for a profile, resolved with the server's copy of the key. */
-  async listModels(profileName: string): Promise<ModelInfo[]> {
+  /**
+   * Model list for a profile, resolved with the server's copy of the key.
+   *
+   * `model` additionally asks what context length that one model really has,
+   * falling back to the endpoint's own API where /v1/models omits it. The
+   * server does that probe because the key is there — this used to be
+   * attempted extension-side and could not authenticate.
+   */
+  async listModels(profileName: string, model?: string): Promise<ModelInfo[]> {
     const { peer } = await this.ensureConnection(profileName);
     const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
       profileName,
+      model,
     } satisfies ListModelsParams);
     return models;
   }

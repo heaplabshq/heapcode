@@ -253,7 +253,7 @@ export class HeapcodeServer {
     // and nowhere else.
     peer.onRequest(METHODS.listModels, async (raw) => {
       if (!session) throw new Error('session/hello must be sent first');
-      const { profileName } = (raw ?? {}) as ListModelsParams;
+      const { profileName, model } = (raw ?? {}) as ListModelsParams;
       const name = profileName ?? session.activeProfile;
       // `resolveProfile`, not `providerFor`: every host pushes only the ACTIVE
       // profile at hello (App.tsx:426, headless.ts:207, serverLink.ts:91), so
@@ -264,7 +264,21 @@ export class HeapcodeServer {
       // whose models a settings UI needs to offer.
       const resolved = await session.resolveProfile(name, requestKey);
       if (!resolved) throw new Error(`Unknown profile "${name}" for this session.`);
-      return { models: await resolved.provider.listModels() } satisfies ListModelsResult;
+      const models = await resolved.provider.listModels();
+      // Asked about one model in particular, and the catalogue did not say how
+      // big its window is: ask the endpoint's own API. Only the daemon can —
+      // the key is here and nowhere else — and a host that guesses instead
+      // sizes its window off a preset default, which is how compaction ends up
+      // never firing on an endpoint that serves far less than the preset says.
+      if (model && !models.find((m) => m.id === model)?.contextLength) {
+        const length = await resolved.provider.contextLengthFor?.(model).catch(() => undefined);
+        if (length) {
+          const existing = models.findIndex((m) => m.id === model);
+          if (existing >= 0) models[existing] = { ...models[existing]!, contextLength: length };
+          else models.push({ id: model, contextLength: length });
+        }
+      }
+      return { models } satisfies ListModelsResult;
     });
 
     // Request/response like provider/listModels. Nothing binary crosses here:

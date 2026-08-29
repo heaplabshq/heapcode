@@ -242,6 +242,13 @@ export interface ChatSendResult {
 export interface ListModelsParams {
   /** Defaults to the session's active profile. */
   profileName?: string;
+  /**
+   * Find out this model's real context length, even where the OpenAI-compatible
+   * `/models` does not report one (Ollama and LM Studio carry it on their own
+   * APIs). Costs one extra request, so it is opt-in: a picker listing an
+   * endpoint's catalogue does not want it, and a host sizing the window does.
+   */
+  model?: string;
 }
 
 export interface ListModelsResult {

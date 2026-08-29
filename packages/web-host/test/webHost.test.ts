@@ -2042,6 +2042,52 @@ describe('web host — context breakdown', () => {
     browser.close();
   });
 
+  it('asks the endpoint before the first run, not during it', async () => {
+    // `known()` answers with the preset until the real number arrives, which
+    // keeps it off the run's critical path. The first read used to happen
+    // inside the first run — the run it matters for, since it is usually the
+    // longest and a guess that is too small compacts it early, summarising
+    // away what it had already looked up.
+    mock = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { data: [{ id: 'mock-model', context_length: 8_000 }] },
+    });
+    daemon = new HeapcodeServer({ home, address: join(home, 'warm.sock'), idleShutdownMs: 0 });
+    await daemon.listen();
+    const configPath = join(home, 'config.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        activeProfile: 'mock',
+        profiles: [{ name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model' }],
+      }),
+      'utf8',
+    );
+    web = await startWebHost({
+      root: realpathSync(workspace),
+      config: new ConfigStore(configPath),
+      secrets: new SecretsStore(join(home, 'secrets.json')),
+      nativeToolCalls: false,
+      port: 0,
+      token: 'test-token',
+      connect: (hello): Promise<ServerConnection> =>
+        connectToServer(
+          { client: { name: 'web-host-test' }, ...hello },
+          { address: daemon.address, token: daemon.token, autostart: false },
+        ),
+    });
+
+    const browser = await openBrowser(web);
+    // `hello` is what starts the session; nothing has run yet.
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Already known, without a run having happened to discover it.
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).contextWindow).toBe(8_000);
+    browser.close();
+  }, 30_000);
+
   it('prefers what the endpoint says its window is', async () => {
     // The tier that was missing everywhere but the extension. A preset default
     // that overstates the real window is the dangerous direction: the meter

@@ -645,6 +645,15 @@ export function App({
       connectedProfile.current = undefined;
     });
 
+    // Ask how big the window really is now, not on first use. `known()`
+    // answers with the preset's guess until the endpoint replies, and the
+    // first read used to happen inside the first run — the run it matters
+    // for, since a guess that is too small compacts it early and it re-does
+    // work it had already done.
+    void contextWindowFor.resolve(active.profile, model).catch(() => {
+      /* Falls back to the preset exactly as before. */
+    });
+
     // edit_file's fast-apply fallback, now that there is something to call it
     // with. Rebound on every reconnect so it follows a profile switch — the
     // apply model belongs to the profile, not to the session.

@@ -435,6 +435,7 @@ export class WebSession {
     });
     this.registerDaemonHandlers(this.connection.peer);
     this.forgetConnectionWhenItCloses(this.connection);
+    this.warmContextWindow();
     // Recorded once the folder has actually opened, not when it was asked
     // for: a path that fails to start is not somewhere to offer going back to.
     //
@@ -1188,6 +1189,32 @@ export class WebSession {
     });
     this.registerDaemonHandlers(this.connection.peer);
     this.forgetConnectionWhenItCloses(this.connection);
+    this.warmContextWindow();
+  }
+
+  /**
+   * Ask the endpoint how big its window is now, rather than on first use.
+   *
+   * `known()` answers with the preset's guess until the real number arrives,
+   * which keeps it off the run's critical path — but the first read of a
+   * session was happening inside the first run, so that run got the guess.
+   * That is the run it matters for: it is usually the longest, and a guess
+   * that is too small compacts it early, summarising away what it had already
+   * looked up. Then it looks the same things up again.
+   *
+   * Seen on a real session: the preset says 128k, the endpoint serves a
+   * million, and a research-heavy first turn re-issued six searches it had
+   * already run.
+   *
+   * Starting it at hello costs one request nobody waits for, and by the time
+   * a human has typed a prompt the answer is there.
+   */
+  private warmContextWindow(): void {
+    const profile = this.profile;
+    if (!profile) return;
+    void this.contextWindowFor.resolve(profile, this.model).catch(() => {
+      /* Falls back to the preset exactly as before — never worth surfacing. */
+    });
   }
 
   /**

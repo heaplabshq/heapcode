@@ -4,6 +4,14 @@ import type { UiContextResult, UiContextSlice } from '@heapcode/web-host/protoco
 export interface ContextMeterProps {
   used?: number;
   window?: number;
+  /**
+   * A run is holding the window right now, so `used` is the loop's own live
+   * measurement. Idle, `used` is a memory of the last run's peak and the
+   * meter prices the next turn from `load` instead.
+   */
+  live?: boolean;
+  /** Bumped when the conversation changes, so an idle meter re-prices. */
+  revision?: number;
   load(): Promise<UiContextResult>;
   /** "Change it on the profile" — the modal's one action. */
   onOpenSettings(): void;
@@ -27,18 +35,63 @@ function colorFor(pct: number): string {
  * full" is a table with five rows and a paragraph of caveat, and a 240px
  * popover is where that turns into something nobody reads.
  */
-export function ContextMeter({ used = 0, window: win, load, onOpenSettings }: ContextMeterProps): JSX.Element | null {
+export function ContextMeter({
+  used = 0,
+  window: win,
+  live = false,
+  revision,
+  load,
+  onOpenSettings,
+}: ContextMeterProps): JSX.Element | null {
   const [open, setOpen] = useState(false);
+  const [idle, setIdle] = useState<number>();
+
+  /**
+   * What the next turn will start with — the ring's number while nothing runs.
+   *
+   * `used` comes from the loop's own per-iteration measurement, so it is the
+   * truth during a run and a memory of one afterwards: it holds the last run's
+   * peak for as long as the tab stays open. That badly overstates what is
+   * actually held, because tool output is not carried between turns
+   * (`trimHistoryForAgent` drops every tool result and keeps the last twelve
+   * real messages). A run of forty file reads left the ring near half full
+   * while the next turn genuinely started near empty — and clicking it opened
+   * a breakdown that said 5%, which read as the two contradicting each other.
+   *
+   * Not fetched during a run: the live figure is the right one then, and this
+   * would be asking the host to price a hypothetical at the busiest moment.
+   */
+  useEffect(() => {
+    if (live) return;
+    let cancelled = false;
+    void load()
+      .then((c) => {
+        if (cancelled) return;
+        setIdle(c.slices.filter((s) => s.key !== 'free').reduce((n, s) => n + s.tokens, 0));
+      })
+      .catch(() => {
+        /* The meter is non-critical; leave the last figure standing. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [live, load, revision]);
+
+  const shown = live ? used : (idle ?? used);
   if (!win) return null;
 
-  const pct = Math.min(1, used / Math.max(1, win));
+  const pct = Math.min(1, shown / Math.max(1, win));
 
   return (
     <>
       <button
         className="ctx-btn"
         onClick={() => setOpen(true)}
-        title={`Context: ~${fmt(used)} of ${fmt(win)} tokens (${Math.round(pct * 100)}%). Click for the breakdown.`}
+        title={
+          live
+            ? `Context: ~${fmt(shown)} of ${fmt(win)} tokens (${Math.round(pct * 100)}%) in this run. Click for the breakdown.`
+            : `Context: the next turn starts at ~${fmt(shown)} of ${fmt(win)} tokens (${Math.round(pct * 100)}%). Click for the breakdown.`
+        }
         aria-label="Context usage"
       >
         <Ring pct={pct} />
@@ -46,7 +99,9 @@ export function ContextMeter({ used = 0, window: win, load, onOpenSettings }: Co
           {Math.round(pct * 100)}%
         </span>
       </button>
-      {open && <ContextModal load={load} onClose={() => setOpen(false)} onOpenSettings={onOpenSettings} />}
+      {open && (
+        <ContextModal live={live} load={load} onClose={() => setOpen(false)} onOpenSettings={onOpenSettings} />
+      )}
     </>
   );
 }
@@ -83,11 +138,26 @@ const SLICE_COLOR: Record<UiContextSlice['key'], string> = {
   free: 'var(--border)',
 };
 
+/**
+ * A slice's caption, corrected for what the host could not know.
+ *
+ * The breakdown is built without reference to whether a run is in flight, so
+ * "Free — room left for this turn's reply" is wrong exactly when it matters:
+ * mid-run the loop's accumulating tool results are spending that space, and
+ * none of them appear anywhere above it.
+ */
+function noteFor(slice: UiContextSlice, live: boolean): string | undefined {
+  if (slice.key === 'free' && live) return 'Room for the next turn — the run in flight is using part of it now.';
+  return slice.note;
+}
+
 function ContextModal({
+  live,
   load,
   onClose,
   onOpenSettings,
 }: {
+  live: boolean;
   load(): Promise<UiContextResult>;
   onClose(): void;
   onOpenSettings(): void;
@@ -136,6 +206,14 @@ function ContextModal({
                   <div className="ctx-headline">
                     {fmt(used)} / {fmt(data.window)} tokens
                   </div>
+                  {/* What this number is, before what it adds up to. The
+                      breakdown prices the NEXT turn's prompt — it is not a
+                      reading of the run that just finished, and saying so is
+                      the difference between "5%" being informative and
+                      looking like it contradicts the ring. */}
+                  <div className="hint">
+                    What the next turn starts with{live ? ', while the run in flight holds more' : ''}.
+                  </div>
                   <div className="hint">
                     {Math.round(pct * 100)}% of the window · compacts at{' '}
                     {Math.round(data.compactionThreshold * 100)}%
@@ -166,7 +244,7 @@ function ContextModal({
                     <span className="ctx-swatch" style={{ background: SLICE_COLOR[s.key] }} aria-hidden="true" />
                     <span className="ctx-legend-label">{s.label}</span>
                     <span className="ctx-legend-num">{fmt(s.tokens)}</span>
-                    {s.note && <span className="ctx-legend-note">{s.note}</span>}
+                    {noteFor(s, live) && <span className="ctx-legend-note">{noteFor(s, live)}</span>}
                   </li>
                 ))}
               </ul>

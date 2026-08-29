@@ -181,6 +181,24 @@ describe('HeapcodeServer — session isolation', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(server.sessionCount).toBe(0);
   });
+
+  it('an attached host is not, by itself, work in progress', async () => {
+    // `busy` is what a rebuilt daemon waits for before retiring, and it has to
+    // mean "something is running", not "someone is connected". A session lives
+    // as long as its host does — a browser tab, an editor window, a terminal —
+    // so gating on attachment meant waiting for the user to quit everything,
+    // which nobody does. The daemon then served the old build indefinitely.
+    await startServer();
+    const profiles = [{ name: 'p', preset: 'custom' as const, baseUrl: 'http://a/v1', model: 'm' }];
+    const client = await connectClient({ root: home, profiles, activeProfile: 'p', keys: { p: 'k' } });
+
+    expect(server.sessionCount).toBe(1);
+    expect(server.busy).toBe(false);
+
+    client.close();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(server.busy).toBe(false);
+  });
 });
 
 /** §6's two races, both resolved by the socket rather than a lock file. */

@@ -133,6 +133,17 @@ export class ServerLink {
     this.connectedProfile = profileName;
     const { peer } = connection;
 
+    // The daemon outlives this window by design, and it also exits without
+    // asking: it goes idle, it retires because its bundle was rebuilt, someone
+    // kills it. Holding the dead peer meant every later request rejected with
+    // "connection closed" until the window was reloaded. Dropping the
+    // reference is the whole recovery — the next call reconnects.
+    peer.onClose(() => {
+      if (this.connection !== connection) return;
+      this.connection = undefined;
+      this.connectedProfile = undefined;
+    });
+
     peer.onRequest(METHODS.toolExecute, async (raw, signal) => {
       const { runId, call } = raw as ToolExecuteParams;
       // One handler, two kinds of run on this connection — the review's

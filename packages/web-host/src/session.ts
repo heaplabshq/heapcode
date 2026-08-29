@@ -434,6 +434,7 @@ export class WebSession {
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
+    this.forgetConnectionWhenItCloses(this.connection);
     // Recorded once the folder has actually opened, not when it was asked
     // for: a path that fails to start is not somewhere to offer going back to.
     //
@@ -1186,6 +1187,30 @@ export class WebSession {
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
+    this.forgetConnectionWhenItCloses(this.connection);
+  }
+
+  /**
+   * Let go of a daemon that has gone, so the next request builds a new one.
+   *
+   * The daemon outlives this host by design, and it also exits without asking:
+   * it goes idle, it retires because its bundle was rebuilt, someone kills it.
+   * Holding the dead peer meant every later request rejected with "connection
+   * closed" until the host itself was restarted — the browser sat on a
+   * daemon-down badge with no way back. Which is how a rebuilt daemon stayed
+   * invisible: the one thing that would have picked up the new build was the
+   * thing that could no longer happen.
+   *
+   * `start()` rebuilds from `this.connection` being undefined, so dropping the
+   * reference is the whole recovery. A run that was in flight is already lost
+   * with the socket; that is reported by its own rejection, not here.
+   */
+  private forgetConnectionWhenItCloses(connection: ServerConnection): void {
+    connection.peer.onClose(() => {
+      if (this.connection !== connection) return;
+      this.connection = undefined;
+      void this.pushState();
+    });
   }
 
   /**

@@ -99,15 +99,24 @@ const REBUILD_POLL_MS = 5_000;
  * keep working. A stat every few seconds costs nothing next to what the daemon
  * is otherwise doing.
  *
- * It never interrupts work. A rebuild mid-run leaves the run alone and the exit
- * waits for the last session to go, because the alternative -- killing a live
- * agent because a file changed on disk -- is worse than serving stale code for
- * another minute. The next client finds nothing listening and spawns a daemon
- * from the new bundle.
+ * It never interrupts work: a rebuild mid-run leaves the run alone and the
+ * exit waits for it, because killing a live agent because a file changed on
+ * disk is worse than serving stale code for another minute.
+ *
+ * It waits for *work*, not for hosts. The first version waited until no
+ * session was attached, and a session lives as long as its host does -- a
+ * browser tab left open, an editor window, a terminal. Nobody quits all three,
+ * so nothing ever retired and the whole thing was ornamental: the daemon went
+ * on serving the old build with a line in its log saying it intended not to.
+ * Dropping an idle session costs a reconnect, which hosts do silently on their
+ * next request.
+ *
+ * The next client finds nothing listening and spawns a daemon from the new
+ * bundle.
  */
 export async function retireOnRebuild(
   entryFile: string,
-  server: { sessionCount: number },
+  server: { busy: boolean },
   log: (line: string) => Promise<void>,
   shutdown: (code: number) => Promise<void>,
   pollMs: number = REBUILD_POLL_MS,
@@ -124,12 +133,12 @@ export async function retireOnRebuild(
 
       if (!announced) {
         announced = true;
-        await log(`${entryFile} was rebuilt; retiring once the last session ends`);
+        await log(`${entryFile} was rebuilt; retiring as soon as nothing is running`);
       }
-      if (server.sessionCount > 0) return;
+      if (server.busy) return;
 
       clearInterval(timer);
-      await log('no sessions left; exiting so the next client starts the new build');
+      await log('nothing running; exiting so the next client starts the new build');
       await shutdown(0);
     })();
   }, pollMs);

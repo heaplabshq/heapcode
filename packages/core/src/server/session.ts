@@ -150,6 +150,11 @@ export class Session {
     return this.keys.has(profileName);
   }
 
+  /** Runs this session currently has in flight. */
+  get runCount(): number {
+    return this.runs.size;
+  }
+
   beginRun(runId: string): AbortController {
     const controller = new AbortController();
     this.runs.set(runId, controller);

@@ -93,6 +93,21 @@ export class HeapcodeServer {
   }
 
   /**
+   * Whether anything is actually running — an agent turn, a review, an index.
+   *
+   * Distinct from `sessionCount` on purpose. A session lives as long as its
+   * host does: a browser tab left open, an editor window, a terminal. Waiting
+   * for those to go before retiring a rebuilt daemon meant waiting for the
+   * user to quit everything, which nobody does, so in practice a rebuilt
+   * daemon never retired and went on serving yesterday's code. What must not
+   * be interrupted is work in flight, and that is this.
+   */
+  get busy(): boolean {
+    for (const session of this.sessions) if (session.runCount > 0) return true;
+    return false;
+  }
+
+  /**
    * Bind, writing the token file first so a client that sees the socket
    * always finds a usable token.
    *

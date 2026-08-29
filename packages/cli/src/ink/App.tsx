@@ -588,13 +588,6 @@ export function App({
   );
 
   /**
-   * Connect (starting the server if needed) and register the four
-   * server→host request handlers. The bodies are the same code that used to
-   * sit inline in the runAgent options object; only their trigger changed —
-   * the split docs/phase3-protocol-design.md §7 describes, and the same
-   * shape headless.ts already uses.
-   */
-  /**
    * The window the model really has, asked of the endpoint through the daemon.
    *
    * The prop from cli.tsx is the preset's number, and a preset is a guess
@@ -614,6 +607,13 @@ export function App({
     }),
   ).current;
 
+  /**
+   * Connect (starting the server if needed) and register the four
+   * server→host request handlers. The bodies are the same code that used to
+   * sit inline in the runAgent options object; only their trigger changed —
+   * the split docs/phase3-protocol-design.md §7 describes, and the same
+   * shape headless.ts already uses.
+   */
   async function ensureConnection(): Promise<ServerConnection> {
     const existing = connectionRef.current;
     if (existing && connectedProfile.current === active.profile.name) return existing;
@@ -633,6 +633,17 @@ export function App({
     connectionRef.current = connection;
     connectedProfile.current = active.profile.name;
     const { peer } = connection;
+
+    // The daemon outlives this process by design, and it also exits without
+    // asking: it goes idle, it retires because its bundle was rebuilt, someone
+    // kills it. Holding the dead peer meant every later request rejected with
+    // "connection closed" until the CLI itself was restarted. Dropping the
+    // reference is the whole recovery — the next call reconnects.
+    peer.onClose(() => {
+      if (connectionRef.current !== connection) return;
+      connectionRef.current = undefined;
+      connectedProfile.current = undefined;
+    });
 
     // edit_file's fast-apply fallback, now that there is something to call it
     // with. Rebound on every reconnect so it follows a profile switch — the

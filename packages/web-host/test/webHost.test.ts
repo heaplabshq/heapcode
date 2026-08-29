@@ -1574,6 +1574,41 @@ describe('web host — a run that was stopped', () => {
   }, 30_000);
 });
 
+describe('web host — the daemon going away', () => {
+  /**
+   * The daemon outlives this host by design, and it also exits without asking:
+   * it goes idle, it retires because its bundle was rebuilt, someone kills it.
+   * The host used to keep the dead peer, so every later request rejected with
+   * "connection closed" and the browser sat on a daemon-down badge with no way
+   * back short of restarting the host. Which is how a rebuilt daemon stayed
+   * invisible: the one thing that would have picked up the new build was the
+   * thing that could no longer happen.
+   */
+  it('reports it, then reconnects on the next request', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).daemon).toBe('up');
+
+    // Exactly what a retiring daemon does to its clients.
+    await daemon.close();
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).daemon).toBe('down');
+
+    // Something is listening again — a fresh build, in real life.
+    daemon = new HeapcodeServer({ home, address: join(home, 'w2.sock'), idleShutdownMs: 0 });
+    await daemon.listen();
+
+    const result = await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, {
+      text: 'rewrite it',
+    });
+    expect(result.outcome).toBe('done');
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).daemon).toBe('up');
+    browser.close();
+  }, 30_000);
+});
+
 describe('web host — model roles', () => {
   it('round-trips every role model and its cross-profile override', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);

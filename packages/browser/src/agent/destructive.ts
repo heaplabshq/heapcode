@@ -1,5 +1,5 @@
 import type { PermissionClass } from '@heapcode/core/agent';
-import type { Control } from '../shared/snapshot.js';
+import type { Control, PageSnapshot } from '../shared/snapshot.js';
 
 /**
  * How dangerous is this action, really?
@@ -87,8 +87,18 @@ export interface Classification {
  * Three independent signals escalate to `destructive`: committing language in
  * the control's own name, submitting a form, and sitting inside a checkout or
  * payment landmark. Any one is enough.
+ *
+ * Two of the three are markup facts, so a driver that could not read the markup
+ * has them both absent -- and absent is indistinguishable from false unless
+ * somebody says so. `signals` is that somebody: on `partial` every click is
+ * treated as a commit, because a button that cannot be shown not to submit has
+ * to be assumed to. That over-asks, which is the direction this module is
+ * deliberately wrong in, and it only happens when a read genuinely failed.
  */
-export function classifyClick(control: Control): Classification {
+export function classifyClick(
+  control: Control,
+  signals?: PageSnapshot['signals'],
+): Classification {
   const name = control.name ?? '';
 
   if (!BENIGN.test(name)) {
@@ -115,6 +125,28 @@ export function classifyClick(control: Control): Classification {
     return {
       permission: 'destructive',
       reason: `"${name}" submits a form, which is usually not reversible`,
+    };
+  }
+
+  // Deliberately without the CONTINUATION de-escalation the bare-submit rule
+  // gets. That rule reads "this submits, but it is only a wizard step"; here
+  // there is no "this submits" to soften, and "Continue" on a checkout page is
+  // precisely the click this whole finding was about. Unproven means asked.
+  if (control.unknownSignals) {
+    return {
+      permission: 'destructive',
+      reason:
+        `"${name}" is inside an embedded frame whose markup could not be read, so whether it ` +
+        `submits a form or sits in a payment area is unknown`,
+    };
+  }
+
+  if (signals === 'partial') {
+    return {
+      permission: 'destructive',
+      reason:
+        `the page markup could not be read, so whether "${name}" submits a form or sits in a ` +
+        `payment area is unknown`,
     };
   }
 
@@ -169,10 +201,29 @@ export function classifyPress(
   key: string,
   target: Control | undefined,
   page: Control[],
+  signals?: PageSnapshot['signals'],
 ): Classification {
   if (key !== 'Enter') return { permission: 'write' };
 
+  // Enter is a submit on most of the web, and `submits` is exactly the field a
+  // partial read does not have. Unknown is not "no".
+  if (signals === 'partial') {
+    return {
+      permission: 'destructive',
+      reason:
+        'the page markup could not be read, so whether Enter submits a form here is unknown',
+    };
+  }
+
   if (target) {
+    if (target.unknownSignals) {
+      return {
+        permission: 'destructive',
+        reason:
+          `"${target.name}" is inside an embedded frame whose markup could not be read, so ` +
+          `whether Enter submits a form there is unknown`,
+      };
+    }
     if (target.checkout) {
       return {
         permission: 'destructive',

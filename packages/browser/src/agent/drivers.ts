@@ -1,8 +1,16 @@
 import type { PageSnapshot } from '../shared/snapshot.js';
 import type { ScrollDirection } from '../content/scroll.js';
-import { sendToPage } from '../sidepanel/page.js';
+import { listFrames, sendToPage } from '../sidepanel/page.js';
+import {
+  bandOf,
+  baseForBand,
+  labelForFrame,
+  mergeFrameSnapshots,
+  type FramePart,
+} from '../shared/frames.js';
 import { CdpDetached, CdpSession, frameList } from './cdp.js';
 import { snapshotFromAxTree, type AxNode } from './axTree.js';
+import { pageFacts } from './domFacts.js';
 import { describeKey, keySpec, modifierMask, selectAllModifier, type KeyPress } from './keys.js';
 
 /**
@@ -40,6 +48,15 @@ export interface PageDriver {
   /** Attach files to a file input. Only CDP can do this at all. */
   attachFiles?(handle: number, generation: number, paths: string[]): Promise<Outcome>;
   /**
+   * Which frame of the tab a handle belongs to.
+   *
+   * For the messages the panel sends to the page directly rather than through
+   * the driver -- the confirmation outline. Only the DOM driver bands its
+   * handles by frame; CDP handles are backend node ids, unique across the whole
+   * tab, so it does not implement this and the caller falls back to frame 0.
+   */
+  frameOf?(handle: number | undefined): number | undefined;
+  /**
    * A picture of the page, for the user to watch — never for the model.
    *
    * Screenshots are 100-500KB, and a model that receives one receives it in
@@ -54,24 +71,101 @@ export interface PageDriver {
 
 export type Outcome = { ok: true; note: string } | { ok: false; error: string };
 
-/** The existing content-script path, unchanged in behaviour. */
+/**
+ * The content-script path.
+ *
+ * It also owns the frames now. The top frame used to gather its children over
+ * `postMessage` and hand back one merged page; that channel could be answered
+ * by any script in a frame, including the page's own in a frame we hold no
+ * permission for, so the gathering moved here where each frame can be addressed
+ * over the extension's own channel. See `shared/frames.ts`.
+ */
 export class DomDriver implements PageDriver {
   readonly kind = 'dom';
   #tabId: number;
+  /**
+   * frame id -> the band of handles that frame mints from.
+   *
+   * Assigned here and kept for the life of the driver, because a handle already
+   * given to the model has to keep meaning what it meant. Band 0 is the top
+   * document, which needs no entry.
+   */
+  #bands = new Map<number, number>();
+  #nextBand = 1;
 
   constructor(tabId: number) {
     this.#tabId = tabId;
   }
 
+  /**
+   * A page's frames are capped, like the CDP path's are.
+   *
+   * A page carrying twenty advert frames would otherwise pay twenty round trips
+   * per read for content nobody asked about.
+   */
+  static readonly MAX_CHILD_FRAMES = 8;
+
+  #bandFor(frameId: number): number {
+    const existing = this.#bands.get(frameId);
+    if (existing !== undefined) return existing;
+    const band = this.#nextBand++;
+    this.#bands.set(frameId, band);
+    return band;
+  }
+
+  /** Which frame owns a handle, from the handle alone. */
+  frameOf(handle: number | undefined): number | undefined {
+    if (handle === undefined) return 0;
+    const band = bandOf(handle);
+    if (band === 0) return 0;
+    for (const [frameId, assigned] of this.#bands) {
+      if (assigned === band) return frameId;
+    }
+    return undefined;
+  }
+
   async snapshot(): Promise<PageSnapshot> {
+    const frames = await listFrames(this.#tabId);
+
     const response = await sendToPage(this.#tabId, { type: 'snapshot' });
     if (!response.ok) throw new Error(response.error);
     if (response.kind !== 'snapshot') throw new Error('Unexpected reply from the page.');
-    return response.snapshot;
+
+    const children = frames
+      .filter((frame) => frame.frameId !== 0)
+      .slice(0, DomDriver.MAX_CHILD_FRAMES);
+    if (children.length === 0) return response.snapshot;
+
+    const parts: FramePart[] = await Promise.all(
+      children.map(async (frame) => {
+        const band = this.#bandFor(frame.frameId);
+        const reply = await sendToPage(
+          this.#tabId,
+          { type: 'snapshot', base: baseForBand(band) },
+          frame.frameId,
+        );
+        return {
+          label: labelForFrame(frame.url),
+          band,
+          snapshot: reply.ok && reply.kind === 'snapshot' ? reply.snapshot : undefined,
+        };
+      }),
+    );
+
+    return mergeFrameSnapshots(response.snapshot, parts);
   }
 
   async #act(request: Parameters<typeof sendToPage>[1]): Promise<Outcome> {
-    const response = await sendToPage(this.#tabId, request);
+    const handle = (request as { handle?: number }).handle;
+    const frameId = this.frameOf(handle);
+    if (frameId === undefined) {
+      return {
+        ok: false,
+        error: `Handle [${String(handle)}] belongs to a frame that is no longer being read. Read the page again.`,
+      };
+    }
+
+    const response = await sendToPage(this.#tabId, request, frameId);
     if (!response.ok) return { ok: false, error: response.error };
     if (response.kind !== 'acted') return { ok: false, error: 'Unexpected reply from the page.' };
     return { ok: true, note: response.note };
@@ -168,18 +262,33 @@ export class CdpDriver implements PageDriver {
   }
 
   async snapshot(): Promise<PageSnapshot> {
-    const [trees, metrics, tab] = await Promise.all([
+    const [trees, metrics, tab, facts] = await Promise.all([
       this.#trees(),
       this.#session.send<LayoutMetrics>('Page.getLayoutMetrics'),
       chrome.tabs.get(this.#session.tabId),
+      // In parallel with the tree, because it is the same page read twice from
+      // two angles and neither depends on the other.
+      pageFacts(this.#session),
     ]);
 
     this.#reads++;
     this.#origin = originOf(tab.url);
 
+    const notes = [...trees.notes];
+    if (!facts) {
+      // Said out loud rather than swallowed. A run that cannot tell a submit
+      // from an ordinary button is a run where the user should be asked more
+      // often, and `signals: 'partial'` is what makes the policy layer do that.
+      notes.push(
+        'The page markup could not be read, so form-submit and payment signals are unavailable ' +
+          'for this read. Actions will be confirmed more cautiously.',
+      );
+    }
+
     return snapshotFromAxTree({
       nodes: trees.nodes,
-      notes: trees.notes,
+      notes,
+      facts,
       url: tab.url ?? '',
       title: tab.title ?? '',
       viewport: {

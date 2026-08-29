@@ -29,16 +29,18 @@ import type { Control, PageSnapshot } from '../shared/snapshot.js';
  * handle, and there is no way for a stale one to survive the transition
  * (PRD section 7.5).
  *
- * The script runs in *every* frame, and the frames talk to each other. Only the
- * top frame answers the panel; a frame inside the page is reached by its parent
- * over `postMessage`, which is the one channel that crosses an origin boundary
- * without a permission of its own. See `FRAME_BAND` for how the handles stay
- * unambiguous across all of them.
+ * The script runs in *every* frame, and every frame answers the panel for
+ * itself. Frames do not talk to each other and no frame speaks for another:
+ * the aggregation that used to happen here, over `postMessage`, is done by the
+ * panel now, for reasons written up in `shared/frames.ts`. The short version is
+ * that `postMessage` proves only which window replied, and the window that
+ * matters is one our content script was never injected into.
+ *
+ * Handles stay unambiguous across frames because the panel gives each frame a
+ * band of numbers to mint from.
  */
 
 const registry = new HandleRegistry();
-
-const IS_TOP = window === window.top;
 
 /**
  * The controls from the most recent snapshot, by handle.
@@ -50,183 +52,36 @@ const IS_TOP = window === window.top;
 let lastControls = new Map<number, Control>();
 
 /**
- * How many handles each frame gets to itself.
+ * This document, and only this document.
  *
- * A frame runs its own registry, so without this every frame would mint `[1]`,
- * `[2]`, `[3]` and the panel would have no way to say which document a handle
- * belonged to. Giving each frame a band makes the number itself the routing
- * information: `[100004]` is the fourth control of frame 1, and the top frame
- * knows where to send the click without keeping a side table the model could
- * get out of step with.
+ * Frames used to be gathered here, by the top frame, over `postMessage`: it
+ * broadcast to every `<iframe>` on the page and merged whatever answered. The
+ * frames that mattered were the ones our content script had never been injected
+ * into -- a third-party advert whose origin was never granted -- and in those,
+ * the only thing that could answer was the page's own script. It could invent
+ * controls, and receive the user's saved details when autofill matched one.
  *
- * Deliberately far larger than any page's control count, so a long-lived page
- * cannot count its way into the next frame's band.
+ * So the gathering moved to the panel, which addresses each frame directly over
+ * `chrome.tabs.sendMessage(..., { frameId })`. Every frame answers for itself,
+ * no frame speaks for another, and a frame with no content script in it simply
+ * does not reply. See `shared/frames.ts`.
  */
-const FRAME_BAND = 100_000;
-
-/** Only frames directly inside the top document are aggregated. See `gather`. */
-const frameIndexes = new WeakMap<Element, number>();
-let nextFrameIndex = 0;
-
-function frameIndexOf(element: Element): number {
-  const existing = frameIndexes.get(element);
-  if (existing !== undefined) return existing;
-  const index = ++nextFrameIndex;
-  frameIndexes.set(element, index);
-  return index;
-}
-
-function frameElements(): HTMLIFrameElement[] {
-  return [...document.querySelectorAll('iframe, frame')].filter(
-    (element): element is HTMLIFrameElement =>
-      element instanceof HTMLIFrameElement && element.contentWindow !== null,
-  );
-}
-
-function frameLabel(element: HTMLIFrameElement): string {
-  const named = element.title?.trim() || element.name?.trim();
-  if (named) return named;
-  try {
-    return new URL(element.src, location.href).host || 'embedded frame';
-  } catch {
-    return 'embedded frame';
-  }
-}
-
-/**
- * One request to a frame, over `postMessage`.
- *
- * A timeout rather than an open wait: a frame whose script never arrived (its
- * origin was not granted, or Chrome declined to inject) is indistinguishable
- * from one that is merely slow, and a snapshot that hangs on a third-party
- * advert frame is worse than one that says the frame could not be read.
- */
-const FRAME_TIMEOUT_MS = 1_500;
-let nextCallId = 1;
-
-function callFrame(
-  frame: HTMLIFrameElement,
-  message: Record<string, unknown>,
-): Promise<FrameReply | undefined> {
-  const target = frame.contentWindow;
-  if (!target) return Promise.resolve(undefined);
-
-  const id = `${nextCallId++}`;
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => finish(undefined), FRAME_TIMEOUT_MS);
-
-    function finish(reply: FrameReply | undefined) {
-      clearTimeout(timer);
-      window.removeEventListener('message', onMessage);
-      resolve(reply);
-    }
-
-    function onMessage(event: MessageEvent) {
-      const data = event.data as FrameEnvelope | undefined;
-      if (!data || data.__heapbrowse !== 'reply' || data.id !== id) return;
-      // Only the frame we asked may answer for it. Any window can post to us,
-      // and a page that could impersonate another frame's reply would be able
-      // to put controls in the snapshot that route somewhere else entirely.
-      if (event.source !== target) return;
-      finish(data.reply);
-    }
-
-    window.addEventListener('message', onMessage);
-    target.postMessage({ __heapbrowse: 'request', id, ...message }, '*');
-  });
-}
-
-interface FrameEnvelope {
-  __heapbrowse?: 'request' | 'reply';
-  id?: string;
-  op?: string;
-  reply?: FrameReply;
-  [key: string]: unknown;
-}
-
-type FrameReply =
-  | { kind: 'snapshot'; snapshot: PageSnapshot; base: number }
-  | { kind: 'acted'; note: string }
-  | { kind: 'ok' }
-  | { kind: 'error'; error: string };
-
-/**
- * The page, plus everything embedded in it.
- *
- * One level deep on purpose. A frame inside a frame is rare on the sites this
- * is used for, and supporting it means handing out sub-bands from within a band
- * — at which point the number no longer says where to route, which is the whole
- * reason the scheme works. A nested frame is reported as unread rather than
- * silently dropped.
- */
-async function snapshotNow(): Promise<PageSnapshot> {
+function snapshotNow(base?: number): PageSnapshot {
+  // The band this frame's handles live in, assigned by the panel and claimed
+  // once: the numbers already handed to the model have to keep meaning what
+  // they meant.
+  if (base !== undefined && base > 0) registry.useBase(base);
   const snapshot = extractSnapshot(document, registry);
-  const merged = IS_TOP ? await mergeFrames(snapshot) : snapshot;
-  lastControls = new Map(merged.controls.map((c) => [c.handle, c]));
-  return merged;
-}
-
-async function mergeFrames(base: PageSnapshot): Promise<PageSnapshot> {
-  const frames = frameElements();
-  if (frames.length === 0) return base;
-
-  const notes: string[] = [...(base.notes ?? [])];
-  const controls = [...base.controls];
-  const tables = [...base.tables];
-  const texts = [base.text];
-
-  const replies = await Promise.all(
-    frames.map(async (frame) => ({
-      frame,
-      label: frameLabel(frame),
-      reply: await callFrame(frame, { op: 'snapshot', base: frameIndexOf(frame) * FRAME_BAND }),
-    })),
-  );
-
-  for (const { label, reply } of replies) {
-    if (!reply || reply.kind !== 'snapshot') {
-      notes.push(
-        `An embedded frame ("${label}") could not be read. Its content is not in this snapshot; ` +
-          `if what you are looking for should be inside it, say so rather than assuming it is absent.`,
-      );
-      continue;
-    }
-    const inner = reply.snapshot;
-    if (inner.controls.length === 0 && !inner.text.trim()) continue;
-
-    controls.push(
-      ...inner.controls.map((control) => ({
-        ...control,
-        context: control.context ? `${label}: ${control.context}` : `in frame "${label}"`,
-        // Frame content ranks just below the host page: it is usually a consent
-        // dialog or a payment field, which matters, but the page's own controls
-        // are what the user is looking at.
-        score: Math.max(0, control.score - 50),
-      })),
-    );
-    tables.push(...inner.tables);
-    if (inner.text.trim()) texts.push(`[frame "${label}"]\n${inner.text.trim()}`);
-    if (inner.notes?.length) notes.push(...inner.notes);
-  }
-
-  return {
-    ...base,
-    controls,
-    tables,
-    text: texts.filter(Boolean).join('\n\n'),
-    notes: notes.length > 0 ? notes : undefined,
-  };
-}
-
-/** The frame a handle belongs to, or undefined when it is ours. */
-function frameFor(handle: number): HTMLIFrameElement | undefined {
-  const index = Math.floor(handle / FRAME_BAND);
-  if (index === 0) return undefined;
-  return frameElements().find((frame) => frameIndexes.get(frame) === index);
+  lastControls = new Map(snapshot.controls.map((c) => [c.handle, c]));
+  return snapshot;
 }
 
 export type ContentRequest =
-  | { type: 'snapshot' }
+  /**
+   * Read this frame. `base` is the band of handle numbers it should mint from,
+   * assigned by the panel so that a handle says which frame it belongs to.
+   */
+  | { type: 'snapshot'; base?: number }
   | { type: 'scroll'; direction: 'down' | 'up' | 'top' | 'bottom'; pages?: number }
   | { type: 'settle'; seconds: number }
   /** What is at this handle, for a confirmation the user can actually check. */
@@ -436,35 +291,11 @@ function highlight(element: Element, label?: string): void {
   untrack = () => cancelAnimationFrame(frame);
 }
 
-/**
- * Send an action to the frame that owns the handle, if it is not ours.
- *
- * Returns undefined when the handle belongs to this document, which is the
- * ordinary case and reads better than a boolean at every call site.
- */
-async function delegate(
-  handle: number | undefined,
-  message: Record<string, unknown>,
-): Promise<ContentResponse | undefined> {
-  if (handle === undefined) return undefined;
-  const frame = frameFor(handle);
-  if (!frame) return undefined;
-
-  const label = frameLabel(frame);
-  const reply = await callFrame(frame, { ...message, handle });
-  if (!reply) {
-    return { ok: false, error: `The embedded frame "${label}" did not respond.` };
-  }
-  if (reply.kind === 'error') return { ok: false, error: reply.error };
-  if (reply.kind === 'acted') return { ok: true, kind: 'acted', note: `${reply.note} (in "${label}")` };
-  return { ok: true, kind: 'ok' };
-}
-
 async function handle(request: ContentRequest): Promise<ContentResponse> {
   try {
     switch (request.type) {
       case 'snapshot':
-        return { ok: true, kind: 'snapshot', snapshot: await snapshotNow() };
+        return { ok: true, kind: 'snapshot', snapshot: snapshotNow(request.base) };
       case 'scroll': {
         scroll(request);
         // Let scrolling take effect, and give a lazy-loading page the chance to
@@ -479,37 +310,23 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
       case 'describe': {
         const control = describeHandle(request.handle);
         if (!control) return { ok: false, error: `No record of handle [${request.handle}].` };
-        // A frame's control is described from the merged snapshot rather than by
-        // asking the frame again: the record is ours either way, and the point
-        // of describing is to show the user what we extracted.
-        if (frameFor(request.handle)) return { ok: true, kind: 'control', control };
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
         return { ok: true, kind: 'control', control };
       }
       case 'highlight': {
-        const delegated = await delegate(request.handle, {
-          op: 'highlight',
-          text: request.label,
-        });
-        if (delegated) return delegated;
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
         highlight(found.element, request.label);
         return { ok: true, kind: 'ok' };
       }
       case 'clearHighlight': {
+        // Only this frame's outline. The panel sends this to every frame,
+        // because by the time it arrives nobody knows which one drew it.
         clearHighlight();
-        // Broadcast: the outline may be in any frame, and by the time this
-        // arrives we no longer know which handle it was for.
-        if (IS_TOP) {
-          await Promise.all(frameElements().map((frame) => callFrame(frame, { op: 'clearHighlight' })));
-        }
         return { ok: true, kind: 'ok' };
       }
       case 'click': {
-        const delegated = await delegate(request.handle, { op: 'click' });
-        if (delegated) return delegated;
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
         clearHighlight();
@@ -517,8 +334,6 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'type': {
-        const delegated = await delegate(request.handle, { op: 'type', text: request.text });
-        if (delegated) return delegated;
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
         clearHighlight();
@@ -526,8 +341,6 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'select': {
-        const delegated = await delegate(request.handle, { op: 'select', option: request.option });
-        if (delegated) return delegated;
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
         clearHighlight();
@@ -535,16 +348,12 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'hover': {
-        const delegated = await delegate(request.handle, { op: 'hover' });
-        if (delegated) return delegated;
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
         const result = performHover(found.element);
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'press': {
-        const delegated = await delegate(request.handle, { op: 'press', press: request.press });
-        if (delegated) return delegated;
         let element: Element | undefined;
         if (request.handle !== undefined) {
           const found = resolveTarget(registry, request.handle, request.generation ?? 0);
@@ -568,75 +377,6 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
   }
 }
 
-/**
- * What a frame does when its parent asks it something.
- *
- * The reply is deliberately narrow — a snapshot, a note, or an error — because
- * the parent turns it back into the same `ContentResponse` the panel expects,
- * and a frame should not be able to widen that shape.
- */
-async function handleFrameRequest(data: FrameEnvelope): Promise<FrameReply> {
-  // The handle arrives already inside this frame's band, which is exactly what
-  // its own registry minted — so it needs no translation, only resolving.
-  const handleNumber = typeof data.handle === 'number' ? data.handle : undefined;
-
-  const resolveLocal = () => {
-    if (handleNumber === undefined) return { ok: false as const, error: 'No handle given.' };
-    return resolveTarget(registry, handleNumber, 0);
-  };
-
-  switch (data.op) {
-    case 'snapshot': {
-      if (typeof data.base === 'number') registry.useBase(data.base);
-      const snapshot = await snapshotNow();
-      return { kind: 'snapshot', snapshot, base: registry.base };
-    }
-    case 'highlight': {
-      const found = resolveLocal();
-      if (!found.ok) return { kind: 'error', error: found.error };
-      highlight(found.element, typeof data.text === 'string' ? data.text : undefined);
-      return { kind: 'ok' };
-    }
-    case 'clearHighlight':
-      clearHighlight();
-      return { kind: 'ok' };
-    case 'click': {
-      const found = resolveLocal();
-      if (!found.ok) return { kind: 'error', error: found.error };
-      clearHighlight();
-      const result = performClick(found.element);
-      return result.ok ? { kind: 'acted', note: result.note } : { kind: 'error', error: result.error };
-    }
-    case 'type': {
-      const found = resolveLocal();
-      if (!found.ok) return { kind: 'error', error: found.error };
-      clearHighlight();
-      const result = performType(found.element, String(data.text ?? ''));
-      return result.ok ? { kind: 'acted', note: result.note } : { kind: 'error', error: result.error };
-    }
-    case 'select': {
-      const found = resolveLocal();
-      if (!found.ok) return { kind: 'error', error: found.error };
-      const result = performSelect(found.element, String(data.option ?? ''));
-      return result.ok ? { kind: 'acted', note: result.note } : { kind: 'error', error: result.error };
-    }
-    case 'hover': {
-      const found = resolveLocal();
-      if (!found.ok) return { kind: 'error', error: found.error };
-      const result = performHover(found.element);
-      return result.ok ? { kind: 'acted', note: result.note } : { kind: 'error', error: result.error };
-    }
-    case 'press': {
-      const found = handleNumber === undefined ? undefined : resolveLocal();
-      if (found && !found.ok) return { kind: 'error', error: found.error };
-      const result = performPress(found?.element, (data.press ?? { key: 'Enter' }) as KeyPress);
-      return result.ok ? { kind: 'acted', note: result.note } : { kind: 'error', error: result.error };
-    }
-    default:
-      return { kind: 'error', error: `Unknown frame request "${String(data.op)}".` };
-  }
-}
-
 // Guard against double injection. `executeScript` on an already-injected tab
 // runs the file again, which would otherwise register a second listener and
 // mint handles from a second registry.
@@ -649,37 +389,27 @@ declare global {
 if (!window.__heapbrowseInjected) {
   window.__heapbrowseInjected = true;
 
-  // Only the top frame answers the panel. `chrome.tabs.sendMessage` without a
-  // frame id is delivered to every frame in the tab, and the reply used is
-  // whichever listener answers first -- so a page with three advert frames
-  // would return a snapshot of a random one of them.
-  if (IS_TOP) {
-    chrome.runtime.onMessage.addListener(
-      (request: ContentRequest, _sender, respond: (response: ContentResponse) => void) => {
-        void handle(request).then(respond);
-        // Keeps the message channel open for the async reply above; without it
-        // Chrome closes it and the panel sees the port disconnect instead.
-        return true;
-      },
-    );
-  }
-
-  // Every frame, including the top one, answers its parent. The top frame has no
-  // parent that will ever ask, and registering anyway keeps the two paths from
-  // diverging.
-  window.addEventListener('message', (event: MessageEvent) => {
-    const data = event.data as FrameEnvelope | undefined;
-    if (!data || data.__heapbrowse !== 'request' || typeof data.id !== 'string') return;
-    // Only our own parent may drive this frame. Any script on the page can post
-    // to this window, and without this check a page could ask its own frames for
-    // snapshots or make them click things.
-    if (event.source !== window.parent) return;
-
-    void handleFrameRequest(data).then((reply) => {
-      (event.source as Window | null)?.postMessage(
-        { __heapbrowse: 'reply', id: data.id, reply },
-        '*',
-      );
-    });
-  });
+  /**
+   * Every frame answers the panel for itself.
+   *
+   * It used to be only the top frame, because `chrome.tabs.sendMessage` without
+   * a frame id goes to all of them and the first reply wins -- a snapshot of a
+   * random advert. The panel now always names a frame id, so each frame can
+   * answer for its own document and none has to speak for another.
+   *
+   * `sender.id` is checked for the same reason the background checks it: this
+   * listener runs in a hostile document, and only our own extension may drive
+   * it. A web page cannot reach `chrome.runtime` at all without
+   * `externally_connectable`, which the manifest does not set, so this is
+   * making an existing guarantee explicit rather than adding one.
+   */
+  chrome.runtime.onMessage.addListener(
+    (request: ContentRequest, sender, respond: (response: ContentResponse) => void) => {
+      if (sender.id !== chrome.runtime.id) return;
+      void handle(request).then(respond);
+      // Keeps the message channel open for the async reply above; without it
+      // Chrome closes it and the panel sees the port disconnect instead.
+      return true;
+    },
+  );
 }

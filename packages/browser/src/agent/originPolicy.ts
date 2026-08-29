@@ -152,7 +152,16 @@ export function decide(input: PolicyInput): Decision {
 }
 
 /** Whether "always allow on this site" should be offered for this action. */
-export function mayOfferAlwaysAllow(permission: PermissionClass, host: string): boolean {
+export function mayOfferAlwaysAllow(
+  permission: PermissionClass,
+  host: string,
+  signals?: 'full' | 'partial',
+): boolean {
+  // Never when the classification could not be fully computed. "Always allow"
+  // is the user retiring a question, and it should only be offered about an
+  // answer we actually have: on `partial` a write is merely everything we could
+  // not prove was worse than a write.
+  if (signals === 'partial') return false;
   // Never for destructive: the point of always-allow is to stop asking, and the
   // actions worth asking about are exactly the ones that spend money.
   return permission === 'write' && !isHighHarm(host);

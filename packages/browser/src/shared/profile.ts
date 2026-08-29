@@ -1,4 +1,5 @@
 import type { Control } from './snapshot.js';
+import { namesSensitiveField } from './sensitive.js';
 
 /**
  * The details the user is tired of typing.
@@ -248,7 +249,13 @@ export function matchProfileField(control: Control, profile: UserProfile): strin
   // Never a credential, whatever it is called. The executor refuses these too;
   // this is the earlier of the two refusals and the one that keeps a saved
   // detail from ever being *considered* for a password box.
+  //
+  // The name is checked alongside the flag because the flag comes from markup
+  // the driver may not have been able to read, and because a control that is
+  // not really on the page at all -- one an embedded frame reported -- carries
+  // whatever flags that frame chose to send. A label is at least a label.
   if (control.sensitive) return undefined;
+  if (namesSensitiveField(control.name, control.context, control.autocomplete)) return undefined;
   if (control.role !== 'input' && control.role !== 'textarea' && control.role !== 'select') {
     return undefined;
   }

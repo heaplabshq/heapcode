@@ -8,52 +8,23 @@
  * button, and a user who sees that on LinkedIn's Apply button learns to ignore
  * the red warning everywhere else.
  *
- * Matched on whole tokens, never substrings. Substring matching against `class`
- * and `id` is hopeless on a real site: generated and BEM-ish class names are
- * long, numerous, and full of accidental matches, and every element inherits
- * every ancestor's classes through `closest`. This is the same mistake that
- * made `/pass/` match `passenger_name`, one level further out.
+ * The rules themselves now live in `shared/moneyRules.ts`, because the CDP
+ * driver has to reach the same verdict from a flat node snapshot with no
+ * elements in it. This file is the DOM walk over those rules; `agent/domFacts.ts`
+ * is the other walk. Matching was token-based rather than substring-based for
+ * reasons written up there, and they have not changed.
  *
  * `cart` is deliberately not a signal. Adding something to a cart is reversible
  * -- it is the checkout that is not -- and "cart" appears in far too many
  * unrelated class names to be worth its false positives.
  */
 
-/** Splits `checkoutPanel`, `checkout-panel` and `checkout_panel` alike. */
-function tokens(value: string): string[] {
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .split(/[^a-zA-Z0-9]+/)
-    .filter(Boolean)
-    .map((token) => token.toLowerCase());
-}
-
-const MONEY_TOKENS = new Set(['checkout', 'payment', 'payments', 'billing', 'purchase']);
-
-/** Path segments that mean the form itself posts money somewhere. */
-const MONEY_SEGMENTS = new Set(['checkout', 'payment', 'payments', 'pay', 'billing', 'order', 'orders', 'purchase']);
+import { isPaymentField, moneySegmentOf, namedForMoney } from '../shared/moneyRules.js';
 
 function actionTakesMoney(form: HTMLFormElement): string | undefined {
-  const action = form.getAttribute('action');
-  if (!action) return undefined;
-  // Path segments, not substrings: `/pay/` is a payment endpoint, `/company/paypal-inc`
-  // is not, and `?redirect=/paylater` is not this form's destination.
-  let path: string;
-  try {
-    path = new URL(action, 'https://example.invalid').pathname;
-  } catch {
-    return undefined;
-  }
-  for (const segment of path.split('/')) {
-    if (MONEY_SEGMENTS.has(segment.toLowerCase())) return `the form posts to /${segment}`;
-  }
-  return undefined;
+  const segment = moneySegmentOf(form.getAttribute('action'));
+  return segment ? `the form posts to /${segment}` : undefined;
 }
-
-/** A field that only exists where money is actually being taken. */
-const PAYMENT_FIELD =
-  'input[autocomplete*="cc-"],input[name*="cardnumber" i],input[name*="card_number" i],' +
-  'input[id*="cardnumber" i],input[id*="cvv" i],input[name*="cvv" i],input[name*="cvc" i]';
 
 /**
  * The reason this element counts as being in a money area, or undefined.
@@ -84,7 +55,7 @@ export function moneyContext(element: Element): string | undefined {
       if (reason) return reason;
     }
 
-    const named = namedForMoney(node);
+    const named = namedForMoney((attribute) => node!.getAttribute(attribute));
     if (named && takesPayment(node)) return `${named}, and it contains card fields`;
 
     node = node.parentElement;
@@ -92,25 +63,11 @@ export function moneyContext(element: Element): string | undefined {
   return undefined;
 }
 
-/** The money-ish name on this element, if it has one. */
-function namedForMoney(node: Element): string | undefined {
-  for (const attribute of ['id', 'class', 'data-testid'] as const) {
-    const value = node.getAttribute(attribute);
-    if (!value) continue;
-    for (const token of tokens(value)) {
-      if (MONEY_TOKENS.has(token)) return `it sits inside "${token}"`;
-    }
-  }
-  const label = node.getAttribute('aria-label');
-  if (label && tokens(label).some((token) => MONEY_TOKENS.has(token))) {
-    return `it sits inside an area labelled "${label}"`;
-  }
-  return undefined;
-}
-
 /** Whether this container really takes payment, rather than merely sounding like it. */
 function takesPayment(node: Element): boolean {
-  if (node.querySelector(PAYMENT_FIELD)) return true;
+  for (const input of node.querySelectorAll('input')) {
+    if (isPaymentField('INPUT', (attribute) => input.getAttribute(attribute))) return true;
+  }
   for (const form of node.querySelectorAll('form')) {
     if (form instanceof HTMLFormElement && actionTakesMoney(form)) return true;
   }

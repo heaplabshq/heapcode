@@ -14,6 +14,7 @@ import {
 import type { Classification } from './destructive.js';
 import { parseKey, KNOWN_KEYS } from './keys.js';
 import { matchAll, PROFILE_FIELDS, type UserProfile } from '../shared/profile.js';
+import { namesSensitiveField } from '../shared/sensitive.js';
 import { canDownload } from '../shared/settings.js';
 import { mergeTable, sameHeaders, type Dataset } from '../shared/dataset.js';
 import { RepetitionGuard } from './repetition.js';
@@ -32,6 +33,45 @@ import { findNextControl, nextIsExhausted, nextPageUrl } from './pagination.js';
  * the model gets what changed rather than the page again, which is the
  * difference between a ten-step run costing ten pages and costing one.
  */
+/**
+ * The one place a write into a credential field is refused.
+ *
+ * It used to live in `content/actions.ts`, which meant it lived on one of the
+ * two drivers. The CDP driver -- the default, since `debugger` is a required
+ * permission and the setting defaults on -- typed into password fields quite
+ * happily, and the tool description, the system prompt and `snapshot.ts` all
+ * said it could not. Three statements of a guarantee and one implementation of
+ * it, on the path fewer people use.
+ *
+ * So it moves above the driver seam. Both drivers now pass through here, the
+ * content script keeps its own copy as defence in depth, and a third driver
+ * arrives already covered rather than arriving as a fourth place to forget.
+ *
+ * The name is checked as well as the flag, because the flag depends on markup
+ * the driver may not have been able to read (`PageSnapshot.signals`), and a box
+ * labelled "Password" is a password box either way.
+ */
+function refuseSensitive(control: Control | undefined): string | undefined {
+  if (!control) return undefined;
+  const sensitive =
+    control.sensitive === true ||
+    namesSensitiveField(control.name, control.context, control.autocomplete);
+  if (!sensitive) return undefined;
+  return (
+    `"${control.name}" is a password, one-time code, or payment field, and those are refused ` +
+    `outright. Ask the user to fill it in themselves -- hand_over is the tool for that.`
+  );
+}
+
+/** What the host needs in order to ask the user about one call. */
+export interface Classified {
+  classification: Classification;
+  target?: Control;
+  url?: string;
+  describe?: string;
+  signals?: PageSnapshot['signals'];
+}
+
 /** Tools that change the page. Repetition means something different for these. */
 const MUTATING = new Set([
   'click',
@@ -392,6 +432,13 @@ export class BrowserToolExecutor {
     const driven = await this.#pool.forActiveTab();
     if (!driven.ok) return fail(driven.reason);
 
+    if (call.name === 'type' || call.name === 'select') {
+      const refused = refuseSensitive(
+        this.#last?.controls.find((candidate) => candidate.handle === handle),
+      );
+      if (refused) return fail(refused);
+    }
+
     const before = this.#last;
     const result =
       call.name === 'click'
@@ -471,7 +518,14 @@ export class BrowserToolExecutor {
    * Returned to the host so the confirmation and the audit record describe the
    * same thing the executor is about to do.
    */
-  async classify(call: ToolCall): Promise<{
+  async classify(call: ToolCall): Promise<Classified> {
+    const result = await this.#classifyCall(call);
+    // Attached once, here, rather than at each of the dozen returns below --
+    // where the one that forgot it would be the one that mattered.
+    return { signals: this.#last?.signals, ...result };
+  }
+
+  async #classifyCall(call: ToolCall): Promise<{
     classification: Classification;
     target?: Control;
     url?: string;
@@ -485,6 +539,13 @@ export class BrowserToolExecutor {
      * executor -- which does know -- writes that line.
      */
     describe?: string;
+    /**
+     * Whether the read behind this classification had every signal available.
+     *
+     * Carried out to the host so the confirmation can decline to offer "always
+     * allow on this site" for a verdict that is a floor rather than an answer.
+     */
+    signals?: PageSnapshot['signals'];
   }> {
     // Only the address is needed here, and asking for read permission to
     // classify an action would make an ungranted page unclassifiable rather
@@ -520,7 +581,9 @@ export class BrowserToolExecutor {
     if (call.name === 'next_page') {
       const control = findNextControl(this.#last?.controls ?? []);
       return {
-        classification: control ? classifyClick(control) : { permission: 'write' },
+        classification: control
+          ? classifyClick(control, this.#last?.signals)
+          : { permission: 'write' },
         target: control,
         url,
         describe: control ? `the next page, via "${control.name}"` : 'the next page',
@@ -534,7 +597,7 @@ export class BrowserToolExecutor {
           ? undefined
           : this.#last?.controls.find((c) => c.handle === Number(call.args.handle));
       return {
-        classification: classifyPress(key, focused, this.#last?.controls ?? []),
+        classification: classifyPress(key, focused, this.#last?.controls ?? [], this.#last?.signals),
         target: focused,
         url,
       };
@@ -609,7 +672,7 @@ export class BrowserToolExecutor {
     }
 
     const classification =
-      call.name === 'type' ? classifyType(control) : classifyClick(control);
+      call.name === 'type' ? classifyType(control) : classifyClick(control, this.#last?.signals);
     return { classification, target: control, url };
   }
 
@@ -810,6 +873,9 @@ export class BrowserToolExecutor {
       }
 
       const control = this.#last?.controls.find((candidate) => candidate.handle === handle);
+
+      const refused = refuseSensitive(control);
+      if (refused) return this.#partial(filled, refused, fail);
 
       // A detail reference is resolved here and nowhere else. The model asked
       // for "Email address" and never receives the address itself.

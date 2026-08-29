@@ -18,12 +18,14 @@ import { READ_ONLY_TOOLS, SCREENSHOT } from './tools.js';
 import { BROWSER_AGENT_PROMPT } from './prompt.js';
 import {
   activeSite,
+  clearHighlightEverywhere,
   sendToPage,
   ensurePage,
   ensureTab,
   type GrantNeeded,
 } from '../sidepanel/page.js';
 import { decide, mayOfferAlwaysAllow, type BrowserMode } from './originPolicy.js';
+import { flush as flushTelemetry, track } from '../shared/telemetry.js';
 import { recordAudit } from './audit.js';
 import { ATTACH_FILE, AUTOFILL_FORM, DRAG, MUTATING_TOOLS } from './actions.js';
 import { RunBudget } from './limits.js';
@@ -94,6 +96,41 @@ export interface ConfirmRequest {
   reason?: string;
   /** Whether "always allow on this site" may be offered for this action. */
   mayAlwaysAllow: boolean;
+  /**
+   * The embedded frame the target sits in, when it is not the page itself.
+   *
+   * Shown because `host` is the address in the address bar, which is not where
+   * the element is. An embedded advert or widget is a different origin doing
+   * its own thing inside the page, and a confirmation that says only
+   * "shop.example.com" for a field belonging to `ads.example.net` is telling
+   * the user something untrue at exactly the moment they are being asked to
+   * trust it.
+   */
+  frame?: string;
+  /**
+   * Whether the element was actually outlined on the page.
+   *
+   * The confirmation used to say "outlined on the page" unconditionally. It is
+   * only drawn for a call that names a handle, so `autofill_form` -- which
+   * takes no arguments at all -- told the user to go and look at a ring that
+   * was never drawn.
+   */
+  outlined: boolean;
+}
+
+/**
+ * The embedded frame a control came from, if it came from one.
+ *
+ * `mergeFrameSnapshots` writes `in frame "host"` into the context of every
+ * control a frame reported, which is where this reads it back from. A control
+ * of the page's own carries no such tag and gets undefined.
+ */
+function frameOfControl(control: { context?: string } | undefined): string | undefined {
+  const match = /(?:^|: )?in frame "([^"]+)"/.exec(control?.context ?? '');
+  if (match) return match[1];
+  // A frame's control whose own context was rewritten as `host: something`.
+  const prefixed = /^([^\s:][^:]*): /.exec(control?.context ?? '');
+  return prefixed ? prefixed[1] : undefined;
 }
 
 export type ConfirmAnswer = 'allow' | 'always' | 'deny';
@@ -146,9 +183,24 @@ export interface RunRequest {
 }
 
 export async function runBrowserAgent(request: RunRequest): Promise<AgentOutcome> {
+  // Counts only: which mode, which preset, how it ended. Never the task, never
+  // the site, never anything the page said. See `shared/telemetry.ts`.
+  track('run_started', { mode: request.mode, preset: request.profile.preset });
+
   // The debugger banner must not outlive the run that raised it; a banner left
   // up after the agent has stopped reads to a user as something watching them.
-  return withDriverPool(request);
+  try {
+    const outcome = await withDriverPool(request);
+    track('run_finished', { mode: request.mode, outcome });
+    return outcome;
+  } catch (error) {
+    track('run_finished', { mode: request.mode, outcome: 'error' });
+    throw error;
+  } finally {
+    // A run is the natural boundary to send on: the panel may be closed moments
+    // later, and an interval timer does not survive that.
+    void flushTelemetry();
+  }
 }
 
 async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
@@ -203,7 +255,7 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   const requestPermission = async (
     call: ToolCall,
   ): Promise<boolean | { allowed: boolean; reason: string }> => {
-    const { classification, target, url, describe } = await executor.classify(call);
+    const { classification, target, url, describe, signals } = await executor.classify(call);
     const host = url ? safeHost(url) : (site?.host ?? '');
 
     const decision = decide({
@@ -256,16 +308,28 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     const generation = executor.lastSnapshot?.generation;
     const handle = Number(call.args.handle);
     const asked = describe ?? describeTarget(call, target?.name);
-    if (page.ok && generation !== undefined && Number.isInteger(handle)) {
+    // Only true if a ring actually goes on the page below.
+    const outlined = page.ok && generation !== undefined && Number.isInteger(handle);
+    if (outlined) {
+      // To the frame that owns the handle, and no other. The label carries the
+      // description the user is being asked to approve, which for `autofill_form`
+      // is the user's own saved details -- there is no reason for a frame that
+      // does not own the element to be handed them.
+      const driven = await pool.forActiveTab();
+      const frameId = (driven.ok ? driven.driver.frameOf?.(handle) : 0) ?? 0;
       // The label is drawn beside the ring, so the description in the panel and
       // the thing on the page can be checked against each other without the
       // user's eyes leaving the element.
-      await sendToPage(page.tabId, {
-        type: 'highlight',
-        handle,
-        generation,
-        label: `${call.name} — ${asked}`.replace(/\s+/g, ' ').slice(0, 120),
-      });
+      await sendToPage(
+        page.tabId,
+        {
+          type: 'highlight',
+          handle,
+          generation,
+          label: `${call.name} — ${asked}`.replace(/\s+/g, ' ').slice(0, 120),
+        },
+        frameId,
+      );
     }
 
     pool.note('Waiting for you', asked);
@@ -280,11 +344,24 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
         target: asked,
         host,
         reason: classification.reason,
-        mayAlwaysAllow: mayOfferAlwaysAllow(classification.permission, host),
+        mayAlwaysAllow: mayOfferAlwaysAllow(classification.permission, host, signals),
+        // Extraction tags a frame's controls with their own host, which is the
+        // only place the real origin of an embedded element survives to.
+        frame: frameOfControl(target),
+        outlined,
       });
     } finally {
-      if (page.ok) await sendToPage(page.tabId, { type: 'clearHighlight' });
+      // Every frame: the outline may have been drawn in any of them, and by
+      // the time this runs nobody remembers which. Carries no data, so
+      // broadcasting it costs nothing.
+      if (page.ok) await clearHighlightEverywhere(page.tabId);
     }
+
+    track('confirmation_answered', {
+      answer,
+      permission: classification.permission,
+      tool: call.name,
+    });
 
     if (answer === 'always') request.onTrustHost(host);
     const allowed = answer !== 'deny';
@@ -335,6 +412,8 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
       // Named from the same table the transcript uses, in the present tense:
       // this one is reporting what is happening, not what happened.
       pool.note(toolLabel(call.name).present, activityDetail(call));
+      // The name of the tool, and nothing it was called with.
+      track('tool_used', { tool: call.name });
 
       /*
        * The user takes a turn at their own keyboard.

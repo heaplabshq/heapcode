@@ -49,9 +49,21 @@ export function Confirm({
       </p>
       <p className="confirm-where">
         on {request.host}
+        {/* The frame, when the element is not in the page itself. An embedded
+            advert or widget is a different origin doing its own thing inside
+            the page, and naming only the address bar here would be telling the
+            user something untrue at the moment they are asked to trust it. */}
+        {request.frame && (
+          <>
+            {' — inside the embedded frame '}
+            <strong>{request.frame}</strong>
+          </>
+        )}
         {/* It is highlighted on the page, so the user can look rather than trust
-            the description. Saying so is what makes them look. */}
-        {' — outlined on the page'}
+            the description. Saying so is what makes them look -- so it is only
+            said when a ring was actually drawn. `autofill_form` names no
+            handle, and used to claim an outline that never existed. */}
+        {request.outlined && ' — outlined on the page'}
       </p>
       {destructive && (
         <p className="confirm-why">

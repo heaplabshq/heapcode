@@ -207,11 +207,19 @@ export function needsApiKey(profile: StoredProfile): boolean {
  * this product has had came from the alternative estimating what CDP simply
  * knows. Defaulting it off meant the good path was the one nobody was on.
  *
- * "On" is only ever a preference: the `debugger` permission is optional and
- * cannot be granted without a user gesture, so a fresh install is on-but-not-
- * granted and quietly runs the content-script path until someone allows it.
- * That is why the setting and the grant are reported separately in the UI --
- * a switch that says on while nothing changed is worse than one that says off.
+ * On from the first run, and worth being precise about because a stale comment
+ * here once said the opposite: `debugger` is a *required* manifest permission
+ * (Chrome does not allow it to be optional), so it is held from install and
+ * this setting is the only thing gating the CDP path. There is no
+ * on-but-not-granted state to fall back through.
+ *
+ * That matters to anyone reasoning about which driver a guarantee has to hold
+ * on. The answer is both, and the CDP one is the default -- which is why the
+ * signals a driver cannot compute are now reported as `partial` rather than
+ * silently read as "nothing dangerous here" (see `agent/domFacts.ts`).
+ *
+ * The setting and the grant are still reported separately in the UI, because a
+ * switch that says on while nothing changed is worse than one that says off.
  */
 export async function loadUseDebugger(): Promise<boolean> {
   const stored = await chrome.storage.local.get(DEBUGGER_KEY);

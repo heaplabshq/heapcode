@@ -1,6 +1,7 @@
 import type { Control, ControlRole, PageSnapshot, TableSummary } from '../shared/snapshot.js';
 import { tableFromList, type ListItem } from '../shared/listTable.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
+import type { PageFacts } from './domFacts.js';
 
 /**
  * The page as the browser itself understands it.
@@ -122,6 +123,14 @@ export interface AxSnapshotInput {
   notes?: string[];
   /** Assigns a handle and remembers how to reach the node again. */
   register(node: AxNode): number;
+  /**
+   * The markup facts the accessibility tree does not carry.
+   *
+   * Absent when the driver could not read them, which is reported as
+   * `signals: 'partial'` rather than passed off as a page with nothing
+   * dangerous on it. See `domFacts.ts`.
+   */
+  facts?: PageFacts;
 }
 
 /** Build a `PageSnapshot` from an accessibility tree. */
@@ -178,11 +187,34 @@ export function snapshotFromAxTree(input: AxSnapshotInput): PageSnapshot {
     if (prop(node, 'disabled') === true) control.disabled = true;
     if (typeof prop(node, 'checked') === 'boolean') control.checked = prop(node, 'checked') as boolean;
 
+    // What the markup says about this element, which the tree does not. Without
+    // it `submits`, `checkout` and `sensitive` are all absent, and absent reads
+    // to every guardrail downstream as "no".
+    const facts = input.facts?.for(node.backendDOMNodeId);
+    // Read but not found is not the same as read and unremarkable. An
+    // out-of-process iframe is absent from the markup snapshot entirely, and
+    // its controls must not be judged as though they had been checked.
+    if (input.facts && !input.facts.knows(node.backendDOMNodeId)) {
+      control.unknownSignals = true;
+    }
+    if (facts?.submits) control.submits = true;
+    if (facts?.checkout) control.checkout = facts.checkout;
+    if (facts?.autocomplete) control.autocomplete = facts.autocomplete;
+    if (facts?.href) control.href = facts.href;
+
+    // The name is a signal in its own right and the only one available when the
+    // markup could not be read, so it is checked either way -- a box labelled
+    // "Password" is a password box whether or not its input carries the type.
+    const sensitive =
+      facts?.sensitive === true ||
+      ((mapped === 'input' || mapped === 'textarea') && namesSensitiveField(name, description));
+    if (sensitive) control.sensitive = true;
+
     const value = str(node.value);
     if (value) {
       // The same rule the DOM path applies: a credential never enters the
       // snapshot, because the snapshot goes to the configured endpoint.
-      control.value = namesSensitiveField(name, description) ? '[hidden]' : value;
+      control.value = sensitive || namesSensitiveField(name, description) ? '[hidden]' : value;
     }
 
     controls.push(control);
@@ -197,6 +229,7 @@ export function snapshotFromAxTree(input: AxSnapshotInput): PageSnapshot {
     tables: tablesFromAxTree(nodes, byId, scope),
     generation: input.generation,
     notes: input.notes?.length ? input.notes : undefined,
+    signals: input.facts ? 'full' : 'partial',
   };
 }
 

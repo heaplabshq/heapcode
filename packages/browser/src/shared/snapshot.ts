@@ -72,6 +72,18 @@ export interface Control {
    */
   autocomplete?: string;
   /**
+   * The driver could not determine `submits`, `checkout` or `sensitive` for
+   * this particular control.
+   *
+   * Page-level `PageSnapshot.signals` covers a read that failed outright; this
+   * covers the commoner case where most of the page was read and some of it was
+   * not -- an out-of-process iframe, which `DOMSnapshot.captureSnapshot` does
+   * not reach and which is exactly where an embedded checkout lives. Without
+   * this the control would be classified on its name alone while looking
+   * identical to one that had been fully checked.
+   */
+  unknownSignals?: boolean;
+  /**
    * Higher survives truncation. Computed at extraction from viewport
    * proximity and landmark role; `formatSnapshot` may add an intent boost.
    */
@@ -135,6 +147,22 @@ export interface PageSnapshot {
    * concludes the button does not exist and starts inventing other routes.
    */
   notes?: string[];
+  /**
+   * Whether the driver could compute the safety signals, or only some of them.
+   *
+   * `submits`, `checkout` and `sensitive` are markup facts, not accessibility
+   * ones, so a driver reading the accessibility tree has to fetch them
+   * separately -- and that fetch can fail. When it does, the controls look
+   * exactly like controls on a page with no forms and no payment area on it,
+   * which is the most dangerous thing they could look like: three escalations
+   * silently answer "no" instead of "cannot tell".
+   *
+   * So the snapshot says which it is, and the policy layer fails closed on
+   * `partial` rather than trusting an absence it has no right to trust.
+   * Undefined means full, so the DOM path -- which always computes them -- is
+   * unaffected.
+   */
+  signals?: 'full' | 'partial';
 }
 
 export interface FormatOptions {

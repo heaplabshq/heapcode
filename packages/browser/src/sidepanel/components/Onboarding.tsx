@@ -161,13 +161,20 @@ export function Onboarding({
                 <span>
                   <strong>Your pages go where you say</strong>
                   To the model endpoint you configure next, and nowhere else. There is no
-                  heapbrowse server; point it at Ollama and nothing leaves this machine.
+                  heapbrowse server for your pages; point it at Ollama and no page you read leaves
+                  this machine.
                 </span>
               </li>
             </ul>
             <p className="muted">
               Your API key is stored on this device, never synced through your Chrome profile, and
               never shown again once saved.
+            </p>
+            <p className="muted">
+              heapbrowse does send anonymous counts &mdash; how often it runs, which tools it used,
+              how runs ended &mdash; so we can tell what is working. Never the pages you visit, the
+              sites you are on, what you asked for, or anything you have saved. You can switch it
+              off in Settings at any time.
             </p>
           </>
         )}

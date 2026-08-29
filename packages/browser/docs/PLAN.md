@@ -181,12 +181,19 @@ Goal: the safety claim is tested, not asserted.
 - [x] System prompt hardening + role separation (user turns vs tool results structurally distinct)
 - [x] Untrusted-output marking verified for every page-reading tool
 - [x] Rate/volume guards: max actions per run, max navigations per run, per-host action ceiling
-- [ ] Security review write-up for the Chrome Web Store submission
+- [x] Security review write-up for the Chrome Web Store submission. Three high-confidence findings,
+      all fixed: the credential-typing refusal and two of the three destructive-action signals were
+      absent on the CDP driver (the accessibility tree carries none of `sensitive`, `submits` or
+      `checkout`, so every guardrail reading them answered "no" on the default path), and the
+      frames' `postMessage` channel let a frame that was not ours answer for itself. The write-up
+      is local and untracked by request
 
 **Exit criteria:** the adversarial suite is green in CI and runs on every PR. A red test blocks release.
 
-**Exit status: met for the suite, one item outstanding (the write-up).** The suite runs in `pnpm test`,
-which CI already runs on every PR, so a red test blocks release today.
+**Exit status: met.** The suite runs in `pnpm test`, which CI already runs on every PR, so a red
+test blocks release today. The review that closed the last item is summarised above; its three
+findings now have regression tests in `test/driverParity.test.ts` and `test/frames.test.ts`, so the
+same gate covers them.
 
 The suite deliberately does **not** test "the model resisted". That would be testing a model, and it
 would pass or fail differently on every endpoint a user might configure — which makes it worthless as
@@ -224,7 +231,10 @@ Goal: earn the "operates it for you" claim on tasks people actually have.
       details exist, names one, and the substitution happens in the executor after the user has
       approved the call. (Once a value is in a field, the next `read_page` does report it — that is
       unavoidable and no different from the user typing it.)
-- [ ] Job-application flow: fill everything, **pause and hand the file upload to the user** (PRD §7.4)
+- [x] Job-application flow: fill everything, **pause and hand the file upload to the user** (PRD §7.4).
+      `hand_over` stops the run, says in one sentence what is needed, and waits; the executor then
+      forgets everything it read, because a handle from before a login addresses a different
+      element or none at all
 - [x] Saved/repeatable tasks — named prompts, shown as chips on a blank panel where the decision
       actually gets made rather than behind a button
 - [x] Task history — every run recorded with its site, outcome and answer, and re-runnable.
@@ -244,7 +254,12 @@ Goal: earn the "operates it for you" claim on tasks people actually have.
       the first real question
 - [x] Privacy disclosure ("page content goes to the endpoint you configure, and nowhere else") —
       in onboarding step 1 and under Settings
-- [ ] Telemetry: register `heapbrowse` in `heaplabs-telemetry` `KNOWN_APPS`, opt-in, anonymous counts only
+- [x] Telemetry: anonymous counts only, **on by default with a switch in Settings** rather than
+      opt-in. The event vocabulary is a closed union and the metadata is enums and integers, so the
+      defence for an opt-out default is that there is provably nothing personal in a payload -- a
+      test asserts every field against an allow-list rather than hunting for known-bad strings.
+      Sent `no-cors` so the collector needs no host permission at install. **Still to do outside
+      this repo: register `heapbrowse` in `heaplabs-telemetry`'s `KNOWN_APPS`**
 - [x] Permission minimisation pass. `host_permissions` was already empty with per-site optional
       grants; this pass removed `activeTab`, which nothing ever used (every read and inject path
       checks `permissions.contains` for the origin, which activeTab does not satisfy), and moved

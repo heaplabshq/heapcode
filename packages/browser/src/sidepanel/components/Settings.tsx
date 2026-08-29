@@ -19,6 +19,7 @@ import {
   setActiveProfile,
   type StoredProfile,
 } from '../../shared/settings.js';
+import { loadTelemetryEnabled, saveTelemetryEnabled } from '../../shared/telemetry.js';
 import { debuggerAvailable } from '../../agent/cdp.js';
 import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnostic.js';
 import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
@@ -64,6 +65,7 @@ export function Settings({
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<Diagnosis | undefined>();
   const [useDebugger, setUseDebugger] = useState(false);
+  const [telemetry, setTelemetry] = useState(true);
   /** Chrome's answer, not a stored preference — see `canDownload`. */
   const [downloads, setDownloads] = useState(false);
   const [files, setFiles] = useState('');
@@ -89,6 +91,7 @@ export function Settings({
 
   useEffect(() => {
     void loadUseDebugger().then(setUseDebugger);
+    void loadTelemetryEnabled().then(setTelemetry);
     void canDownload().then(setDownloads);
     void loadFiles().then((paths) => setFiles(paths.join('\n')));
     void loadProfiles().then(setProfiles);
@@ -123,6 +126,11 @@ export function Settings({
    * permission the manifest does not declare as optional, which is why the
    * switch would not stay ticked.
    */
+  const toggleTelemetry = async (wanted: boolean) => {
+    setTelemetry(wanted);
+    await saveTelemetryEnabled(wanted);
+  };
+
   const toggleDebugger = async (wanted: boolean) => {
     setUseDebugger(wanted);
     await saveUseDebugger(wanted);
@@ -458,8 +466,39 @@ export function Settings({
         <div className="settings-card-body">
           <p className="muted">
             The text of the pages you point heapbrowse at is sent to the endpoint configured above,
-            and nowhere else. There is no heapbrowse server. Your API key and your saved details are
-            stored on this device, never synced through your Chrome profile.
+            and nowhere else. Your API key and your saved details are stored on this device, never
+            synced through your Chrome profile.
+          </p>
+
+          <hr className="rule" />
+
+          <div className="switch-row">
+            <label className="switch">
+              <input
+                type="checkbox"
+                aria-label="Send anonymous usage counts"
+                checked={telemetry}
+                onChange={(e) => void toggleTelemetry(e.target.checked)}
+              />
+              Send anonymous usage counts
+            </label>
+            <span className={telemetry ? 'state on' : 'state'} aria-hidden="true">
+              {telemetry ? (
+                <>
+                  <Icon name="check" size={11} />
+                  on
+                </>
+              ) : (
+                'off'
+              )}
+            </span>
+          </div>
+          <p className="muted">
+            On by default. Counts how often heapbrowse is run, which tools it used, and how runs
+            ended, so we can tell what is working. It never includes the pages you visit, the sites
+            you are on, what you asked for, what the model said, your endpoint address, your API key
+            or your saved details &mdash; none of those are collected in the first place, so there
+            is nothing to remove. Turning this off also deletes the random identifier it used.
           </p>
         </div>
       </details>

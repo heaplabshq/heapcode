@@ -26,11 +26,13 @@
 
 <section class="hero wrap">
   <p class="eyebrow">Privacy &middot; last updated 29 August 2026</p>
-  <h1>heapbrowse has no server, and collects nothing.</h1>
+  <h1>heapbrowse keeps your pages to itself.</h1>
   <p class="lede">
     This is the whole policy, not a summary of one. heapbrowse is a Chrome extension that runs
-    entirely on your device. There is no heapbrowse account, no heapbrowse backend, and no
-    telemetry, analytics or crash reporting of any kind.
+    entirely on your device. There is no heapbrowse account and nowhere for your browsing to be
+    stored. The pages you read go to the model endpoint you choose and nowhere else. The one
+    other thing that leaves is a count of how the extension itself is used &mdash; no pages, no
+    sites, no prompts &mdash; and you can switch it off.
   </p>
 </section>
 
@@ -51,6 +53,34 @@
     Page content is only read when a question needs it, and only for sites you have granted
     access to, one site at a time. A screenshot is sent to the model only if the model explicitly
     requests one; screenshots taken to show you what it is doing are never sent anywhere.
+  </p>
+</section>
+
+<section class="panel wrap">
+  <h2>Anonymous usage counts</h2>
+  <p>
+    heapbrowse sends anonymous counts about the extension to a Heap Labs collector, so we can
+    tell which parts of it work. <strong>This is on by default and there is a switch for it in
+    Settings, under &ldquo;Where your data goes&rdquo;.</strong>
+  </p>
+  <p>An event is a name and a handful of fixed values. The complete list of what can be in one:</p>
+  <ul class="plain">
+    <li>That a run started, and that it finished &mdash; with its outcome as one of
+        <code>done</code>, <code>stopped</code>, <code>error</code> or <code>incomplete</code>.</li>
+    <li>Which permission mode was selected, and which provider preset &mdash; <code>ollama</code>,
+        <code>openai</code> and so on. Never your endpoint address.</li>
+    <li>The name of a tool that ran &mdash; <code>read_page</code>, <code>click</code> &mdash;
+        never what it was called with.</li>
+    <li>Whether you allowed or refused a confirmation, and what class it was.</li>
+    <li>A random identifier generated on this device, so repeat counts are not double-counted.
+        It is not derived from anything about you or your machine, and it is deleted when you
+        switch the counts off.</li>
+  </ul>
+  <p>
+    It contains no page content, no page addresses, no site names, no search terms, nothing you
+    typed, nothing the model replied, no endpoint address, no API key and none of your saved
+    details. Those are not collected and then removed &mdash; they never enter an event, so there
+    is nothing in it to remove.
   </p>
 </section>
 
@@ -83,8 +113,11 @@
 <section class="panel wrap">
   <h2>What heapbrowse never does</h2>
   <ul class="plain">
-    <li>It makes no network request to any address except the model endpoint you configured.</li>
-    <li>It has no analytics, no telemetry, no crash reporting and no update pings of its own.</li>
+    <li>It sends nothing about the pages you visit anywhere except the model endpoint you
+        configured. The usage counts above are about the extension, not about your browsing.</li>
+    <li>It has no crash reporting, no session recording, no advertising identifiers, and no
+        third-party analytics service &mdash; the counts go to a Heap Labs collector and nowhere
+        else, and are never sold or shared.</li>
     <li>It never types into a password field, and never asks you to tell it a password or a
         one-time code so that it can type one. When a step needs a person, it stops and hands the
         page back to you.</li>

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BrowserToolExecutor } from '../src/agent/executor.js';
 import { READ_ONLY_TOOLS } from '../src/agent/tools.js';
+import { ALL_ACTION_TOOLS } from '../src/agent/actions.js';
 import type { PageSnapshot } from '../src/shared/snapshot.js';
 
 function snapshot(overrides: Partial<PageSnapshot> = {}): PageSnapshot {
@@ -56,6 +57,17 @@ describe('the tool belt', () => {
       const tool = READ_ONLY_TOOLS.find((t) => t.name === name);
       expect(tool, name).toBeDefined();
       expect(tool?.untrustedOutput, name).toBe(true);
+    }
+  });
+
+  it('marks every acting tool too, because they all return the page afterwards', () => {
+    // The hardcoded read-only list above was the whole of this assertion for a
+    // long time, and the acting tools -- all of which come back through
+    // `#observe` with a snapshot or a delta in hand -- carried no flag at all.
+    // Asserted over the belt rather than over a list, so a fifteenth action
+    // tool cannot be added without one.
+    for (const tool of ALL_ACTION_TOOLS) {
+      expect(tool.untrustedOutput, tool.name).toBe(true);
     }
   });
 

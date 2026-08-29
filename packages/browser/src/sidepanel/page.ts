@@ -172,6 +172,43 @@ async function prepare(tab: chrome.tabs.Tab): Promise<PageTarget> {
 }
 
 /**
+ * The frames in a tab that we can actually talk to.
+ *
+ * `executeScript` with `allFrames` returns one result per frame it ran in, each
+ * carrying its frame id -- and Chrome silently skips frames whose origin was
+ * never granted. So the frames this returns are exactly the frames holding our
+ * content script, which is exactly the set that can answer a message. A
+ * third-party advert we hold no permission for is absent here, and ends up
+ * reported to the model as a frame that could not be read.
+ *
+ * Cheaper than it looks: the function is trivial and the injection has already
+ * happened by the time anything calls this.
+ */
+export async function listFrames(tabId: number): Promise<{ frameId: number; url: string }[]> {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => location.href,
+    });
+    return results
+      .filter((result) => typeof result.frameId === 'number')
+      .map((result) => ({ frameId: result.frameId, url: String(result.result ?? '') }));
+  } catch {
+    // The top frame alone is a correct answer, not a failure: it is what the
+    // page looked like before frames were read at all.
+    return [{ frameId: 0, url: '' }];
+  }
+}
+
+/** Clear the confirmation outline wherever it was drawn. */
+export async function clearHighlightEverywhere(tabId: number): Promise<void> {
+  const frames = await listFrames(tabId);
+  await Promise.all(
+    frames.map((frame) => sendToPage(tabId, { type: 'clearHighlight' }, frame.frameId)),
+  );
+}
+
+/**
  * Wait for a tab to finish loading.
  *
  * Navigation is a hard state boundary: it destroys the content script, the
@@ -190,14 +227,26 @@ export async function waitForLoad(tabId: number, timeoutMs = 15_000): Promise<bo
   return false;
 }
 
-/** One request to the content script, with a disconnect reported as what it means. */
-export async function sendToPage(tabId: number, request: ContentRequest): Promise<ContentResponse> {
+/**
+ * One request to the content script in one frame.
+ *
+ * Always to a named frame, never a broadcast: without a frame id Chrome
+ * delivers to every frame and uses whichever answers first, which on a page
+ * with three advert frames is a snapshot of a random one of them. Frame 0 is
+ * the top document and the default.
+ *
+ * This is also the channel that replaced the frames' `postMessage` mesh. Chrome
+ * delivers it only to our own content script in the named frame: a page script
+ * there cannot answer it, cannot see it, and cannot forge a reply to it, none
+ * of which was true of the channel it replaces (`shared/frames.ts`).
+ */
+export async function sendToPage(
+  tabId: number,
+  request: ContentRequest,
+  frameId = 0,
+): Promise<ContentResponse> {
   try {
-    // Frame 0 explicitly. The script now runs in every frame, and a broadcast
-    // would be answered by whichever frame replied first -- a snapshot of a
-    // random advert instead of the page. The top frame gathers the others
-    // itself, over `postMessage`.
-    return await chrome.tabs.sendMessage(tabId, request, { frameId: 0 });
+    return await chrome.tabs.sendMessage(tabId, request, { frameId });
   } catch {
     // The usual cause is the document being replaced mid-call, which takes the
     // listener with it (PRD section 7.5).

@@ -12,6 +12,15 @@ import type { ToolDefinition } from '@heapcode/core/agent';
  * `upload_file` is specified in the PRD and deliberately absent: `input.files`
  * cannot be set from page context without `chrome.debugger`, so the agent fills
  * the rest of a form and hands the upload back to the user (PRD section 7.4).
+ *
+ * Every tool here carries `untrustedOutput`, because every one of them returns
+ * the page afterwards -- a snapshot or a delta, through `#observe`. For a long
+ * while none of them did, while every read tool did, which meant the guarantee
+ * in PLAN guardrail 4 ("every snapshot reaches the model through
+ * `wrapUntrusted()`, no exceptions") held on the reading half of the belt and
+ * not the acting half. `navigate` and `open_tab` were the sharp end: they
+ * deliver the first full view of a page the model may have been talked into
+ * visiting, and that view arrived with no notice on it at all.
  */
 
 const HANDLE = {
@@ -32,6 +41,7 @@ export const CLICK: ToolDefinition = {
     required: ['handle'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 export const TYPE: ToolDefinition = {
@@ -48,6 +58,7 @@ export const TYPE: ToolDefinition = {
     required: ['handle', 'text'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 export const SELECT: ToolDefinition = {
@@ -62,6 +73,7 @@ export const SELECT: ToolDefinition = {
     required: ['handle', 'option'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 export const NAVIGATE: ToolDefinition = {
@@ -74,6 +86,7 @@ export const NAVIGATE: ToolDefinition = {
     required: ['url'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 export const GO_BACK: ToolDefinition = {
@@ -81,6 +94,7 @@ export const GO_BACK: ToolDefinition = {
   description: 'Go back to the previous page.',
   parameters: { type: 'object', properties: {} },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 /**
@@ -113,6 +127,7 @@ export const PRESS_KEY: ToolDefinition = {
     required: ['key'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 /**
@@ -158,6 +173,7 @@ export const FILL_FORM: ToolDefinition = {
     required: ['fields'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 /**
@@ -180,6 +196,7 @@ export const AUTOFILL_FORM: ToolDefinition = {
     'ask about the rest. Use this before filling a form by hand.',
   parameters: { type: 'object', properties: {} },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 /**
@@ -205,6 +222,7 @@ export const NEXT_PAGE: ToolDefinition = {
     'extract_data to add that page to what you have collected.',
   parameters: { type: 'object', properties: {} },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 export const OPEN_TAB: ToolDefinition = {
@@ -224,6 +242,7 @@ export const OPEN_TAB: ToolDefinition = {
     required: ['url'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 export const CLOSE_TAB: ToolDefinition = {
@@ -237,6 +256,7 @@ export const CLOSE_TAB: ToolDefinition = {
     required: ['tab'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 /**
@@ -260,6 +280,7 @@ export const DRAG: ToolDefinition = {
     required: ['from', 'to'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 /**
@@ -288,6 +309,7 @@ export const DOWNLOAD: ToolDefinition = {
     },
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 /**
@@ -318,6 +340,7 @@ export const ATTACH_FILE: ToolDefinition = {
     required: ['handle'],
   },
   permission: 'write',
+  untrustedOutput: true,
 };
 
 export const MUTATING_TOOLS: ToolDefinition[] = [
@@ -332,4 +355,21 @@ export const MUTATING_TOOLS: ToolDefinition[] = [
   OPEN_TAB,
   CLOSE_TAB,
   DOWNLOAD,
+];
+
+/**
+ * Every acting tool, including the three offered conditionally.
+ *
+ * `MUTATING_TOOLS` is the belt handed to the model in the ordinary case;
+ * `DRAG`, `ATTACH_FILE` and `AUTOFILL_FORM` are appended by `run.ts` only when
+ * the driver or the user's saved details make them meaningful. That makes
+ * `MUTATING_TOOLS` the wrong list to assert safety properties over -- the three
+ * it omits are still tools, and they still return the page. This is the list
+ * for anything that has to hold across all of them.
+ */
+export const ALL_ACTION_TOOLS: ToolDefinition[] = [
+  ...MUTATING_TOOLS,
+  AUTOFILL_FORM,
+  DRAG,
+  ATTACH_FILE,
 ];

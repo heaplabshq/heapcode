@@ -60,7 +60,11 @@ import {
   buildAgentSession,
   canonicalize,
   conversationsFile,
+  describeMcpServer,
   listPermissionGrants,
+  loadMcpServerSources,
+  mcpNameProblem,
+  parseMcpServerSpec,
   listSkillsFormatted,
   permissionsFile,
   projectStateDir,
@@ -90,7 +94,9 @@ import {
   type UiOpenConversationResult,
   type UiPermissionRequestParams,
   type UiPermissionRequestResult,
+  type UiMcpServer,
   type UiNameParams,
+  type UiSaveMcpServerParams,
   type UiResetPermissionsResult,
   type UiRunCommandParams,
   type UiSaveProfileParams,
@@ -1030,13 +1036,11 @@ export class WebSession {
           enabled: cfg.webSearch?.enabled ?? Boolean(cfg.webSearch?.provider),
           hasKey: Boolean(await this.deps.secrets.getApiKey(WEB_SEARCH_SECRET_NAME)),
         },
-        mcpServers: Object.keys(cfg.mcpServers ?? {}).map((name) => ({
-          name,
-          connected: connected.has(name),
-          tools: this.session!.mcpManager.getToolDefinitions()
-            .map((t) => t.name)
-            .filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
-        })),
+        // Both sources, not just personal config: a server defined in this
+        // project's `.heapcode/mcp.json` was loaded and callable but never
+        // appeared here, so the panel showed "None configured" for a session
+        // that had servers running in it.
+        mcpServers: await this.listMcpServers(connected),
         permissionGrants: await listPermissionGrants(permissionsFile(this.root)),
       };
     });
@@ -1104,6 +1108,37 @@ export class WebSession {
       return null;
     });
 
+    /**
+     * Add or replace a personal MCP server, and connect it now.
+     *
+     * The panel used to list servers and tell you to go and edit
+     * `~/.heapcode/config.json` by hand, which is the one thing a settings
+     * screen exists to save you from. The CLI's `/mcp` said the same. Only
+     * the extension had an add flow, and it writes to VS Code's own settings,
+     * so what it added was invisible here.
+     */
+    ui.onRequest(UI_METHODS.saveMcpServer, async (raw) => {
+      await this.start();
+      const { name, spec } = raw as UiSaveMcpServerParams;
+      const nameProblem = mcpNameProblem(name);
+      if (nameProblem) throw new Error(nameProblem);
+      const parsed = parseMcpServerSpec(spec);
+      if ('error' in parsed) throw new Error(parsed.error);
+      await this.deps.config.saveMcpServer(name.trim(), parsed);
+      this.reconnectMcp();
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.deleteMcpServer, async (raw) => {
+      await this.start();
+      const { name } = raw as UiNameParams;
+      await this.deps.config.deleteMcpServer(name);
+      this.reconnectMcp();
+      void this.pushState();
+      return null;
+    });
+
     ui.onRequest(UI_METHODS.deleteProfile, async (raw) => {
       const { name } = raw as UiNameParams;
       if (name === this.profile?.name) throw new Error('Cannot delete the profile currently in use.');
@@ -1166,6 +1201,48 @@ export class WebSession {
     }
     await this.reconnect();
     this.profileRefreshPending = false;
+  }
+
+  /**
+   * MCP servers as the settings panel needs them: both sources, with the
+   * project-scoped ones marked so the editor can show them read-only.
+   */
+  private async listMcpServers(connected: Set<string>): Promise<UiMcpServer[]> {
+    const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
+    const tools = this.session?.mcpManager.getToolDefinitions() ?? [];
+    return Object.entries({ ...global, ...project }).map(([name, server]) => ({
+      name,
+      connected: connected.has(name),
+      tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
+      spec: describeMcpServer(server),
+      project: name in project,
+    }));
+  }
+
+  /**
+   * Pick up a changed server list without restarting the session.
+   *
+   * `McpManager` reads its config through the thunk it was built with, so
+   * this re-reads the file: it drops what was removed, connects what is new,
+   * and reconnects anything whose definition changed.
+   *
+   * Not awaited by the caller. Connecting means launching the server — an
+   * `npx` line can spend half a minute fetching a package before it says
+   * anything — and a settings panel that freezes until a third-party process
+   * finishes starting is worse than one that shows the row immediately as not
+   * connected and updates when it is. The second `pushState` is what makes
+   * that arrive.
+   *
+   * A server that will not start is reported by its own row, and must never
+   * turn saving a setting into an error.
+   */
+  private reconnectMcp(): void {
+    void this.session?.mcpManager
+      .ensureConnected()
+      .catch(() => {
+        /* The row shows it as not connected, which is the honest report. */
+      })
+      .finally(() => void this.pushState());
   }
 
   /** Apply a profile edit that arrived while a run was in flight. */

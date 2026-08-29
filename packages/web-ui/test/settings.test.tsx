@@ -58,6 +58,8 @@ function props(over: Partial<SettingsProps> = {}): SettingsProps {
     onUseProfile: vi.fn(),
     onDeleteProfile: vi.fn(),
     onSaveProfile: vi.fn(),
+    onSaveMcpServer: vi.fn(),
+    onDeleteMcpServer: vi.fn(),
     ...over,
   };
 }
@@ -396,5 +398,72 @@ describe('a role redirected to another profile', () => {
   it('leaves the roles that are not redirected editable', () => {
     open(withTarget);
     expect(screen.getByLabelText<HTMLInputElement>('Rerank model')).toBeTruthy();
+  });
+});
+
+/**
+ * Connectors.
+ *
+ * The page used to be a list ending in "add them to ~/.heapcode/config.json
+ * yourself", which is the one thing a settings screen exists to save you
+ * from. The CLI said the same; only the extension could add one, and it wrote
+ * to VS Code's own settings, so what it added never appeared here.
+ */
+describe('MCP servers', () => {
+  const withServers: UiSettings = {
+    ...SETTINGS,
+    mcpServers: [
+      { name: 'filesystem', connected: true, tools: ['mcp__filesystem__read'], spec: 'npx -y server-fs /code' },
+      { name: 'teamserver', connected: false, tools: [], spec: 'npx -y team', project: true },
+    ],
+  };
+
+  function open(over: Partial<SettingsProps> = {}): void {
+    render(<Settings {...props({ settings: withServers, ...over })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Connectors' }));
+  }
+
+  it('adds a server from one field, without asking for a transport first', () => {
+    // A server is either a URL or a command line, and the string already says
+    // which — the host parses it the same way the CLI does.
+    const onSaveMcpServer = vi.fn();
+    open({ onSaveMcpServer });
+    fireEvent.change(screen.getByLabelText('MCP server name'), { target: { value: 'github' } });
+    fireEvent.change(screen.getByLabelText('MCP server command or URL'), {
+      target: { value: 'https://mcp.example.com/sse' },
+    });
+    fireEvent.click(screen.getByText('Add server'));
+    expect(onSaveMcpServer).toHaveBeenCalledWith('github', 'https://mcp.example.com/sse');
+  });
+
+  it('will not send a half-filled form', () => {
+    const onSaveMcpServer = vi.fn();
+    open({ onSaveMcpServer });
+    fireEvent.change(screen.getByLabelText('MCP server name'), { target: { value: 'github' } });
+    fireEvent.click(screen.getByText('Add server'));
+    expect(onSaveMcpServer).not.toHaveBeenCalled();
+  });
+
+  it('shows what each server is configured as, not just its name', () => {
+    open();
+    expect(screen.getByText('npx -y server-fs /code')).toBeTruthy();
+  });
+
+  it('removes one', () => {
+    const onDeleteMcpServer = vi.fn();
+    open({ onDeleteMcpServer });
+    fireEvent.click(screen.getAllByText('Remove')[0]!);
+    expect(onDeleteMcpServer).toHaveBeenCalledWith('filesystem');
+  });
+
+  it("shows a project's own server but offers no way to edit it", () => {
+    // `.heapcode/mcp.json` is meant to be committed. A settings panel writing
+    // to a file under version control on someone's behalf is the one thing it
+    // must not do — so that row is displayed and left alone.
+    open();
+    expect(screen.getByText('teamserver')).toBeTruthy();
+    expect(screen.getByText(/from this project/)).toBeTruthy();
+    // One Remove button, for the personal server — not two.
+    expect(screen.getAllByText('Remove')).toHaveLength(1);
   });
 });

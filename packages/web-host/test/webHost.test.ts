@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1607,6 +1607,99 @@ describe('web host — the daemon going away', () => {
     expect((await browser.peer.request<UiState>(UI_METHODS.state)).daemon).toBe('up');
     browser.close();
   }, 30_000);
+});
+
+describe('web host — MCP servers', () => {
+  /**
+   * Adding one used to mean leaving the browser and editing
+   * `~/.heapcode/config.json` by hand, which is the one thing a settings
+   * screen exists to save you from. The extension had an add flow that wrote
+   * to VS Code's own settings, so what it added never appeared here.
+   */
+  it('adds a server and reports it back', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    // A command that is not a real MCP server: saving must not wait for it to
+    // start, let alone succeed. Launching one can take half a minute of `npx`
+    // fetching a package, and a settings panel that freezes for that is worse
+    // than a row that says "not connected" until it is.
+    await browser.peer.request(UI_METHODS.saveMcpServer, {
+      name: 'filesystem',
+      spec: 'npx -y @modelcontextprotocol/server-filesystem /code',
+    });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    const server = settings.mcpServers.find((m) => m.name === 'filesystem')!;
+    // Read back in the same one-line form the editor accepts, so the row can
+    // be edited without anyone having to reconstruct it.
+    expect(server.spec).toBe('npx -y @modelcontextprotocol/server-filesystem /code');
+    expect(server.project).toBe(false);
+    browser.close();
+  });
+
+  it('stores a URL as a remote server', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveMcpServer, { name: 'remote', spec: 'https://example.com/mcp' });
+
+    const stored = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
+      mcpServers?: Record<string, unknown>;
+    };
+    expect(stored.mcpServers?.remote).toEqual({ url: 'https://example.com/mcp', transport: 'http' });
+    browser.close();
+  });
+
+  it('refuses a name that would not survive being prefixed onto a tool', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await expect(
+      browser.peer.request(UI_METHODS.saveMcpServer, { name: 'my server', spec: 'echo hi' }),
+    ).rejects.toThrow(/letters, digits/i);
+    browser.close();
+  });
+
+  it('removes one', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveMcpServer, { name: 'gone', spec: 'echo hi' });
+    await browser.peer.request(UI_METHODS.deleteMcpServer, { name: 'gone' });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    expect(settings.mcpServers.some((m) => m.name === 'gone')).toBe(false);
+    browser.close();
+  });
+
+  it("lists this project's own servers, which it never used to", async () => {
+    // `.heapcode/mcp.json` was loaded and its tools were callable, but the
+    // panel read personal config only — so a session with servers running in
+    // it displayed "None configured".
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await mkdir(join(root, '.heapcode'), { recursive: true });
+    await writeFile(
+      join(root, '.heapcode', 'mcp.json'),
+      JSON.stringify({ teamserver: { command: 'npx', args: ['-y', 'team'] } }),
+      'utf8',
+    );
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    const server = settings.mcpServers.find((m) => m.name === 'teamserver')!;
+    expect(server).toBeDefined();
+    // Marked, because it is the one the panel must not write to: that file is
+    // meant to be committed.
+    expect(server.project).toBe(true);
+    browser.close();
+  });
 });
 
 describe('web host — model roles', () => {

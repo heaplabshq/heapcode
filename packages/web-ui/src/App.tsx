@@ -1014,6 +1014,8 @@ export function App(): JSX.Element {
           onSaveProfile={(profile: UiProfileDraft, apiKey?: string) =>
             act(UI_METHODS.saveProfile, { profile, apiKey })
           }
+          onSaveMcpServer={(name, spec) => act(UI_METHODS.saveMcpServer, { name, spec })}
+          onDeleteMcpServer={(name) => act(UI_METHODS.deleteMcpServer, { name })}
           loadSkills={loadSkills}
           loadMemory={loadMemory}
           listModels={listProfileModels}

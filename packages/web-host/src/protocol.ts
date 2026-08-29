@@ -56,6 +56,8 @@ export const UI_METHODS = {
   resetPermissions: 'ui/resetPermissions',
   saveProfile: 'ui/saveProfile',
   deleteProfile: 'ui/deleteProfile',
+  saveMcpServer: 'ui/saveMcpServer',
+  deleteMcpServer: 'ui/deleteMcpServer',
   useProfile: 'ui/useProfile',
   runCommand: 'ui/runCommand',
 
@@ -574,6 +576,25 @@ export interface UiMcpServer {
   connected: boolean;
   /** Tools this server contributed, once connected. */
   tools: string[];
+  /**
+   * How it is configured, in the one-line form the editor accepts back — a
+   * URL, or a command with its arguments.
+   */
+  spec?: string;
+  /**
+   * Defined in this project's `.heapcode/mcp.json` rather than in personal
+   * config. Editable by hand only: that file is meant to be committed, and a
+   * settings panel should not write to something under version control on
+   * someone's behalf.
+   */
+  project?: boolean;
+}
+
+/** `ui/saveMcpServer` — add or replace a personal MCP server. */
+export interface UiSaveMcpServerParams {
+  name: string;
+  /** A URL, or a command line. Parsed the same way the CLI parses it. */
+  spec: string;
 }
 
 /** A provider preset as the settings UI needs it — core's, minus capabilities. */

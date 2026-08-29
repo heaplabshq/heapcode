@@ -46,6 +46,15 @@ const UNKNOWN_CLIENT_VERSION = '0.0.0';
 interface ConnectedServer {
   client: Client;
   tools: ToolDefinition[];
+  /**
+   * The definition this connection was made from.
+   *
+   * Kept so a server whose command or URL was edited is reconnected rather
+   * than left running the old one. Without it, `ensureConnected` saw a name
+   * it already had and skipped it — which is fine for a list that only ever
+   * grows, and wrong the moment a settings screen can edit an entry.
+   */
+  spec: string;
 }
 
 /**
@@ -90,10 +99,10 @@ export class McpManager {
     const config = await this.loadConfig();
 
     for (const name of [...this.servers.keys()]) {
-      if (!config[name]) {
-        void this.servers.get(name)!.client.close();
-        this.servers.delete(name);
-      }
+      const wanted = config[name];
+      if (wanted && this.servers.get(name)!.spec === JSON.stringify(wanted)) continue;
+      void this.servers.get(name)!.client.close();
+      this.servers.delete(name);
     }
 
     for (const [name, server] of Object.entries(config)) {
@@ -119,7 +128,7 @@ export class McpManager {
           // Third-party server output — same injection posture as fetch_url.
           untrustedOutput: true,
         }));
-        this.servers.set(name, { client, tools });
+        this.servers.set(name, { client, tools, spec: JSON.stringify(server) });
         this.onLog?.(`connected "${name}" (${tools.length} tools)`);
       } catch (err) {
         this.onLog?.(`failed to connect "${name}": ${err instanceof Error ? err.message : String(err)}`);

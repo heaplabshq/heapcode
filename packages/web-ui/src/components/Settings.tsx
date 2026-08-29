@@ -5,6 +5,7 @@ import {
   type UiPreset,
   type UiProbeProviderParams,
   type UiProbeProviderResult,
+  type UiMcpServer,
   type UiProfile,
   type UiSaveProfileParams,
   type UiSettings,
@@ -24,6 +25,9 @@ export interface SettingsProps {
   onUseProfile(name: string): void;
   onDeleteProfile(name: string): void;
   onSaveProfile(profile: UiSaveProfileParams['profile'], apiKey?: string): void;
+  /** Add or replace an MCP server. `spec` is a URL or a command line. */
+  onSaveMcpServer(name: string, spec: string): void;
+  onDeleteMcpServer(name: string): void;
   /** Models a given profile's endpoint serves, for the role fields' type-ahead. */
   listModels?(profileName: string): Promise<string[]>;
   /** Tests an endpoint that isn't a saved profile yet, and reports what it serves. */
@@ -232,27 +236,11 @@ export function Settings(props: SettingsProps): JSX.Element {
               )}
 
               {page === 'connectors' && (
-                <Section title="Connectors">
-                  <p className="hint">MCP servers this session can call tools on.</p>
-                  {s.mcpServers.length === 0 ? (
-                    <p className="hint">
-                      None configured. Add them to <code>~/.heapcode/config.json</code> (<code>mcpServers</code>) or
-                      this project&rsquo;s <code>.heapcode/mcp.json</code>.
-                    </p>
-                  ) : (
-                    <ul className="rows">
-                      {s.mcpServers.map((m) => (
-                        <li key={m.name} className="row">
-                          <span className={`badge ${m.connected ? 'badge-ok' : 'badge-off'}`}>
-                            {m.connected ? 'connected' : 'not connected'}
-                          </span>
-                          <span className="row-name">{m.name}</span>
-                          <span className="hint">{m.tools.length} tools</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </Section>
+                <Connectors
+                  servers={s.mcpServers}
+                  onSave={props.onSaveMcpServer}
+                  onDelete={props.onDeleteMcpServer}
+                />
               )}
 
               {page === 'skills' && (
@@ -835,6 +823,140 @@ function AddProfile({
         </button>
         <button className="btn" onClick={() => setOpen(false)}>
           Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * MCP servers: what is connected, and a way to add one.
+ *
+ * This page used to be a list ending in "edit ~/.heapcode/config.json
+ * yourself", which is the one thing a settings screen exists to save you
+ * from. The CLI's `/mcp` said the same; only the extension had an add flow,
+ * and it writes to VS Code's own settings, so what it added never showed up
+ * here.
+ *
+ * One field, not a transport picker and three boxes. A server is either a URL
+ * or a command line, and the string already says which — asking someone to
+ * classify it first is asking them to tell you something you can see.
+ */
+function Connectors({
+  servers,
+  onSave,
+  onDelete,
+}: {
+  servers: UiMcpServer[];
+  onSave(name: string, spec: string): void;
+  onDelete(name: string): void;
+}): JSX.Element {
+  const [name, setName] = useState('');
+  const [spec, setSpec] = useState('');
+  const [editing, setEditing] = useState<string>();
+
+  const add = (): void => {
+    if (!name.trim() || !spec.trim()) return;
+    onSave(name.trim(), spec.trim());
+    setName('');
+    setSpec('');
+  };
+
+  return (
+    <Section title="Connectors">
+      <p className="hint">MCP servers this session can call tools on.</p>
+
+      {servers.length > 0 && (
+        <ul className="rows">
+          {servers.map((m) => (
+            <li key={m.name} className="row row-block">
+              <div className="row-main">
+                <span className={`badge ${m.connected ? 'badge-ok' : 'badge-off'}`}>
+                  {m.connected ? 'connected' : 'not connected'}
+                </span>
+                <span className="row-name">{m.name}</span>
+                <span className="hint">{m.tools.length} tools</span>
+                {/* Shown, never written: `.heapcode/mcp.json` is meant to be
+                    committed, and a settings panel should not edit a file
+                    under version control on someone's behalf. */}
+                {m.project ? (
+                  <span className="hint">from this project&rsquo;s .heapcode/mcp.json</span>
+                ) : (
+                  <div className="row-actions">
+                    <button className="btn" onClick={() => setEditing(editing === m.name ? undefined : m.name)}>
+                      {editing === m.name ? 'Close' : 'Edit'}
+                    </button>
+                    <button className="btn btn-danger" onClick={() => onDelete(m.name)}>
+                      Remove
+                    </button>
+                  </div>
+                )}
+              </div>
+              {m.spec && <p className="hint mono-hint">{m.spec}</p>}
+              {editing === m.name && !m.project && (
+                <EditServer
+                  initial={m.spec ?? ''}
+                  onSave={(next) => {
+                    onSave(m.name, next);
+                    setEditing(undefined);
+                  }}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <Field label="Name">
+        <input
+          className="input"
+          value={name}
+          placeholder="filesystem"
+          aria-label="MCP server name"
+          onChange={(e) => setName(e.target.value)}
+        />
+      </Field>
+      <Field label="Command or URL">
+        <input
+          className="input"
+          value={spec}
+          placeholder="npx -y @modelcontextprotocol/server-filesystem /path — or https://…"
+          aria-label="MCP server command or URL"
+          onChange={(e) => setSpec(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') add();
+          }}
+        />
+      </Field>
+      <p className="hint">
+        A URL is a remote server; anything else is run as a local command. Its tools go through the same permission
+        prompts as everything else.
+      </p>
+      <div className="field-row">
+        <button className="btn btn-primary" disabled={!name.trim() || !spec.trim()} onClick={add}>
+          Add server
+        </button>
+      </div>
+    </Section>
+  );
+}
+
+/** The one editable thing about a stored server: what it points at. */
+function EditServer({ initial, onSave }: { initial: string; onSave(spec: string): void }): JSX.Element {
+  const [spec, setSpec] = useState(initial);
+  return (
+    <div className="profile-edit">
+      <Field label="Command or URL">
+        <input
+          className="input"
+          value={spec}
+          aria-label="Edit MCP server command or URL"
+          onChange={(e) => setSpec(e.target.value)}
+        />
+      </Field>
+      <div className="field-row">
+        <button className="btn btn-primary" disabled={!spec.trim()} onClick={() => onSave(spec.trim())}>
+          Save
         </button>
       </div>
     </div>

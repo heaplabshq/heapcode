@@ -467,3 +467,47 @@ describe('MCP servers', () => {
     expect(screen.getAllByText('Remove')).toHaveLength(1);
   });
 });
+
+/**
+ * Prompt detail.
+ *
+ * The tier was settable only by hand-editing config.json — which is where a
+ * setting goes to be undiscovered. Three states, and the important one is the
+ * default: "Automatic" is the absence of the field, not a third value, so the
+ * capability-based choice keeps applying.
+ */
+describe('prompt detail', () => {
+  function openProfile(over: Partial<SettingsProps> = {}): void {
+    render(<Settings {...props({ ...over })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    fireEvent.click(screen.getAllByText('Edit')[0]!);
+  }
+
+  it('defaults to Automatic when the profile sets nothing', () => {
+    openProfile();
+    expect(screen.getByLabelText<HTMLSelectElement>('Prompt detail').value).toBe('');
+  });
+
+  it('sends the chosen tier', () => {
+    const onSaveProfile = vi.fn();
+    openProfile({ onSaveProfile });
+    fireEvent.change(screen.getByLabelText('Prompt detail'), { target: { value: 'lean' } });
+    fireEvent.click(screen.getByText('Save changes'));
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ promptProfile: 'lean' });
+  });
+
+  it('sends null for Automatic, which is how the host clears it', () => {
+    // Not the string "automatic": the absence of a value is what makes the
+    // capability-based choice apply, and a third stored value would defeat it.
+    const onSaveProfile = vi.fn();
+    const withTier: UiSettings = {
+      ...SETTINGS,
+      profiles: [{ ...SETTINGS.profiles[0]!, promptProfile: 'lean' }],
+    };
+    openProfile({ settings: withTier, onSaveProfile });
+    expect(screen.getByLabelText<HTMLSelectElement>('Prompt detail').value).toBe('lean');
+    fireEvent.change(screen.getByLabelText('Prompt detail'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save changes'));
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ promptProfile: null });
+  });
+});

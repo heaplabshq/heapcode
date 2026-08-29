@@ -78,7 +78,20 @@ export const PROFILE_FIELDS = [
   'embeddingsProfile',
   'rerankProfile',
   'contextProfile',
+  'promptProfile',
 ] as const satisfies ReadonlyArray<keyof ProviderProfileConfig>;
+
+/**
+ * Fields that take one of a fixed set of values rather than free text.
+ *
+ * Every other field here is a model id or a profile name, which this command
+ * cannot check — a typo surfaces at the provider. These it can, and should:
+ * `promptProfile` silently ignoring "leen" would leave the user believing
+ * they had changed how the agent is prompted.
+ */
+const ENUM_FIELDS: Partial<Record<ProfileField, readonly string[]>> = {
+  promptProfile: ['full', 'lean'],
+};
 
 export type ProfileField = (typeof PROFILE_FIELDS)[number];
 
@@ -102,9 +115,15 @@ export async function profileSet(name: string, field: ProfileField, value?: stri
     process.exitCode = 1;
     return;
   }
+  const allowed = ENUM_FIELDS[field];
+  if (value && allowed && !allowed.includes(value)) {
+    console.error(`"${value}" is not a valid ${field}. Use one of: ${allowed.join(', ')}.`);
+    process.exitCode = 1;
+    return;
+  }
   const next: ProviderProfileConfig = { ...profile };
   if (value === undefined || value === '') delete next[field];
-  else next[field] = value;
+  else Object.assign(next, { [field]: value });
   await config.saveProfile(next);
   console.log(value ? `${name}.${field} = ${value}` : `${name}.${field} cleared (inherits again)`);
 }

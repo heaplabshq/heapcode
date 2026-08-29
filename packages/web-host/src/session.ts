@@ -1016,6 +1016,7 @@ export class WebSession {
           // resolved where it matters — the run, the meter, the breakdown.
           effectiveContextWindow: profileContextWindow(p),
           maxTokens: p.maxTokens,
+          promptProfile: p.promptProfile,
         })),
       );
       const connected = new Set(this.session!.mcpManager.connectedServerNames());
@@ -2079,6 +2080,10 @@ export function mergeProfile(
   }
   if (patch.baseUrl !== undefined) next.baseUrl = patch.baseUrl;
   if (patch.model !== undefined) next.model = patch.model;
+  // `null` is the editor's "back to automatic", which is the absence of the
+  // field rather than a third value — the same distinction the numeric
+  // overrides below make.
+  if (patch.promptProfile !== undefined) next.promptProfile = patch.promptProfile ?? undefined;
   // Every role, in one loop rather than fourteen near-identical lines. An
   // empty string clears the override, which is what the editor sends when the
   // field is emptied — the role then falls back down its inheritance chain.

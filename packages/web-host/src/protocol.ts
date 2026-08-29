@@ -559,6 +559,15 @@ export type UiModelRole = (typeof UI_MODEL_ROLES)[number]['key'];
 /** `{ agentModel, agentProfile, … }` — the shape both directions carry roles in. */
 export type UiRoleFields = Partial<Record<`${UiModelRole}Model` | `${UiModelRole}Profile`, string>>;
 
+/**
+ * How much of the agent prompt a profile's model gets.
+ *
+ * `undefined` means the default: derived from the model's context window and
+ * whether it can call tools natively. The override exists for the model that
+ * has the room but follows short instructions better anyway.
+ */
+export type UiPromptDetail = 'full' | 'lean';
+
 export interface UiProfile extends UiRoleFields {
   name: string;
   preset: string;
@@ -575,6 +584,8 @@ export interface UiProfile extends UiRoleFields {
   effectiveContextWindow: number;
   /** Output cap per reply. Absent means the provider's own default. */
   maxTokens?: number;
+  /** Unset = chosen automatically from the model's window and protocol. */
+  promptProfile?: UiPromptDetail;
 }
 
 export interface UiMcpServer {
@@ -666,6 +677,8 @@ export interface UiSaveProfileParams {
     contextWindow?: number | null;
     maxTokens?: number | null;
     temperature?: number | null;
+    /** `null` clears the override, restoring the automatic choice. */
+    promptProfile?: UiPromptDetail | null;
   };
   /** Write-only. Omitted leaves any existing key untouched. */
   apiKey?: string;

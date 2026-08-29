@@ -93,3 +93,37 @@ describe('the settable field list', () => {
     expect(isProfileField('__proto__')).toBe(false);
   });
 });
+
+/**
+ * Prompt detail, the one field here that is not free text.
+ *
+ * Every other settable field is a model id or a profile name, which this
+ * command cannot check — a typo surfaces at the provider, eventually. This one
+ * it can, and must: silently ignoring "leen" would leave the user believing
+ * they had changed how the agent is prompted.
+ */
+describe('profile set promptProfile', () => {
+  it('stores a valid tier', async () => {
+    await profileSet('local', 'promptProfile', 'lean');
+    expect(await stored()).toMatchObject({ promptProfile: 'lean' });
+  });
+
+  it('refuses an invalid one, and says what is allowed', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await profileSet('local', 'promptProfile', 'leen');
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('full, lean'));
+    expect(await stored()).not.toHaveProperty('promptProfile');
+  });
+
+  it('clears back to automatic when the value is omitted', async () => {
+    // Absence is what makes the capability-based choice apply again; there is
+    // no third "auto" value to store.
+    await profileSet('local', 'promptProfile', 'lean');
+    await profileSet('local', 'promptProfile');
+    expect(await stored()).not.toHaveProperty('promptProfile');
+  });
+
+  it('is on the settable list, so the usage line advertises it', () => {
+    expect(PROFILE_FIELDS).toContain('promptProfile');
+  });
+});

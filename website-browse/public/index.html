@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>heapbrowse — An AI Browser Agent That Runs in Your Browser, Not Someone Else's</title>
+<meta name="description" content="heapbrowse is a Chrome side-panel agent that reads the page you are on and can operate it for you. It runs in your own browser and your own session, sends page text only to the model endpoint you configure, and asks before it acts." />
+<meta property="og:title" content="heapbrowse — An AI Browser Agent That Runs in Your Browser" />
+<meta property="og:description" content="Reads the page you are on and can operate it for you. Your session, your model endpoint, no heapbrowse server." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://browse.heaplabs.dev/" />
+<link rel="canonical" href="https://browse.heaplabs.dev/" />
+<link rel="icon" href="/icon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/_shared.css" />
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-row">
+    <a class="brand" href="/"><svg width="22" height="22" viewBox="0 0 128 128" aria-hidden="true"><defs><linearGradient id="m" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="url(#m)"/><path d="M64 37 L86.5 50.5 L86.5 77.5 L64 91 L41.5 77.5 L41.5 50.5 Z" fill="none" stroke="#fff" stroke-width="11" stroke-linejoin="round"/></svg> heapbrowse</a>
+    <div class="nav-links">
+      <a href="#what">What it does</a>
+      <a href="#data">Your data</a>
+      <a href="#permissions">Permissions</a>
+      <a href="https://github.com/heaplabshq/heapcode">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero wrap">
+  <p class="eyebrow">Chrome extension &middot; side panel</p>
+  <h1>An AI browser agent that runs in your browser, not someone else's.</h1>
+  <p class="lede">
+    heapbrowse reads the page you are on and can operate it for you — search, filter, fill in a
+    form, pull a list into a spreadsheet. It works in your own Chrome, in your own logged-in
+    session, and it shows you every action before it takes one.
+  </p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/heaplabshq/heapcode">Get it on GitHub →</a>
+    <a class="btn btn-ghost" href="/privacy.html">Privacy</a>
+  </div>
+  <p class="fine" style="margin-top:18px;">
+    Not yet on the Chrome Web Store. Load it unpacked from the repository for now.
+  </p>
+</section>
+
+<section class="panel wrap" id="what">
+  <p class="eyebrow">What it does</p>
+  <h2>Ask about the page. Or ask it to work the page.</h2>
+  <div class="card-grid">
+    <div class="card">
+      <span class="tag">Read</span>
+      <h3>Answers from what is actually there</h3>
+      <p>
+        It reads the page the way the browser itself does, through Chrome's accessibility tree —
+        not by guessing at the markup. Specifications, delivery options, small print, the thing
+        three screens down.
+      </p>
+    </div>
+    <div class="card">
+      <span class="tag">Act</span>
+      <h3>Clicks, types and fills in forms</h3>
+      <p>
+        With real input events that pages cannot tell from yours. Nothing happens to a page until
+        you have approved it, and anything that buys, pays, submits or deletes asks every time —
+        whatever mode you are in.
+      </p>
+    </div>
+    <div class="card">
+      <span class="tag">Collect</span>
+      <h3>Turns a list into a spreadsheet</h3>
+      <p>
+        Search results, product grids, job boards. It gathers rows across pages, de-duplicates
+        them, and hands you CSV or JSON — the actual data, which never passed through the model
+        on its way to you.
+      </p>
+    </div>
+    <div class="card">
+      <span class="tag">Hand back</span>
+      <h3>Stops at the things only you can do</h3>
+      <p>
+        A login, a one-time code, a CAPTCHA, choosing a file. It says what is needed and waits.
+        You do it on the page in front of you, and it carries on from there — no cloud browser to
+        hand your credentials to.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="panel wrap" id="data">
+  <p class="eyebrow">Your data</p>
+  <h2>Your pages go to your endpoint.</h2>
+  <p class="lede">
+    The text of the pages you point it at goes to the model endpoint you configure, and nowhere
+    else. Point it at Ollama on your own machine and no page you read leaves it at all.
+  </p>
+  <table class="spec-table">
+    <tr>
+      <th>Page content</th>
+      <td>Sent to your configured endpoint only, and only when a question needs it.</td>
+    </tr>
+    <tr>
+      <th>Your API key</th>
+      <td>Stored on the device in <code>chrome.storage.local</code>. Never synced through your Chrome profile, never shown again after saving.</td>
+    </tr>
+    <tr>
+      <th>Your saved details</th>
+      <td>Name, email, address and the rest stay on the device. The model is told which of them exist — never their values. Substitution happens locally, after you approve the action.</td>
+    </tr>
+    <tr>
+      <th>History and audit log</th>
+      <td>On the device. Clearable from the panel at any time.</td>
+    </tr>
+    <tr>
+      <th>Usage counts</th>
+      <td>Anonymous counts about the extension &mdash; how often it runs, which tools it used, how runs ended. Never the pages you visit, the sites you are on, or anything you typed. On by default, with a switch in Settings.</td>
+    </tr>
+  </table>
+  <p class="fine" style="margin-top:20px;">
+    The full statement is on the <a href="/privacy.html">privacy page</a>.
+  </p>
+</section>
+
+<section class="panel wrap" id="permissions">
+  <p class="eyebrow">Permissions</p>
+  <h2>What it asks for, and what each one buys.</h2>
+  <p class="lede">
+    A browser agent is only as trustworthy as its install prompt is honest. Here is the whole
+    list, in plain terms.
+  </p>
+  <table class="spec-table">
+    <tr>
+      <th>Reading a site</th>
+      <td>Granted one site at a time, when you point it at one — not the whole web at install. You will see an &ldquo;Allow&rdquo; button on any page it has not been granted.</td>
+    </tr>
+    <tr>
+      <th>Chrome's debugger</th>
+      <td>How it reads the page as the browser does and clicks with genuine input events. <strong>Chrome shows a &ldquo;being debugged&rdquo; banner across the top of the window while a run is going.</strong> That is Chrome telling you the truth; it cannot be hidden, and it goes when the run ends. You can turn the debugger off in Settings and everything still works, more slowly and less reliably.</td>
+    </tr>
+    <tr>
+      <th>Tabs</th>
+      <td>Chrome calls this &ldquo;read your browsing history&rdquo;. What it actually buys is the address of the tab you are on, so the panel can tell you which site is in scope and offer to allow it. Reading the page itself still needs the per-site grant, which is separate and yours to give.</td>
+    </tr>
+    <tr>
+      <th>Saving files</th>
+      <td><strong>Not asked for at install.</strong> Turn it on in Settings if you want heapbrowse to save a file a page links to, and Chrome will ask you then. Most people never need it, so most people are never asked.</td>
+    </tr>
+  </table>
+</section>
+
+<section class="panel wrap">
+  <p class="eyebrow">Models</p>
+  <h2>Bring your own.</h2>
+  <p class="lede">
+    Ollama and LM Studio on your own machine, or OpenAI, OpenRouter, Groq, Together, Azure, vLLM
+    — anything speaking the OpenAI-compatible API. Test the connection in Settings and the model
+    field becomes a list of whatever that endpoint offers.
+  </p>
+  <ul class="plain">
+    <li>No account. No sign-up. No heapbrowse subscription.</li>
+    <li>Several endpoints side by side as profiles, each with its own key.</li>
+    <li>Switch model without leaving the conversation.</li>
+  </ul>
+</section>
+
+<footer>
+  <div class="wrap footer-row">
+    <span class="mono">HEAPBROWSE &middot; POLYFORM-NC-1.0 &middot; A HEAP LABS PROJECT</span>
+    <div class="cta-row" style="margin:0;">
+      <a class="btn btn-primary" href="https://github.com/heaplabshq/heapcode">GitHub</a>
+      <a class="btn btn-ghost" href="https://code.heaplabs.dev/">Heap Code</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

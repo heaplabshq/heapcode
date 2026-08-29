@@ -1,0 +1,35 @@
+{
+  "name": "@heapcode/browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "heapbrowse \u2014 AI browser agent: a side-panel assistant that reads the page you are on and can operate it for you.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heaplabshq/heapcode.git",
+    "directory": "packages/browser"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "vite build && node scripts/buildContent.mjs",
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "package": "pnpm build && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@heapcode/core": "workspace:*",
+    "@heapcode/web-ui": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.7.1",
+    "@types/chrome": "^0.2.7",
+    "@types/react": "^18.3.4",
+    "@types/react-dom": "^18.3.0",
+    "esbuild": "^0.23.1",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}

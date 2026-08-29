@@ -67,12 +67,34 @@ export interface AgentOptions {
   /** Images attached to the task (data: URLs) — needs a vision-capable model. */
   images?: string[];
   workspaceName: string;
+  /**
+   * Replaces the built-in coding-agent identity and rules — for hosts whose
+   * agent is not a coding agent (heapbrowse drives a web page, not a repo, and
+   * the default prompt would send it looking for files that do not exist).
+   *
+   * Only the identity half is replaced. The tool-calling protocol is still
+   * appended by core, since it describes how this loop terminates and how calls
+   * are emitted, which is core's contract rather than the host's business.
+   */
+  systemPrompt?: string;
   tools: ToolDefinition[];
   /** True → OpenAI-native function calling; false → structured-text fallback. */
   nativeToolCalls: boolean;
   execute(call: ToolCall): Promise<ToolResult>;
   /** Resolve to false to deny; a denial is reported to the model, not fatal. */
-  requestPermission(call: ToolCall, tool: ToolDefinition): Promise<boolean>;
+  /**
+   * Resolve to false to deny; a denial is reported to the model, not fatal.
+   *
+   * A host may also return `{ allowed: false, reason }` when it refused for a
+   * reason of its own rather than because the user said no — a policy block, a
+   * rate ceiling, an origin that is off limits. The default message says the
+   * *user* denied it, and a model told that will keep looking for a route the
+   * user might accept. Told it hit a ceiling, it stops.
+   */
+  requestPermission(
+    call: ToolCall,
+    tool: ToolDefinition,
+  ): Promise<boolean | { allowed: boolean; reason?: string }>;
   /**
    * Called for non-read tools right after a permission grant, before execute()
    * — e.g. to snapshot the workspace for fine-grained rollback (PLAN.md M8).
@@ -113,8 +135,45 @@ export interface AgentOptions {
   maxTokens?: number;
   /** Model context window in tokens; drives usage reporting and compaction. */
   contextWindow?: number;
+  /**
+   * What this agent's work is made of, for the summary written when a run
+   * outgrows the context window.
+   *
+   * Compaction throws away the middle of a transcript and keeps a summary, so
+   * the instruction deciding what to preserve decides what the agent still
+   * knows for the rest of the run. That instruction was hard-coded for a coding
+   * agent -- keep the files changed and the commands run -- and a host whose
+   * work has neither was being told to remember things that do not exist,
+   * exactly when it could least afford to lose the things that do.
+   *
+   * Left unset it stays the coding wording, so nothing changes for a host that
+   * has not thought about it.
+   */
+  compaction?: CompactionShape;
   signal?: AbortSignal;
 }
+
+/** How to summarize one kind of work, when a run has to be compacted. */
+export interface CompactionShape {
+  /** What the agent is, in the summarizer's system line. E.g. 'browser-agent'. */
+  kind: string;
+  /**
+   * What must survive, most important first.
+   *
+   * Written as the things themselves rather than as advice: "pages visited and
+   * what each one turned out to contain" tells a summarizer what to look for,
+   * where "be thorough" does not.
+   */
+  preserve: string;
+}
+
+/** The wording every host got before any of them could say otherwise. */
+const CODING_COMPACTION: CompactionShape = {
+  kind: 'coding-agent',
+  preserve:
+    'files read/modified (and what was learned or changed in each), commands run with their ' +
+    'outcomes, decisions made, errors hit, and exact current progress on the task',
+};
 
 const PLAN_REQUEST =
   'Before doing anything, write a concise plan for this task, scaled to what it actually ' +
@@ -423,8 +482,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     return { response: counted(response), streamed };
   };
   const systemPrompt = nativeToolCalls
-    ? buildNativeAgentSystemPrompt(opts.workspaceName)
-    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish);
+    ? buildNativeAgentSystemPrompt(opts.workspaceName, opts.systemPrompt)
+    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, opts.systemPrompt);
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -450,8 +509,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     const call: ToolCall = { ...rawCall, args: unwrapMisenvelopedArgs(rawCall.args, tool) };
     events.onToolCall(call);
     let result: ToolResult;
-    if (tool.permission !== 'read' && !(await opts.requestPermission(call, tool))) {
-      result = { id: call.id, name: call.name, content: DENIED_RESULT_TEXT, isError: true };
+    const decision =
+      tool.permission === 'read' ? true : await opts.requestPermission(call, tool);
+    const allowed = typeof decision === 'boolean' ? decision : decision.allowed;
+    if (!allowed) {
+      const reason = typeof decision === 'boolean' ? undefined : decision.reason;
+      result = {
+        id: call.id,
+        name: call.name,
+        content: reason ?? DENIED_RESULT_TEXT,
+        isError: true,
+      };
     } else {
       try {
         if (tool.permission !== 'read') await opts.beforeToolCall?.(call, tool);
@@ -490,8 +558,19 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   let finishReminderSent = false;
   let verificationNudges = 0;
   const MAX_VERIFICATION_NUDGES = 2;
+  /**
+   * Names the host's actual verifying tool rather than assuming `run_tests`.
+   *
+   * heapbrowse's is `read_page` — its agent changes a web page and verifies by
+   * looking at it — and being told to "run the tests (run_tests)" sent the model
+   * off explaining that it had no such tool, which is a wasted turn and reads to
+   * the user like the product is confused about itself.
+   */
+  const verifyToolNames = tools.filter((t) => t.verifies).map((t) => t.name);
   const VERIFY_NUDGE =
-    'Files changed since the last passing test run. Run the tests (run_tests) before finishing.';
+    verifyToolNames.length > 0
+      ? `Something changed since the last time you checked your work. Call ${verifyToolNames.join(' or ')} before finishing.`
+      : 'Something changed since the last time you checked your work. Verify it before finishing.';
 
   /**
    * True when finish should be deferred — pushes a nudge as a side effect (call
@@ -532,6 +611,8 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
    * exchanges verbatim) and splice the summary in. Best-effort — on failure
    * the session continues and the provider's own error surfaces later.
    */
+  const shape = opts.compaction ?? CODING_COMPACTION;
+
   const compactIfNeeded = async (): Promise<void> => {
     const before = estimateMessagesTokens(messages);
     events.onContextUsage?.(before, contextWindow);
@@ -556,15 +637,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         messages: [
           {
             role: 'system',
-            content: 'You compress coding-agent transcripts. Reply with only the summary.',
+            content: `You compress ${shape.kind} transcripts. Reply with only the summary.`,
           },
           {
             role: 'user',
             content:
-              'Summarize this transcript so the agent can continue seamlessly. Preserve: files ' +
-              'read/modified (and what was learned or changed in each), commands run with their ' +
-              'outcomes, decisions made, errors hit, and exact current progress on the task. ' +
-              `Max 500 words.\n\n${transcript}`,
+              'Summarize this transcript so the agent can continue seamlessly. Preserve: ' +
+              `${shape.preserve}. Max 500 words.\n\n${transcript}`,
           },
         ],
         maxTokens: 1_000,
@@ -749,6 +828,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
             // Pair off the call's own id (as chat/chatTurn.ts does), never the
             // result's — see execTool.
             messages.push({ role: 'tool', content: result.content, toolCallId: requested.id });
+            // A tool message cannot carry an image in the OpenAI-compatible
+            // protocol, so images arrive as the user turn that follows it —
+            // the only shape vision models accept. Marked as tool output rather
+            // than as something the user said, since that is what it is.
+            if (result.images?.length) {
+              messages.push({
+                role: 'user',
+                content: `[image output from ${requested.name}]`,
+                images: result.images,
+              });
+            }
           }
           continue;
         }

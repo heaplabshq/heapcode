@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!--
+    The mark: the panel's own brand glyph on the panel's own gradient.
+
+    Edge to edge, with no halo. The halo belongs to the empty state, where there
+    is room for it and something to sit against; on a 16px toolbar icon it is
+    invisible against the toolbar and costs a third of the canvas, which shrinks
+    the glyph to the point where the hexagon stops reading as one.
+
+    The stroke is 11 at this size — deliberately heavier than the 1.5 the panel
+    draws it at. A hairline hexagon survives 128px and turns to grey mush at 16,
+    which is the size that actually has to work.
+  -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#g)"/>
+  <path d="M64 37 L86.5 50.5 L86.5 77.5 L64 91 L41.5 77.5 L41.5 50.5 Z"
+        fill="none" stroke="#fff" stroke-width="11" stroke-linejoin="round"/>
+</svg>

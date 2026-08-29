@@ -36,6 +36,18 @@ jobs:
           name: heap-code-vsix
           path: packages/vscode/heap-code.vsix
 
+      # The unpacked extension, zipped exactly as the Chrome Web Store wants it.
+      # Built from the same dist/ the build step just produced, so the artifact
+      # a release uploads is provably the one that passed CI.
+      - name: Package extension .zip
+        working-directory: packages/browser
+        run: node scripts/package.mjs
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: heapbrowse-extension
+          path: packages/browser/*.zip
+
       # Tarball of the exact bundle the build job just built and tested —
       # the release job below publishes this artifact verbatim, never a
       # fresh rebuild, so what gets published is provably what passed CI.

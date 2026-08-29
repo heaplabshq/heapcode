@@ -10,11 +10,13 @@ Three surfaces over one shared engine:
 | **Terminal CLI** | `npm install -g @heaplabs/heapcode-cli` — see [packages/cli/README.md](packages/cli/README.md) |
 | **Browser UI** | `heapcode web` in any workspace — see [Browser UI](#browser-ui) below |
 
+There is also **[heapbrowse](packages/browser/README.md)** — a separate product on the same engine: a Chrome side-panel agent that reads the page you are on and can operate it for you. [browse.heaplabs.dev](https://browse.heaplabs.dev)
+
 ## Privacy first
 
 Your code never leaves your machine except to the model endpoint **you** configure — no proprietary backend, no account. Point it at Ollama on your LAN and your code stays home.
 
-Heap Code does send anonymous usage telemetry by default (which features get used, coarse error counts — never code, prompts, or file contents/paths). Turn it off via `heapcode.telemetry.enabled` or VS Code's own `telemetry.telemetryLevel`. See [packages/vscode/README.md](packages/vscode/README.md#telemetry) for details.
+Heap Code does send anonymous usage telemetry by default (which features get used, coarse error counts — never code, prompts, or file contents/paths). Turn it off via `heapcode.telemetry.enabled` or VS Code's own `telemetry.telemetryLevel`. See [packages/vscode/README.md](packages/vscode/README.md#telemetry) for details. heapbrowse does the same for the extension's own usage — never the pages you visit — with a switch in its Settings panel.
 
 ## Works with
 

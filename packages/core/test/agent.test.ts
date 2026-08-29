@@ -9,7 +9,7 @@ import {
 } from '../src/agent/loop.js';
 import { ASK_USER_NO_ANSWER } from '../src/agent/askUser.js';
 import { parseToolBlocks } from '../src/agent/textProtocol.js';
-import type { ToolCall, ToolDefinition, ToolResult } from '../src/agent/tools.js';
+import { DENIED_RESULT_TEXT, type ToolCall, type ToolDefinition, type ToolResult } from '../src/agent/tools.js';
 import type { ChatRequest, ChatResponse, Provider } from '../src/providers/types.js';
 import { ProviderError } from '../src/providers/errors.js';
 
@@ -721,6 +721,64 @@ describe('runAgent — native tool calls', () => {
     expect(lastReq.messages.some((m) => m.content.includes('[Earlier work compacted'))).toBe(true);
     expect(lastReq.messages.some((m) => m.content.includes('Compact summary'))).toBe(true);
   });
+
+  /**
+   * What compaction is told to keep decides what the agent still knows for the
+   * rest of the run, and it was hard-coded for this host. A browser agent has
+   * no files and no commands, so it was being asked to preserve things that do
+   * not exist and never asked for the pages it had visited or the rows it had
+   * gathered -- on exactly the long runs where compaction fires.
+   */
+  const compactionRequest = (provider: { requests: { messages: { content: string }[] }[] }) =>
+    provider.requests.find((r) => r.messages.some((m) => m.content.includes('Summarize this transcript')))!;
+
+  const overflowing = () => {
+    const toolTurn = { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: { path: 'a.ts' } }] };
+    return scriptedProvider([
+      ...Array.from({ length: 6 }, () => toolTurn),
+      { content: 'Summary.' },
+      { content: '', toolCalls: [{ id: 'f', name: 'finish', args: { summary: 'did it' } }] },
+    ]);
+  };
+
+  const overflowingHarness = () =>
+    harness({
+      execute: (call: ToolCall) => Promise.resolve({ id: call.id, name: call.name, content: 'x'.repeat(3000) }),
+      events: { onText: () => {}, onToolCall: () => {}, onToolResult: () => {}, onCompaction: () => {} },
+    });
+
+  it('summarizes as a coding agent when the host has not said otherwise', async () => {
+    const provider = overflowing();
+    await runAgent({
+      ...overflowingHarness().options,
+      provider,
+      nativeToolCalls: true,
+      contextWindow: 4_000,
+      maxTokens: 1_000,
+    });
+
+    const asked = compactionRequest(provider);
+    expect(asked.messages[0]!.content).toContain('coding-agent');
+    expect(asked.messages[1]!.content).toContain('files read/modified');
+    expect(asked.messages[1]!.content).toContain('commands run');
+  });
+
+  it('summarizes as whatever the host says its work is made of', async () => {
+    const provider = overflowing();
+    await runAgent({
+      ...overflowingHarness().options,
+      provider,
+      nativeToolCalls: true,
+      contextWindow: 4_000,
+      maxTokens: 1_000,
+      compaction: { kind: 'browser-agent', preserve: 'the pages visited and what was collected' },
+    });
+
+    const asked = compactionRequest(provider);
+    expect(asked.messages[0]!.content).toContain('browser-agent');
+    expect(asked.messages[1]!.content).toContain('the pages visited and what was collected');
+    expect(asked.messages[1]!.content).not.toContain('files read/modified');
+  });
 });
 
 describe('runAgent — memory distillation', () => {
@@ -1115,7 +1173,10 @@ describe('runAgent — requireVerificationBeforeFinish', () => {
     const toolMsg = deferredReq.messages[deferredReq.messages.length - 1]!;
     expect(toolMsg.role).toBe('tool');
     expect(toolMsg.toolCallId).toBe('c2');
-    expect(toolMsg.content).toContain('Run the tests');
+    // Names the host's own verifying tool. A host whose verifier is not
+    // `run_tests` — heapbrowse verifies by reading the page — was previously
+    // told to run tests it does not have, and spent a turn saying so.
+    expect(toolMsg.content).toContain('run_tests');
   });
 
   it('gives up gating after MAX_VERIFICATION_NUDGES and lets finish through', async () => {
@@ -1338,5 +1399,86 @@ describe('saidKeepGoing', () => {
   it('treats silence and anything it does not recognize as a no — an extra budget is not the safe guess', () => {
     for (const answer of ['', '   ', ASK_USER_NO_ANSWER, 'hmm', 'what do you mean?'])
       expect(saidKeepGoing(answer)).toBe(false);
+  });
+});
+
+describe('a host that refuses for its own reasons', () => {
+  /**
+   * `requestPermission` returning false says "the user denied this", and a model
+   * told that reasonably hunts for a route the user might accept. When the
+   * refusal was actually a policy block or a rate ceiling, that is both wrong
+   * and expensive: heapbrowse hit a per-site action limit and spent the rest of
+   * the run trying new ways to do the same thing, telling the user they had
+   * denied something they had in fact approved.
+   */
+  it('reports the host reason to the model instead of blaming the user', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a.ts' } }] },
+      { content: 'Stopping, that is the limit.' },
+    ]);
+    const h = harness({
+      requestPermission: () =>
+        Promise.resolve({
+          allowed: false,
+          reason: 'This run has already taken 120 actions on example.com, which is the limit.',
+        }),
+      execute: () => {
+        throw new Error('execute must not run when permission was refused');
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(h.results[0]?.content).toMatch(/already taken 120 actions/);
+    expect(h.results[0]?.content).not.toMatch(/user denied/i);
+    expect(h.results[0]?.isError).toBe(true);
+  });
+
+  it('still says the user denied it when the host simply returns false', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a.ts' } }] },
+      { content: 'Understood.' },
+    ]);
+    const h = harness({
+      requestPermission: () => Promise.resolve(false),
+      execute: () => {
+        throw new Error('execute must not run when permission was refused');
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(h.results[0]?.content).toBe(DENIED_RESULT_TEXT);
+  });
+});
+
+describe('the verification nudge', () => {
+  it('names whatever tool this host verifies with, not run_tests', async () => {
+    // heapbrowse verifies by reading the page. Being told to "run the tests
+    // (run_tests)" sent it off explaining it had no such tool — a wasted turn
+    // that reads to the user like the product is confused about itself.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'write_file', args: { path: 'a.ts' } }] },
+      { content: '', toolCalls: [{ id: 'c2', name: 'finish', args: { summary: 'done' } }] },
+      { content: '', toolCalls: [{ id: 'c3', name: 'look', args: {} }] },
+      { content: '', toolCalls: [{ id: 'c4', name: 'finish', args: { summary: 'done' } }] },
+    ]);
+    const h = harness({
+      tools: [
+        { name: 'write_file', description: 'Write', parameters: {}, permission: 'write' },
+        { name: 'look', description: 'Look', parameters: {}, permission: 'read', verifies: true },
+      ],
+      requireVerificationBeforeFinish: true,
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    // The deferred finish is answered with a paired tool message carrying the
+    // nudge — the same place the test above reads it from.
+    const deferred = provider.requests[2]!;
+    const nudge = deferred.messages[deferred.messages.length - 1]!;
+    expect(nudge.role).toBe('tool');
+    expect(nudge.content).toContain('look');
+    expect(nudge.content).not.toContain('run_tests');
   });
 });

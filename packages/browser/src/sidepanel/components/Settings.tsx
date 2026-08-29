@@ -1,0 +1,528 @@
+import { useEffect, useState } from 'react';
+import type { PresetId } from '@heapcode/core/providers';
+import {
+  addProfile,
+  deleteProfile,
+  loadFiles,
+  loadProfiles,
+  canDownload,
+  dropDownloads,
+  loadUseDebugger,
+  needsApiKey,
+  requestDownloads,
+  presetById,
+  presets,
+  saveApiKey,
+  saveFiles,
+  saveProfile,
+  saveUseDebugger,
+  setActiveProfile,
+  type StoredProfile,
+} from '../../shared/settings.js';
+import { loadTelemetryEnabled, saveTelemetryEnabled } from '../../shared/telemetry.js';
+import { debuggerAvailable } from '../../agent/cdp.js';
+import { describe, diagnose, type Diagnosis } from '../../shared/ollamaDiagnostic.js';
+import { hasHostPermission, requestHostPermission } from '../../shared/hostPermission.js';
+import { Details } from './Details.js';
+import { Icon } from './Icon.js';
+import { ModelField } from './ModelField.js';
+
+/**
+ * Provider setup, plus the connectivity check.
+ *
+ * The check is not decoration. A local-first user's first action is pointing
+ * this at `http://localhost:11434/v1`, and it fails — Ollama refuses origins
+ * that are not in `OLLAMA_ORIGINS`, and the browser reports that as an
+ * indistinguishable "Failed to fetch" (PRD §7.2). Without this the product
+ * looks broken at minute one for exactly the users it is aimed at.
+ *
+ * The key field is write-only. It is stored on save and never read back into
+ * the form, so a stored key cannot be exfiltrated by anything that gets to
+ * render this panel, and it never appears in a screenshot.
+ *
+ * Laid out as a stack of cards rather than a flat form: the panel is 320–400px
+ * wide and a flat list of labelled fields buries the thing someone opened
+ * Settings for. Each concern — which profile, which endpoint, how the page is
+ * read — is its own card with an icon and a title, the same shape the
+ * onboarding's permission cards already taught. The two long-form sections
+ * that are rarely edited stay as disclosures, so they do not push the fields
+ * above them off the screen.
+ */
+export function Settings({
+  profile,
+  origin,
+  knownModels = [],
+  onSaved,
+}: {
+  profile: StoredProfile;
+  origin: string;
+  /** Models the panel has already fetched for the active profile. */
+  knownModels?: string[];
+  onSaved: (profile: StoredProfile) => void;
+}) {
+  const [draft, setDraft] = useState<StoredProfile>(profile);
+  const [apiKey, setApiKey] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<Diagnosis | undefined>();
+  const [useDebugger, setUseDebugger] = useState(false);
+  const [telemetry, setTelemetry] = useState(true);
+  /** Chrome's answer, not a stored preference — see `canDownload`. */
+  const [downloads, setDownloads] = useState(false);
+  const [files, setFiles] = useState('');
+  const [profiles, setProfiles] = useState<StoredProfile[]>([]);
+  /**
+   * Which saved profile the form is editing.
+   *
+   * Held apart from `draft.name` because the two answer different questions:
+   * this one is which profile you are on, and `draft.name` is what you are in
+   * the middle of calling it. Binding the switcher to the draft meant that the
+   * moment you started renaming, its value matched no option and the dropdown
+   * rendered blank until you finished typing.
+   */
+  const [editing, setEditing] = useState(profile.name);
+  /**
+   * What the endpoint says it can run.
+   *
+   * Seeded from whatever the panel has already discovered, so opening Settings
+   * on a working profile shows a list rather than making the user press Test
+   * again to get back what it already knew.
+   */
+  const [models, setModels] = useState<string[]>(knownModels);
+
+  useEffect(() => {
+    void loadUseDebugger().then(setUseDebugger);
+    void loadTelemetryEnabled().then(setTelemetry);
+    void canDownload().then(setDownloads);
+    void loadFiles().then((paths) => setFiles(paths.join('\n')));
+    void loadProfiles().then(setProfiles);
+  }, []);
+
+  /**
+   * Switch to another configured endpoint.
+   *
+   * The draft is replaced wholesale and the key field cleared: a key typed
+   * against one profile must never be saved into another, and the field is
+   * write-only so there is nothing to carry across anyway.
+   */
+  const choose = async (name: string) => {
+    const wanted = profiles.find((profile) => profile.name === name);
+    if (!wanted) return;
+    await setActiveProfile(name);
+    setEditing(name);
+    setDraft(wanted);
+    setApiKey('');
+    setResult(undefined);
+    // The list belonged to the endpoint being left.
+    setModels([]);
+    onSaved(wanted);
+  };
+
+  /**
+   * Just a preference now.
+   *
+   * There is no permission to request: Chrome refuses to let `debugger` be
+   * optional, so it is held from install or not at all. The runtime grant flow
+   * this replaced could never have worked -- `permissions.request` throws for a
+   * permission the manifest does not declare as optional, which is why the
+   * switch would not stay ticked.
+   */
+  const toggleTelemetry = async (wanted: boolean) => {
+    setTelemetry(wanted);
+    await saveTelemetryEnabled(wanted);
+  };
+
+  const toggleDebugger = async (wanted: boolean) => {
+    setUseDebugger(wanted);
+    await saveUseDebugger(wanted);
+  };
+
+  /**
+   * Ask Chrome, or hand it back.
+   *
+   * `permissions.request` must run inside a user gesture, which is why this
+   * hangs off the switch and not off an effect — and why the agent cannot ask
+   * for it mid-run. The state is whatever Chrome says afterwards rather than
+   * what was clicked: a user who dismisses the prompt has not granted it, and a
+   * switch that showed on regardless would be lying.
+   */
+  const toggleDownloads = async (wanted: boolean) => {
+    const now = wanted ? await requestDownloads() : !(await dropDownloads());
+    setDownloads(now);
+  };
+
+  const preset = presetById(draft.preset);
+
+  const choosePreset = (id: PresetId) => {
+    const next = presetById(id);
+    // Carry the base URL across only when the user had not customised it, so
+    // switching presets to compare them does not silently discard a hand-typed
+    // endpoint.
+    const untouched = draft.baseUrl === presetById(draft.preset).defaultBaseUrl;
+    setDraft({
+      ...draft,
+      preset: id,
+      baseUrl: untouched ? next.defaultBaseUrl : draft.baseUrl,
+    });
+    setResult(undefined);
+    setModels([]);
+  };
+
+  /**
+   * Chrome must grant access to the endpoint before any request reaches it, and
+   * `permissions.request` only works inside a user gesture — so it hangs off
+   * these buttons rather than off an effect. Asking again when the grant is
+   * already held would show a redundant prompt, hence the check first.
+   */
+  const ensureAccess = async (): Promise<boolean> => {
+    if (await hasHostPermission(draft.baseUrl)) return true;
+    return requestHostPermission(draft.baseUrl);
+  };
+
+  const save = async () => {
+    await ensureAccess();
+    await saveProfile(draft);
+    if (apiKey.length > 0) {
+      // Named explicitly: the key belongs to the profile being saved, which is
+      // not necessarily the one that was active when the field was typed into.
+      await saveApiKey(apiKey, draft.name);
+      setApiKey('');
+    }
+    setProfiles(await loadProfiles());
+    // The rename is committed, so the switcher now belongs to the new name.
+    setEditing(draft.name);
+    onSaved(draft);
+  };
+
+  const check = async () => {
+    setChecking(true);
+    setResult(undefined);
+    try {
+      await ensureAccess();
+      // Use the key being typed if there is one, so the check reflects the form
+      // rather than what was last saved.
+      const diagnosis = await diagnose(draft.baseUrl, origin, apiKey || undefined);
+      setResult(diagnosis);
+      if (diagnosis.kind !== 'ok') return;
+      setModels(diagnosis.models);
+      if (!draft.model.trim() && diagnosis.models.length === 1) {
+        setDraft((current) => ({ ...current, model: diagnosis.models[0]! }));
+      }
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="pane settings-pane">
+      {profiles.length > 0 && (
+        <section className="settings-card">
+          <header className="settings-card-head">
+            <span className="settings-card-icon" aria-hidden="true">
+              <Icon name="settings" />
+            </span>
+            <h3 className="section-title">Profile</h3>
+          </header>
+          <div className="settings-card-body">
+            {/* Which one, then what it is called. The other order reads as two
+                controls for the same thing with no way to tell which switches
+                and which renames. */}
+            <label>
+              Editing
+              <span className="picker">
+                <select value={editing} onChange={(e) => void choose(e.target.value)}>
+                  {profiles.map((profile) => (
+                    <option key={profile.name} value={profile.name}>
+                      {profile.name}
+                      {profile.model ? ` — ${profile.model}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <Icon name="chevron" size={12} className="picker-caret" />
+              </span>
+            </label>
+            <label>
+              Name
+              <input
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                placeholder="local, work, big model…"
+                spellCheck={false}
+              />
+              {draft.name !== editing && (
+                <span className="hint">Renames “{editing}” when you save.</span>
+              )}
+            </label>
+            <div className="row">
+              <button
+                type="button"
+                className="ghost"
+                onClick={async () => {
+                  const next = await addProfile(draft);
+                  setProfiles(next);
+                  const created = next[next.length - 1]!;
+                  setEditing(created.name);
+                  setDraft(created);
+                  setApiKey('');
+                  onSaved(created);
+                }}
+              >
+                Duplicate
+              </button>
+              {profiles.length > 1 && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={async () => {
+                    // By the saved name, not the draft's -- a half-typed
+                    // rename must not decide which profile is deleted.
+                    const next = await deleteProfile(editing);
+                    setProfiles(next);
+                    setEditing(next[0]!.name);
+                    setDraft(next[0]!);
+                    setApiKey('');
+                    onSaved(next[0]!);
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section className="settings-card">
+        <header className="settings-card-head">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="plug" />
+          </span>
+          <h3 className="section-title">Model endpoint</h3>
+        </header>
+        <div className="settings-card-body">
+          <label>
+            Provider
+            <select
+              value={draft.preset}
+              onChange={(e) => choosePreset(e.target.value as PresetId)}
+            >
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                  {p.local ? ' (local)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            Base URL
+            <input
+              value={draft.baseUrl}
+              onChange={(e) => {
+                setDraft({ ...draft, baseUrl: e.target.value });
+                setModels([]);
+              }}
+              spellCheck={false}
+            />
+          </label>
+
+          <ModelField
+            value={draft.model}
+            models={models}
+            onChange={(model) => setDraft({ ...draft, model })}
+            placeholder={draft.preset === 'ollama' ? 'llama3.1' : 'gpt-4o-mini'}
+          />
+
+          <label>
+            API key {needsApiKey(draft) ? '' : '(not needed for this provider)'}
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="stored locally, never synced"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          {preset.apiKeyUrl && (
+            <p className="muted">
+              Get a key at{' '}
+              <a href={preset.apiKeyUrl} target="_blank" rel="noreferrer noopener">
+                {preset.apiKeyUrl}
+              </a>
+            </p>
+          )}
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <header className="settings-card-head">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="read" />
+          </span>
+          <h3 className="section-title">How it reads the page</h3>
+        </header>
+        <div className="settings-card-body">
+          <div className="switch-row">
+            <label className="switch">
+              <input
+                type="checkbox"
+                aria-label="Use Chrome's debugger"
+                checked={useDebugger}
+                onChange={(e) => void toggleDebugger(e.target.checked)}
+              />
+              Use Chrome&rsquo;s debugger
+            </label>
+            <span className={useDebugger ? 'state on' : 'state'} aria-hidden="true">
+              {useDebugger ? (
+                <>
+                  <Icon name="check" size={11} />
+                  on
+                </>
+              ) : (
+                'off'
+              )}
+            </span>
+          </div>
+          <p className="muted">
+            Reads the page the way the browser itself does, clicks with real input events, and can
+            attach files. Chrome shows a &ldquo;being debugged&rdquo; banner while a run is going,
+            and opening DevTools on the tab switches it back off.
+          </p>
+          {useDebugger && !debuggerAvailable() && (
+            <p className="turn-error">
+              This build does not have the debugger permission, so the page will be read the older
+              way.
+            </p>
+          )}
+
+          <hr className="rule" />
+
+          <div className="switch-row">
+            <label className="switch">
+              <input
+                type="checkbox"
+                aria-label="Let heapbrowse save files"
+                checked={downloads}
+                onChange={(e) => void toggleDownloads(e.target.checked)}
+              />
+              Let it save files
+            </label>
+            <span className={downloads ? 'state on' : 'state'} aria-hidden="true">
+              {downloads ? (
+                <>
+                  <Icon name="check" size={11} />
+                  on
+                </>
+              ) : (
+                'off'
+              )}
+            </span>
+          </div>
+          <p className="muted">
+            Lets it save a file a page links to — an invoice, an export — to your downloads folder.
+            Off by default, so the install prompt does not ask every user for something most will
+            never need. Chrome asks when you turn it on.
+          </p>
+
+          {useDebugger && (
+            <label>
+              Files the agent may attach — one full path per line
+              <textarea
+                className="code"
+                value={files}
+                onChange={(e) => setFiles(e.target.value)}
+                onBlur={() => void saveFiles(files.split('\n').map((line) => line.trim()))}
+                placeholder="/Users/you/Documents/CV.pdf"
+                rows={2}
+                spellCheck={false}
+              />
+            </label>
+          )}
+        </div>
+      </section>
+
+      <details className="settings-card disclosure-card">
+        <summary className="settings-card-head disclosure-summary">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="form" />
+          </span>
+          <h3 className="section-title">Your details</h3>
+          <Icon name="chevron" size={12} className="disclosure-caret" />
+        </summary>
+        <div className="settings-card-body">
+          <Details />
+        </div>
+      </details>
+
+      <details className="settings-card disclosure-card">
+        <summary className="settings-card-head disclosure-summary">
+          <span className="settings-card-icon" aria-hidden="true">
+            <Icon name="lock" />
+          </span>
+          <h3 className="section-title">Where your data goes</h3>
+          <Icon name="chevron" size={12} className="disclosure-caret" />
+        </summary>
+        <div className="settings-card-body">
+          <p className="muted">
+            The text of the pages you point heapbrowse at is sent to the endpoint configured above,
+            and nowhere else. Your API key and your saved details are stored on this device, never
+            synced through your Chrome profile.
+          </p>
+
+          <hr className="rule" />
+
+          <div className="switch-row">
+            <label className="switch">
+              <input
+                type="checkbox"
+                aria-label="Send anonymous usage counts"
+                checked={telemetry}
+                onChange={(e) => void toggleTelemetry(e.target.checked)}
+              />
+              Send anonymous usage counts
+            </label>
+            <span className={telemetry ? 'state on' : 'state'} aria-hidden="true">
+              {telemetry ? (
+                <>
+                  <Icon name="check" size={11} />
+                  on
+                </>
+              ) : (
+                'off'
+              )}
+            </span>
+          </div>
+          <p className="muted">
+            On by default. Counts how often heapbrowse is run, which tools it used, and how runs
+            ended, so we can tell what is working. It never includes the pages you visit, the sites
+            you are on, what you asked for, what the model said, your endpoint address, your API key
+            or your saved details &mdash; none of those are collected in the first place, so there
+            is nothing to remove. Turning this off also deletes the random identifier it used.
+          </p>
+        </div>
+      </details>
+
+      <div className="settings-actions">
+        <button type="button" className="primary" onClick={save}>
+          Save
+        </button>
+        <button type="button" onClick={check} disabled={checking}>
+          {checking ? 'Checking…' : 'Test connection'}
+        </button>
+      </div>
+
+      {result && (
+        <div className={`diagnosis ${result.kind}`}>
+          <p>{describe(result)}</p>
+          {result.kind === 'origin-blocked' && (
+            <>
+              <p className="muted">Run this, then try again:</p>
+              <pre>{result.fix}</pre>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

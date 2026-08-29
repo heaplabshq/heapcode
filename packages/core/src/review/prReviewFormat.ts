@@ -438,6 +438,8 @@ export interface PrInfo {
   url: string;
   /** Head commit the review anchors to. Absent in preview-only contexts (tests). */
   headRefOid?: string;
+  /** The branch being merged into, for the local-diff fallback. */
+  baseRefName?: string;
 }
 
 /**

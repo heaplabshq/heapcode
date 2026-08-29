@@ -6,6 +6,20 @@ import { HeapcodeServer } from './server.js';
 
 export interface DaemonOptions {
   /**
+   * This bundle's own path, so the daemon can notice it has been rebuilt.
+   *
+   * A daemon outlives the session that spawned it -- that is the point of it --
+   * which means it also outlives a `pnpm build`. It then keeps answering with
+   * the code it started with, and every client sees a fix that is demonstrably
+   * on disk fail to take effect, with nothing anywhere saying why. That cost a
+   * real debugging session: a rebuilt bundle, a restarted host, and a daemon
+   * from the previous day quietly serving the old behaviour.
+   *
+   * Supplied by the host for the same reason `wasmDir` is: the host is what
+   * gets built and installed, so only it knows where its bundle landed.
+   */
+  entryFile?: string;
+  /**
    * Directory holding the tree-sitter runtime + grammar wasm assets. Supplied
    * by whichever host bundled this daemon, for the same reason
    * `ConnectOptions.daemonEntry` is: each host is what actually gets
@@ -68,9 +82,58 @@ export async function main(opts: DaemonOptions = {}): Promise<number> {
     return 1;
   }
   await log(`listening on ${server.address} (pid ${process.pid})`);
+  if (opts.entryFile) void retireOnRebuild(opts.entryFile, server, log, shutdown);
   return new Promise<number>(() => {
-    /* run until signalled or idle */
+    /* run until signalled, idle, or rebuilt */
   });
+}
+
+/** How often the daemon checks whether it has been rebuilt underneath itself. */
+const REBUILD_POLL_MS = 5_000;
+
+/**
+ * Exit once this bundle has been rebuilt and nothing is still using us.
+ *
+ * Polled rather than watched: `fs.watch` on a file esbuild replaces by rename
+ * stops reporting after the first swap, which is precisely the case that has to
+ * keep working. A stat every few seconds costs nothing next to what the daemon
+ * is otherwise doing.
+ *
+ * It never interrupts work. A rebuild mid-run leaves the run alone and the exit
+ * waits for the last session to go, because the alternative -- killing a live
+ * agent because a file changed on disk -- is worse than serving stale code for
+ * another minute. The next client finds nothing listening and spawns a daemon
+ * from the new bundle.
+ */
+export async function retireOnRebuild(
+  entryFile: string,
+  server: { sessionCount: number },
+  log: (line: string) => Promise<void>,
+  shutdown: (code: number) => Promise<void>,
+  pollMs: number = REBUILD_POLL_MS,
+): Promise<void> {
+  const startedWith = await stat(entryFile).catch(() => undefined);
+  if (!startedWith) return;
+
+  let announced = false;
+  const timer = setInterval(() => {
+    void (async () => {
+      const current = await stat(entryFile).catch(() => undefined);
+      if (!current) return;
+      if (current.mtimeMs === startedWith.mtimeMs && current.size === startedWith.size) return;
+
+      if (!announced) {
+        announced = true;
+        await log(`${entryFile} was rebuilt; retiring once the last session ends`);
+      }
+      if (server.sessionCount > 0) return;
+
+      clearInterval(timer);
+      await log('no sessions left; exiting so the next client starts the new build');
+      await shutdown(0);
+    })();
+  }, pollMs);
+  timer.unref?.();
 }
 
 /**

@@ -9,4 +9,4 @@ export * from './rag.js';
 export * from './review.js';
 export * from './server.js';
 export * from './client.js';
-export { main as runDaemon, enableAstChunking, type DaemonOptions } from './daemon.js';
+export { main as runDaemon, enableAstChunking, retireOnRebuild, type DaemonOptions } from './daemon.js';

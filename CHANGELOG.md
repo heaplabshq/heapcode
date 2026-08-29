@@ -1,5 +1,16 @@
 # Changelog
 
+## heapbrowse 0.1.0
+
+First release of **heapbrowse** — a separate product in this repo (`packages/browser`), built on the same `@heapcode/core` agent loop. A Chrome side-panel agent that reads the page you are on and can operate it: search, filter, compare across pages, fill a form from your saved details, and hand the page back for the steps only a person can do.
+
+- **Two drivers, one interface.** Chrome's debugger for real input events, frame-aware accessibility-tree reads, and file attachment; a content-script walk as the landing ground, because Chrome takes the debugger away the moment DevTools opens on the tab
+- **Nothing mutating happens unnoticed.** Every action is classified from what the element actually is — not from the tool name — and reaches a confirmation or an explicit per-origin grant. Banks, brokerages and password managers are refused in every mode, and no setting lifts that
+- **Page content is untrusted, always**, and the claim is tested rather than asserted: an adversarial suite assumes an injection fully succeeded and checks the properties that must still hold
+- **Security review before release.** Three high-confidence findings, all fixed: the refusal to type into credential fields and two of the three destructive-action signals were absent on the default driver — the accessibility tree carries none of `sensitive`, `submits` or `checkout`, so the guardrails reading them answered "no" on the path almost everyone is on. And the frames' `postMessage` channel let a frame that was not ours answer for itself, which was enough to be handed your saved details. The credential refusal now sits above both drivers, the missing signals are computed from the page's markup in one call, a driver that cannot compute them says so and the classifier fails closed, and frame traffic moved onto a channel no page script can answer
+- **Anonymous usage counts, on by default**, with a switch in Settings under "Where your data goes". Event names and fixed enums only — never the pages you visit, the sites you are on, what you asked for, what the model said, your endpoint, your key, or your saved details
+- Local-first: point it at Ollama and no page you read leaves the machine. `host_permissions` is empty at install; sites are granted one at a time
+
 ## 0.6.1
 
 - **An agent session gets 100 plan→act→observe iterations instead of 50, and reaching the limit now asks whether to keep going.** An iteration is one model turn, so a batch of parallel tool calls costs one and a read-then-edit-then-test cycle costs three — real multi-file work spent the old budget before finishing, and the session ended on a "what's done, what remains" summary that reads exactly like a completed job. Answering the question continues inside the same session, with the whole run's context intact; a follow-up message would have started the model over from that summary alone. `heapcode.agent.maxIterations` still sets the ceiling

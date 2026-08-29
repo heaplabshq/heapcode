@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import type { ChatMessage, Provider } from '../providers/types.js';
 import type { ToolCall, ToolDefinition } from '../agent/tools.js';
 import {
@@ -80,6 +81,158 @@ function runGh(args: string[], cwd: string, stdin?: string): Promise<GhResult> {
       child.stdin.end();
     }
   });
+}
+
+/** Same contract as `runGh`, for the local-checkout fallback. */
+function runGit(args: string[], cwd: string): Promise<GhResult> {
+  return new Promise((resolve) => {
+    const child = spawn('git', args, { cwd });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += d));
+    child.stderr.on('data', (d) => (stderr += d));
+    child.on('close', (code) => resolve({ stdout, stderr, code }));
+    child.on('error', (err) => resolve({ stdout: '', stderr: String(err), code: -1 }));
+  });
+}
+
+/** One file as the pulls/N/files endpoint describes it. */
+interface PrFileEntry {
+  filename: string;
+  previous_filename?: string;
+  status?: string;
+  patch?: string;
+}
+
+/**
+ * The PR's diff, from whichever endpoint will actually give it to us.
+ *
+ * `gh pr diff` is the obvious way and it has a hard ceiling: GitHub refuses the
+ * `.diff` media type above 20,000 lines with `406 Sorry, the diff exceeded the
+ * maximum number of lines`. That is not an exotic size -- a branch that adds a
+ * feature reaches it -- and the failure landed as "no changes, or gh failed",
+ * which sends the user to check their `gh` install for a problem that is not
+ * there.
+ *
+ * `pulls/{n}/files` has no such ceiling: it paginates, and it returns each
+ * file's patch separately. That is also the shape this reviewer wants, since it
+ * batches per file anyway -- so the fallback is closer to the natural source
+ * than the primary was. The entries are reassembled into a unified diff because
+ * everything downstream (`splitDiffByFile`, `parseDiffHunkRanges`, and the line
+ * anchoring that depends on them) reads `diff --git` and `+++ b/` headers.
+ *
+ * A file with no `patch` is binary, or one the API stopped computing partway
+ * through a large PR -- the latter come back as `+0/-0 added`, which reads as
+ * an empty change and is not one. Those are asked of the local checkout, which
+ * is the head of this branch anyway. Whatever is still missing after that is
+ * reported to the user rather than passed over, for the same reason a batch
+ * that could not be reached is.
+ */
+export async function fetchPrDiff(
+  number: number,
+  cwd: string,
+  baseRef?: string,
+): Promise<{ diff: string; unreviewable: string[]; reason?: string; gitRoot?: string }> {
+  const topLevelEarly = await runGit(['rev-parse', '--show-toplevel'], cwd);
+  const root =
+    topLevelEarly.code === 0 && topLevelEarly.stdout.trim() ? topLevelEarly.stdout.trim() : undefined;
+
+  const direct = await runGh(['pr', 'diff', String(number)], cwd);
+  if (direct.code === 0 && direct.stdout.trim()) {
+    return { diff: direct.stdout, unreviewable: [], gitRoot: root };
+  }
+
+  const listed = await runGh(
+    [
+      'api',
+      `repos/{owner}/{repo}/pulls/${number}/files`,
+      '--paginate',
+      '--jq',
+      '.[] | {filename, previous_filename, status, patch}',
+    ],
+    cwd,
+  );
+  if (listed.code !== 0) {
+    // Whichever error is real. `gh` explains itself well -- "the diff exceeded
+    // the maximum number of lines (20000)" is actionable and was being thrown
+    // away -- so it is passed through rather than replaced with a guess.
+    const detail = (listed.stderr.trim() || direct.stderr.trim() || '').split('\n')[0];
+    return {
+      diff: '',
+      unreviewable: [],
+      reason: detail || 'gh could not list the changed files',
+      gitRoot: root,
+    };
+  }
+  if (!listed.stdout.trim()) {
+    // The endpoint answered and had nothing to say. Distinguished from the
+    // branch above on purpose: "the PR is empty" and "the call failed" are
+    // different problems, and reporting the first as the second is how the
+    // original message sent someone to check their `gh` install.
+    return { diff: '', unreviewable: [], reason: 'it has no changes', gitRoot: root };
+  }
+
+  // The paths the API reports are relative to the repository root, and a
+  // pathspec is resolved against the process's working directory -- which is
+  // wherever the host happened to be started, not necessarily the root. Asking
+  // git for the root once and diffing from there is what makes the fallback
+  // independent of that. (`gh` needs no equivalent: it walks up to find the
+  // repo on its own, which is why the first two tiers worked from a
+  // subdirectory while this one silently matched nothing.)
+  const gitRoot = root ?? cwd;
+
+  const parts: string[] = [];
+  const unreviewable: string[] = [];
+  for (const line of listed.stdout.split('\n')) {
+    if (!line.trim()) continue;
+    let entry: PrFileEntry;
+    try {
+      entry = JSON.parse(line) as PrFileEntry;
+    } catch {
+      continue;
+    }
+    if (!entry.filename) continue;
+    if (!entry.patch) {
+      // GitHub omits the patch for binary files, and *also* stops computing
+      // them partway through a very large PR -- those come back as `+0/-0`
+      // with no patch, which looks like an empty change and is not one. The
+      // working tree is the head of this branch, so ask git for the ones the
+      // API gave up on rather than reporting a source file as unreviewable
+      // when its diff is sitting on disk.
+      const local = baseRef
+        ? await runGit(
+            ['diff', '--no-color', `origin/${baseRef}...HEAD`, '--', entry.filename],
+            gitRoot,
+          )
+        : undefined;
+      if (local?.code === 0 && local.stdout.includes('@@')) {
+        parts.push(local.stdout.endsWith('\n') ? local.stdout.slice(0, -1) : local.stdout);
+      } else {
+        unreviewable.push(entry.filename);
+      }
+      continue;
+    }
+
+    const before =
+      entry.status === 'added' ? undefined : (entry.previous_filename ?? entry.filename);
+    const after = entry.status === 'removed' ? undefined : entry.filename;
+    parts.push(
+      `diff --git a/${before ?? entry.filename} b/${after ?? entry.filename}`,
+      `--- ${before ? `a/${before}` : '/dev/null'}`,
+      `+++ ${after ? `b/${after}` : '/dev/null'}`,
+      entry.patch.endsWith('\n') ? entry.patch.slice(0, -1) : entry.patch,
+    );
+  }
+
+  if (parts.length === 0) {
+    return {
+      diff: '',
+      unreviewable,
+      reason: unreviewable.length > 0 ? 'every changed file is binary or too large' : 'it has no changes',
+      gitRoot: root,
+    };
+  }
+  return { diff: `${parts.join('\n')}\n`, unreviewable, gitRoot: root };
 }
 
 /**
@@ -410,7 +563,10 @@ export async function reviewCurrentPr(opts: PrReviewOptions): Promise<PrReviewRe
     return { status: 'skipped' };
   }
 
-  const prView = await runGh(['pr', 'view', '--json', 'number,title,url,headRefOid'], cwd);
+  const prView = await runGh(
+    ['pr', 'view', '--json', 'number,title,url,headRefOid,baseRefName'],
+    cwd,
+  );
   if (prView.code !== 0) {
     host.warn(`no pull request found for the current branch (${prView.stderr.trim() || 'gh pr view failed'}).`);
     return { status: 'skipped' };
@@ -423,12 +579,33 @@ export async function reviewCurrentPr(opts: PrReviewOptions): Promise<PrReviewRe
     return { status: 'skipped' };
   }
 
-  const diffRes = await runGh(['pr', 'diff', String(pr.number)], cwd);
-  if (diffRes.code !== 0 || !diffRes.stdout.trim()) {
-    host.warn('could not fetch a diff for this PR (no changes, or gh failed).');
+  const fetched = await fetchPrDiff(pr.number, cwd, pr.baseRefName);
+  if (!fetched.diff.trim()) {
+    host.warn(`could not fetch a diff for this PR — ${fetched.reason ?? 'it has no changes'}.`);
     return { status: 'skipped' };
   }
-  const fullDiff = diffRes.stdout;
+  if (fetched.gitRoot && resolve(fetched.gitRoot) !== resolve(cwd)) {
+    // Worth saying out loud: every path in the diff is relative to the
+    // repository root, and the review's own file-reading tools resolve against
+    // the workspace. Started somewhere below the root, the reviewer can read
+    // the diff and cannot open a single file it names -- so it reviews from the
+    // diff text alone and says nothing about why it got quieter.
+    host.warn(
+      `the workspace is ${cwd}, which is not the repository root (${fetched.gitRoot}). ` +
+        `Paths in the diff are relative to the root, so the review may not be able to open ` +
+        `the files it is reviewing. Start heapcode from the repository root for a full review.`,
+    );
+  }
+  if (fetched.unreviewable.length > 0) {
+    // Named, not silently dropped: the whole point of the per-file rewrite was
+    // that a file nobody reviewed must not read as a file with nothing wrong.
+    host.warn(
+      `${fetched.unreviewable.length} file(s) carry no reviewable patch (binary, or too large for ` +
+        `the API to return): ${fetched.unreviewable.slice(0, 10).join(', ')}` +
+        `${fetched.unreviewable.length > 10 ? ', …' : ''}`,
+    );
+  }
+  const fullDiff = fetched.diff;
   const diffRanges = parseDiffHunkRanges(fullDiff);
 
   // ~4 chars/token is a rough but standard estimate — good enough for sizing

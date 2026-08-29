@@ -1,0 +1,11 @@
+{
+  // A second Worker rather than a path on the first. The two sites are separate
+  // products on separate domains, and an assets-only Worker serves one
+  // directory — sharing would mean one deploy for both and a stale page every
+  // time only one of them changed.
+  "name": "heapbrowse",
+  "compatibility_date": "2026-07-18",
+  "assets": {
+    "directory": "./public"
+  }
+}

@@ -31,6 +31,19 @@ export interface ToolResult {
   name: string;
   content: string;
   isError?: boolean;
+  /**
+   * Images the tool produced, as data: URLs — a screenshot, a rendered chart.
+   *
+   * Carried separately from `content` because the wire format has nowhere to put
+   * them: a `role: 'tool'` message is text only in the OpenAI-compatible
+   * protocol every provider here speaks. The loop delivers them as a following
+   * user message, which is the shape vision models actually accept.
+   *
+   * Needs a vision-capable model. Hosts should only produce these when the model
+   * asked for one: an image is large, and once in the transcript it is re-sent
+   * on every subsequent request.
+   */
+  images?: string[];
 }
 
 export const DENIED_RESULT_TEXT =

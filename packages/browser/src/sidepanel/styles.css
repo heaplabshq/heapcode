@@ -1,0 +1,2865 @@
+/*
+ * heapbrowse, as a surface.
+ *
+ * Chrome opens a side panel at around 320-400px and it sits beside a page it
+ * does not own, so this follows the browser's theme rather than imposing one.
+ * Width is the constraint that shapes every decision below: at 350px there is
+ * one column and no room for decoration that does not carry information. Every
+ * border earns its place by separating two things that would otherwise be
+ * confused, and anything wide -- a table, a code block, a URL -- scrolls inside
+ * its own box rather than making the conversation scroll sideways.
+ *
+ * Everything is expressed in tokens, and the tokens come in four groups:
+ * colour, space, radius and motion. A value that is not in one of them is a
+ * value someone will pick differently next time.
+ */
+
+:root {
+  /* ---- colour: light --------------------------------------------------- */
+  --bg: #ffffff;
+  --surface-1: #f6f7f9;
+  --surface-2: #eceef2;
+
+  --fg: #14161a;
+  --muted: #5f6672;
+  --faint: #949aa6;
+
+  --line: #e7e9ee;
+  --line-strong: #d5d9e1;
+
+  /* One accent, keyed to the mark. Generic blue read as "a dialog"; this reads
+     as a product. */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: rgba(79, 70, 229, 0.09);
+  --accent-line: rgba(79, 70, 229, 0.35);
+  --accent-fg: #ffffff;
+
+  --positive: #157f3c;
+  --positive-soft: rgba(21, 127, 60, 0.1);
+  --warn: #a45a08;
+  --warn-soft: rgba(164, 90, 8, 0.11);
+  --danger: #bf2a20;
+  --danger-soft: rgba(191, 42, 32, 0.09);
+  --danger-line: rgba(191, 42, 32, 0.4);
+
+  --brand-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+
+  --shadow-1:
+    0 1px 2px rgba(16, 24, 40, 0.05),
+    0 1px 3px rgba(16, 24, 40, 0.04);
+  --ring: 0 0 0 3px var(--accent-soft);
+
+  /* ---- space ----------------------------------------------------------- */
+  /* One scale, so nothing is 7px because 7px looked right that day. */
+  --s1: 4px;
+  --s2: 6px;
+  --s3: 8px;
+  --s4: 10px;
+  --s5: 14px;
+  --s6: 18px;
+  --s7: 24px;
+
+  /* ---- radius ---------------------------------------------------------- */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 13px;
+  --r-full: 999px;
+
+  /* ---- motion ---------------------------------------------------------- */
+  /* Two curves. `--ease` for anything that moves because state changed;
+     `--spring` only for something arriving, where a little overshoot reads as
+     the thing having been placed rather than having appeared. */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --d1: 110ms;
+  --d2: 190ms;
+  --d3: 300ms;
+
+  /* ---- type ------------------------------------------------------------ */
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-md: 13px;
+  --t-lg: 15px;
+  --t-xl: 18px;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131418;
+    --surface-1: #1a1c21;
+    --surface-2: #22252b;
+
+    --fg: #e8eaed;
+    --muted: #9aa1ad;
+    --faint: #6f7683;
+
+    --line: #282b32;
+    --line-strong: #383c45;
+
+    --accent: #8b93ff;
+    --accent-hover: #a3a9ff;
+    --accent-soft: rgba(139, 147, 255, 0.14);
+    --accent-line: rgba(139, 147, 255, 0.4);
+    --accent-fg: #14161a;
+
+    --positive: #4ade80;
+    --positive-soft: rgba(74, 222, 128, 0.13);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.13);
+    --danger: #f87171;
+    --danger-soft: rgba(248, 113, 113, 0.12);
+    --danger-line: rgba(248, 113, 113, 0.42);
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: var(--t-md) / 1.55 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overscroll-behavior: none;
+}
+
+/* A scrollbar that does not shout in a 350px column. */
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--r-full);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.icon {
+  flex: none;
+  display: block;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+}
+
+/* ================================================================ topbar == */
+
+/*
+ * One row, and none of it is the product's name.
+ *
+ * Chrome draws "heapbrowse" in the side panel's own title bar immediately above
+ * this, so a brand row here was the same word twice in fifty pixels. Eight
+ * things competing for one 350px row also meant every one was truncated to an
+ * ambiguous stub -- so the permission mode went to the composer, next to the
+ * send button, and the model and context meter went underneath it. What is left
+ * is the two things a header is for: what is in scope, and where to go.
+ */
+.topbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4) var(--s4) var(--s3);
+  background: var(--bg);
+  flex: none;
+}
+
+.topbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+/* A mark rather than an icon file: one gradient chip, no asset to load. Used by
+   the onboarding, which is the one screen with room to introduce itself. */
+.brand-mark {
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  background: var(--brand-gradient);
+  flex: none;
+  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.4);
+}
+
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+  padding: 2px;
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+
+/* ================================================================ buttons == */
+
+button {
+  font: inherit;
+  padding: 5px var(--s4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  transition:
+    background var(--d1) var(--ease),
+    border-color var(--d1) var(--ease),
+    color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
+}
+
+button:hover:not(:disabled) {
+  background: var(--surface-1);
+  border-color: var(--faint);
+}
+
+button:active:not(:disabled) {
+  background: var(--surface-2);
+  transform: translateY(0.5px);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 500;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+button.ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 4px var(--s3);
+  font-size: var(--t-sm);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--surface-1);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+button.danger {
+  border-color: var(--danger-line);
+  color: var(--danger);
+  background: var(--bg);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+/* A square target for a glyph. 28px is the smallest that still hits reliably
+   with a trackpad, and four of them fit beside the site pill. They sit inside
+   the tool-group's recessed tray, so their own background is transparent and
+   the tray supplies the resting surface. */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted);
+}
+
+.icon-button:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+/* A pane that is open should look open, not identical to the three that are
+   not. A filled accent chip reads as pressed, the way a segmented control's
+   active segment does. */
+.icon-button.on {
+  background: var(--bg);
+  border-color: var(--line);
+  color: var(--accent);
+  box-shadow: var(--shadow-1);
+}
+
+/* ================================================================== site == */
+
+/*
+ * Which site the panel is pointed at, and whether it may be read.
+ *
+ * A permission fact, not a chat message, so it lives in the chrome. An inset
+ * pill rather than a full-bleed bar: a second bordered strip under the header
+ * made the top of a 350px panel read as three separate toolbars.
+ */
+.site {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  flex: 1;
+  padding: 4px var(--s3) 4px var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+
+.site-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: none;
+  transition: background var(--d2) var(--ease);
+}
+
+.site-granted .site-dot {
+  background: var(--positive);
+  box-shadow: 0 0 0 3px var(--positive-soft);
+}
+
+.site-host {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.site-ok {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--positive);
+  font-size: var(--t-xs);
+  font-weight: 500;
+}
+
+/* The one call to action up here, so it does not read as a label. */
+.grant {
+  flex: none;
+  padding: 3px var(--s4);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  border-radius: var(--r-full);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+
+.grant:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* ================================================================= stage == */
+
+/* The transcript and anything layered over it share one box, so a pane can
+   cover the conversation instead of shoving it down the screen. */
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ================================================================ sheets == */
+
+/*
+ * Settings, saved tasks and the log, as one thing.
+ *
+ * They used to push the transcript down, which meant opening Settings scrolled
+ * away whatever you had opened it to check. A sheet covers the conversation
+ * instead: one layer, one way out, and the transcript is exactly where it was
+ * when the sheet closes.
+ */
+.sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  animation: sheet-in var(--d2) var(--ease);
+}
+
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s5) var(--s4) var(--s5) var(--s5);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+  flex: none;
+}
+
+.sheet-title {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* A short accent bar gives every sheet the same left anchor, so the title
+   reads as a pane heading rather than a line of body text -- the same role
+   the brand mark plays in the topbar, but a stroke instead of a chip. */
+.sheet-title::before {
+  content: '';
+  width: 3px;
+  height: var(--s6);
+  border-radius: var(--r-full);
+  background: var(--accent);
+  flex: none;
+}
+
+.sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* ============================================================ transcript == */
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--s5) var(--s4) var(--s4);
+  scroll-behavior: smooth;
+}
+
+.turn {
+  margin-bottom: var(--s6);
+  animation: rise var(--d2) var(--ease);
+}
+
+.turn:last-child {
+  margin-bottom: var(--s3);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* The user's own words, set apart from everything the machine produced. */
+.turn.user {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--s5);
+}
+
+.turn.user .user-text {
+  margin: 0;
+  padding: var(--s3) var(--s5);
+  max-width: 88%;
+  background: var(--accent-soft);
+  color: var(--fg);
+  border-radius: var(--r-lg) var(--r-lg) var(--r-xs) var(--r-lg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Everything the agent did, behind one line.
+ *
+ * A run is ten to thirty steps and the user asked one question. Laid out in
+ * full, the answer arrives below a screen and a half of narration, thinking and
+ * screenshots of a page the user is already looking at. Collapsed, the answer
+ * sits directly under the question and the work is one press away.
+ */
+.run {
+  margin-bottom: var(--s4);
+}
+
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: 3px var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+}
+
+.run-head:hover {
+  background: var(--surface-1);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+.run-glyph {
+  color: var(--faint);
+  transition: color var(--d2) var(--ease);
+}
+
+.run.live .run-glyph {
+  color: var(--accent);
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+.run-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run.live .run-label {
+  color: var(--fg);
+}
+
+.run-caret {
+  margin-left: auto;
+  color: var(--faint);
+  transition: transform var(--d2) var(--ease);
+}
+
+.run[data-open='true'] .run-caret {
+  transform: rotate(-180deg);
+}
+
+/* The steps themselves, on a rail. Indented under the line that summarises
+   them, so an open run reads as its detail rather than as a second thread. */
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: var(--s2) 0 0 var(--s4);
+  padding-left: var(--s4);
+  border-left: 1px solid var(--line);
+  animation: open-down var(--d2) var(--ease);
+}
+
+.steps:empty {
+  display: none;
+}
+
+.assistant-text {
+  overflow-wrap: anywhere;
+}
+
+.assistant-text > :first-child {
+  margin-top: 0;
+}
+
+.assistant-text > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-text h1,
+.assistant-text h2,
+.assistant-text h3 {
+  font-size: var(--t-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: var(--s5) 0 var(--s2);
+}
+
+.assistant-text p {
+  margin: var(--s3) 0;
+}
+
+.assistant-text ul,
+.assistant-text ol {
+  padding-left: 20px;
+  margin: var(--s3) 0;
+}
+
+.assistant-text li + li {
+  margin-top: 3px;
+}
+
+.assistant-text a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+
+.assistant-text blockquote {
+  margin: var(--s3) 0;
+  padding-left: var(--s4);
+  border-left: 2px solid var(--line-strong);
+  color: var(--muted);
+}
+
+.assistant-text hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: var(--s5) 0;
+}
+
+/* Wide content scrolls inside itself; the panel is too narrow to give up its
+   layout to one long line. */
+.assistant-text pre {
+  overflow-x: auto;
+  padding: var(--s4);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+
+.assistant-text code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+.assistant-text :not(pre) > code {
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+}
+
+.assistant-text table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+}
+
+.assistant-text th,
+.assistant-text td {
+  border: 1px solid var(--line);
+  padding: 4px var(--s3);
+  text-align: left;
+}
+
+.assistant-text img {
+  max-width: 100%;
+  border-radius: var(--r-md);
+}
+
+.cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 1px;
+  background: var(--accent);
+  border-radius: 1px;
+  vertical-align: text-bottom;
+  animation: blink 1.05s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.turn-error {
+  display: flex;
+  gap: var(--s2);
+  margin: var(--s3) 0 0;
+  padding: var(--s3) var(--s4);
+  background: var(--danger-soft);
+  border-radius: var(--r-md);
+  color: var(--danger);
+  font-size: var(--t-sm);
+}
+
+/* Narration between steps. Quieter than the answer on purpose: it is the agent
+   thinking aloud, not the thing the user asked for. */
+.note {
+  margin: 0;
+  padding: 0 var(--s1);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* =========================================================== empty state == */
+
+/*
+ * A blank panel is the most-seen screen in the product, so it does the work an
+ * empty box cannot: says what this is for, and offers three things to press.
+ *
+ * The layout is a centred head over a left-aligned body. The head is the
+ * promise; the body is the things to press, and things to press are read
+ * left-to-right, so they start at the left edge like everything else the
+ * user clicks in this panel.
+ */
+.empty {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* `safe` so a centred column that outgrows the viewport falls back to
+     start-alignment instead of overflowing unreachably at the top. Chrome 93+;
+     the manifest floor is 116. */
+  justify-content: safe center;
+  gap: var(--s3);
+  padding: var(--s7) var(--s5);
+  text-align: center;
+  animation: rise var(--d3) var(--ease);
+}
+
+/* The mark, with a halo. The gradient square alone read as a bullet; the
+   ring makes it read as a product mark, and the ring is the only decoration
+   the head gets — the title carries the rest. */
+.empty-hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: var(--s2);
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  animation: mark-in var(--d3) var(--spring);
+}
+
+.empty-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: var(--brand-gradient);
+  color: #fff;
+  box-shadow: 0 6px 18px -6px rgba(99, 102, 241, 0.65);
+}
+
+@keyframes mark-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-12deg);
+  }
+}
+
+.empty-title {
+  margin: 0;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.empty-sub {
+  margin: 0;
+  max-width: 30ch;
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+
+/* The body: suggestions and saved tasks, left-aligned under the centred
+   head. `align-self: stretch` beats the parent's `align-items: center`. */
+.empty-group {
+  width: 100%;
+  margin-top: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.empty-group.left {
+  align-self: stretch;
+  text-align: left;
+}
+
+.empty-label {
+  color: var(--faint);
+  font-size: var(--t-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* A suggestion, as a card rather than a pill. A pill is one press among
+   equals; a card is a thing with a category (the icon) and a direction (the
+   arrow), which is what a first-time question actually looks like. */
+.empty-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.empty-card {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  width: 100%;
+  padding: var(--s4) var(--s5);
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--fg);
+  text-align: left;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition:
+    background var(--d1) var(--ease),
+    border-color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
+}
+
+.empty-card:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  transform: translateY(-1px);
+}
+
+.empty-card:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.empty-card-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  transition: background var(--d1) var(--ease);
+}
+
+.empty-card:hover:not(:disabled) .empty-card-icon {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* Single-line by design: the three fixed suggestions fit with ~5 characters to
+   spare at the narrowest panel width. A longer suggestion will ellipsize
+   silently — keep prompts under ~30 characters or revisit this rule. */
+.empty-card-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The affordance: quiet until hovered, so the card reads as text at rest and
+   as a button when it is being considered. */
+.empty-card-go {
+  flex: none;
+  color: var(--faint);
+  transition:
+    color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
+}
+
+.empty-card:hover:not(:disabled) .empty-card-go {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
+/* The one tip worth the space: a real feature nobody finds unaided. Left-
+   aligned with the cards above it, which are the body it belongs to. */
+.empty-hint {
+  margin: var(--s2) 0 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--faint);
+  font-size: var(--t-xs);
+  text-align: left;
+}
+
+/* ================================================================= pills == */
+
+/* One shape for anything one-press: a suggestion, a saved task, an option in a
+   question the agent asked. */
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  justify-content: center;
+}
+
+/* Under left-aligned prose, rather than under a centred title. */
+.pills.left {
+  justify-content: flex-start;
+}
+
+.pill {
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--muted);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  padding: 4px var(--s4);
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    color var(--d1) var(--ease),
+    background var(--d1) var(--ease),
+    border-color var(--d1) var(--ease),
+    transform var(--d1) var(--ease);
+}
+
+.pill:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
+
+/* ============================================================== thinking == */
+
+/*
+ * Reasoning models produce pages of this and none of it is addressed to the
+ * user, so it collapses to one quiet line. Not hidden, because when it matters
+ * it matters a great deal -- an agent that did something surprising usually
+ * talked itself into it here first.
+ */
+.thinking-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: 3px var(--s2);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--faint);
+  font-size: var(--t-sm);
+  text-align: left;
+  border-radius: var(--r-sm);
+}
+
+.thinking-head:hover {
+  background: var(--surface-1);
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.thinking-glyph {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.thinking.live .thinking-glyph {
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+/* The one place a label animates: three dots that are actually moving say
+   "still going" in a way a static ellipsis cannot. */
+.thinking.live .thinking-label::after {
+  content: '';
+  animation: ellipsis 1.4s steps(4, end) infinite;
+}
+
+@keyframes ellipsis {
+  0% {
+    content: '';
+  }
+  25% {
+    content: '.';
+  }
+  50% {
+    content: '..';
+  }
+  75% {
+    content: '...';
+  }
+}
+
+.thinking-caret {
+  margin-left: auto;
+  transition: transform var(--d2) var(--ease);
+}
+
+.thinking[data-open='true'] .thinking-caret {
+  transform: rotate(-180deg);
+}
+
+.thinking-body {
+  margin: var(--s1) 0 0 var(--s3);
+  padding: var(--s2) var(--s4);
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 300px;
+  overflow-y: auto;
+  animation: open-down var(--d2) var(--ease);
+}
+
+@keyframes open-down {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/*
+ * The point where the run was made to forget.
+ *
+ * Quieter than a note and set apart from one: it is not something the agent
+ * said, it is something that happened to it. Amber because nothing is broken
+ * and nothing needs answering -- but an agent that gets vaguer after this line
+ * has a reason, and this is it.
+ */
+.compacted {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+}
+
+.compacted .icon {
+  margin-top: 1px;
+}
+
+/* ============================================================ tool chips == */
+
+/*
+ * What the agent did, inline in the transcript.
+ *
+ * Collapsed to a single line with no box around it: a run is ten of these, and
+ * ten bordered cards in a 350px column is a wall. The border appears only when
+ * one is opened, which is when it has a body to contain.
+ */
+.tool-chip {
+  border-radius: var(--r-md);
+  transition: background var(--d1) var(--ease);
+}
+
+.tool-chip[data-open='true'] {
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  padding: 4px var(--s3);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--fg);
+  text-align: left;
+  font: inherit;
+  font-size: var(--t-sm);
+  cursor: pointer;
+}
+
+.tool-head:hover {
+  background: var(--surface-1);
+  border-color: transparent;
+}
+
+.tool-icon {
+  flex: none;
+  color: var(--accent);
+  transition:
+    color var(--d2) var(--ease),
+    opacity var(--d2) var(--ease);
+}
+
+.tool-chip.running .tool-icon {
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+.tool-chip.failed .tool-icon,
+.tool-chip.failed .tool-name {
+  color: var(--danger);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.tool-name {
+  flex: none;
+  font-weight: 500;
+}
+
+.tool-detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-caret {
+  color: var(--faint);
+  margin-left: auto;
+  transition: transform var(--d2) var(--ease);
+}
+
+.tool-chip[data-open='true'] .tool-caret {
+  transform: rotate(-180deg);
+}
+
+/* Tool results are page content, so plain text only -- never markdown, which
+   would give an untrusted page a way to shape the panel. */
+.tool-body {
+  margin: 0;
+  padding: var(--s3) var(--s4) var(--s4);
+  max-height: 260px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: open-down var(--d2) var(--ease);
+}
+
+/* What the agent is looking at. Shown to the user only -- it never reaches the
+   model, because a screenshot in the context is carried for every turn after.
+   Inside a chip rather than loose in the transcript: on a page-reading agent a
+   run was otherwise mostly pictures of a page the user has open in front of
+   them. */
+.view {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+/* ==================================================== collected datasets == */
+
+/* The deliverable for a comparison task, so it gets to be a real table rather
+   than prose the model wrote about one. */
+.dataset {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg);
+  box-shadow: var(--shadow-1);
+  margin-bottom: var(--s4);
+}
+
+/* Closed it is one line; open it grows a body. The border between them only
+   exists when there are two things to separate. */
+.dataset-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s3) var(--s4);
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.dataset-head:hover {
+  background: var(--surface-2);
+  border-color: transparent;
+}
+
+.dataset[data-open='true'] .dataset-head {
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.dataset-icon {
+  color: var(--accent);
+}
+
+.dataset-head .muted {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.dataset-caret {
+  color: var(--faint);
+  transition: transform var(--d2) var(--ease);
+}
+
+.dataset[data-open='true'] .dataset-caret {
+  transform: rotate(-180deg);
+}
+
+/* The panel is narrow and the data is not. Scroll inside the box, never the
+   conversation. */
+.dataset-scroll {
+  overflow-x: auto;
+  max-height: 320px;
+  overflow-y: auto;
+  animation: open-down var(--d2) var(--ease);
+}
+
+.dataset table {
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+  width: max-content;
+  min-width: 100%;
+}
+
+.dataset th,
+.dataset td {
+  border-top: 1px solid var(--line);
+  padding: 5px var(--s4);
+  text-align: left;
+  vertical-align: top;
+  max-width: 260px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dataset tbody tr:nth-child(even) {
+  background: var(--surface-1);
+}
+
+.dataset th {
+  background: var(--surface-2);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  border-top: none;
+}
+
+.dataset-actions {
+  display: flex;
+  gap: var(--s1);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--line);
+}
+
+/* ============================================================== composer == */
+
+.footer {
+  flex: none;
+  background: var(--bg);
+}
+
+.composer {
+  padding: var(--s3) var(--s4) var(--s4);
+}
+
+/*
+ * One surface holding the text and everything that acts on it.
+ *
+ * The permission mode lives in here rather than in the header because it is a
+ * property of the run you are about to start, and this is where you start one.
+ */
+.composer-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  transition:
+    border-color var(--d2) var(--ease),
+    box-shadow var(--d2) var(--ease);
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.composer-box textarea {
+  width: 100%;
+  resize: none;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  padding: 2px var(--s2);
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.composer-box textarea:focus {
+  outline: none;
+}
+
+.composer-box textarea::placeholder {
+  color: var(--faint);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* Round, filled, and the only filled control on the screen. */
+.send {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex: none;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.send:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.send:disabled {
+  background: var(--surface-2);
+  border-color: var(--surface-2);
+  color: var(--faint);
+  opacity: 1;
+}
+
+.send.stop {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 var(--danger-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+
+/*
+ * Which model is answering, and how full its window is.
+ *
+ * Under the box rather than in the header. Both are reference — worth being
+ * able to check, never worth a line at the top of a 350px column — and the
+ * header already had the site and four panes in it.
+ */
+.composer-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3) 0;
+  color: var(--faint);
+  font-size: var(--t-xs);
+}
+
+.meta-model {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  padding: 1px var(--s2);
+  margin-left: calc(var(--s2) * -1);
+  border-radius: var(--r-sm);
+  color: inherit;
+  transition:
+    background var(--d1) var(--ease),
+    color var(--d1) var(--ease);
+}
+
+.meta-model-name {
+  min-width: 0;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Only the switchable one invites a press. */
+.meta-model.picker:hover {
+  background: var(--surface-1);
+  color: var(--fg);
+}
+
+.meta-model.picker > select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.meta-model .picker-caret {
+  position: static;
+  flex: none;
+}
+
+/* ------------------------------------------------------------ mode select -- */
+
+/*
+ * The ceiling on what a run may do, always in view.
+ *
+ * A dot carries the reading at a glance -- neutral, accent, amber, red -- so
+ * the setting is legible without reading the words. There is no full-auto: even
+ * the most permissive setting still asks before anything irreversible.
+ */
+.mode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  position: relative;
+  min-width: 0;
+  padding: 3px var(--s2) 3px var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: var(--t-xs);
+  transition:
+    border-color var(--d1) var(--ease),
+    background var(--d1) var(--ease);
+}
+
+.mode:hover {
+  border-color: var(--line-strong);
+}
+
+.mode:focus-within {
+  border-color: var(--accent);
+}
+
+.mode-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--faint);
+  transition: background var(--d2) var(--ease);
+}
+
+.mode-read .mode-dot {
+  background: var(--faint);
+}
+.mode-confirm .mode-dot {
+  background: var(--accent);
+}
+.mode-approve .mode-dot {
+  background: var(--warn);
+}
+.mode-auto .mode-dot {
+  background: var(--danger);
+}
+
+.mode-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-caret {
+  color: var(--faint);
+  flex: none;
+}
+
+/* The real control, invisible over the top of the pretty one. Keeping the
+   native select is what keeps the keyboard, the screen reader and Chrome's own
+   menu placement working. */
+.mode select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+/*
+ * What a slash offers.
+ *
+ * Above the composer, because the composer is already at the bottom of the
+ * panel and a menu below it would open off the screen. It floats over the
+ * transcript rather than pushing it, so the conversation does not jump every
+ * time someone types a slash and changes their mind.
+ */
+.slash {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 var(--s1) var(--s2);
+  padding: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-1);
+  animation: slide-up var(--d1) var(--ease);
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--t-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Highlighted by the arrow keys, so hover must not fight it: the keyboard is
+   what is driving, and two highlights would say two different things. */
+.slash-item.on {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+.slash-icon { color: var(--accent); }
+
+.slash-text { display: flex; align-items: baseline; gap: var(--s3); min-width: 0; flex: 1; }
+
+.slash-name { font-family: var(--mono); flex: none; }
+
+.slash-hint {
+  color: var(--faint);
+  font-size: var(--t-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ================================================================ notice == */
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0;
+  padding: var(--s2) var(--s5);
+  color: var(--muted);
+  font-size: var(--t-xs);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
+  animation: rise var(--d2) var(--ease);
+}
+
+.notice-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+/* ==================================================== asking the person == */
+
+/* The confirmation. Sits above the composer, in the way, on purpose. */
+.prompt-sheet {
+  padding: var(--s5);
+  border-top: 2px solid var(--accent);
+  background: var(--surface-1);
+  animation: slide-up var(--d2) var(--ease);
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* An irreversible action must not look like an ordinary one, or the
+   confirmation stops carrying information. */
+.prompt-sheet.destructive {
+  border-top-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.confirm-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 0 var(--s2);
+  color: var(--accent);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.destructive .confirm-head {
+  color: var(--danger);
+}
+
+.confirm-what {
+  margin: 0 0 var(--s1);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.confirm-where {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+
+.confirm-why {
+  margin: var(--s3) 0 0;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--t-sm);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: var(--s5);
+}
+
+.confirm-actions button {
+  flex: 1;
+  justify-content: center;
+}
+
+.confirm-actions .deny {
+  color: var(--muted);
+}
+
+/*
+ * The agent stepping aside.
+ *
+ * The instruction is the loudest thing on the sheet, because the one way this
+ * goes wrong is someone pressing Done before they have done it. Amber rather
+ * than accent: nothing is at risk, but nothing is happening either, and the run
+ * stays stopped until a person acts.
+ */
+.prompt-sheet.handover {
+  border-top-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.handover .confirm-head {
+  color: var(--warn);
+}
+
+.handover-what {
+  margin: 0 0 var(--s2);
+  font-size: var(--t-lg);
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+/* The agent asking for a fact. Deliberately not styled like the permission
+   confirmation: that one asks "may I", and its safe answer is no; this one asks
+   "what", and has no safe default at all. */
+.ask-question {
+  margin: 0 0 var(--s4);
+  overflow-wrap: anywhere;
+}
+
+.ask-options {
+  justify-content: flex-start;
+  margin-bottom: var(--s4);
+}
+
+.ask-entry {
+  display: flex;
+  gap: var(--s2);
+}
+
+.ask-entry input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 5px var(--s3);
+}
+
+.ask-entry input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.ask-skip {
+  margin-top: var(--s3);
+  padding-left: 0;
+}
+
+/* =========================================================== form panes == */
+
+.pane {
+  padding: var(--s5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.pane label,
+.onboarding label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+
+.pane input,
+.pane select,
+.pane textarea,
+.onboarding input,
+.onboarding select,
+.onboarding textarea {
+  font: inherit;
+  font-size: var(--t-md);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 6px var(--s3);
+  transition:
+    border-color var(--d1) var(--ease),
+    box-shadow var(--d1) var(--ease);
+}
+
+.pane input:focus,
+.pane select:focus,
+.pane textarea:focus,
+.onboarding input:focus,
+.onboarding select:focus,
+.onboarding textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.pane textarea,
+.onboarding textarea {
+  resize: vertical;
+}
+
+.pane .code {
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+}
+
+.row {
+  display: flex;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+
+/* The two long-form settings sections are disclosures, but they are still
+   cards — same border, surface and icon badge as the others — so the whole
+   page reads as one stack rather than two cards and two leftover list items.
+   Collapsed by default: the provider fields are what someone opens Settings
+   for, and a long list of personal details above them would bury those. */
+.disclosure-card {
+  /* The card already has padding; the summary is the clickable header, so it
+     needs no list marker and no extra chrome of its own. */
+}
+
+.disclosure-summary {
+  cursor: pointer;
+  list-style: none;
+  /* The caret sits at the right edge, the title between it and the icon. */
+}
+
+.disclosure-summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure-summary .section-title {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The chevron points down when open, right when closed — the same affordance
+   the run log uses, so the two read as the same kind of "expand for more". */
+.disclosure-caret {
+  flex: none;
+  color: var(--faint);
+  transition: transform var(--d2) var(--ease);
+}
+
+.disclosure-card[open] .disclosure-caret {
+  transform: rotate(180deg);
+}
+
+.disclosure-summary:hover .section-title,
+.disclosure-summary:hover .disclosure-caret {
+  color: var(--accent);
+}
+
+/* The Details form is itself a `.pane`; inside a card body it must not add its
+   own padding or the fields sit in a double frame. */
+.disclosure-card .pane {
+  padding: 0;
+}
+
+.rule {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 0;
+  width: 100%;
+}
+
+.switch {
+  /* A switch is a checkbox and its label on one line. It is a `.pane label`, so
+     it inherits that rule's `display: flex; flex-direction: column`; restated
+     here as a row so the checkbox and its text sit side by side regardless of
+     where the switch is mounted (pane, card body, onboarding). The `!important`
+     is because `.pane label` outranks a lone class and would otherwise stack the
+     checkbox above its text. */
+  display: flex;
+  flex-direction: row !important;
+  align-items: center;
+  gap: var(--s3) !important;
+  color: var(--fg) !important;
+  font-size: var(--t-md) !important;
+  cursor: pointer;
+}
+
+.switch input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.section-title {
+  margin: 0;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.diagnosis {
+  border-radius: var(--r-md);
+  padding: var(--s4);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  font-size: var(--t-sm);
+  animation: rise var(--d2) var(--ease);
+}
+
+.diagnosis p {
+  margin: 0;
+}
+
+.diagnosis p + p {
+  margin-top: var(--s2);
+}
+
+.diagnosis.ok {
+  color: var(--positive);
+  background: var(--positive-soft);
+  border-color: transparent;
+}
+
+.diagnosis.origin-blocked,
+.diagnosis.unreachable,
+.diagnosis.http-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: transparent;
+}
+
+.diagnosis pre {
+  overflow-x: auto;
+  margin: var(--s3) 0 0;
+  padding: var(--s3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+}
+
+/* ============================================================ settings cards == */
+/*
+ * Settings as a stack of cards, not a flat form. The panel is 320–400px wide;
+ * a flat list of labelled fields buries the thing someone opened Settings for.
+ * Each concern is its own card with an icon and a title — the same shape the
+ * onboarding's permission cards already taught, so the two surfaces read as
+ * one product. The card body keeps the existing `.pane label` field styling, so
+ * nothing about the inputs themselves changes.
+ */
+.settings-pane {
+  gap: var(--s4);
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+
+.settings-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* The icon badge: the same 26px accent-soft square the onboarding's value-list
+   uses, so a settings card and an onboarding claim at the same width read as
+   the same kind of thing. */
+.settings-card-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.settings-card-head .section-title {
+  /* The card title is the section title, kept in the same uppercase tracking
+     so it reads as a label rather than a heading competing with the sheet's
+     own title above it. */
+  margin: 0;
+}
+
+.settings-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+/* The debugger toggle and its on/off state, side by side. The state pill is
+   the same `.state` shape the onboarding's permission cards use, so "on" reads
+   the same here as "allowed" does there. */
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.switch-row .switch {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The actions sit at the bottom of the stack, full-width and in priority order,
+   the same way the onboarding footer lays its primary action out. */
+.settings-actions {
+  display: flex;
+  gap: var(--s3);
+}
+
+.settings-actions button {
+  flex: 1;
+  justify-content: center;
+}
+
+/*
+ * A select, wearing our chrome.
+ *
+ * The native control stays -- it is what keeps the keyboard, the screen reader
+ * and Chrome's own menu placement working -- and is made transparent over a
+ * span that draws the value and the caret. The same trick as the permission
+ * mode, and for the same reason.
+ */
+.picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.picker > select {
+  width: 100%;
+  min-width: 0;
+  /* Room for the caret drawn on top of it. */
+  padding-right: var(--s6);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.picker-caret {
+  position: absolute;
+  right: var(--s3);
+  color: var(--faint);
+  pointer-events: none;
+}
+
+/* What a field will become once the endpoint has been asked. */
+.hint {
+  color: var(--faint);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+}
+
+/* ============================================================ onboarding == */
+
+/*
+ * The first three minutes.
+ *
+ * The whole panel while it is up, and one idea per step. Someone who has not
+ * built the thing has no way to know that page text goes to an endpoint they
+ * choose, that a local Ollama refuses an extension until an environment
+ * variable is set, that reading a site is granted one site at a time, or what
+ * the "being debugged" banner across the top of their browser means -- and each
+ * of those is a question asked once and then never again, which is exactly what
+ * an onboarding is for and exactly what a settings page is bad at.
+ */
+.onboarding {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.onboarding-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  flex: none;
+}
+
+.onboarding-track {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.onboarding-track .seg {
+  height: 3px;
+  flex: 1;
+  border-radius: var(--r-full);
+  background: var(--line);
+  transition: background var(--d3) var(--ease);
+}
+
+.onboarding-track .seg.done {
+  background: var(--accent-line);
+}
+
+.onboarding-track .seg.on {
+  background: var(--accent);
+}
+
+.onboarding-count {
+  flex: none;
+  color: var(--faint);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.onboarding-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s3) var(--s5) var(--s6);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s4);
+  animation: step-in var(--d3) var(--ease);
+}
+
+/* A lone button in a stretch column is a full-width button, which reads as the
+   step's primary action -- and the step's primary action is in the footer. */
+.onboarding-body > button {
+  align-self: flex-start;
+}
+
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+}
+
+.onboarding-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  flex: none;
+}
+
+.onboarding-foot .grow {
+  flex: 1;
+}
+
+.onboarding h2 {
+  font-size: var(--t-xl);
+  font-weight: 600;
+  margin: 0;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+.onboarding h3 {
+  font-size: var(--t-md);
+  font-weight: 600;
+  margin: 0;
+  color: var(--fg);
+}
+
+.onboarding p {
+  margin: 0;
+  line-height: 1.55;
+  color: var(--muted);
+  font-size: var(--t-md);
+}
+
+.onboarding p strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.hero-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--brand-gradient);
+  box-shadow: 0 10px 26px -8px rgba(99, 102, 241, 0.7);
+  animation: mark-in 420ms var(--spring);
+}
+
+/* Three claims, one line each, with the glyph carrying the category. Prose in
+   its place read as a paragraph nobody finishes. */
+.value-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.value-list li {
+  display: flex;
+  gap: var(--s4);
+  align-items: flex-start;
+  font-size: var(--t-md);
+  color: var(--muted);
+}
+
+.value-list .value-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-top: 1px;
+}
+
+.value-list strong {
+  display: block;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* A permission, as a thing with a state. */
+.perm-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+}
+
+.perm-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.perm-head h3 {
+  flex: 1;
+  min-width: 0;
+}
+
+.state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--s3);
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.state.on {
+  background: var(--positive-soft);
+  color: var(--positive);
+}
+
+.state.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+/* ==================================================== tasks and history == */
+
+.pane-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s3);
+}
+
+/* The pane gets a little air at the top so the first section title is not
+   glued to the sheet's title bar, and the two lists read as groups. */
+.tasks-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.task-list,
+.history-list,
+.audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+/* ---- saved tasks -------------------------------------------------------- */
+
+/* A saved task is a card, not a row. The whole card is the run target — the
+   name is the affordance — and the actions sit at the right edge, appearing
+   only when the card is focused or hovered, so the list reads as a list of
+   things to do rather than a list of things to manage. */
+.task-card {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  overflow: hidden;
+  transition:
+    border-color var(--d1) var(--ease),
+    background var(--d1) var(--ease),
+    box-shadow var(--d1) var(--ease);
+}
+
+.task-card:hover,
+.task-card:focus-within {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-1);
+}
+
+.task-run {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: var(--s3) var(--s4);
+  border-color: transparent;
+  background: none;
+  color: var(--fg);
+}
+
+.task-run-name {
+  font-size: var(--t-md);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  font-size: var(--t-xs);
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* What you type to run it. Accent-coloured because it is the one thing on the
+   row that is an instruction rather than a fact about it. */
+.task-slug {
+  flex: none;
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
+.task-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The actions live in a column of their own so the run button keeps its full
+   hit area; they fade in only when the card is attended to. */
+.task-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: var(--s2);
+  opacity: 0;
+  transition: opacity var(--d1) var(--ease);
+}
+
+.task-card:hover .task-actions,
+.task-card:focus-within .task-actions {
+  opacity: 1;
+}
+
+/* Smaller than the chrome icon-buttons so they sit inside the card without
+   competing with the name. */
+.task-action {
+  width: 22px;
+  height: 22px;
+  color: var(--faint);
+}
+
+.task-action:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.task-rename {
+  flex: 1;
+  min-width: 0;
+  margin: var(--s2) var(--s4);
+  padding: 2px var(--s2);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--t-md);
+}
+
+/* The empty state is a quiet hint, not a banner. */
+.tasks-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+}
+
+.tasks-empty-icon {
+  color: var(--faint);
+  flex: none;
+  margin-top: 1px;
+}
+
+/* ---- earlier runs ------------------------------------------------------- */
+
+/* History is a vertical thread: a spine on the left with a node per run, the
+   body of each run sitting to its right. The node is coloured by how the run
+   ended — a filled accent dot for a clean finish, a danger ring for anything
+   that did not — so the eye finds the failures first without reading. */
+.history-list {
+  position: relative;
+  padding-left: var(--s2);
+}
+
+/* The spine runs down the list behind the nodes. */
+.history-list::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--s2) + 4px);
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--line);
+}
+
+.history-entry {
+  position: relative;
+  display: flex;
+  gap: var(--s4);
+  padding: var(--s3) 0 var(--s5);
+}
+
+.history-entry:first-child {
+  padding-top: 0;
+}
+
+.history-entry:last-child {
+  padding-bottom: 0;
+}
+
+/* The node sits on the spine. A clean run is a solid accent dot; a failed run
+   is a hollow danger ring, which reads as "incomplete" rather than "wrong". */
+.history-node {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  margin-left: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg);
+  position: relative;
+  z-index: 1;
+}
+
+.history-entry.is-failed .history-node {
+  background: var(--bg);
+  border: 2px solid var(--danger);
+}
+
+.history-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  transition:
+    border-color var(--d1) var(--ease),
+    box-shadow var(--d1) var(--ease);
+}
+
+.history-body:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-1);
+}
+
+/* A failed run gets a faint danger tint on the body so the ring is not the only
+   signal — useful when the list is long and the nodes are scrolled out of view. */
+.history-entry.is-failed .history-body {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
+.history-line {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-size: var(--t-xs);
+  color: var(--faint);
+  flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-when {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.history-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The outcome badge sits at the end of the line. Capitalised so core's
+   snake-cased vocabulary ("aborted", "errored") reads as a status, not a word. */
+.history-outcome {
+  color: var(--danger);
+  background: var(--bg);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-full);
+  padding: 0 var(--s3);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  text-transform: capitalize;
+  line-height: 1.6;
+}
+
+.history-task {
+  margin: 0;
+  font-size: var(--t-md);
+  line-height: 1.4;
+}
+
+.history-summary {
+  margin: 0;
+  font-size: var(--t-sm);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.history-actions {
+  margin-top: var(--s1);
+}
+
+/* =============================================================== audit == */
+
+/* The audit log is a vertical thread, the same shape as the run history: a
+   spine on the left with a node per entry, the body of each entry to its right.
+   The node is coloured by the decision — a filled accent dot for anything the
+   user allowed, a hollow danger ring for a refusal or a block — so the eye
+   finds the things that were stopped without reading. */
+.audit-list {
+  position: relative;
+  padding-left: var(--s2);
+}
+
+/* The spine runs down the list behind the nodes. */
+.audit-list::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--s2) + 4px);
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--line);
+}
+
+.audit-entry {
+  position: relative;
+  display: flex;
+  gap: var(--s4);
+  padding: var(--s3) 0 var(--s5);
+}
+
+.audit-entry:first-child {
+  padding-top: 0;
+}
+
+.audit-entry:last-child {
+  padding-bottom: 0;
+}
+
+/* The node sits on the spine. An allowed action is a solid accent dot; a
+   refused or blocked action is a hollow danger ring, which reads as "stopped"
+   rather than "wrong". */
+.audit-node {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg);
+  position: relative;
+  z-index: 1;
+}
+
+.audit-entry.is-denied .audit-node {
+  background: var(--bg);
+  border: 2px solid var(--danger);
+}
+
+.audit-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  transition:
+    border-color var(--d1) var(--ease),
+    box-shadow var(--d1) var(--ease);
+}
+
+.audit-body:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-1);
+}
+
+/* A refused or blocked action gets a faint danger tint on the body so the ring
+   is not the only signal — useful when the list is long and the nodes are
+   scrolled out of view. */
+.audit-entry.is-denied .audit-body {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
+.audit-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  overflow-wrap: anywhere;
+  font-size: var(--t-sm);
+}
+
+.audit-tool {
+  font-weight: 600;
+}
+
+.audit-target {
+  color: var(--fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The decision badge sits at the end of the line. It is the answer to the
+   question this screen exists for, so it gets a pill rather than plain text. */
+.audit-decision {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  padding: 0 var(--s3);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.audit-decision.is-denied {
+  color: var(--danger);
+  background: var(--bg);
+  border-color: var(--danger-line);
+}
+
+.audit-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  font-size: var(--t-xs);
+  color: var(--faint);
+  flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-when {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.audit-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-perm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-reason {
+  color: var(--muted);
+  font-style: italic;
+  font-size: var(--t-sm);
+}
+
+/* The empty state is a quiet hint, not a banner. */
+.audit-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+}
+
+.audit-empty-icon {
+  color: var(--faint);
+  flex: none;
+  margin-top: 1px;
+}
+
+/* The actions sit below the thread as quiet ghost buttons — they are
+   housekeeping, not the point of the screen. */
+.audit-actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+/* ======================================================= context meter == */
+
+/* How much of the model's window the last prompt used. Worth surfacing because
+   the number moves for a reason the user can act on: a page snapshot is by far
+   the largest thing that enters the context. */
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--faint);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.meter-bar {
+  width: 30px;
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  transition:
+    width var(--d3) var(--ease),
+    background var(--d3) var(--ease);
+}
+
+.meter-fill.warm {
+  background: var(--warn);
+}
+
+.meter-fill.hot {
+  background: var(--danger);
+}
+
+/* ========================================================== reduced motion */
+
+/* Someone who has asked for less movement should get less of it. Every
+   animation here is decoration on information that is already in the text. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

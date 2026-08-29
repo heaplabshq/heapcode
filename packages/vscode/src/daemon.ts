@@ -20,6 +20,13 @@ import { runDaemon } from '@heapcode/core';
  * itself, which reads the same directory through `context.extensionUri`
  * (extension.ts:44).
  */
-void runDaemon({ wasmDir: join(__dirname, 'wasm') }).then((code: number) => {
+void runDaemon({
+  wasmDir: join(__dirname, 'wasm'),
+  // So a rebuild of this bundle retires the daemon instead of leaving it
+  // serving yesterday's code to every client that connects. `__filename` for
+  // the same reason as `__dirname` above: this entry is CJS, where
+  // `import.meta.url` is empty and would throw on the way in.
+  entryFile: __filename,
+}).then((code: number) => {
   if (code !== 0) process.exit(code);
 });

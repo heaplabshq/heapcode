@@ -2,11 +2,17 @@
 /**
  * The donut on the composer and the breakdown behind it.
  *
- * The number the ring shows is the last turn's reported usage; the modal
- * recomputes what the NEXT turn would send. They answer different questions and
- * will not always agree, which is fine — but the modal has to actually fetch
- * rather than reuse the ring's number, or "why is my context full" gets the
- * same unhelpful total it already had.
+ * These used to answer two different questions without saying so. The ring
+ * showed the loop's live measurement, which after a run ends is a memory of
+ * that run's peak; the modal recomputed what the NEXT turn would send. Tool
+ * output is not carried between turns, so those two numbers are not close —
+ * a run of forty file reads left the ring near half full and a breakdown
+ * behind it reading 5%, with nothing anywhere to say they were measuring
+ * different things.
+ *
+ * The ring is live only while a run is. Idle, it prices the next turn from
+ * the same source the modal does, so the two agree; and the modal says which
+ * of the two questions it is answering either way.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -29,11 +35,71 @@ const BREAKDOWN: UiContextResult = {
 };
 
 describe('ContextMeter', () => {
-  it('shows the percentage of the window in use', () => {
+  it('shows the percentage of the window in use during a run', () => {
+    render(
+      <ContextMeter
+        used={8_000}
+        live
+        window={32_000}
+        load={() => Promise.resolve(BREAKDOWN)}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('25%')).toBeTruthy();
+  });
+
+  it('drops to what the next turn starts with once the run ends', async () => {
+    // The bug this exists for: `used` holds the finished run's peak for as
+    // long as the tab is open, and the context it measured has in fact been
+    // released — the next turn starts from the breakdown's 16k, not 30k.
+    const load = vi.fn(() => Promise.resolve(BREAKDOWN));
+    render(<ContextMeter used={30_000} window={32_000} load={load} onOpenSettings={vi.fn()} />);
+    expect(await screen.findByText('50%')).toBeTruthy();
+  });
+
+  it('does not price a hypothetical while a run is in flight', async () => {
+    // Live, the loop's own figure is the true one and the host has better
+    // things to do than rebuild a prompt nobody is going to send yet.
+    const load = vi.fn(() => Promise.resolve(BREAKDOWN));
+    render(<ContextMeter used={30_000} live window={32_000} load={load} onOpenSettings={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('94%')).toBeTruthy());
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('re-prices when the conversation underneath it changes', async () => {
+    const load = vi.fn(() => Promise.resolve(BREAKDOWN));
+    const { rerender } = render(
+      <ContextMeter used={0} revision={1} window={32_000} load={load} onOpenSettings={vi.fn()} />,
+    );
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    rerender(<ContextMeter used={0} revision={2} window={32_000} load={load} onOpenSettings={vi.fn()} />);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  });
+
+  it('says which of the two questions the breakdown answers', async () => {
+    // "5% of the window" beside a ring that said 47% was the whole confusion.
     render(
       <ContextMeter used={8_000} window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} />,
     );
-    expect(screen.getByText('25%')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Context usage'));
+    expect(await screen.findByText(/What the next turn starts with/)).toBeTruthy();
+  });
+
+  it('does not claim the free space is free while a run is spending it', async () => {
+    // The host writes that note without knowing whether a run is in flight.
+    // Mid-run the loop's tool results are eating exactly this space, and none
+    // of them appear in the breakdown above it.
+    render(
+      <ContextMeter
+        used={8_000}
+        live
+        window={32_000}
+        load={() => Promise.resolve(BREAKDOWN)}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Context usage'));
+    expect(await screen.findByText(/the run in flight is using part of it now/)).toBeTruthy();
   });
 
   it('renders nothing at all when the window size is unknown', () => {

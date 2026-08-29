@@ -47,6 +47,7 @@ import {
   type RpcPeer,
   type ServerConnection,
   type SnapshotBeforeParams,
+  type ModelInfo,
   type StoredMessage,
   type ToolCall,
   type ToolExecuteParams,
@@ -59,10 +60,15 @@ import {
   buildAgentSession,
   canonicalize,
   conversationsFile,
+  describeMcpServer,
   listPermissionGrants,
+  loadMcpServerSources,
+  mcpNameProblem,
+  parseMcpServerSpec,
   listSkillsFormatted,
   permissionsFile,
   projectStateDir,
+  createContextWindowResolver,
   profileContextWindow,
   trimHistoryForAgent,
   type ConfigStore,
@@ -88,7 +94,9 @@ import {
   type UiOpenConversationResult,
   type UiPermissionRequestParams,
   type UiPermissionRequestResult,
+  type UiMcpServer,
   type UiNameParams,
+  type UiSaveMcpServerParams,
   type UiResetPermissionsResult,
   type UiRunCommandParams,
   type UiSaveProfileParams,
@@ -293,6 +301,25 @@ export class WebSession {
 
   private activeRunId?: string;
   private abort?: AbortController;
+  /**
+   * A profile edit the daemon has not been told about yet, because a run was
+   * in flight when it was saved. Flushed when that run ends — see
+   * `refreshDaemonProfile`.
+   */
+  private profileRefreshPending = false;
+
+  /**
+   * The window a model really has, asked of the endpoint through the daemon
+   * and cached. This host used to size everything off the preset's number,
+   * which for a hosted endpoint is a guess about a family of them.
+   */
+  private readonly contextWindowFor = createContextWindowResolver((profileName, model) =>
+    this.connection
+      ? this.connection.peer
+          .request<{ models: ModelInfo[] }>(METHODS.listModels, { profileName, model })
+          .then((r) => r.models)
+      : Promise.resolve([]),
+  );
   /** Per-run event log, for replay when a browser reattaches mid-run. */
   private readonly buffers = new Map<string, UiEventParams[]>();
 
@@ -413,6 +440,8 @@ export class WebSession {
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
+    this.forgetConnectionWhenItCloses(this.connection);
+    this.warmContextWindow();
     // Recorded once the folder has actually opened, not when it was asked
     // for: a path that fails to start is not somewhere to offer going back to.
     //
@@ -681,7 +710,12 @@ export class WebSession {
     const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
     const history = trimHistoryForAgent(this.conversation?.messages ?? []);
 
-    const window = profileContextWindow(profile);
+    // The one place that waits: the breakdown is opened on purpose to ask
+    // "is this number right", and answering it with the guess we happen to
+    // have cached would be answering a different question.
+    const resolved = await this.contextWindowFor.resolve(profile, this.model);
+    const window = resolved.window;
+    const windowSource = resolved.source;
     const slices: UiContextSlice[] = [
       {
         key: 'system',
@@ -721,7 +755,7 @@ export class WebSession {
       window,
       slices,
       compactionThreshold: COMPACTION_THRESHOLD,
-      windowSource: profile.contextWindow ? 'profile' : 'preset',
+      windowSource,
     };
   }
 
@@ -971,6 +1005,11 @@ export class WebSession {
           active: p.name === this.profile?.name,
           nativeToolCalls: resolveCapabilities(p).nativeToolCalls,
           contextWindow: p.contextWindow,
+          // The preset's number, deliberately: this is a column for every
+          // configured profile and it is rebuilt on every state push, so
+          // asking each endpoint what it really serves would be one request
+          // per profile per push. The active profile's real window is
+          // resolved where it matters — the run, the meter, the breakdown.
           effectiveContextWindow: profileContextWindow(p),
           maxTokens: p.maxTokens,
         })),
@@ -997,13 +1036,11 @@ export class WebSession {
           enabled: cfg.webSearch?.enabled ?? Boolean(cfg.webSearch?.provider),
           hasKey: Boolean(await this.deps.secrets.getApiKey(WEB_SEARCH_SECRET_NAME)),
         },
-        mcpServers: Object.keys(cfg.mcpServers ?? {}).map((name) => ({
-          name,
-          connected: connected.has(name),
-          tools: this.session!.mcpManager.getToolDefinitions()
-            .map((t) => t.name)
-            .filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
-        })),
+        // Both sources, not just personal config: a server defined in this
+        // project's `.heapcode/mcp.json` was loaded and callable but never
+        // appeared here, so the panel showed "None configured" for a session
+        // that had servers running in it.
+        mcpServers: await this.listMcpServers(connected),
         permissionGrants: await listPermissionGrants(permissionsFile(this.root)),
       };
     });
@@ -1057,10 +1094,47 @@ export class WebSession {
       await this.deps.config.saveProfile(next);
       if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
       if (profile.name === this.profile?.name) {
-        this.profile = await this.deps.config.getProfile(profile.name);
+        const before = this.profile;
+        this.profile = (await this.deps.config.getProfile(profile.name)) ?? next;
         // contextWindow and maxTokens are read off the profile at run time
-        // (see `run`), so the next turn picks them up without a reconnect.
+        // (see `run`), so those two alone still need no reconnect. Everything
+        // else was handed to the daemon once, at hello, and is read from that
+        // copy for the rest of the session -- so saving a role redirect and
+        // stopping here left the daemon running the profile as it was before
+        // the edit, with nothing anywhere saying so.
+        if (apiKey || daemonHeldFieldsChanged(before, this.profile)) await this.refreshDaemonProfile();
       }
+      void this.pushState();
+      return null;
+    });
+
+    /**
+     * Add or replace a personal MCP server, and connect it now.
+     *
+     * The panel used to list servers and tell you to go and edit
+     * `~/.heapcode/config.json` by hand, which is the one thing a settings
+     * screen exists to save you from. The CLI's `/mcp` said the same. Only
+     * the extension had an add flow, and it writes to VS Code's own settings,
+     * so what it added was invisible here.
+     */
+    ui.onRequest(UI_METHODS.saveMcpServer, async (raw) => {
+      await this.start();
+      const { name, spec } = raw as UiSaveMcpServerParams;
+      const nameProblem = mcpNameProblem(name);
+      if (nameProblem) throw new Error(nameProblem);
+      const parsed = parseMcpServerSpec(spec);
+      if ('error' in parsed) throw new Error(parsed.error);
+      await this.deps.config.saveMcpServer(name.trim(), parsed);
+      this.reconnectMcp();
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.deleteMcpServer, async (raw) => {
+      await this.start();
+      const { name } = raw as UiNameParams;
+      await this.deps.config.deleteMcpServer(name);
+      this.reconnectMcp();
       void this.pushState();
       return null;
     });
@@ -1099,6 +1173,86 @@ export class WebSession {
   }
 
   /** Tears down and re-opens the daemon session — used when the profile changes. */
+  /**
+   * Hand the daemon the profile as it now stands.
+   *
+   * The daemon is given the active profile exactly once, at hello, and reads
+   * the role redirects, the endpoint, the key and the capabilities off that
+   * copy from then on (core/src/server/session.ts:135). Nothing in the
+   * protocol pushes a changed profile into a live session, so the only way to
+   * apply an edit is to rebuild the session -- the same thing `useProfile`
+   * does, and for the same reason.
+   *
+   * Never mid-run: closing the connection would kill the run in flight, and a
+   * settings edit must not do that. It waits for the run to end instead. If
+   * the reconnect itself fails the flag stays set, so the next opportunity
+   * tries again rather than leaving the daemon on a profile nobody chose.
+   */
+  private async refreshDaemonProfile(): Promise<void> {
+    if (!this.connection) {
+      // Nothing has started yet, so hello has not happened -- it will carry
+      // the current profile when it does.
+      this.profileRefreshPending = false;
+      return;
+    }
+    if (this.activeRunId) {
+      this.profileRefreshPending = true;
+      return;
+    }
+    await this.reconnect();
+    this.profileRefreshPending = false;
+  }
+
+  /**
+   * MCP servers as the settings panel needs them: both sources, with the
+   * project-scoped ones marked so the editor can show them read-only.
+   */
+  private async listMcpServers(connected: Set<string>): Promise<UiMcpServer[]> {
+    const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
+    const tools = this.session?.mcpManager.getToolDefinitions() ?? [];
+    return Object.entries({ ...global, ...project }).map(([name, server]) => ({
+      name,
+      connected: connected.has(name),
+      tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
+      spec: describeMcpServer(server),
+      project: name in project,
+    }));
+  }
+
+  /**
+   * Pick up a changed server list without restarting the session.
+   *
+   * `McpManager` reads its config through the thunk it was built with, so
+   * this re-reads the file: it drops what was removed, connects what is new,
+   * and reconnects anything whose definition changed.
+   *
+   * Not awaited by the caller. Connecting means launching the server — an
+   * `npx` line can spend half a minute fetching a package before it says
+   * anything — and a settings panel that freezes until a third-party process
+   * finishes starting is worse than one that shows the row immediately as not
+   * connected and updates when it is. The second `pushState` is what makes
+   * that arrive.
+   *
+   * A server that will not start is reported by its own row, and must never
+   * turn saving a setting into an error.
+   */
+  private reconnectMcp(): void {
+    void this.session?.mcpManager
+      .ensureConnected()
+      .catch(() => {
+        /* The row shows it as not connected, which is the honest report. */
+      })
+      .finally(() => void this.pushState());
+  }
+
+  /** Apply a profile edit that arrived while a run was in flight. */
+  private flushProfileRefresh(): void {
+    if (!this.profileRefreshPending) return;
+    void this.refreshDaemonProfile().catch(() => {
+      /* Flag stays set; the next run's end tries again. */
+    });
+  }
+
   private async reconnect(): Promise<void> {
     this.connection?.close();
     this.connection = undefined;
@@ -1111,6 +1265,56 @@ export class WebSession {
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
+    this.forgetConnectionWhenItCloses(this.connection);
+    this.warmContextWindow();
+  }
+
+  /**
+   * Ask the endpoint how big its window is now, rather than on first use.
+   *
+   * `known()` answers with the preset's guess until the real number arrives,
+   * which keeps it off the run's critical path — but the first read of a
+   * session was happening inside the first run, so that run got the guess.
+   * That is the run it matters for: it is usually the longest, and a guess
+   * that is too small compacts it early, summarising away what it had already
+   * looked up. Then it looks the same things up again.
+   *
+   * Seen on a real session: the preset says 128k, the endpoint serves a
+   * million, and a research-heavy first turn re-issued six searches it had
+   * already run.
+   *
+   * Starting it at hello costs one request nobody waits for, and by the time
+   * a human has typed a prompt the answer is there.
+   */
+  private warmContextWindow(): void {
+    const profile = this.profile;
+    if (!profile) return;
+    void this.contextWindowFor.resolve(profile, this.model).catch(() => {
+      /* Falls back to the preset exactly as before — never worth surfacing. */
+    });
+  }
+
+  /**
+   * Let go of a daemon that has gone, so the next request builds a new one.
+   *
+   * The daemon outlives this host by design, and it also exits without asking:
+   * it goes idle, it retires because its bundle was rebuilt, someone kills it.
+   * Holding the dead peer meant every later request rejected with "connection
+   * closed" until the host itself was restarted — the browser sat on a
+   * daemon-down badge with no way back. Which is how a rebuilt daemon stayed
+   * invisible: the one thing that would have picked up the new build was the
+   * thing that could no longer happen.
+   *
+   * `start()` rebuilds from `this.connection` being undefined, so dropping the
+   * reference is the whole recovery. A run that was in flight is already lost
+   * with the socket; that is reported by its own rejection, not here.
+   */
+  private forgetConnectionWhenItCloses(connection: ServerConnection): void {
+    connection.peer.onClose(() => {
+      if (this.connection !== connection) return;
+      this.connection = undefined;
+      void this.pushState();
+    });
   }
 
   /**
@@ -1204,7 +1408,7 @@ export class WebSession {
       // The meter's denominator before any run has reported usage — otherwise
       // the window is invisible until the first turn, which is exactly when
       // someone wants to check it.
-      contextWindow: this.profile ? profileContextWindow(this.profile) : undefined,
+      contextWindow: this.profile ? this.contextWindowFor.known(this.profile, this.model).window : undefined,
       profiles,
       daemon: this.connection ? 'up' : 'down',
       runId: this.activeRunId,
@@ -1226,6 +1430,8 @@ export class WebSession {
     this.activeRunId = runId;
     this.abort = new AbortController();
     this.buffers.set(runId, []);
+    /** Whether the success path already wrote this turn — see the `finally`. */
+    let persisted = false;
 
     const persona = applyModeToPersona(getPersona(this.personaId), this.mode);
     // CREATE_ARTIFACT_TOOL is added HERE, by this host only — the CLI and the
@@ -1284,7 +1490,10 @@ export class WebSession {
           // narrated what it would do instead of calling anything: no tool
           // chips, no edits. `deps` stays as an override for tests only.
           nativeToolCalls: this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls,
-          contextWindow: profileContextWindow(profile),
+          // The endpoint's own number where it has one. A preset default that
+          // overstates the real window means the loop never compacts and the
+          // endpoint truncates the prompt instead, silently.
+          contextWindow: this.contextWindowFor.known(profile, this.model).window,
           // Was missing entirely, so a profile's maxTokens was honoured by the
           // CLI (App.tsx) and ignored here — replies got truncated at the
           // provider default with no way to raise it from the browser.
@@ -1299,12 +1508,45 @@ export class WebSession {
         this.abort.signal,
       );
       await this.persistTurn(task, images?.length);
+      persisted = true;
       return { runId, outcome, maxIterations };
     } finally {
+      if (!persisted) await this.persistUnfinishedTurn(task, images?.length);
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
+      this.flushProfileRefresh();
       void this.pushState();
+    }
+  }
+
+  /**
+   * Keep a turn that did not finish cleanly.
+   *
+   * `persistTurn` sits on the success path, and this host -- alone among the
+   * three -- hands its own AbortSignal to `agent/run`. So Stop rejects the
+   * request here instead of letting the daemon answer `outcome: 'stopped'`,
+   * which is what the CLI and the extension get (both only notify
+   * `agent/cancel`, and both persist normally afterwards). The turn was
+   * therefore discarded whole: every file it read, every edit it made, gone
+   * from the conversation at the moment you stopped it -- and gone from the
+   * next turn's history, so the model could not be told what it had just
+   * done and started over.
+   *
+   * The local abort stays, because it is what makes Stop work against a
+   * daemon that has stopped answering. It just no longer costs the transcript.
+   *
+   * A run that produced nothing writes nothing: a request that never reached
+   * the daemon is not an exchange, and recording it would leave an
+   * unanswered prompt in the history for the next turn to puzzle over.
+   */
+  private async persistUnfinishedTurn(task: string, imageCount?: number): Promise<void> {
+    if (!this.conversation) return;
+    if (this.turnEntries.length === 0 && !this.lastText.trim() && !this.reasoningAcc.trim()) return;
+    try {
+      await this.persistTurn(task, imageCount);
+    } catch {
+      /* Losing the write is bad; losing the error that caused it is worse. */
     }
   }
 
@@ -1345,7 +1587,7 @@ export class WebSession {
           model: this.model,
           temperature: profile.temperature,
           maxTokens: profile.maxTokens,
-          contextWindow: profileContextWindow(profile),
+          contextWindow: this.contextWindowFor.known(profile, this.model).window,
           // The review filters this to the read-only tools itself
           // (prReview.ts:457); handing it the full list is what every host does.
           tools: [...session.tools, ...session.mcpManager.getToolDefinitions()],
@@ -1361,6 +1603,7 @@ export class WebSession {
       this.activeReview = undefined;
       this.activeRunId = undefined;
       this.abort = undefined;
+      this.flushProfileRefresh();
       void this.pushState();
     }
   }
@@ -1761,6 +2004,34 @@ export function describeCall(name: string, args: Record<string, unknown>): strin
  * silently-clamped context window would misreport the meter and compact at a
  * size the user never chose.
  */
+/**
+ * Fields the host re-sends on every run, so a change to them reaches the
+ * daemon without rebuilding the session.
+ *
+ * Deliberately a list of exceptions rather than a list of what matters. A
+ * profile crosses to the daemon whole and is read from that copy; these two
+ * are the only ones the host also passes per run (see `run`). Anything added
+ * to a profile later is therefore treated as needing a reconnect until
+ * someone proves otherwise, which is the safe direction to be wrong in --
+ * the previous version guessed the other way and left every role redirect
+ * inert.
+ */
+const RESENT_EACH_RUN = new Set<keyof ProviderProfileConfig>(['contextWindow', 'maxTokens']);
+
+/** Did this edit touch anything the daemon is holding its own copy of? */
+function daemonHeldFieldsChanged(
+  before: ProviderProfileConfig | undefined,
+  after: ProviderProfileConfig,
+): boolean {
+  if (!before) return true;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)] as Array<keyof ProviderProfileConfig>);
+  for (const key of keys) {
+    if (RESENT_EACH_RUN.has(key)) continue;
+    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) return true;
+  }
+  return false;
+}
+
 function tokenCount(value: number | null | undefined, label: string): number | null | undefined {
   if (value === undefined || value === null) return value;
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${label} must be a positive whole number of tokens.`);

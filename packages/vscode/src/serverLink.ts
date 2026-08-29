@@ -133,6 +133,17 @@ export class ServerLink {
     this.connectedProfile = profileName;
     const { peer } = connection;
 
+    // The daemon outlives this window by design, and it also exits without
+    // asking: it goes idle, it retires because its bundle was rebuilt, someone
+    // kills it. Holding the dead peer meant every later request rejected with
+    // "connection closed" until the window was reloaded. Dropping the
+    // reference is the whole recovery — the next call reconnects.
+    peer.onClose(() => {
+      if (this.connection !== connection) return;
+      this.connection = undefined;
+      this.connectedProfile = undefined;
+    });
+
     peer.onRequest(METHODS.toolExecute, async (raw, signal) => {
       const { runId, call } = raw as ToolExecuteParams;
       // One handler, two kinds of run on this connection — the review's
@@ -305,11 +316,19 @@ export class ServerLink {
     return message;
   }
 
-  /** Model list for a profile, resolved with the server's copy of the key. */
-  async listModels(profileName: string): Promise<ModelInfo[]> {
+  /**
+   * Model list for a profile, resolved with the server's copy of the key.
+   *
+   * `model` additionally asks what context length that one model really has,
+   * falling back to the endpoint's own API where /v1/models omits it. The
+   * server does that probe because the key is there — this used to be
+   * attempted extension-side and could not authenticate.
+   */
+  async listModels(profileName: string, model?: string): Promise<ModelInfo[]> {
     const { peer } = await this.ensureConnection(profileName);
     const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
       profileName,
+      model,
     } satisfies ListModelsParams);
     return models;
   }

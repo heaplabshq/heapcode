@@ -485,7 +485,7 @@ export async function webSearch(
         err instanceof Error && err.name === 'AbortError'
           ? new Error(`Search timed out after ${Math.round(timeoutMs / 1000)}s.`)
           : err instanceof Error
-            ? err
+            ? describeTransportFailure(err, url, preset)
             : new Error(String(err));
       // A timeout is worth one more try; a thrown non-retryable HTTP error is not.
       const retryable = error.message.startsWith('Search timed out');
@@ -499,6 +499,75 @@ export async function webSearch(
     }
   }
   throw lastError ?? new Error('Search failed.');
+}
+
+/**
+ * A connection that never got as far as an HTTP status.
+ *
+ * `fetch` reports every one of these as the same four characters -- "fetch
+ * failed" -- with the actual reason buried in `cause.code`. That string was
+ * what reached the model, and it is indistinguishable from a transient
+ * hiccup, so the model treated it as one: it stopped searching and rebuilt
+ * the answer out of fifty-one `npm view` calls instead. Nobody was told the
+ * search backend was simply not running.
+ *
+ * So the message names the endpoint, says which of the two kinds of problem
+ * it is, and says search is unavailable rather than slow -- because the
+ * failure worth avoiding is not the failed call, it is the hour of
+ * substitutes that follows it.
+ */
+function describeTransportFailure(err: Error, url: string, preset: SearchProviderPreset): Error {
+  const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+  // Not every cause carries a `code` — a port the URL standard blocks outright
+  // arrives as a bare "bad port", for one — so the message is the fallback.
+  const code = cause?.code ?? codeFromMessage(cause?.message);
+  const origin = originOf(url);
+  const unavailable =
+    ' Web search is unavailable until this is fixed — say so rather than working around it with other tools.';
+
+  if (code === 'ECONNREFUSED' || code === 'ECONNRESET') {
+    const remedy = preset.selfHosted
+      ? `Start your ${preset.label} instance, or choose another provider in the web-search settings.`
+      : `Check the endpoint, or choose another provider in the web-search settings.`;
+    return new Error(`Search failed: nothing is listening at ${origin}. ${remedy}${unavailable}`);
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return new Error(
+      `Search failed: ${origin} could not be resolved. Check the endpoint and this machine's network.${unavailable}`,
+    );
+  }
+  if (code === 'BADPORT') {
+    return new Error(
+      `Search failed: ${origin} uses a port that browsers and fetch refuse to connect to. ` +
+        `Host it on another port, or choose a different provider in the web-search settings.${unavailable}`,
+    );
+  }
+  if (code) {
+    return new Error(`Search failed: could not reach ${origin} (${code}).${unavailable}`);
+  }
+  // Not a transport problem — a parse error, a refused redirect, whatever the
+  // caller already worded well. Left exactly as it is.
+  return err;
+}
+
+/** The error code named inside a cause that carried no `code` field. */
+function codeFromMessage(message?: string): string | undefined {
+  if (!message) return undefined;
+  const match = /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b/.exec(message);
+  if (match) return match[1];
+  // The URL standard refuses a set of ports outright, before any connection is
+  // attempted. Rare in practice, and baffling as "fetch failed".
+  if (/bad port/i.test(message)) return 'BADPORT';
+  return undefined;
+}
+
+/** Just the scheme and host, for a message about reachability rather than a query. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
 
 function describeStatus(status: number, preset: SearchProviderPreset): string {

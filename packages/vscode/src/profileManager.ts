@@ -30,51 +30,6 @@ const ROLE_PROFILE_FIELD: Record<ModelRole, keyof ProviderProfileConfig> = {
   contextModel: 'contextProfile',
 };
 
-/**
- * Model context length from provider-native APIs, for endpoints whose
- * OpenAI-compatible /models omits it: Ollama (/api/show) and LM Studio
- * (/api/v0/models). Best-effort with a short timeout; undefined otherwise.
- */
-async function probeNativeContextLength(
-  profile: ProviderProfileConfig,
-  model: string,
-): Promise<number | undefined> {
-  if (profile.preset !== 'ollama' && profile.preset !== 'lmstudio') return undefined;
-  const origin = profile.baseUrl.replace(/\/v1\/?$/, '');
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5_000);
-  try {
-    if (profile.preset === 'ollama') {
-      const res = await fetch(`${origin}/api/show`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model }),
-        signal: controller.signal,
-      });
-      if (!res.ok) return undefined;
-      const json = (await res.json()) as { model_info?: Record<string, unknown> };
-      for (const [k, v] of Object.entries(json.model_info ?? {})) {
-        // e.g. "llama.context_length", "qwen2.context_length"
-        if (k.endsWith('.context_length') && typeof v === 'number' && v > 0) return v;
-      }
-    } else {
-      const res = await fetch(`${origin}/api/v0/models/${encodeURIComponent(model)}`, {
-        signal: controller.signal,
-      });
-      if (!res.ok) return undefined;
-      const json = (await res.json()) as { max_context_length?: number };
-      if (typeof json.max_context_length === 'number' && json.max_context_length > 0) {
-        return json.max_context_length;
-      }
-    }
-  } catch {
-    // endpoint down or API shape changed — caller falls back
-  } finally {
-    clearTimeout(timeout);
-  }
-  return undefined;
-}
-
 function profileSecretKey(profileName: string): string {
   return `heapcode.apiKey.${profileName}`;
 }
@@ -155,15 +110,16 @@ export class ProfileManager {
    * one caller that must never fail (contextWindowFor) already degrades to a
    * preset default when this throws.
    */
-  private listModelsVia?: (profileName: string) => Promise<ModelInfo[]>;
+  private listModelsVia?: (profileName: string, model?: string) => Promise<ModelInfo[]>;
 
-  setModelLister(lister: (profileName: string) => Promise<ModelInfo[]>): void {
+  setModelLister(lister: (profileName: string, model?: string) => Promise<ModelInfo[]>): void {
     this.listModelsVia = lister;
   }
 
-  private async listModels(profileName: string): Promise<ModelInfo[]> {
+  /** `model` additionally asks the endpoint what context length it really has. */
+  private async listModels(profileName: string, model?: string): Promise<ModelInfo[]> {
     if (!this.listModelsVia) throw new Error('The core server connection is not available yet.');
-    return this.listModelsVia(profileName);
+    return this.listModelsVia(profileName, model);
   }
 
   dispose(): void {
@@ -245,14 +201,15 @@ export class ProfileManager {
     if (!this.modelContextCache.has(key)) {
       let reported: number | undefined;
       try {
-        reported = (await this.listModels(profile.name)).find((m) => m.id === model)?.contextLength;
+        // `model` asks the daemon to fall back to the endpoint's own API for
+        // the ones whose /v1/models omits a context length (Ollama, LM
+        // Studio). That probe used to live here and could not reach a hosted
+        // Ollama, because it had no key; the daemon has one.
+        reported = (await this.listModels(profile.name, model)).find((m) => m.id === model)?.contextLength;
       } catch {
         // unreachable endpoint, unlistable endpoint, or no server yet —
         // preset default below. Never throws; this is on the chat hot path.
       }
-      // Ollama and LM Studio don't report context in /v1/models — ask their
-      // native APIs instead.
-      reported ??= await probeNativeContextLength(profile, model);
       if (reported) {
         this.log.appendLine(`[profiles] ${model}: provider reports ${reported}-token context window`);
       }

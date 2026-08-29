@@ -1560,6 +1560,49 @@ exit 0
     expect(await readFile(join(root, 'scratch.txt'), 'utf8')).toBe('hi');
   });
 
+  it('/mcp add stores a server and connects it, without leaving the terminal', async () => {
+    // Adding one used to mean quitting, opening ~/.heapcode/config.json, and
+    // editing JSON — a strange thing for a tool with a settings command to
+    // ask. It writes to the config the browser reads too.
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const configStore = new ConfigStore(join(root, 'config.json'));
+    const mcpManager = stubMcp();
+
+    const app = renderApp({ provider: fakeProvider('unused'), conversation, historyStore, mcpManager, configStore });
+    await new Promise((r) => setTimeout(r, 20));
+    app.stdin.write('/mcp add filesystem npx -y server-fs /code');
+    app.stdin.write('\r');
+
+    await vi.waitFor(() => expect(app.lastFrame()).toMatch(/Added "filesystem"|did not connect/));
+    expect((await configStore.load()).mcpServers).toEqual({
+      filesystem: { command: 'npx', args: ['-y', 'server-fs', '/code'] },
+    });
+    // Picked up in this session, not the next one.
+    expect(mcpManager.ensureConnected).toHaveBeenCalled();
+  });
+
+  it('/mcp add refuses a name that would not survive being prefixed onto a tool', async () => {
+    const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
+    const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
+    const configStore = new ConfigStore(join(root, 'config.json'));
+
+    const app = renderApp({
+      provider: fakeProvider('unused'),
+      conversation,
+      historyStore,
+      mcpManager: stubMcp(),
+      configStore,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    // A dot survives neither the tool-name prefix nor the sanitizer.
+    app.stdin.write('/mcp add my.server echo hi');
+    app.stdin.write('\r');
+
+    await vi.waitFor(() => expect(app.lastFrame()).toMatch(/letters, digits/i));
+    expect((await configStore.load()).mcpServers ?? {}).toEqual({});
+  });
+
   it('/mcp reports "no servers" when none are connected, and lists connected ones otherwise', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
@@ -1579,7 +1622,10 @@ exit 0
     await new Promise((r) => setTimeout(r, 20));
     connected.stdin.write('/mcp');
     connected.stdin.write('\r');
-    await vi.waitFor(() => expect(connected.lastFrame()).toContain('Connected: filesystem'));
+    // Named with its state, rather than counted: a server that is configured
+    // and NOT connected is the thing worth seeing, and a "1 connected" line is
+    // exactly where that disappears.
+    await vi.waitFor(() => expect(connected.lastFrame()).toContain('filesystem — connected'));
     expect(mcpManager.ensureConnected).toHaveBeenCalled();
   });
 

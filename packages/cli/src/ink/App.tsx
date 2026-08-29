@@ -73,6 +73,11 @@ import {
 import {
   DELEGATE_TASK_TOOL,
   configFile,
+  createContextWindowResolver,
+  describeMcpServer,
+  loadMcpServerSources,
+  mcpNameProblem,
+  parseMcpServerSpec,
   listPermissionGrants,
   listSkillsFormatted,
   permissionsFile,
@@ -124,7 +129,7 @@ const COMMANDS: SlashCommand[] = [
   { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
   { name: '/index', description: 'Rebuild the semantic search + repo map indexes' },
   { name: '/pr-review', args: '[deep]', description: "Review the current branch's PR and (on confirmation) post it to GitHub — needs the gh CLI" },
-  { name: '/mcp', description: 'List configured MCP servers and their connection status' },
+  { name: '/mcp', args: '[add <name> <command…|url>|remove <name>]', description: 'List, add, or remove MCP servers' },
   { name: '/subagents', args: '[on|off]', description: 'Toggle delegate_task — lets the agent hand off sub-tasks to a fresh sub-agent' },
   { name: '/clear', description: 'Clear the screen and start a new conversation' },
   { name: '/new', description: 'Start a new conversation' },
@@ -587,6 +592,26 @@ export function App({
   );
 
   /**
+   * The window the model really has, asked of the endpoint through the daemon.
+   *
+   * The prop from cli.tsx is the preset's number, and a preset is a guess
+   * about a family of endpoints. Too small only wastes context by compacting
+   * early; too large is worse — the loop never compacts, the endpoint drops
+   * the oldest part of the prompt instead, and the agent forgets what it just
+   * read and reads it again.
+   */
+  const contextWindowFor = useRef(
+    createContextWindowResolver(async (profileName, m) => {
+      const { peer } = await ensureConnection();
+      const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
+        profileName,
+        model: m,
+      } satisfies ListModelsParams);
+      return models;
+    }),
+  ).current;
+
+  /**
    * Connect (starting the server if needed) and register the four
    * server→host request handlers. The bodies are the same code that used to
    * sit inline in the runAgent options object; only their trigger changed —
@@ -612,6 +637,26 @@ export function App({
     connectionRef.current = connection;
     connectedProfile.current = active.profile.name;
     const { peer } = connection;
+
+    // The daemon outlives this process by design, and it also exits without
+    // asking: it goes idle, it retires because its bundle was rebuilt, someone
+    // kills it. Holding the dead peer meant every later request rejected with
+    // "connection closed" until the CLI itself was restarted. Dropping the
+    // reference is the whole recovery — the next call reconnects.
+    peer.onClose(() => {
+      if (connectionRef.current !== connection) return;
+      connectionRef.current = undefined;
+      connectedProfile.current = undefined;
+    });
+
+    // Ask how big the window really is now, not on first use. `known()`
+    // answers with the preset's guess until the endpoint replies, and the
+    // first read used to happen inside the first run — the run it matters
+    // for, since a guess that is too small compacts it early and it re-does
+    // work it had already done.
+    void contextWindowFor.resolve(active.profile, model).catch(() => {
+      /* Falls back to the preset exactly as before. */
+    });
 
     // edit_file's fast-apply fallback, now that there is something to call it
     // with. Rebound on every reconnect so it follows a profile switch — the
@@ -1338,7 +1383,7 @@ export function App({
           model,
           temperature: active.profile.temperature,
           maxTokens: active.profile.maxTokens,
-          contextWindow: active.contextWindow,
+          contextWindow: contextWindowFor.known(active.profile, model).window,
           tools,
           client: CLI_REVIEW_CLIENT,
           deep: mode === 'deep',
@@ -1458,12 +1503,80 @@ export function App({
           pushSystem('MCP is unavailable in this session.');
           return true;
         }
+        const action = rest[0]?.toLowerCase();
+
+        // Adding one used to mean closing the terminal and editing JSON, which
+        // is a strange thing for a tool with a settings command to ask. The
+        // extension had an add flow and wrote it to VS Code's own settings, so
+        // what it added was invisible here; this writes to the config both
+        // this CLI and the browser already read.
+        if (action === 'add') {
+          const name = rest[1];
+          const spec = rest.slice(2).join(' ');
+          if (!name || !spec) {
+            pushSystem('Usage: /mcp add <name> <command…|url>\ne.g. /mcp add filesystem npx -y @modelcontextprotocol/server-filesystem ~/code');
+            return true;
+          }
+          const nameProblem = mcpNameProblem(name);
+          if (nameProblem) {
+            pushSystem(nameProblem);
+            return true;
+          }
+          const parsed = parseMcpServerSpec(spec);
+          if ('error' in parsed) {
+            pushSystem(parsed.error);
+            return true;
+          }
+          await configStore?.saveMcpServer(name, parsed);
+          await mcpManager.ensureConnected();
+          const live = mcpManager.connectedServerNames().includes(name);
+          pushSystem(
+            live
+              ? `Added "${name}" — ${mcpManager.getToolDefinitions().filter((t) => t.name.startsWith(`mcp__${name}__`)).length} tool(s) available now.`
+              : `Saved "${name}", but it did not connect. Check the command or URL, then run /mcp to retry.`,
+          );
+          return true;
+        }
+
+        if (action === 'remove') {
+          const name = rest[1];
+          if (!name) {
+            pushSystem('Usage: /mcp remove <name>');
+            return true;
+          }
+          await configStore?.deleteMcpServer(name);
+          await mcpManager.ensureConnected();
+          pushSystem(`Removed "${name}".`);
+          return true;
+        }
+
         await mcpManager.ensureConnected();
-        const names = mcpManager.connectedServerNames();
+        const { global, project } = configStore
+          ? await loadMcpServerSources(cwd ?? process.cwd(), configStore)
+          : { global: {}, project: {} };
+        const connected = new Set(mcpManager.connectedServerNames());
+        const all = { ...global, ...project };
+        // Config and reality, unioned. Listing only what config names would
+        // hide a server that is connected without one — and this session may
+        // have no config store at all.
+        const names = [...new Set([...Object.keys(all), ...connected])];
+        if (names.length === 0) {
+          pushSystem('No MCP servers connected. Add one with "/mcp add <name> <command…|url>".');
+          return true;
+        }
         pushSystem(
-          names.length === 0
-            ? 'No MCP servers connected. Configure them under "mcpServers" in ~/.heapcode/config.json or <cwd>/.heapcode/mcp.json.'
-            : `Connected: ${names.join(', ')} (${mcpManager.getToolDefinitions().length} tool(s) total).`,
+          [
+            ...names.map((name) => {
+              // Named, not counted: a server that is configured and not
+              // connected is the thing worth seeing, and a "3 connected" line
+              // hides exactly that.
+              const where = name in project ? ' [project]' : '';
+              const state = connected.has(name) ? 'connected' : 'not connected';
+              const spec = all[name] ? `\n  ${describeMcpServer(all[name]!)}` : '';
+              return `${name}${where} — ${state}${spec}`;
+            }),
+            `${mcpManager.getToolDefinitions().length} tool(s) total. "/mcp add <name> <command…|url>" to add, "/mcp remove <name>" to remove.`,
+          ].join('\n'),
         );
         return true;
       }
@@ -1604,6 +1717,9 @@ export function App({
 
     try {
       const { peer } = await ensureConnection();
+      // Read after the connection exists, so the first turn of a session can
+      // already have the endpoint's real answer rather than the preset's.
+      const runWindow = contextWindowFor.known(active.profile, model).window;
       const runId = randomUUID();
       // Cancellation stays on the existing Esc / Ctrl+C wiring above: the
       // controller is still what the UI aborts, but aborting now sends one
@@ -1681,7 +1797,11 @@ export function App({
         workspaceName,
         tools: offered,
         nativeToolCalls: effectiveNativeToolCalls,
-        contextWindow: active.contextWindow,
+        // What the endpoint says its window is, where it has said so — the
+        // preset's guess until then, which is what this always used to send.
+        // Never awaited: sizing a window must not delay a turn, still less
+        // hang one behind an endpoint that has stopped answering.
+        contextWindow: runWindow,
         subAgents: subAgentsEnabled,
         persona: effectivePersona,
         maxIterations,

@@ -1,4 +1,10 @@
-import type { AgentEvent, AgentOutcome, PermissionChoice, PermissionClass } from '@heapcode/core';
+import type {
+  AgentEvent,
+  AgentOutcome,
+  ContextWindowSource,
+  PermissionChoice,
+  PermissionClass,
+} from '@heapcode/core';
 
 /**
  * The wire protocol between the **browser** and the **web host**.
@@ -50,6 +56,8 @@ export const UI_METHODS = {
   resetPermissions: 'ui/resetPermissions',
   saveProfile: 'ui/saveProfile',
   deleteProfile: 'ui/deleteProfile',
+  saveMcpServer: 'ui/saveMcpServer',
+  deleteMcpServer: 'ui/deleteMcpServer',
   useProfile: 'ui/useProfile',
   runCommand: 'ui/runCommand',
 
@@ -410,8 +418,13 @@ export interface UiContextResult {
   slices: UiContextSlice[];
   /** Fraction of the window at which the loop starts compacting. */
   compactionThreshold: number;
-  /** What the window size was read from, for the "is this number right" question. */
-  windowSource: 'profile' | 'preset';
+  /**
+   * What the window size was read from, for the "is this number right"
+   * question. `model` means the endpoint told us; `preset` means it did not
+   * and this is a default for a family of endpoints, which is exactly when
+   * the number is worth doubting.
+   */
+  windowSource: ContextWindowSource;
 }
 
 /**
@@ -563,6 +576,25 @@ export interface UiMcpServer {
   connected: boolean;
   /** Tools this server contributed, once connected. */
   tools: string[];
+  /**
+   * How it is configured, in the one-line form the editor accepts back — a
+   * URL, or a command with its arguments.
+   */
+  spec?: string;
+  /**
+   * Defined in this project's `.heapcode/mcp.json` rather than in personal
+   * config. Editable by hand only: that file is meant to be committed, and a
+   * settings panel should not write to something under version control on
+   * someone's behalf.
+   */
+  project?: boolean;
+}
+
+/** `ui/saveMcpServer` — add or replace a personal MCP server. */
+export interface UiSaveMcpServerParams {
+  name: string;
+  /** A URL, or a command line. Parsed the same way the CLI parses it. */
+  spec: string;
 }
 
 /** A provider preset as the settings UI needs it — core's, minus capabilities. */

@@ -63,7 +63,9 @@ function parseNdjson(write: { mock: { calls: unknown[][] } }): HeadlessEvent[] {
     .map((l) => JSON.parse(l) as HeadlessEvent);
 }
 
-type SingleBehavior = Exclude<MockBehavior, { kind: 'sequence' }>;
+// `route` answers by path rather than in order, so it is not a step a
+// sequence can hold either.
+type SingleBehavior = Exclude<MockBehavior, { kind: 'sequence' } | { kind: 'route' }>;
 const sse = (content: string): SingleBehavior => ({ kind: 'sse', chunks: [content] });
 /** Like sse(), but the endpoint also reports what the turn cost. */
 const sseCosting = (content: string, prompt: number, completion: number): SingleBehavior => ({

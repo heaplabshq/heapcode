@@ -72,7 +72,7 @@ export function activate(context: vscode.ExtensionContext): void {
     daemonEntry: vscode.Uri.joinPath(context.extensionUri, 'dist', 'daemon.js').fsPath,
   };
   const link = new ServerLink(profiles, log, serverOptions);
-  profiles.setModelLister((profileName) => link.listModels(profileName));
+  profiles.setModelLister((profileName, model) => link.listModels(profileName, model));
   const chatProvider = new ChatViewProvider(context.extensionUri, profiles, store, log, link, track);
   activeChatProvider = chatProvider;
   const permissions = new PermissionEngine(context.workspaceState, log, track, () => chatProvider.permissionMode);

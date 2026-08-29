@@ -579,4 +579,75 @@ export class OpenAICompatibleProvider implements Provider {
         return typeof ctx === 'number' && ctx > 0 ? { id: m.id, contextLength: ctx } : { id: m.id };
       });
   }
+
+  /**
+   * One model's real context length.
+   *
+   * `/v1/models` first, because most endpoints answer there. Ollama and LM
+   * Studio do not — they carry it on their own APIs — and that gap is not
+   * cosmetic: without it a host falls back to the preset's guess, and a guess
+   * that is too large means the window never looks full, compaction never
+   * fires, and the endpoint quietly drops the oldest part of the prompt
+   * instead. The agent then forgets what it read a moment ago and reads it
+   * again, which is what an unstoppable read loop looks like from outside.
+   *
+   * Best-effort throughout, with a short timeout: this is called to size a
+   * meter and a budget, and neither is worth failing a turn over.
+   */
+  async contextLengthFor(model: string): Promise<number | undefined> {
+    const listed = await this.listModels().catch(() => [] as ModelInfo[]);
+    const reported = listed.find((m) => m.id === model)?.contextLength;
+    if (reported) return reported;
+    return this.probeNativeContextLength(model);
+  }
+
+  /**
+   * Ollama's `/api/show` and LM Studio's `/api/v0/models` — the provider-native
+   * APIs that do report a context length.
+   *
+   * Gated on the preset rather than tried speculatively: these are guesses at
+   * another vendor's URL space, and firing them at, say, an OpenAI endpoint
+   * would be a 404 nobody asked for.
+   */
+  private async probeNativeContextLength(model: string): Promise<number | undefined> {
+    const preset = this.config.preset;
+    if (preset !== 'ollama' && preset !== 'ollama-cloud' && preset !== 'lmstudio') return undefined;
+    const origin = this.config.baseUrl.replace(/\/v1\/?$/, '');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
+    try {
+      if (preset === 'lmstudio') {
+        const res = await fetch(`${origin}/api/v0/models/${encodeURIComponent(model)}`, {
+          headers: this.headers(),
+          signal: controller.signal,
+        });
+        if (!res.ok) return undefined;
+        const json = (await res.json()) as { max_context_length?: number };
+        return typeof json.max_context_length === 'number' && json.max_context_length > 0
+          ? json.max_context_length
+          : undefined;
+      }
+      // Ollama, local or hosted. The hosted one needs the key, which is why
+      // this lives on the provider: `this.headers()` already carries it.
+      const res = await fetch(`${origin}/api/show`, {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({ model }),
+        signal: controller.signal,
+      });
+      if (!res.ok) return undefined;
+      const json = (await res.json()) as { model_info?: Record<string, unknown> };
+      for (const [k, v] of Object.entries(json.model_info ?? {})) {
+        // Keyed by architecture: "llama.context_length", "qwen2.context_length".
+        if (k.endsWith('.context_length') && typeof v === 'number' && v > 0) return v;
+      }
+      return undefined;
+    } catch {
+      // Endpoint down, or an API shape that has moved on. The caller falls
+      // back to the preset default, which is where it started.
+      return undefined;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 }

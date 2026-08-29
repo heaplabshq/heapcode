@@ -428,6 +428,7 @@ export function App(): JSX.Element {
     [rpc],
   );
 
+
   const listProfileModels = useCallback(
     (profileName: string) =>
       rpc
@@ -804,6 +805,7 @@ export function App(): JSX.Element {
   // reports (one started before a reload, or from another tab).
   const busy = Boolean(runId ?? hostRunId);
 
+
   // The indicator's clock starts when the run becomes visible here and stops
   // with it. Timed from this tab rather than from the host, which does not
   // record a start time — for a run inherited on reload that means "since you
@@ -923,6 +925,11 @@ export function App(): JSX.Element {
                 <div className="composer-bar-right">
                   <ContextMeter
                     used={transcript.usedTokens}
+                    live={busy}
+                    // Idle, the meter re-prices itself from `load`; this tells
+                    // it when the thing being priced has moved underneath it —
+                    // a conversation switched, a new chat started.
+                    revision={transcript.items.length}
                     window={transcript.windowTokens || state?.contextWindow}
                     load={loadContext}
                     onOpenSettings={() => openSettings('context')}
@@ -1007,6 +1014,8 @@ export function App(): JSX.Element {
           onSaveProfile={(profile: UiProfileDraft, apiKey?: string) =>
             act(UI_METHODS.saveProfile, { profile, apiKey })
           }
+          onSaveMcpServer={(name, spec) => act(UI_METHODS.saveMcpServer, { name, spec })}
+          onDeleteMcpServer={(name) => act(UI_METHODS.deleteMcpServer, { name })}
           loadSkills={loadSkills}
           loadMemory={loadMemory}
           listModels={listProfileModels}

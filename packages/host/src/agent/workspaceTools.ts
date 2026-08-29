@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import fg from 'fast-glob';
 import {
@@ -42,6 +44,31 @@ import type { SessionCheckpoint } from './checkpoint.js';
 import { filterIgnored } from './ignoreFiles.js';
 import { listSkillsFormatted, loadSkill } from './skills.js';
 
+/**
+ * Every spelling of the system temp directory on this machine.
+ *
+ * Both the name and its target, because macOS reports `/var/folders/...` from
+ * `tmpdir()` while the real path is `/private/var/folders/...` — and a path
+ * the agent wrote as `/tmp/x` matches neither. Comparing one spelling against
+ * the other is how a directory ends up refused for not being itself.
+ */
+let cachedTempRoots: string[] | undefined;
+function tempRoots(): string[] {
+  if (cachedTempRoots) return cachedTempRoots;
+  const roots = new Set<string>();
+  for (const candidate of [tmpdir(), '/tmp']) {
+    const resolved = path.resolve(candidate);
+    roots.add(resolved);
+    try {
+      roots.add(realpathSync.native(resolved));
+    } catch {
+      // Does not exist on this platform — the literal spelling still counts.
+    }
+  }
+  cachedTempRoots = [...roots];
+  return cachedTempRoots;
+}
+
 async function fileExists(abs: string): Promise<boolean> {
   try {
     await stat(abs);
@@ -58,10 +85,22 @@ function buildCommandResult(opts: {
   stoppedByUser: boolean;
   timedOut: boolean;
   timeoutSec: number;
+  /** Where the shell is now, relative to the workspace root — absent while it is still at the root. */
+  cwd?: string;
 }): ToolResult {
-  const { content, exitCode, stoppedByUser, timedOut, timeoutSec } = opts;
+  const { content, exitCode, stoppedByUser, timedOut, timeoutSec, cwd } = opts;
+  // Said on every command, not only the one that moved.
+  //
+  // The working directory persists between calls, which the tool description
+  // has always stated — and stating it once, at the top of a long context,
+  // against state that silently changes underneath is not enough. What
+  // actually happened: `cd apps/web && npm run build` succeeded, and the next
+  // call, `cd apps/web && npm run lint`, failed with "No such file or
+  // directory" because the shell was already there. Three steps then went on
+  // `pwd`, `ls`, and a retry. Twice in one run, three times in another.
+  const where = cwd ? `\n(working directory: ${cwd})` : '';
   if (stoppedByUser) {
-    return { id: '', name: 'run_command', content: `Stopped by user.\n${content}`, isError: true };
+    return { id: '', name: 'run_command', content: `Stopped by user.\n${content}${where}`, isError: true };
   }
   if (timedOut) {
     return {
@@ -71,11 +110,16 @@ function buildCommandResult(opts: {
         `Command did not finish within ${timeoutSec}s and was killed — this usually means it's a ` +
         'long-running process (a dev server, watcher, REPL…) rather than a one-shot command. Don\'t run ' +
         'it again the same way; it will just time out again. Either tell the user to run it themselves, ' +
-        `or start it in the background (e.g. append &) and verify separately with a short-lived check.\n${content}`,
+        `or start it in the background (e.g. append &) and verify separately with a short-lived check.\n${content}${where}`,
       isError: true,
     };
   }
-  return { id: '', name: 'run_command', content: `exit code: ${exitCode ?? 'unknown'}\n${content}`, isError: exitCode !== 0 };
+  return {
+    id: '',
+    name: 'run_command',
+    content: `exit code: ${exitCode ?? 'unknown'}\n${content}${where}`,
+    isError: exitCode !== 0,
+  };
 }
 
 /**
@@ -223,7 +267,7 @@ export class WorkspaceToolExecutor {
     const a = call.args as Record<string, string | undefined>;
     switch (call.name) {
       case 'read_file': {
-        const abs = this.resolve(a.path);
+        const abs = this.resolveForReading(a.path);
         const allLines = (await readFile(abs, 'utf8')).split('\n');
 
         const rangeGiven = Boolean(a.start_line || a.end_line);
@@ -512,6 +556,35 @@ export class WorkspaceToolExecutor {
     return resolved;
   }
 
+  /**
+   * Same as `resolve`, plus the system temp directory.
+   *
+   * Reading only. The workspace jail is the whole of what stops a `read_file`
+   * from returning `~/.ssh/id_rsa` or this machine's stored API keys, and
+   * `read` is the permission class that is usually auto-allowed, so it stays
+   * exactly where it is for everything else.
+   *
+   * Temp is the exception because it is where the agent's own work goes. The
+   * run that prompted this unpacked two npm tarballs into `/tmp` and then had
+   * to read them back; `read_file` refused, so it used `cat` piped through
+   * `head`, `tail` and `sed` instead, and read one type-definition file ten
+   * times in overlapping windows because nothing there tracks what it has
+   * already seen. Nothing was gained by refusing: `run_command` had just
+   * written those files.
+   */
+  private resolveForReading(rel: string | undefined): string {
+    if (!rel) throw new Error('Missing "path" argument.');
+    const resolved = path.resolve(this.root, rel);
+    if (resolved === this.root || resolved.startsWith(this.root + path.sep)) return resolved;
+
+    if (tempRoots().some((r) => resolved === r || resolved.startsWith(r + path.sep))) return resolved;
+
+    throw new Error(
+      `Path escapes the workspace: ${rel}. Only the workspace and the system temp directory can be read; ` +
+        'use run_command for anything else.',
+    );
+  }
+
   private async search(pattern: string, glob?: string): Promise<string> {
     if (!pattern) throw new Error('Missing "pattern" argument.');
     const regex = new RegExp(pattern);
@@ -611,6 +684,10 @@ export class WorkspaceToolExecutor {
             stoppedByUser,
             timedOut,
             timeoutSec: this.commandTimeoutMs / 1000,
+            // Relative, and only once the shell has left the root: at the root
+            // it is what the description already says, and repeating it on
+            // every command would be noise on the common case.
+            cwd: this.cwd === this.root ? undefined : path.relative(this.root, this.cwd).replace(/\\/g, '/'),
           }),
         );
       });

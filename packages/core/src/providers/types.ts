@@ -106,6 +106,12 @@ export interface ProviderConfig {
   apiKey?: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
+  /**
+   * Which preset this profile came from, so a provider can use an endpoint's
+   * non-standard APIs where the OpenAI-compatible surface falls short —
+   * `contextLengthFor` is the only such case today.
+   */
+  preset?: string;
 }
 
 export interface Provider {
@@ -125,4 +131,15 @@ export interface Provider {
   completion(req: CompletionRequest): Promise<CompletionResponse>;
   embeddings(req: EmbeddingsRequest): Promise<EmbeddingsResponse>;
   listModels(): Promise<ModelInfo[]>;
+  /**
+   * One model's context length, asking the endpoint's own APIs when the
+   * OpenAI-compatible `/models` does not report it (Ollama and LM Studio do
+   * not). Best-effort: undefined means "could not find out", never an error.
+   *
+   * Here rather than in a host because it needs the endpoint's credentials,
+   * and those live with the provider. Every host reads it through the
+   * daemon's `provider/listModels`, so none of them has to hold a key to
+   * learn how big the window really is.
+   */
+  contextLengthFor?(model: string): Promise<number | undefined>;
 }

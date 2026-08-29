@@ -272,7 +272,7 @@ describe('a daemon that has been rebuilt underneath itself', () => {
     let exited: number | undefined;
     await retireOnRebuild(
       entry,
-      { sessionCount: 0 },
+      { busy: false },
       async (line) => void logs.push(line),
       async (code) => void (exited = code),
       5,
@@ -286,11 +286,35 @@ describe('a daemon that has been rebuilt underneath itself', () => {
     expect(logs.join(' ')).toContain('was rebuilt');
   });
 
+  it('retires while hosts are still attached, as long as nothing is running', async () => {
+    // The gate this replaces waited for the last SESSION to go, and a session
+    // lives as long as its host does — a browser tab, an editor window, a
+    // terminal. Nobody quits all three, so nothing ever retired and the daemon
+    // went on serving the old build with a log line saying it meant not to.
+    const entry = join(dir, 'attached.js');
+    await writeFile(entry, 'v1', 'utf8');
+
+    let exited: number | undefined;
+    await retireOnRebuild(
+      entry,
+      // Hosts connected, none of them doing anything.
+      { busy: false },
+      async () => {},
+      async (code) => void (exited = code),
+      5,
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+    await writeFile(entry, 'v2-and-longer', 'utf8');
+    await new Promise((r) => setTimeout(r, 80));
+    expect(exited).toBe(0);
+  });
+
   it('waits rather than killing a run that is still going', async () => {
     const entry = join(dir, 'busy.js');
     await writeFile(entry, 'v1', 'utf8');
 
-    const server = { sessionCount: 1 };
+    const server = { busy: true };
     let exited: number | undefined;
     await retireOnRebuild(
       entry,
@@ -305,7 +329,7 @@ describe('a daemon that has been rebuilt underneath itself', () => {
     await new Promise((r) => setTimeout(r, 60));
     expect(exited).toBeUndefined();
 
-    server.sessionCount = 0;
+    server.busy = false;
     await new Promise((r) => setTimeout(r, 60));
     expect(exited).toBe(0);
   });
@@ -317,7 +341,7 @@ describe('a daemon that has been rebuilt underneath itself', () => {
     let exited: number | undefined;
     await retireOnRebuild(
       entry,
-      { sessionCount: 0 },
+      { busy: false },
       async () => {},
       async (code) => void (exited = code),
       5,

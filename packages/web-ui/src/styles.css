@@ -1074,6 +1074,8 @@ body {
 .row-active { border-color: var(--accent); }
 .row-name { font-weight: 600; }
 .row-actions { margin-left: auto; display: flex; gap: 6px; }
+/* An MCP server's command line or URL, under its name. */
+.mono-hint { font-family: var(--mono); font-size: 11.5px; margin: 4px 0 0; word-break: break-all; }
 .row code { font-family: var(--mono); font-size: 12px; }
 
 .badge {
@@ -1181,6 +1183,10 @@ body {
 .role-label { font-size: 12.5px; color: var(--text-dim); }
 .role-input { font-family: var(--mono); font-size: 12px; }
 .role-select { max-width: 16ch; font-size: 12px; }
+/* Stands in for the model box when the role runs on another profile, which
+   supplies the model as well as the endpoint. */
+.role-from { font-size: 12px; color: var(--text-dim); align-self: center; }
+.role-from code { font-family: var(--mono); color: var(--text); }
 
 @media (max-width: 620px) {
   .role { grid-template-columns: 1fr; gap: 4px; }

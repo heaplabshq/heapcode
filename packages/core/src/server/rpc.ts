@@ -62,6 +62,9 @@ export class RpcPeer {
   private readonly inbound = new Map<RpcId, AbortController>();
   private closed = false;
 
+  /** Told once when the transport goes, so a caller can reconnect rather than wedge. */
+  private readonly closeHandlers = new Set<() => void>();
+
   constructor(
     stream: Duplex,
     private readonly idPrefix: string,
@@ -70,6 +73,22 @@ export class RpcPeer {
     this.channel = new NdjsonChannel(stream, (m) => this.dispatch(m), onError);
     stream.on('close', () => this.fail(new Error('connection closed')));
     stream.on('error', (err: Error) => this.fail(err));
+  }
+
+  /**
+   * Run `handler` when this connection ends, for whatever reason.
+   *
+   * A daemon exits — because it was rebuilt, because it went idle, because
+   * someone killed it — and without this the host holds a dead peer and every
+   * later request rejects with "connection closed" forever. The socket already
+   * knew; nothing was listening.
+   */
+  onClose(handler: () => void): void {
+    if (this.closed) {
+      handler();
+      return;
+    }
+    this.closeHandlers.add(handler);
   }
 
   onRequest(method: string, handler: RequestHandler): void {
@@ -187,6 +206,11 @@ export class RpcPeer {
     this.pending.clear();
     for (const [, controller] of this.inbound) controller.abort();
     this.inbound.clear();
+    // After the rejections, so a handler that reconnects does not race the
+    // failures belonging to the connection it is replacing.
+    const handlers = [...this.closeHandlers];
+    this.closeHandlers.clear();
+    for (const handler of handlers) handler();
   }
 
   close(): void {

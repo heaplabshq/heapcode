@@ -377,6 +377,48 @@ describe('rate limiting and retries', () => {
   });
 });
 
+/**
+ * A search backend that is not there.
+ *
+ * `fetch` reports every transport failure as the same four characters, and
+ * that string is what reached the model. It is indistinguishable from a
+ * transient hiccup, so the model treated it as one: it abandoned search
+ * without comment and rebuilt the answer from fifty-one shell calls instead.
+ * The cost was never the failed request; it was the hour of substitutes.
+ */
+describe('a search endpoint that cannot be reached', () => {
+  it('names the endpoint and what to do, instead of "fetch failed"', async () => {
+    // A high port nothing binds — a genuine refused connection.
+    await expect(
+      webSearch({ provider: 'searxng', baseUrl: 'http://127.0.0.1:59999/search' }, undefined, 'anything'),
+    ).rejects.toThrow(/nothing is listening at http:\/\/127\.0\.0\.1:59999/);
+  });
+
+  it('says to start it, for a backend the user hosts themselves', async () => {
+    await expect(
+      webSearch({ provider: 'searxng', baseUrl: 'http://127.0.0.1:59999/search' }, undefined, 'anything'),
+    ).rejects.toThrow(/Start your SearXNG instance/);
+  });
+
+  it('tells the model not to paper over it', async () => {
+    // The behaviour this exists to prevent: quietly substituting other tools
+    // for search and never mentioning that search is down.
+    await expect(
+      webSearch({ provider: 'searxng', baseUrl: 'http://127.0.0.1:59999/search' }, undefined, 'anything'),
+    ).rejects.toThrow(/say so rather than working around it/);
+  });
+
+  it('distinguishes a name that does not resolve from a port nobody answers', async () => {
+    await expect(
+      webSearch(
+        { provider: 'custom', baseUrl: 'http://heapcode-no-such-host.invalid/search' },
+        undefined,
+        'anything',
+      ),
+    ).rejects.toThrow(/could not be resolved/);
+  }, 15_000);
+});
+
 /** Shared with fetch_url's htmlToText, which had the same hex-entity gap. */
 describe('decodeHtmlEntities', () => {
   it('handles named, decimal and hex escapes', () => {

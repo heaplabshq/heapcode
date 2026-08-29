@@ -28,7 +28,16 @@ export type MockBehavior =
   /** Emits the given payloads verbatim as `data:` lines, then [DONE]. */
   | { kind: 'sse-raw'; events: string[] }
   /** Serves responses[i] for the i-th request (last one repeats). */
-  | { kind: 'sequence'; responses: Array<Exclude<MockBehavior, { kind: 'sequence' }>> };
+  | {
+      kind: 'sequence';
+      responses: Array<Exclude<MockBehavior, { kind: 'sequence' } | { kind: 'route' }>>;
+    }
+  /**
+   * Answers by path, for an endpoint whose different APIs say different
+   * things — `/v1/models` alongside a provider-native one, say. A path with
+   * no route gets a 404, which is what a real endpoint would give.
+   */
+  | { kind: 'route'; routes: Record<string, { status: number; body: unknown }> };
 
 /** Minimal OpenAI-compatible fake for offline, deterministic tests. */
 export async function startMockServer(behavior: MockBehavior): Promise<MockServer> {
@@ -67,6 +76,13 @@ export async function startMockServer(behavior: MockBehavior): Promise<MockServe
         // request got the second script.
         const index = Math.min(chatCalls++, active.responses.length - 1);
         active = active.responses[index]!;
+      }
+
+      if (active.kind === 'route') {
+        const match = Object.entries(active.routes).find(([path]) => (req.url ?? '').includes(path));
+        res.writeHead(match ? match[1].status : 404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(match ? match[1].body : { error: 'no route' }));
+        return;
       }
 
       if (active.kind === 'hang') {

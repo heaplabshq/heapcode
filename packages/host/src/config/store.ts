@@ -117,4 +117,34 @@ export class ConfigStore {
     if (cfg.activeProfile === name) cfg.activeProfile = cfg.profiles[0]?.name;
     await this.persist();
   }
+
+  /**
+   * Add or replace a personal MCP server, by name.
+   *
+   * There was no write path here at all, which is why every host could list
+   * servers and none could add one: the CLI's `/mcp` and the browser's
+   * Connectors page both ended in "edit this JSON file yourself". Only the
+   * extension had an add flow, and it writes to VS Code's own settings, so
+   * what it adds is invisible to the other two.
+   *
+   * Global, not project-scoped. `<root>/.heapcode/mcp.json` is meant to be
+   * committed and shared with a team, and quietly writing to a file that is
+   * under version control is not something a settings panel should do on
+   * someone's behalf. That file keeps winning on a name collision
+   * (`loadMcpServers`), so a project's choice still overrides this.
+   */
+  async saveMcpServer(name: string, server: McpServerConfig): Promise<void> {
+    const cfg = await this.load();
+    cfg.mcpServers = { ...cfg.mcpServers, [name]: server };
+    await this.persist();
+  }
+
+  /** Removes a personal MCP server. A project-scoped one of the same name is untouched. */
+  async deleteMcpServer(name: string): Promise<void> {
+    const cfg = await this.load();
+    if (!cfg.mcpServers?.[name]) return;
+    const { [name]: _removed, ...rest } = cfg.mcpServers;
+    cfg.mcpServers = rest;
+    await this.persist();
+  }
 }

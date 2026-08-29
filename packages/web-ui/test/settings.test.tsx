@@ -58,6 +58,8 @@ function props(over: Partial<SettingsProps> = {}): SettingsProps {
     onUseProfile: vi.fn(),
     onDeleteProfile: vi.fn(),
     onSaveProfile: vi.fn(),
+    onSaveMcpServer: vi.fn(),
+    onDeleteMcpServer: vi.fn(),
     ...over,
   };
 }
@@ -331,14 +333,137 @@ describe('role model suggestions', () => {
     await waitFor(() => expect(listModels).toHaveBeenCalledWith('ollama'));
   });
 
-  it('suggests from the TARGET profile once the role is redirected', async () => {
-    // Point embeddings at a local Ollama and the models worth offering are
-    // that endpoint's — listing this profile's would suggest ids the role can
-    // never reach.
+  it('offers nothing to type once the role is redirected', async () => {
+    // There is no box to suggest into: a redirected role takes its model from
+    // the profile it was redirected to, so this row stops asking for one.
     const listModels = vi.fn(() => Promise.resolve([]));
     openRoles(listModels);
     fireEvent.change(screen.getByLabelText('Embeddings profile'), { target: { value: 'local' } });
-    fireEvent.focus(screen.getByLabelText('Embeddings model'));
-    await waitFor(() => expect(listModels).toHaveBeenCalledWith('local'));
+    expect(screen.queryByRole('textbox', { name: 'Embeddings model' })).toBeNull();
+    await waitFor(() => expect(listModels).not.toHaveBeenCalledWith('local'));
+  });
+});
+
+/**
+ * What a redirected role actually runs.
+ *
+ * The row used to show a model box beside the profile dropdown, as though the
+ * two were independent settings. They are not: `providerForRole` resolves the
+ * target profile and the model is then read off *that* one, so a model typed
+ * here was stored, displayed, and never used. Which is how a working config
+ * can sit on disk with semantic search reporting no embedder.
+ */
+describe('a role redirected to another profile', () => {
+  const withTarget: UiSettings = {
+    ...SETTINGS,
+    profiles: [
+      { ...SETTINGS.profiles[0]!, embeddingsProfile: 'local' },
+      {
+        name: 'local',
+        preset: 'ollama',
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'llama',
+        embeddingsModel: 'nomic-embed-text',
+        active: false,
+        hasKey: false,
+        effectiveContextWindow: 8_000,
+      },
+    ],
+  };
+
+  function open(settings: UiSettings): void {
+    render(<Settings {...props({ settings })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    fireEvent.click(screen.getAllByText('Edit')[0]!);
+    fireEvent.click(screen.getByText(/Model roles/));
+  }
+
+  it('names the model the target will run, not an empty box', () => {
+    open(withTarget);
+    expect(screen.getByText('nomic-embed-text')).toBeTruthy();
+    expect(screen.getByText(/from local/)).toBeTruthy();
+  });
+
+  it('says where to set one when the target has none', () => {
+    // The failure this replaces was silent: the role was redirected, the
+    // target had no embeddings model, and the panel showed a blank field that
+    // looked settable.
+    open({
+      ...withTarget,
+      profiles: [withTarget.profiles[0]!, { ...withTarget.profiles[1]!, embeddingsModel: undefined }],
+    });
+    expect(screen.getByText(/no embeddings model on local; set one there/)).toBeTruthy();
+  });
+
+  it('leaves the roles that are not redirected editable', () => {
+    open(withTarget);
+    expect(screen.getByLabelText<HTMLInputElement>('Rerank model')).toBeTruthy();
+  });
+});
+
+/**
+ * Connectors.
+ *
+ * The page used to be a list ending in "add them to ~/.heapcode/config.json
+ * yourself", which is the one thing a settings screen exists to save you
+ * from. The CLI said the same; only the extension could add one, and it wrote
+ * to VS Code's own settings, so what it added never appeared here.
+ */
+describe('MCP servers', () => {
+  const withServers: UiSettings = {
+    ...SETTINGS,
+    mcpServers: [
+      { name: 'filesystem', connected: true, tools: ['mcp__filesystem__read'], spec: 'npx -y server-fs /code' },
+      { name: 'teamserver', connected: false, tools: [], spec: 'npx -y team', project: true },
+    ],
+  };
+
+  function open(over: Partial<SettingsProps> = {}): void {
+    render(<Settings {...props({ settings: withServers, ...over })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Connectors' }));
+  }
+
+  it('adds a server from one field, without asking for a transport first', () => {
+    // A server is either a URL or a command line, and the string already says
+    // which — the host parses it the same way the CLI does.
+    const onSaveMcpServer = vi.fn();
+    open({ onSaveMcpServer });
+    fireEvent.change(screen.getByLabelText('MCP server name'), { target: { value: 'github' } });
+    fireEvent.change(screen.getByLabelText('MCP server command or URL'), {
+      target: { value: 'https://mcp.example.com/sse' },
+    });
+    fireEvent.click(screen.getByText('Add server'));
+    expect(onSaveMcpServer).toHaveBeenCalledWith('github', 'https://mcp.example.com/sse');
+  });
+
+  it('will not send a half-filled form', () => {
+    const onSaveMcpServer = vi.fn();
+    open({ onSaveMcpServer });
+    fireEvent.change(screen.getByLabelText('MCP server name'), { target: { value: 'github' } });
+    fireEvent.click(screen.getByText('Add server'));
+    expect(onSaveMcpServer).not.toHaveBeenCalled();
+  });
+
+  it('shows what each server is configured as, not just its name', () => {
+    open();
+    expect(screen.getByText('npx -y server-fs /code')).toBeTruthy();
+  });
+
+  it('removes one', () => {
+    const onDeleteMcpServer = vi.fn();
+    open({ onDeleteMcpServer });
+    fireEvent.click(screen.getAllByText('Remove')[0]!);
+    expect(onDeleteMcpServer).toHaveBeenCalledWith('filesystem');
+  });
+
+  it("shows a project's own server but offers no way to edit it", () => {
+    // `.heapcode/mcp.json` is meant to be committed. A settings panel writing
+    // to a file under version control on someone's behalf is the one thing it
+    // must not do — so that row is displayed and left alone.
+    open();
+    expect(screen.getByText('teamserver')).toBeTruthy();
+    expect(screen.getByText(/from this project/)).toBeTruthy();
+    // One Remove button, for the personal server — not two.
+    expect(screen.getAllByText('Remove')).toHaveLength(1);
   });
 });

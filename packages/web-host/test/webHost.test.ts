@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,12 +61,22 @@ let workspace: string;
 let daemon: HeapcodeServer;
 let mock: MockServer | undefined;
 let web: RunningWebHost | undefined;
+/**
+ * How many times the host has handed the daemon a session/hello.
+ *
+ * The daemon is given the active profile once, at hello, and reads role
+ * redirects and the endpoint off that copy for the rest of the session — so
+ * "did this edit reach the daemon" is exactly "did the host reconnect", and
+ * there is nothing else to observe it by.
+ */
+let connects: number;
 
 beforeEach(async () => {
   // Short paths — a unix socket path over 104 bytes fails listen() with EINVAL.
   home = await mkdtemp(join(tmpdir(), 'hcwh-'));
   workspace = await mkdtemp(join(tmpdir(), 'hcww-'));
   process.env.HEAPCODE_HOME = home;
+  connects = 0;
 });
 
 afterEach(async () => {
@@ -127,11 +137,13 @@ async function boot(
     port: 0, // ephemeral, so parallel test files never collide
     token: 'test-token',
     ...hostExtras,
-    connect: (hello): Promise<ServerConnection> =>
-      connectToServer(
+    connect: (hello): Promise<ServerConnection> => {
+      connects += 1;
+      return connectToServer(
         { client: { name: 'web-host-test' }, ...hello },
         { address: daemon.address, token: daemon.token, autostart: false },
-      ),
+      );
+    },
   });
   web = host;
   return { root, host };
@@ -664,7 +676,9 @@ describe('web host — tool protocol', () => {
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
     await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'go' }).catch(() => {});
 
-    const body = mock!.requests[0]?.body as { tools?: unknown[] } | undefined;
+    // The chat call specifically. The host also asks `/models` what context
+    // length this model really has, and that lands first.
+    const body = chatRequest()?.body as { tools?: unknown[] } | undefined;
     expect(Array.isArray(body?.tools)).toBe(true);
     expect((body!.tools as Array<{ function?: { name: string } }>).length).toBeGreaterThan(0);
 
@@ -1487,6 +1501,207 @@ describe('web host — switching workspace', () => {
   });
 });
 
+describe('web host — a run that was stopped', () => {
+  /**
+   * Stopping a run must not erase it.
+   *
+   * `persistTurn` sits on the success path, and this host is the only one of
+   * the three that hands its own AbortSignal to `agent/run` — so Stop rejected
+   * the request rather than letting the daemon answer `outcome: 'stopped'`,
+   * and the turn was dropped whole. Everything the agent read or changed
+   * vanished from the conversation at the moment you stopped it, and from the
+   * next turn's history with it, so the model could not be told what it had
+   * just been doing.
+   */
+  /**
+   * Found rather than computed: the state directory is keyed by a hash of the
+   * root, and two packages spell that helper differently. What matters is
+   * that a file was written at all.
+   */
+  async function storedMessages(): Promise<Array<Record<string, unknown>>> {
+    const projects = join(home, 'projects');
+    const dirs = await readdir(projects);
+    for (const d of dirs) {
+      const file = join(projects, d, 'conversations.json');
+      const raw = await readFile(file, 'utf8').catch(() => undefined);
+      if (!raw) continue;
+      const convos = JSON.parse(raw) as Array<{ messages: Array<Record<string, unknown>> }>;
+      return convos.flatMap((c) => c.messages);
+    }
+    throw new Error('no conversation was written');
+  }
+
+  it('keeps what it did up to the moment it was stopped', async () => {
+    // An endless read loop, so there is real work in flight to lose.
+    const { root, host } = await boot([
+      { kind: 'sse', chunks: ['<tool name="read_file">\n{"path":"a.ts"}\n</tool>'] },
+    ]);
+    await writeFile(join(root, 'a.ts'), 'export const a = 1;\n', 'utf8');
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const running = browser.peer
+      .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'read forever', runId: 'stopped' })
+      .catch(() => undefined);
+    // Specifically a tool call: that is the work worth keeping, and the
+    // earlier events (text deltas) leave nothing behind to assert on.
+    while (!browser.events.some((e) => e.type === 'tool_call')) await new Promise((r) => setTimeout(r, 10));
+    await browser.peer.request(UI_METHODS.cancel, { runId: 'stopped' });
+    await running;
+
+    const messages = await storedMessages();
+    expect(messages.some((m) => m.role === 'user' && m.content === 'read forever')).toBe(true);
+    // The tool chips too — the record of what it actually did, which is the
+    // part a follow-up turn needs and the part that was being thrown away.
+    expect(messages.some((m) => JSON.stringify(m.ui ?? {}).includes('read_file'))).toBe(true);
+    browser.close();
+  }, 30_000);
+
+  it('writes nothing for a run that never got started', async () => {
+    // A request that never reached the daemon is not an exchange. Recording
+    // one would leave an unanswered prompt in the history for the next turn.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await daemon.close();
+
+    await browser.peer
+      .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'go', runId: 'doomed' })
+      .catch(() => undefined);
+
+    await expect(storedMessages()).rejects.toThrow();
+    browser.close();
+  }, 30_000);
+});
+
+describe('web host — the daemon going away', () => {
+  /**
+   * The daemon outlives this host by design, and it also exits without asking:
+   * it goes idle, it retires because its bundle was rebuilt, someone kills it.
+   * The host used to keep the dead peer, so every later request rejected with
+   * "connection closed" and the browser sat on a daemon-down badge with no way
+   * back short of restarting the host. Which is how a rebuilt daemon stayed
+   * invisible: the one thing that would have picked up the new build was the
+   * thing that could no longer happen.
+   */
+  it('reports it, then reconnects on the next request', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).daemon).toBe('up');
+
+    // Exactly what a retiring daemon does to its clients.
+    await daemon.close();
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).daemon).toBe('down');
+
+    // Something is listening again — a fresh build, in real life.
+    daemon = new HeapcodeServer({ home, address: join(home, 'w2.sock'), idleShutdownMs: 0 });
+    await daemon.listen();
+
+    const result = await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, {
+      text: 'rewrite it',
+    });
+    expect(result.outcome).toBe('done');
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).daemon).toBe('up');
+    browser.close();
+  }, 30_000);
+});
+
+describe('web host — MCP servers', () => {
+  /**
+   * Adding one used to mean leaving the browser and editing
+   * `~/.heapcode/config.json` by hand, which is the one thing a settings
+   * screen exists to save you from. The extension had an add flow that wrote
+   * to VS Code's own settings, so what it added never appeared here.
+   */
+  it('adds a server and reports it back', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    // A command that is not a real MCP server: saving must not wait for it to
+    // start, let alone succeed. Launching one can take half a minute of `npx`
+    // fetching a package, and a settings panel that freezes for that is worse
+    // than a row that says "not connected" until it is.
+    await browser.peer.request(UI_METHODS.saveMcpServer, {
+      name: 'filesystem',
+      spec: 'npx -y @modelcontextprotocol/server-filesystem /code',
+    });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    const server = settings.mcpServers.find((m) => m.name === 'filesystem')!;
+    // Read back in the same one-line form the editor accepts, so the row can
+    // be edited without anyone having to reconstruct it.
+    expect(server.spec).toBe('npx -y @modelcontextprotocol/server-filesystem /code');
+    expect(server.project).toBe(false);
+    browser.close();
+  });
+
+  it('stores a URL as a remote server', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveMcpServer, { name: 'remote', spec: 'https://example.com/mcp' });
+
+    const stored = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
+      mcpServers?: Record<string, unknown>;
+    };
+    expect(stored.mcpServers?.remote).toEqual({ url: 'https://example.com/mcp', transport: 'http' });
+    browser.close();
+  });
+
+  it('refuses a name that would not survive being prefixed onto a tool', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await expect(
+      browser.peer.request(UI_METHODS.saveMcpServer, { name: 'my server', spec: 'echo hi' }),
+    ).rejects.toThrow(/letters, digits/i);
+    browser.close();
+  });
+
+  it('removes one', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveMcpServer, { name: 'gone', spec: 'echo hi' });
+    await browser.peer.request(UI_METHODS.deleteMcpServer, { name: 'gone' });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    expect(settings.mcpServers.some((m) => m.name === 'gone')).toBe(false);
+    browser.close();
+  });
+
+  it("lists this project's own servers, which it never used to", async () => {
+    // `.heapcode/mcp.json` was loaded and its tools were callable, but the
+    // panel read personal config only — so a session with servers running in
+    // it displayed "None configured".
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await mkdir(join(root, '.heapcode'), { recursive: true });
+    await writeFile(
+      join(root, '.heapcode', 'mcp.json'),
+      JSON.stringify({ teamserver: { command: 'npx', args: ['-y', 'team'] } }),
+      'utf8',
+    );
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    const server = settings.mcpServers.find((m) => m.name === 'teamserver')!;
+    expect(server).toBeDefined();
+    // Marked, because it is the one the panel must not write to: that file is
+    // meant to be committed.
+    expect(server.project).toBe(true);
+    browser.close();
+  });
+});
+
 describe('web host — model roles', () => {
   it('round-trips every role model and its cross-profile override', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
@@ -1567,6 +1782,99 @@ describe('web host — model roles', () => {
       rerankModel: 'rerank-1',
       agentModel: 'big-agent',
     });
+    browser.close();
+  });
+
+  /**
+   * Saving a role redirect has to reach the daemon.
+   *
+   * The daemon is handed the active profile once, at hello, and resolves
+   * `<role>Profile` off that copy from then on. `saveProfile` used to write
+   * the file, update the host's own copy, and stop — so a user could set
+   * embeddings to a local Ollama, see it stored, reopen the panel and see it
+   * still set, and have semantic search keep reporting no embedder because
+   * the daemon was still running the profile as it stood at hello. Nothing
+   * anywhere said so; switching profiles and back was the only cure, and only
+   * by accident.
+   */
+  it('a role redirect saved on the active profile reaches the daemon', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.sendMessage, { text: 'go' });
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', embeddingsProfile: 'local' },
+    });
+
+    expect(connects).toBe(before + 1);
+    browser.close();
+  });
+
+  it('does not reconnect for the two fields the host re-sends every run', async () => {
+    // contextWindow and maxTokens go out as run parameters, so they take
+    // effect on the next turn on their own. Rebuilding the session for them
+    // would throw away a warm one for nothing.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.sendMessage, { text: 'go' });
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', contextWindow: 64_000, maxTokens: 4_000 },
+    });
+
+    expect(connects).toBe(before);
+    browser.close();
+  });
+
+  it('waits for a run in flight rather than pulling the connection out from under it', async () => {
+    // Reconnecting closes the daemon session, which would kill whatever is
+    // running on it. A settings edit must never do that — so the refresh is
+    // held until the run ends, and then happens rather than being forgotten.
+    const { host } = await boot([
+      { kind: 'sse', chunks: ['<tool name="run_command">\n{"command":"sleep 1"}\n</tool>'] },
+      { kind: 'sse', chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+    ]);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const running = browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, {
+      text: 'go',
+      runId: 'slow',
+    });
+    // The first event means the daemon has the run; the sleep gives a whole
+    // second of margin to save inside it.
+    while (browser.events.length === 0) await new Promise((r) => setTimeout(r, 10));
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', embeddingsProfile: 'local' },
+    });
+    expect(connects).toBe(before);
+
+    await running;
+    // The flush is fired as the run unwinds, not awaited by it.
+    const deadline = Date.now() + 5_000;
+    while (connects === before && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    expect(connects).toBe(before + 1);
+    browser.close();
+  });
+
+  it('does not reconnect for a profile that is not the one in use', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.sendMessage, { text: 'go' });
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'other', preset: 'custom', baseUrl: mock!.baseUrl, model: 'x' },
+    });
+
+    expect(connects).toBe(before);
     browser.close();
   });
 
@@ -1815,15 +2123,120 @@ describe('web host — context breakdown', () => {
     browser.close();
   });
 
-  it('says when the window size is the preset default rather than a choice', async () => {
-    const { host } = await boot(WRITE_THEN_FINISH); // no contextWindow on the profile
+  it('admits when nothing reported a window size', async () => {
+    // No `contextWindow` on the profile, and the `custom` preset carries no
+    // maxContext either — so this number is a conservative fallback, and the
+    // one question the breakdown exists to answer is whether to trust it.
+    const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
     const ctx = await browser.peer.request<UiContextResult>(UI_METHODS.context);
-    expect(ctx.windowSource).toBe('preset');
+    expect(ctx.windowSource).toBe('default');
+    browser.close();
+  });
+
+  it('asks the endpoint before the first run, not during it', async () => {
+    // `known()` answers with the preset until the real number arrives, which
+    // keeps it off the run's critical path. The first read used to happen
+    // inside the first run — the run it matters for, since it is usually the
+    // longest and a guess that is too small compacts it early, summarising
+    // away what it had already looked up.
+    mock = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { data: [{ id: 'mock-model', context_length: 8_000 }] },
+    });
+    daemon = new HeapcodeServer({ home, address: join(home, 'warm.sock'), idleShutdownMs: 0 });
+    await daemon.listen();
+    const configPath = join(home, 'config.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        activeProfile: 'mock',
+        profiles: [{ name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model' }],
+      }),
+      'utf8',
+    );
+    web = await startWebHost({
+      root: realpathSync(workspace),
+      config: new ConfigStore(configPath),
+      secrets: new SecretsStore(join(home, 'secrets.json')),
+      nativeToolCalls: false,
+      port: 0,
+      token: 'test-token',
+      connect: (hello): Promise<ServerConnection> =>
+        connectToServer(
+          { client: { name: 'web-host-test' }, ...hello },
+          { address: daemon.address, token: daemon.token, autostart: false },
+        ),
+    });
+
+    const browser = await openBrowser(web);
+    // `hello` is what starts the session; nothing has run yet.
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Already known, without a run having happened to discover it.
+    expect((await browser.peer.request<UiState>(UI_METHODS.state)).contextWindow).toBe(8_000);
+    browser.close();
+  }, 30_000);
+
+  it('prefers what the endpoint says its window is', async () => {
+    // The tier that was missing everywhere but the extension. A preset default
+    // that overstates the real window is the dangerous direction: the meter
+    // never fills, compaction never fires, and the endpoint silently drops the
+    // front of the prompt instead — so the agent forgets what it read and
+    // reads it again.
+    mock = await startMockServer({
+      kind: 'json',
+      status: 200,
+      body: { data: [{ id: 'mock-model', context_length: 8_000 }] },
+    });
+    daemon = new HeapcodeServer({ home, address: join(home, 'win.sock'), idleShutdownMs: 0 });
+    await daemon.listen();
+    const configPath = join(home, 'config.json');
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        activeProfile: 'mock',
+        profiles: [{ name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model' }],
+      }),
+      'utf8',
+    );
+    web = await startWebHost({
+      root: realpathSync(workspace),
+      config: new ConfigStore(configPath),
+      secrets: new SecretsStore(join(home, 'secrets.json')),
+      nativeToolCalls: false,
+      port: 0,
+      token: 'test-token',
+      connect: (hello): Promise<ServerConnection> =>
+        connectToServer(
+          { client: { name: 'web-host-test' }, ...hello },
+          { address: daemon.address, token: daemon.token, autostart: false },
+        ),
+    });
+
+    const browser = await openBrowser(web);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    const ctx = await browser.peer.request<UiContextResult>(UI_METHODS.context);
+
+    expect(ctx.window).toBe(8_000);
+    expect(ctx.windowSource).toBe('model');
     browser.close();
   });
 });
+
+/**
+ * The chat completion the host sent, ignoring the `/models` lookups around it.
+ *
+ * Indexing `requests[0]` used to mean "the chat call" because it was the only
+ * call. It is not any more: the host asks the endpoint what context length a
+ * model really has rather than trusting the preset's guess.
+ */
+function chatRequest(): MockServer['requests'][number] | undefined {
+  return mock?.requests.find((r) => !r.path.includes('/models'));
+}
 
 /** A promise plus its resolve — for waiting on a callback the host makes. */
 function deferred(): { promise: Promise<void>; resolve(): void } {

@@ -118,7 +118,7 @@ describe('core loop driving a browser', () => {
     expect(system).not.toContain('autonomous coding agent');
     expect(system).not.toContain('read_file');
     // Core still owns the termination contract.
-    expect(system).toMatch(/ONLY way to end the session/);
+    expect(system).toMatch(/ONLY way to end the run/);
   });
 
   it('advertises exactly the read-only belt to the model', async () => {

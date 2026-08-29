@@ -44,7 +44,9 @@ export const sharedAgentTools = {
   },
   search: {
     name: 'search',
-    description: 'Search file contents with a regex. Returns file:line matches.',
+    description:
+      'Search file contents with a regex. Returns file:line matches. Cheaper than reading files to ' +
+      'find something: prefer this, semantic_search, or get_symbols over opening files to look.',
     parameters: {
       type: 'object',
       properties: {
@@ -160,7 +162,10 @@ export const sharedAgentTools = {
   },
   fetch_url: {
     name: 'fetch_url',
-    description: 'Fetch a web page or API over HTTP(S) — documentation, READMEs, API responses. HTML is reduced to readable text.',
+    description:
+      'Fetch a web page or API over HTTP(S) — documentation, READMEs, API responses. HTML is reduced ' +
+      'to readable text. One good page beats another five searches: when a search result looks right, ' +
+      'read it rather than searching again.',
     parameters: { type: 'object', properties: { url: { type: 'string', description: 'http(s):// URL' } }, required: ['url'] },
     permission: 'execute',
     // Arbitrary third-party content — same injection posture as MCP (PLAN.md M7).
@@ -171,7 +176,9 @@ export const sharedAgentTools = {
     description:
       'Search the web and get back titles, URLs and snippets. Use for current information, ' +
       'library docs, error messages, and anything outside this repository. Follow up with ' +
-      'fetch_url to read a result in full — snippets alone are rarely enough to answer from.',
+      'fetch_url to read a result in full — snippets alone are rarely enough to answer from. ' +
+      'Two or three searches settle most questions; if yours is not settled by then, rewording it ' +
+      'again will not settle it either — read one of the results properly, or ask the user.',
     parameters: {
       type: 'object',
       properties: {

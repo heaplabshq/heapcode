@@ -695,14 +695,17 @@ export class WebSession {
     // the system prompt. Building the fallback prompt twice — once with the
     // real tools and once with none — separates the two exactly, instead of
     // either double-counting them or hiding them inside "system".
+    // The same number the run will be given, so the breakdown prices the
+    // prompt the model actually gets — the budget section is part of it now.
+    const maxIterations = (await this.deps.config.load()).maxIterations ?? DEFAULT_MAX_ITERATIONS;
     let systemTokens: number;
     let toolTokens: number;
     if (nativeToolCalls) {
-      systemTokens = estimateTokens(buildNativeAgentSystemPrompt(workspaceName));
+      systemTokens = estimateTokens(buildNativeAgentSystemPrompt(workspaceName, { maxIterations }));
       toolTokens = estimateTokens(JSON.stringify(tools));
     } else {
-      const withTools = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, tools));
-      systemTokens = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, []));
+      const withTools = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, tools, { maxIterations }));
+      systemTokens = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, [], { maxIterations }));
       toolTokens = Math.max(0, withTools - systemTokens);
     }
 

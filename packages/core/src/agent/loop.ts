@@ -430,7 +430,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       if (!isToolsUnsupported(message)) return false;
       toolProtocolFellBack = true;
       nativeToolCalls = false;
-      messages[0] = { role: 'system', content: buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish) };
+      messages[0] = {
+        role: 'system',
+        content: buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, { maxIterations }),
+      };
       events.onText(TOOL_PROTOCOL_FALLBACK_NOTICE);
       return true;
     };
@@ -482,8 +485,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     return { response: counted(response), streamed };
   };
   const systemPrompt = nativeToolCalls
-    ? buildNativeAgentSystemPrompt(opts.workspaceName, opts.systemPrompt)
-    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, opts.systemPrompt);
+    ? buildNativeAgentSystemPrompt(opts.workspaceName, { base: opts.systemPrompt, maxIterations })
+    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, {
+        base: opts.systemPrompt,
+        maxIterations,
+      });
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -495,6 +501,38 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   // any successful write flips it on; any successful `verifies` call clears it.
   const hasVerifyTool = tools.some((t) => t.verifies);
   let dirtySinceVerify = false;
+
+  /**
+   * Results of look-up calls already made this run, keyed by call.
+   *
+   * The prompt tells the agent not to repeat itself, and a determined loop
+   * does anyway: one real run made 81 web searches on a single question, six
+   * of them character-for-character identical, and another re-read one file
+   * ten times in overlapping slices. Telling it again in the next turn's
+   * system prompt does not help, because the turn that repeats is the turn
+   * that already had the answer.
+   *
+   * So the second identical call does not go out. It returns the first
+   * answer, labelled — which costs nothing, and puts the information back in
+   * front of a model that may have lost it to compaction, which is usually
+   * why it asked twice.
+   */
+  const lookupCache = new Map<string, { at: number; result: ToolResult }>();
+  /** Calls made so far, so a cached entry can be compared against the last write. */
+  let callsMade = 0;
+  /** When the workspace last changed. A read from before that may legitimately differ now. */
+  let lastMutationAt = -1;
+
+  /**
+   * Whether repeating this call could return something new.
+   *
+   * Only look-ups are cached, and only while nothing has been written since:
+   * re-reading a file you have just edited is not a repeat, it is the point.
+   * `run_command` is never cached however read-only it looks — `pwd` twice is
+   * fine, and the loop has no way to know which commands have effects.
+   */
+  const cacheableLookup = (tool: ToolDefinition): boolean =>
+    tool.permission === 'read' || tool.name === 'web_search' || tool.name === 'fetch_url';
 
   const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
     const tool = toolsByName.get(rawCall.name);
@@ -508,6 +546,26 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     }
     const call: ToolCall = { ...rawCall, args: unwrapMisenvelopedArgs(rawCall.args, tool) };
     events.onToolCall(call);
+
+    const at = callsMade++;
+    const key = cacheableLookup(tool) ? `${call.name}:${JSON.stringify(call.args ?? {})}` : undefined;
+    const cached = key ? lookupCache.get(key) : undefined;
+    if (cached && cached.at > lastMutationAt) {
+      // Said plainly, and with the answer attached: an agent that is going in
+      // circles needs to be told which circle, not merely refused.
+      const repeated: ToolResult = {
+        ...cached.result,
+        id: call.id,
+        content:
+          'You already made this exact call earlier in this run and nothing has changed since. ' +
+          'Here is what it returned — use it rather than calling again, and if it does not answer ' +
+          'your question, a different call or a question to the user will.\n\n' +
+          cached.result.content,
+      };
+      events.onToolResult(repeated);
+      return repeated;
+    }
+
     let result: ToolResult;
     const decision =
       tool.permission === 'read' ? true : await opts.requestPermission(call, tool);
@@ -531,6 +589,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           if (tool.verifies) dirtySinceVerify = false;
           else if (tool.permission === 'write') dirtySinceVerify = true;
         }
+        // Anything that is not a look-up may have changed the workspace —
+        // including a shell command, which is how most non-obvious changes
+        // happen. Every cached read from before now is suspect.
+        if (!cacheableLookup(tool)) lastMutationAt = at;
+        else if (key && !result.isError) lookupCache.set(key, { at, result });
       } catch (err) {
         result = {
           id: call.id,

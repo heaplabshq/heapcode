@@ -106,21 +106,50 @@ const DIFF = [
  * verb records its argv and stdin to a file so a test can assert whether — and
  * with what — the review posted.
  */
-async function installGhStub(binDir: string, postLog: string, opts: { version?: boolean } = {}): Promise<void> {
+async function installGhStub(
+  binDir: string,
+  postLog: string,
+  opts: { version?: boolean; oversized?: boolean } = {},
+): Promise<void> {
+  // `oversized` reproduces what GitHub actually does above 20,000 diff lines:
+  // it refuses the `.diff` media type outright, while the per-file endpoint
+  // keeps answering. That combination is not hypothetical -- it is what a
+  // real PR in this repo did, and it used to end the review with "no changes,
+  // or gh failed".
+  const prDiff = opts.oversized
+    ? `  echo "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000)" >&2
+  exit 1`
+    : `  cat <<'DIFF_EOF'
+${DIFF}
+DIFF_EOF
+  exit 0`;
   const script = `#!/bin/sh
 case "$1 $2" in
   "--version ") ${opts.version === false ? 'exit 1' : 'echo "gh version 2.0.0"; exit 0'} ;;
 esac
 if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  echo '{"number":42,"title":"Add b","url":"https://github.com/o/r/pull/42","headRefOid":"abc123"}'
+  echo '{"number":42,"title":"Add b","url":"https://github.com/o/r/pull/42","headRefOid":"abc123","baseRefName":"main"}'
   exit 0
 fi
 if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
-  cat <<'DIFF_EOF'
-${DIFF}
-DIFF_EOF
-  exit 0
+${prDiff}
 fi
+case "$1 $2" in
+  # Only the file-listing call. Posting a review also goes through \`gh api\`,
+  # and swallowing that here would make every posting assertion pass vacuously.
+  "api "*"/files") ${
+    opts.oversized
+      ? // A heredoc rather than echo: /bin/sh on macOS expands backslash
+        // escapes, which would turn the newline escapes inside a JSON patch
+        // into real newlines and split the line into unparseable fragments.
+        `cat <<'FILES_EOF'
+{"filename":"src/a.ts","status":"modified","patch":"@@ -1,3 +1,4 @@\\n const a = 1;\\n+const b = parseInt(input);\\n const c = 3;"}
+{"filename":"assets/logo.png","status":"added"}
+FILES_EOF
+    exit 0`
+      : `exit 0`
+  } ;;
+esac
 { echo "ARGV: $@"; echo "PWD: $(pwd)"; echo "STDIN:"; cat; } >> "${postLog}"
 exit 0
 `;
@@ -266,7 +295,15 @@ describe('review/run', () => {
 
     expect(result).toEqual({
       status: 'posted',
-      pr: { number: 42, title: 'Add b', url: 'https://github.com/o/r/pull/42', headRefOid: 'abc123' },
+      pr: {
+        number: 42,
+        title: 'Add b',
+        url: 'https://github.com/o/r/pull/42',
+        headRefOid: 'abc123',
+        // Carried so the diff fetcher can fall back to the local checkout for
+        // files the API declines to patch.
+        baseRefName: 'main',
+      },
     });
     expect(c.confirmations).toHaveLength(1);
     expect(c.confirmations[0]!.findingCount).toBe(1);
@@ -390,6 +427,102 @@ describe('review/run', () => {
     expect(endpoint.requests).toHaveLength(2);
     expect(c.events.some((e) => e.kind === 'progress' && e.message.includes('verifying'))).toBe(true);
     expect(c.confirmations[0]!.preview).toContain('One real issue.');
+  });
+});
+
+describe('review/run — when GitHub refuses the diff', () => {
+  /**
+   * GitHub caps the `.diff` media type at 20,000 lines, and a branch that adds
+   * a feature reaches that. `gh pr diff` then fails, and the review used to
+   * stop there and report "no changes, or gh failed" -- which is neither of the
+   * two things that had happened, and sends whoever is debugging it to check
+   * their `gh` install.
+   *
+   * These drive the whole orchestrator over that refusal, because the failure
+   * was not in any one function: every piece worked, and the only thing wrong
+   * was that nothing tried the endpoint that would have answered.
+   */
+
+  it('reviews and posts anyway, from the per-file endpoint', async () => {
+    await installGhStub(binDir, postLog, { oversized: true });
+    endpoint.script.push(REPORT_ONE_FINDING);
+    const c = await client();
+
+    const result = await c.run();
+
+    expect(result.status).toBe('posted');
+    expect(c.confirmations[0]!.findingCount).toBe(1);
+  });
+
+  it('still sends the model the changed code, not an empty diff', async () => {
+    await installGhStub(binDir, postLog, { oversized: true });
+    endpoint.script.push(REPORT_ONE_FINDING);
+    const c = await client();
+
+    await c.run();
+
+    const sent = JSON.stringify(endpoint.requests[0]?.messages ?? []);
+    expect(sent).toContain('src/a.ts');
+    expect(sent).toContain('parseInt(input)');
+  });
+
+  it('names the files it could not get a patch for', async () => {
+    // The binary in the stub's file list. A file nobody reviewed must not read
+    // as a file with nothing wrong in it.
+    await installGhStub(binDir, postLog, { oversized: true });
+    endpoint.script.push(REPORT_ONE_FINDING);
+    const c = await client();
+
+    await c.run();
+
+    expect(
+      c.events.some((e) => e.kind === 'warn' && e.message.includes('assets/logo.png')),
+    ).toBe(true);
+  });
+
+  it('verifies in deep mode over the same fallback', async () => {
+    await installGhStub(binDir, postLog, { oversized: true });
+    endpoint.script.push(REPORT_ONE_FINDING, {
+      toolCalls: [
+        {
+          name: 'report_verdicts',
+          args: { overall_summary: 'One real issue.', verdicts: [{ index: 0, verdict: 'confirmed' }] },
+        },
+      ],
+    });
+    const c = await client();
+
+    const result = await c.run({ deep: true });
+
+    expect(result.status).toBe('posted');
+    expect(endpoint.requests).toHaveLength(2);
+    expect(c.events.some((e) => e.kind === 'progress' && e.message.includes('verifying'))).toBe(true);
+    expect(c.confirmations[0]!.preview).toContain('One real issue.');
+  });
+
+  it('reports what gh said when nothing can produce a diff', async () => {
+    // `pr diff` refuses and the file listing is not stubbed to answer, so both
+    // sources fail -- the case the old message described badly.
+    const script = `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "gh version 2.0.0"; exit 0; fi
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+  echo '{"number":42,"title":"Add b","url":"https://github.com/o/r/pull/42","headRefOid":"abc123","baseRefName":"main"}'
+  exit 0
+fi
+echo "HTTP 403: rate limit exceeded" >&2
+exit 1
+`;
+    const { writeFile: wf, chmod: cm } = await import('node:fs/promises');
+    await wf(join(binDir, 'gh'), script, 'utf8');
+    await cm(join(binDir, 'gh'), 0o755);
+
+    const c = await client();
+    const result = await c.run();
+
+    expect(result.status).toBe('skipped');
+    expect(
+      c.events.some((e) => e.kind === 'warn' && e.message.includes('rate limit exceeded')),
+    ).toBe(true);
   });
 });
 

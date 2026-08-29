@@ -15,6 +15,11 @@ import { runDaemon } from '@heapcode/core';
  */
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-void runDaemon({ wasmDir: join(__dirname, 'wasm') }).then((code: number) => {
+void runDaemon({
+  wasmDir: join(__dirname, 'wasm'),
+  // So a rebuild of this bundle retires the daemon instead of leaving it
+  // serving yesterday's code to every client that connects.
+  entryFile: fileURLToPath(import.meta.url),
+}).then((code: number) => {
   if (code !== 0) process.exit(code);
 });

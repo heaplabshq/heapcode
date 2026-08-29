@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { ToolCall } from '@heapcode/core';
@@ -276,6 +276,47 @@ describe('WorkspaceToolExecutor — semantic_search', () => {
   });
 });
 
+/**
+ * What `read_file` may reach.
+ *
+ * The jail is the whole of what stops a read from returning `~/.ssh/id_rsa`
+ * or this machine's stored API keys, and `read` is the permission class that
+ * is usually auto-allowed — so it stays exactly where it is, with one
+ * exception for the place the agent does its own scratch work.
+ */
+describe('WorkspaceToolExecutor — what read_file can reach', () => {
+  it('reads a file the agent left in the system temp directory', async () => {
+    // The run this comes from unpacked two npm tarballs into /tmp and then had
+    // to read them back. read_file refused, so it used cat piped through head,
+    // tail and sed instead — and read one file ten times in overlapping
+    // windows, because nothing there tracks what it has already seen.
+    const scratch = await mkdtemp(join(tmpdir(), 'wt-read-'));
+    const file = join(scratch, 'types.d.ts');
+    await writeFile(file, 'export declare const x: number;\n');
+
+    const result = await executor.execute(call('read_file', { path: file }));
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain('export declare const x');
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  it('still refuses everywhere else, and says what to use instead', async () => {
+    await expect(
+      executor.execute(call('read_file', { path: join(homedir(), '.ssh', 'id_rsa') })),
+    ).rejects.toThrow(/escapes the workspace.*run_command/s);
+  });
+
+  it('does not let writing out of the workspace ride along', async () => {
+    // Reading the agent's own scratch is one thing; the write tools keep the
+    // jail exactly as it was.
+    const scratch = await mkdtemp(join(tmpdir(), 'wt-write-'));
+    await expect(
+      executor.execute(call('write_file', { path: join(scratch, 'nope.txt'), content: 'x' })),
+    ).rejects.toThrow(/escapes the workspace/);
+    await rm(scratch, { recursive: true, force: true });
+  });
+});
+
 describe('WorkspaceToolExecutor — run_command', () => {
   it('reports exit code and stdout', async () => {
     const result = await executor.execute(call('run_command', { command: 'echo hello' }));
@@ -296,6 +337,45 @@ describe('WorkspaceToolExecutor — run_command', () => {
     await executor.execute(call('run_command', { command: 'cd sub' }));
     const result = await executor.execute(call('run_command', { command: 'ls' }));
     expect(result.content).toContain('marker.txt');
+  });
+
+  /**
+   * Persisting the working directory is only half a feature while nothing
+   * says where it went.
+   *
+   * What it cost: `cd apps/web && npm run build` succeeded, and the very next
+   * call — `cd apps/web && npm run lint` — failed with "No such file or
+   * directory", because the shell was already there. Three steps then went on
+   * `pwd`, `ls` and a retry. Twice in one run and three times in another, on a
+   * run that hit its step limit having written nothing.
+   */
+  it('says where the shell is once it has left the root', async () => {
+    await mkdir(join(root, 'sub'), { recursive: true });
+    const moved = await executor.execute(call('run_command', { command: 'cd sub' }));
+    expect(moved.content).toContain('(working directory: sub)');
+  });
+
+  it('keeps saying so on later commands, not only the one that moved', async () => {
+    // The next call is exactly where the mistake gets made.
+    await mkdir(join(root, 'sub'), { recursive: true });
+    await executor.execute(call('run_command', { command: 'cd sub' }));
+    const after = await executor.execute(call('run_command', { command: 'echo hi' }));
+    expect(after.content).toContain('(working directory: sub)');
+  });
+
+  it('says it on a failure too, which is when it is most needed', async () => {
+    await mkdir(join(root, 'sub'), { recursive: true });
+    await executor.execute(call('run_command', { command: 'cd sub' }));
+    const failed = await executor.execute(call('run_command', { command: 'cd sub' }));
+    expect(failed.isError).toBe(true);
+    expect(failed.content).toContain('(working directory: sub)');
+  });
+
+  it('stays quiet while the shell is still at the root', async () => {
+    // The common case. The tool description already says runs start at the
+    // root; repeating it on every command would be noise.
+    const result = await executor.execute(call('run_command', { command: 'echo hello' }));
+    expect(result.content).not.toContain('working directory');
   });
 
   // Both kill tests assert on ELAPSED TIME, not just the message. Killing only

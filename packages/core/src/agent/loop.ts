@@ -6,7 +6,7 @@ import {
   estimateMessagesTokens,
 } from '../context/tokens.js';
 import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt, resolvePromptTier } from './prompts.js';
-import type { AgentEnvironment, PromptTier } from './promptSections.js';
+import type { AgentEnvironment, PromptTierSetting } from './promptSections.js';
 import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol.js';
 import { TODO_TOOL, parseTodos, renderTodos, type TodoItem } from './todo.js';
 import {
@@ -153,12 +153,12 @@ export interface AgentOptions {
    */
   environment?: AgentEnvironment;
   /**
-   * The prompt tier for this run, from the profile's `promptProfile` override.
-   * Omitted, the tier is derived from capability — see resolvePromptTier —
-   * so a run against a small-context or text-protocol model gets the lean
-   * section set without anyone configuring anything.
+   * How much of the prompt this run gets, from the profile's `promptTier`.
+   * Omitted, the run gets the full section set; 'auto' asks for the tier to
+   * be derived from the model's context window and protocol. See
+   * resolvePromptTier.
    */
-  promptTier?: PromptTier;
+  promptTier?: PromptTierSetting;
   /**
    * What this agent's work is made of, for the summary written when a run
    * outgrows the context window.

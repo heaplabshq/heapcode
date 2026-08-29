@@ -18,6 +18,17 @@
 export type PromptTier = 'full' | 'lean';
 
 /**
+ * What a profile may store, which is the two tiers plus 'auto'.
+ *
+ * Distinct from `PromptTier` because the composer only ever sees a real tier:
+ * 'auto' is a question ("decide from the model") that `resolvePromptTier`
+ * answers before any section is composed. Keeping them one type is how a
+ * literal 'auto' ends up compared against section tiers and silently matching
+ * nothing.
+ */
+export type PromptTierSetting = PromptTier | 'auto';
+
+/**
  * What an agent is told about the machine and repo it runs in.
  *
  * Lives here rather than in environment.ts (the gatherer) because

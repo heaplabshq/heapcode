@@ -57,16 +57,24 @@ describe('prompt tiers', () => {
     }
   });
 
-  it('selects lean below the context-window threshold, full above it', () => {
-    expect(resolvePromptTier({ contextWindow: LEAN_TIER_CONTEXT_WINDOW - 1, nativeToolCalls: true })).toBe('lean');
-    expect(resolvePromptTier({ contextWindow: LEAN_TIER_CONTEXT_WINDOW, nativeToolCalls: true })).toBe('full');
+  it('gives the full prompt when the profile says nothing', () => {
+    // The default is full, not derived. Quietly shortening the prompt makes
+    // the agent behave differently with nothing saying so, and the difference
+    // surfaces as a model ignoring an instruction it was never given — which
+    // is indistinguishable, from outside, from the model being bad at its job.
+    expect(resolvePromptTier({ contextWindow: 8_192, nativeToolCalls: false })).toBe('full');
+    expect(resolvePromptTier({ nativeToolCalls: false })).toBe('full');
   });
 
-  it('selects lean for the text protocol, which small models usually need', () => {
-    expect(resolvePromptTier({ nativeToolCalls: false })).toBe('lean');
+  it("derives from the model only when asked to, with 'auto'", () => {
+    expect(resolvePromptTier({ promptTier: 'auto', contextWindow: LEAN_TIER_CONTEXT_WINDOW - 1, nativeToolCalls: true })).toBe('lean');
+    expect(resolvePromptTier({ promptTier: 'auto', contextWindow: LEAN_TIER_CONTEXT_WINDOW, nativeToolCalls: true })).toBe('full');
+    // The text protocol usually means a model that could not manage the
+    // native one — small, local, or both.
+    expect(resolvePromptTier({ promptTier: 'auto', nativeToolCalls: false })).toBe('lean');
   });
 
-  it('lets an explicit profile override win over both conditions', () => {
+  it('lets an explicit tier win over everything', () => {
     // A user pointing a big prompt at a small model, or a small one at a big
     // model, knows something the heuristic doesn't.
     expect(resolvePromptTier({ promptTier: 'full', contextWindow: 8192, nativeToolCalls: false })).toBe('full');

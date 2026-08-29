@@ -132,7 +132,7 @@ export async function runSubAgent(call: ToolCall, ctx: SubAgentContext): Promise
     tools: subTools,
     nativeToolCalls: ctx.nativeToolCalls,
     environment: ctx.environment,
-    promptTier: ctx.profile.promptProfile,
+    promptTier: ctx.profile.promptTier,
     execute: subExecute,
     requestPermission: (subCall, tool) => ctx.requestPermission(subCall, tool),
     beforeToolCall: async (subCall) => {

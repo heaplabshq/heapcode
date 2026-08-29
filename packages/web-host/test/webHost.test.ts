@@ -1620,11 +1620,11 @@ describe('web host — prompt detail', () => {
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
 
     await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', promptProfile: 'lean' },
+      profile: { name: 'mock', promptTier: 'lean' },
     });
 
     const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
-    expect(settings.profiles.find((p) => p.name === 'mock')?.promptProfile).toBe('lean');
+    expect(settings.profiles.find((p) => p.name === 'mock')?.promptTier).toBe('lean');
     browser.close();
   });
 
@@ -1636,13 +1636,13 @@ describe('web host — prompt detail', () => {
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
 
-    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptProfile: 'lean' } });
-    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptProfile: null } });
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptTier: 'lean' } });
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptTier: null } });
 
     const stored = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
       profiles: Array<Record<string, unknown>>;
     };
-    expect('promptProfile' in stored.profiles.find((p) => p.name === 'mock')!).toBe(false);
+    expect('promptTier' in stored.profiles.find((p) => p.name === 'mock')!).toBe(false);
     browser.close();
   });
 
@@ -1652,12 +1652,12 @@ describe('web host — prompt detail', () => {
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
 
     await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', agentModel: 'big' } });
-    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptProfile: 'full' } });
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptTier: 'full' } });
 
     const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
     expect(settings.profiles.find((p) => p.name === 'mock')).toMatchObject({
       agentModel: 'big',
-      promptProfile: 'full',
+      promptTier: 'full',
     });
     browser.close();
   });

@@ -174,7 +174,7 @@ export async function runAgentForSession(
     nativeToolCalls: params.nativeToolCalls,
     contextWindow: params.contextWindow,
     environment,
-    promptTier: resolved.profile.promptProfile,
+    promptTier: resolved.profile.promptTier,
     plan: params.plan,
     planOnly: params.planOnly,
     resumePlan: params.resumePlan,

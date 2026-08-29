@@ -6,6 +6,7 @@ import {
   composeAgentPrompt,
   type AgentEnvironment,
   type PromptTier,
+  type PromptTierSetting,
 } from './promptSections.js';
 
 /**
@@ -29,10 +30,10 @@ import {
  */
 export const LEAN_TIER_CONTEXT_WINDOW = 65_536;
 
-/** What an explicit per-profile override says, when it says anything. */
+/** What a profile says about the tier, plus what the capability check would need. */
 export interface TierSelection {
-  /** Set by the profile — wins over everything. */
-  promptTier?: PromptTier;
+  /** From the profile. Unset means 'full' — see resolvePromptTier. */
+  promptTier?: PromptTierSetting;
   /** Model context window in tokens, when known. */
   contextWindow?: number;
   /** Whether the run starts on native tool calling (false = text protocol). */
@@ -42,14 +43,21 @@ export interface TierSelection {
 /**
  * Which prompt tier a run gets.
  *
- * A small context window means the full prompt is a tax on the working room
- * the model has left, and a run on the text protocol is usually a model that
- * cannot manage the native one — small, local, or both. Either condition
- * selects lean; an explicit `promptTier` from the profile overrides both,
- * because the user is the one who knows which model they pointed at.
+ * Unset means 'full', deliberately. Deriving it from the model was the first
+ * design, and it is the wrong default for the same reason quietly shortening
+ * anything is: the agent behaves differently and nothing says so, and the
+ * difference shows up as the model ignoring an instruction it was never given.
+ * A person who has just spent an afternoon on the prompt should get the prompt.
+ *
+ * 'auto' keeps that derivation as something a user chooses rather than
+ * something that happens to them. It reads the two signals that suggest a
+ * model cannot spend the tokens: a context window small enough that the full
+ * prompt is a tax on the room left to work in, and a run on the text protocol,
+ * which usually means a model that could not manage the native one.
  */
 export function resolvePromptTier(selection: TierSelection): PromptTier {
-  if (selection.promptTier) return selection.promptTier;
+  if (selection.promptTier === 'full' || selection.promptTier === 'lean') return selection.promptTier;
+  if (selection.promptTier !== 'auto') return 'full';
   if (selection.contextWindow !== undefined && selection.contextWindow < LEAN_TIER_CONTEXT_WINDOW) return 'lean';
   if (!selection.nativeToolCalls) return 'lean';
   return 'full';

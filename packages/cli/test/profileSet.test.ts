@@ -102,28 +102,32 @@ describe('the settable field list', () => {
  * it can, and must: silently ignoring "leen" would leave the user believing
  * they had changed how the agent is prompted.
  */
-describe('profile set promptProfile', () => {
+describe('profile set promptTier', () => {
   it('stores a valid tier', async () => {
-    await profileSet('local', 'promptProfile', 'lean');
-    expect(await stored()).toMatchObject({ promptProfile: 'lean' });
+    await profileSet('local', 'promptTier', 'lean');
+    expect(await stored()).toMatchObject({ promptTier: 'lean' });
+  });
+
+  it('stores auto, which is the derivation as an opt-in', async () => {
+    await profileSet('local', 'promptTier', 'auto');
+    expect(await stored()).toMatchObject({ promptTier: 'auto' });
   });
 
   it('refuses an invalid one, and says what is allowed', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await profileSet('local', 'promptProfile', 'leen');
-    expect(err).toHaveBeenCalledWith(expect.stringContaining('full, lean'));
-    expect(await stored()).not.toHaveProperty('promptProfile');
+    await profileSet('local', 'promptTier', 'leen');
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('full, lean, auto'));
+    expect(await stored()).not.toHaveProperty('promptTier');
   });
 
-  it('clears back to automatic when the value is omitted', async () => {
-    // Absence is what makes the capability-based choice apply again; there is
-    // no third "auto" value to store.
-    await profileSet('local', 'promptProfile', 'lean');
-    await profileSet('local', 'promptProfile');
-    expect(await stored()).not.toHaveProperty('promptProfile');
+  it('clears back to the default when the value is omitted', async () => {
+    // Nothing stored means full, so there is no written-out 'full' to keep.
+    await profileSet('local', 'promptTier', 'lean');
+    await profileSet('local', 'promptTier');
+    expect(await stored()).not.toHaveProperty('promptTier');
   });
 
   it('is on the settable list, so the usage line advertises it', () => {
-    expect(PROFILE_FIELDS).toContain('promptProfile');
+    expect(PROFILE_FIELDS).toContain('promptTier');
   });
 });

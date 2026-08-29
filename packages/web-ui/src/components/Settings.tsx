@@ -473,7 +473,7 @@ function ProfileRow({
     baseUrl: profile.baseUrl,
     model: profile.model,
     contextWindow: profile.contextWindow ?? null,
-    promptDetail: profile.promptProfile ?? '',
+    promptDetail: profile.promptTier ?? '',
     maxTokens: profile.maxTokens ?? null,
     temperature: profile.temperature ?? null,
     roles: rolesOf(profile),
@@ -592,15 +592,15 @@ function ProfileRow({
               aria-label="Prompt detail"
               onChange={(e) => setDraft({ ...draft, promptDetail: e.target.value })}
             >
-              <option value="">Automatic</option>
-              <option value="full">Full — every section</option>
+              <option value="">Full — every section (default)</option>
               <option value="lean">Lean — the essential rules only</option>
+              <option value="auto">Automatic — decide from the model</option>
             </select>
           </Field>
           <p className="hint">
-            How much of the agent&rsquo;s instructions this model receives. Automatic decides from the model&rsquo;s
-            context window and whether it calls tools natively, which is right for almost every profile. Choose Lean
-            for a model that has the room but follows short instructions better.
+            How much of the agent&rsquo;s instructions this model receives. Full is the default and the right choice
+            for almost every profile. Lean is for a model that follows short instructions better. Automatic picks
+            between them from the model&rsquo;s context window and whether it calls tools natively.
           </p>
 
           <ModelRoles
@@ -1146,9 +1146,9 @@ function toSaveParams(draft: UiProfileDraft): UiSaveProfileParams['profile'] {
   return {
     ...rest,
     ...(roles ?? {}),
-    // '' is the editor's "Automatic", and the host stores that as the absence
-    // of the field rather than as a third value — `null` is how the patch
-    // says "clear it", the same as the numeric overrides.
-    promptProfile: promptDetail === 'full' || promptDetail === 'lean' ? promptDetail : null,
+    // '' is the editor's default, which the host stores as the absence of the
+    // field rather than as a written-out 'full' — `null` is how a patch says
+    // "clear it", the same as the numeric overrides.
+    promptTier: promptDetail === 'lean' || promptDetail === 'auto' ? promptDetail : null,
   };
 }

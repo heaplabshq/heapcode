@@ -78,7 +78,7 @@ export const PROFILE_FIELDS = [
   'embeddingsProfile',
   'rerankProfile',
   'contextProfile',
-  'promptProfile',
+  'promptTier',
 ] as const satisfies ReadonlyArray<keyof ProviderProfileConfig>;
 
 /**
@@ -86,11 +86,11 @@ export const PROFILE_FIELDS = [
  *
  * Every other field here is a model id or a profile name, which this command
  * cannot check — a typo surfaces at the provider. These it can, and should:
- * `promptProfile` silently ignoring "leen" would leave the user believing
+ * `promptTier` silently ignoring "leen" would leave the user believing
  * they had changed how the agent is prompted.
  */
 const ENUM_FIELDS: Partial<Record<ProfileField, readonly string[]>> = {
-  promptProfile: ['full', 'lean'],
+  promptTier: ['full', 'lean', 'auto'],
 };
 
 export type ProfileField = (typeof PROFILE_FIELDS)[number];

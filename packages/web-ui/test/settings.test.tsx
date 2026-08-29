@@ -483,9 +483,18 @@ describe('prompt detail', () => {
     fireEvent.click(screen.getAllByText('Edit')[0]!);
   }
 
-  it('defaults to Automatic when the profile sets nothing', () => {
+  it('defaults to Full when the profile sets nothing', () => {
+    // Full is the default, and the empty value is how "nothing stored" is
+    // spelled — there is no written-out 'full' in anyone's config.
     openProfile();
     expect(screen.getByLabelText<HTMLSelectElement>('Prompt detail').value).toBe('');
+    expect(screen.getByText(/Full — every section \(default\)/)).toBeTruthy();
+  });
+
+  it('offers Automatic as a choice rather than as the default', () => {
+    openProfile();
+    const options = [...screen.getByLabelText<HTMLSelectElement>('Prompt detail').options].map((o) => o.value);
+    expect(options).toEqual(['', 'lean', 'auto']);
   });
 
   it('sends the chosen tier', () => {
@@ -493,21 +502,22 @@ describe('prompt detail', () => {
     openProfile({ onSaveProfile });
     fireEvent.change(screen.getByLabelText('Prompt detail'), { target: { value: 'lean' } });
     fireEvent.click(screen.getByText('Save changes'));
-    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ promptProfile: 'lean' });
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ promptTier: 'lean' });
   });
 
-  it('sends null for Automatic, which is how the host clears it', () => {
-    // Not the string "automatic": the absence of a value is what makes the
-    // capability-based choice apply, and a third stored value would defeat it.
+  it('sends null when set back to Full, which is how the host clears it', () => {
+    // Nothing stored means full, so choosing Full is choosing to store
+    // nothing — writing it out would put a value in every config that the
+    // absence of a value already means.
     const onSaveProfile = vi.fn();
     const withTier: UiSettings = {
       ...SETTINGS,
-      profiles: [{ ...SETTINGS.profiles[0]!, promptProfile: 'lean' }],
+      profiles: [{ ...SETTINGS.profiles[0]!, promptTier: 'lean' }],
     };
     openProfile({ settings: withTier, onSaveProfile });
     expect(screen.getByLabelText<HTMLSelectElement>('Prompt detail').value).toBe('lean');
     fireEvent.change(screen.getByLabelText('Prompt detail'), { target: { value: '' } });
     fireEvent.click(screen.getByText('Save changes'));
-    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ promptProfile: null });
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ promptTier: null });
   });
 });

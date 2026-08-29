@@ -147,7 +147,9 @@ export const agentToolDefinitions: ToolDefinition[] = [
   T.run_tests,
   T.check_package_exists,
   getSymbolsTool(
-    'Outline of a file: functions, classes, methods with their line numbers (tree-sitter based). Much cheaper than reading the whole file.',
+    'Outline of a file: functions, classes, methods with their line numbers (tree-sitter based). Much cheaper ' +
+      'than reading the whole file. Use it to pick where to read before reading, and to see what a file holds ' +
+      'when you need one thing from it — a symbol name plus its line range turns into a ranged read_file.',
   ),
   T.fetch_url,
   // Always offered, executed only when configured — the same posture as

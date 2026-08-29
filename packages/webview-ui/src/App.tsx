@@ -6,6 +6,7 @@ import type {
   FileEditInfo,
   PermissionChoice,
   SlashCommandInfo,
+  TodoItem,
 } from '@heapcode/core';
 import { filterModels } from '@heapcode/core/modelFilter';
 import {
@@ -201,10 +202,26 @@ interface UiMessage {
   collapsed?: boolean;
   /** Small centered system note (e.g. "context compacted"). */
   note?: boolean;
+  /** The agent's task list — one card per run, updated in place. */
+  todos?: TodoItem[];
 }
 
 function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/**
+ * Index of the current turn's task-list card, if this run has one yet — it
+ * updates in place. The scan stops at the last user message, so a new run
+ * gets its own card rather than rewriting the previous run's.
+ */
+function todosIndexOf(messages: UiMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'user') break;
+    if (m.todos) return i;
+  }
+  return -1;
 }
 
 const WINDOW_SOURCE_LABEL: Record<string, string> = {
@@ -604,6 +621,9 @@ export function App() {
                   agentStatus: { state: m.status.state, changedFiles: [] },
                 };
               }
+              if (m.todos) {
+                return { role: m.role, content: m.content, todos: m.todos };
+              }
               return { role: m.role, content: m.content, plan: m.plan, images: m.images };
             }),
           );
@@ -742,6 +762,20 @@ export function App() {
           break;
         case 'agentPlan':
           setMessages((prev) => [...prev, { role: 'assistant', content: msg.text, plan: true }]);
+          break;
+        case 'agentTodos':
+          // One card, updated in place: the list answers "what is left", and
+          // a stack of stale copies would answer it five times, all wrong but
+          // the last.
+          setMessages((prev) => {
+            const i = todosIndexOf(prev);
+            if (i >= 0) {
+              const next = [...prev];
+              next[i] = { ...next[i]!, todos: msg.todos };
+              return next;
+            }
+            return [...prev, { role: 'assistant', content: '', todos: msg.todos }];
+          });
           break;
         case 'agentToolCall':
           setToolStreamChars(0);
@@ -1215,6 +1249,31 @@ export function App() {
                     </span>
                   </button>
                   {!m.collapsed && <div className="reasoning-body">{m.content}</div>}
+                </div>
+              );
+            }
+            if (m.todos) {
+              const done = m.todos.filter((t) => t.status === 'completed').length;
+              return (
+                <div key={i} className="todos-card">
+                  <div className="todos-head">
+                    <span className="plan-badge">Tasks</span>
+                    {m.todos.length > 0 && (
+                      <span className="plan-steps">
+                        {done}/{m.todos.length} done
+                      </span>
+                    )}
+                  </div>
+                  <ul className="todos-list">
+                    {m.todos.map((t, j) => (
+                      <li key={j} className={`todo todo-${t.status}`}>
+                        <span className="todo-mark" aria-hidden>
+                          {t.status === 'completed' ? '✔' : t.status === 'in_progress' ? '▸' : '·'}
+                        </span>
+                        {t.content}
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               );
             }

@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@heapcode/core';
+import type { ChatMessage, TodoItem } from '@heapcode/core';
 
 export type TranscriptItem =
   | { kind: 'header'; version?: string; profileName: string; model: string; baseUrl?: string; cwd?: string; messageCount?: number; canResume?: boolean }
@@ -16,6 +16,11 @@ export type TranscriptItem =
       indent?: boolean;
     }
   | { kind: 'plan'; text: string }
+  /**
+   * The agent's live task list, updated in place by each todo_write: one card
+   * per run, showing the current state rather than a history of every write.
+   */
+  | { kind: 'todo'; todos: TodoItem[] }
   /**
    * Markdown emitted by a command rather than by the model — rendered like an
    * assistant message but deliberately NOT a 'message', so it never becomes

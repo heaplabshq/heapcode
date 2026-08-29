@@ -188,6 +188,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         this.scheduleSave();
         break;
+      case 'agentTodos': {
+        // One entry per run, updated in place — the list answers "what is
+        // left", and a stack of stale copies would answer it five times, all
+        // wrong but the last. Scoped to the current turn: the scan stops at
+        // the last user message, so a new run gets its own entry rather than
+        // rewriting the previous run's.
+        let index = -1;
+        for (let i = this.conversation.messages.length - 1; i >= 0; i--) {
+          const message = this.conversation.messages[i]!;
+          if (message.role === 'user') break;
+          if (message.ui?.todos !== undefined) {
+            index = i;
+            break;
+          }
+        }
+        if (index >= 0) this.conversation.messages[index]!.ui!.todos = msg.todos;
+        else
+          this.conversation.messages.push({
+            role: 'assistant',
+            content: '',
+            ui: { todos: msg.todos },
+          });
+        this.scheduleSave();
+        break;
+      }
       case 'agentToolCall':
         this.conversation.messages.push({
           role: 'assistant',
@@ -1047,6 +1072,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       plan: m.ui?.plan,
       tool: m.ui?.tool,
       status: m.ui?.status,
+      todos: m.ui?.todos,
     }));
   }
 

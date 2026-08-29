@@ -56,6 +56,15 @@ export interface ProviderProfileConfig {
   temperature?: number;
   maxTokens?: number;
   /**
+   * Which section tier the agent prompt is composed from: 'full' (every
+   * section — the default) or 'lean' (the incident rules only, for small
+   * context windows). Unset, the tier is derived from the model's context
+   * window and protocol — see resolvePromptTier — which is right for almost
+   * every profile; this is the override for the exceptions, e.g. a big-window
+   * model that nonetheless follows short instructions better.
+   */
+  promptProfile?: 'full' | 'lean';
+  /**
    * Model context window in tokens (prompt + output). Drives the context
    * usage meter and automatic conversation compaction. Default 32768.
    */

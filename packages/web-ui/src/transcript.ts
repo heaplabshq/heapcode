@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@heapcode/core';
+import type { AgentEvent, TodoItem } from '@heapcode/core';
 import type { UiMessage } from '@heapcode/web-host/protocol';
 
 /**
@@ -69,7 +69,13 @@ export interface NoticeItem {
   warn?: boolean;
 }
 
-export type Item = TextItem | ToolItem | ReasoningItem | PlanItem | NoticeItem;
+export interface TaskListItem {
+  kind: 'tasks';
+  id: string;
+  todos: TodoItem[];
+}
+
+export type Item = TextItem | ToolItem | ReasoningItem | PlanItem | NoticeItem | TaskListItem;
 
 export interface Transcript {
   items: Item[];
@@ -126,6 +132,7 @@ export function fromMessages(messages: UiMessage[], prefix = 'h'): Transcript {
         };
       }
       if (m.ui?.plan) return { kind: 'plan', id: `${prefix}p${i}`, text: m.content };
+      if (m.ui?.todos) return { kind: 'tasks', id: `${prefix}d${i}`, todos: m.ui.todos };
       if (m.ui?.reasoning)
         return { kind: 'reasoning', id: `${prefix}r${i}`, text: m.content, streaming: m.ui.streaming };
       return { kind: 'text', id: `${prefix}${i}`, role: m.role, text: m.content, streaming: m.ui?.streaming };
@@ -228,6 +235,32 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
     case 'plan': {
       const base = closeOpenText(t);
       return { ...base, items: [...base.items, { kind: 'plan', id: `p${seq}`, text: event.text }] };
+    }
+
+    case 'todo_update': {
+      // One card per run, updated in place: the list answers "what is left",
+      // and a stack of stale copies would answer it five times, all wrong but
+      // the last. Scoped to the current turn — the scan stops at the last
+      // user message — so a new run gets its own card instead of rewriting
+      // the previous run's, which is what a reload shows (fromMessages builds
+      // one item per stored turn).
+      const base = closeOpenText(t);
+      let existing = -1;
+      for (let i = base.items.length - 1; i >= 0; i--) {
+        const item = base.items[i]!;
+        if (item.kind === 'text' && item.role === 'user') break;
+        if (item.kind === 'tasks') {
+          existing = i;
+          break;
+        }
+      }
+      if (existing >= 0) {
+        const items = [...base.items];
+        const current = items[existing] as TaskListItem;
+        items[existing] = { ...current, todos: event.todos };
+        return { ...base, items };
+      }
+      return { ...base, items: [...base.items, { kind: 'tasks', id: `d${seq}`, todos: event.todos }] };
     }
 
     case 'reasoning_delta': {

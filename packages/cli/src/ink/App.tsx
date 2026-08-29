@@ -69,6 +69,7 @@ import {
   type ToolDefinition,
   type ToolExecuteParams,
   type ToolResult,
+  buildAgentTask,
 } from '@heapcode/core';
 import {
   DELEGATE_TASK_TOOL,
@@ -1697,8 +1698,13 @@ export function App({
     const mentionNote = /(^|\s)@[^\s@]+/.test(display)
       ? 'Paths prefixed with @ in the task are file/folder references in this workspace — read them for context.'
       : '';
-    const preamble = [effectivePersona.taskAddendum, instructions, workspaceContext, mentionNote].filter(Boolean).join('\n\n---\n\n');
-    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+    const fullTask = buildAgentTask({
+      personaAddendum: effectivePersona.taskAddendum,
+      instructions,
+      workspaceContext,
+      mentionNote,
+      task,
+    });
 
     // Reconnect (idempotent) at the start of every task rather than once at
     // launch — config edits and dropped servers take effect on the next
@@ -1748,6 +1754,31 @@ export function App({
             case 'plan':
               pushItem({ kind: 'plan', text: event.text });
               return;
+            case 'todo_update': {
+              // One card per run, replaced in place — a list that scrolled a
+              // new copy in on every write would be a history of bookkeeping,
+              // not the answer to "what is left". Scoped to the current turn:
+              // the scan stops at the last user message, so a new run gets
+              // its own card rather than rewriting the previous run's.
+              let at = -1;
+              for (let i = itemsRef.current.length - 1; i >= 0; i--) {
+                const it = itemsRef.current[i]!;
+                if (it.kind === 'message' && it.message.role === 'user') break;
+                if (it.kind === 'todo') {
+                  at = i;
+                  break;
+                }
+              }
+              if (at >= 0) {
+                const next = [...itemsRef.current];
+                next[at] = { kind: 'todo', todos: event.todos };
+                itemsRef.current = next;
+              } else {
+                itemsRef.current = [...itemsRef.current, { kind: 'todo', todos: event.todos }];
+              }
+              setItems(itemsRef.current);
+              return;
+            }
             case 'tool_call': {
               const description =
                 event.name === 'ask_user'
@@ -1922,6 +1953,20 @@ export function App({
                     Plan
                   </Text>
                   <Text>{item.text}</Text>
+                </Box>
+              );
+            case 'todo':
+              return (
+                <Box key={i} flexDirection="column" marginBottom={1} borderStyle="round" borderColor="magenta" paddingX={1}>
+                  <Text color="magenta" bold>
+                    Tasks
+                  </Text>
+                  {item.todos.map((todo, j) => (
+                    <Text key={j} color={todo.status === 'completed' ? 'green' : todo.status === 'in_progress' ? 'yellow' : 'gray'}>
+                      {todo.status === 'completed' ? '✔' : todo.status === 'in_progress' ? '▸' : '·'} {todo.content}
+                      {todo.status === 'in_progress' ? ' (in progress)' : ''}
+                    </Text>
+                  ))}
                 </Box>
               );
             case 'markdown':

@@ -66,6 +66,51 @@ describe('agent system prompts', () => {
     // after finishing the one it was given.
     expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/That is history, not a\s+to-do list/);
   });
+
+  it('holds the model to the requested scope', () => {
+    // Claude Code, Copilot, and Cursor all carry a scope-discipline section;
+    // heapcode runs that finish the easy third and call it done were the
+    // local version of the failure it prevents.
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/requested scope is the deliverable/);
+    expect(prompt).toMatch(/finish the whole task/);
+  });
+
+  it('tells the model routine in-scope choices are its own', () => {
+    // A run that stopped to ask which of two equivalent imports to use was
+    // spending the user's attention on a decision it was better placed to make.
+    expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/Choices inside the scope are yours to make/);
+  });
+
+  it('makes corrections plain rather than apologetic', () => {
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/no apology/);
+    expect(prompt).toMatch(/A follow-up\s+question is not evidence you were wrong/);
+  });
+
+  it('extends the fabrication rule to relayed results', () => {
+    // A sub-agent's "done, tests pass" repeated as fact was the same
+    // fabrication with one more step of indirection.
+    expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/applies to relayed results/);
+  });
+
+  it('says compaction preserves work, so runs need not wrap up early', () => {
+    // A run that hurried to finish "before the context ran out" produced
+    // half-done work that the compaction it feared would have saved.
+    expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/not lost, so there is no need to wrap up early/);
+  });
+
+  it('asks for file:line references instead of quoted code', () => {
+    expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/by file and line/);
+  });
+
+  it('asks for plain reporting of failures', () => {
+    expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/if tests fail, say so and show the failure/);
+  });
+
+  it('prefers purpose-built tools over shell equivalents', () => {
+    expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/read_file instead\s+of cat/);
+  });
 });
 
 /**

@@ -5,9 +5,9 @@ import type { ToolDefinition } from './tools.js';
  *
  * A record rather than an array on purpose: the two hosts present these in
  * the same relative order but interleave their own extras (the extension's
- * language-server tools, its delegate_task), and the order tools are offered
- * in is part of the prompt. Each host composes its own ordered list from
- * these, so neither's ordering changes as a side effect of sharing them.
+ * language-server tools), and the order tools are offered in is part of the
+ * prompt. Each host composes its own ordered list from these, so neither's
+ * ordering changes as a side effect of sharing them.
  *
  * get_symbols is not here — its description names the mechanism behind it,
  * which genuinely differs (tree-sitter in the CLI, the language server in the
@@ -20,7 +20,10 @@ export const sharedAgentTools = {
       'Read a file (or a line range of it). Returns content with line numbers. ' +
       'For files over ~300 lines, calling this with no range first returns a symbol outline ' +
       'instead of the full text — call again with start_line/end_line for the section you need, ' +
-      'or repeat the unranged call to force the full contents.',
+      'or repeat the unranged call to force the full contents. ' +
+      'Read only the part you need: when you know roughly where something is, a range beats the ' +
+      'whole file. And do not re-read a file you have just edited to verify the change — edit_file ' +
+      'already showed you the changed region, so a re-read spends a turn confirming what you know.',
     parameters: {
       type: 'object',
       properties: {
@@ -65,7 +68,10 @@ export const sharedAgentTools = {
     description:
       'Create a NEW file, or replace an existing one end to end. Overwrites without warning, so to ' +
       'change part of a file that already exists use edit_file or multi_edit — write_file on a file ' +
-      'you have not read in full is how unrelated work gets deleted.',
+      'you have not read in full is how unrelated work gets deleted. ' +
+      'Before creating a new file, check that one does not already exist for the job (repo_map or ' +
+      'search): extending an existing file is nearly always the smaller change, and a second file ' +
+      'doing the same thing is a fork future readers have to reconcile.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -311,3 +317,43 @@ export function getSymbolsTool(description: string): ToolDefinition {
     permission: 'read',
   };
 }
+
+/**
+ * Delegate a sub-task to a fresh sub-agent. In core (not the sharedAgentTools
+ * record) because no host bakes it into its standing list: execution needs
+ * cross-cutting context the executors have no business knowing, so hosts
+ * always *offer* it and the server does the recursing — while sub-agents are
+ * disabled, calling it returns an informative "disabled" error instead of
+ * running, which is what keeps the model honest about a capability it cannot
+ * currently use.
+ *
+ * One wording for every host: the two copies this replaced had drifted into
+ * saying different things about the same tool, and the model's choice to
+ * delegate should not depend on which host it is running in.
+ */
+export const DELEGATE_TASK_TOOL: ToolDefinition = {
+  name: 'delegate_task',
+  description:
+    'Delegate a self-contained sub-task to a fresh sub-agent with its own context window (no memory of this ' +
+    'conversation). Use it for a chunk of work whose intermediate exploration would just clutter your own context ' +
+    '— e.g. "investigate and summarize how X works" or "write tests for Y". The sub-agent shares this workspace ' +
+    'and its edits use the same checkpoints as your own, but cannot delegate further — one level of nesting only. ' +
+    'Runs to completion before returning; there is no parallelism. Use it sparingly: genuinely separable work, ' +
+    'not routine steps you could just do directly.',
+  parameters: {
+    type: 'object',
+    properties: {
+      task: {
+        type: 'string',
+        description: 'A self-contained description of the sub-task — the sub-agent has no context beyond this.',
+      },
+      persona: {
+        type: 'string',
+        description: 'Optional: agent, architect, debug, or reviewer. Can never be more permissive than your own persona.',
+      },
+      profile: { type: 'string', description: 'Optional: run the sub-agent on a different configured provider profile.' },
+    },
+    required: ['task'],
+  },
+  permission: 'execute',
+};

@@ -23,9 +23,10 @@ export default tseslint.config(
     // `/providers`, `/context` — must stay free of Node builtins, so an MV3 extension or a
     // web worker can bundle the agent loop without `node:child_process` coming with it.
     //
-    // The three exempted files are the Node-coupled agent modules, reachable only through the
+    // The exempted files are the Node-coupled agent modules, reachable only through the
     // package barrel: `workspaceTools` shells out, `webSearch` reaches child_process through
-    // it, and `mcp`'s stdio transport does the same via the SDK.
+    // it, `mcp`'s stdio transport does the same via the SDK, and `environment` runs `git` to
+    // gather the prompt's environment block.
     //
     // This rule catches the direct case and gives fast feedback. It cannot catch coupling that
     // arrives through a relative import — `webSearch` -> `workspaceTools` -> `node:child_process`
@@ -37,6 +38,7 @@ export default tseslint.config(
       'packages/core/src/agent/workspaceTools.ts',
       'packages/core/src/agent/webSearch.ts',
       'packages/core/src/agent/mcp.ts',
+      'packages/core/src/agent/environment.ts',
     ],
     rules: {
       'no-restricted-imports': [

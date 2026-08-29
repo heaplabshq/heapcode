@@ -16,6 +16,7 @@
   --accent-text: #ffffff;
   --danger: #c8342b;
   --warn: #9a6700;
+  --ok: #1a7f37;
   --code-bg: #f6f8fa;
   --chip-bg: #f2f4f7;
   --radius: 8px;
@@ -40,6 +41,7 @@
     --accent-text: #06121f;
     --danger: #f85149;
     --warn: #d29922;
+    --ok: #3fb950;
     --code-bg: #0d1117;
     --chip-bg: #161b22;
   }
@@ -368,6 +370,19 @@ body {
   background: var(--bg-raised);
 }
 .plan-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+
+.tasks {
+  border: 1px solid var(--border); border-left: 3px solid var(--border);
+  border-radius: var(--radius); padding: 8px 12px; margin-bottom: 12px;
+  background: var(--bg-raised);
+}
+.tasks-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.task { display: flex; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--text-dim); }
+.task-mark { width: 1em; flex: none; text-align: center; }
+.task-completed .task-mark { color: var(--ok); }
+.task-in_progress { color: var(--text); }
+.task-in_progress .task-mark { color: var(--accent); }
+.task-completed .task-text { text-decoration: line-through; }
 
 .reasoning { margin: 0 0 8px; }
 .reasoning-toggle {

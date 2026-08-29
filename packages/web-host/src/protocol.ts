@@ -4,6 +4,7 @@ import type {
   ContextWindowSource,
   PermissionChoice,
   PermissionClass,
+  TodoItem,
 } from '@heapcode/core';
 
 /**
@@ -210,6 +211,11 @@ export interface UiMessage {
       done?: boolean;
     };
     plan?: boolean;
+    /**
+     * The agent's task list — one entry per run, holding the latest
+     * todo_write state (the web-host updates it in place, never appends).
+     */
+    todos?: TodoItem[];
     /** A collapsed "thinking" block — the model's reasoning, kept for reloads. */
     reasoning?: boolean;
     /** True only in `pending`: this entry is still being streamed into. */

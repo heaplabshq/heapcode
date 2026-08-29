@@ -19,6 +19,7 @@ import {
   type WebSearchConfig,
   findBestMatch,
   getSymbolsTool,
+  DELEGATE_TASK_TOOL,
   killTree,
   LARGE_FILE_LINES,
   MAX_APPLY_MERGE_CHARS,
@@ -146,9 +147,9 @@ function buildCommandResult(opts: {
 
 /**
  * Tools only this host can offer: three backed by VS Code's language-server
- * command bus, with no portable CLI equivalent, plus delegate_task (the CLI
- * offers its own from delegate.ts, where the cross-cutting context it needs
- * to actually run lives).
+ * command bus, with no portable CLI equivalent. delegate_task is shared from
+ * core like the rest, but not baked into its standing list — see its comment
+ * there.
  */
 const GET_DIAGNOSTICS_TOOL: ToolDefinition = {
     name: 'get_diagnostics',
@@ -191,38 +192,6 @@ const GO_TO_DEFINITION_TOOL: ToolDefinition = {
     permission: 'read',
 };
 
-const DELEGATE_TASK_TOOL: ToolDefinition = {
-    name: 'delegate_task',
-    description:
-      'Delegate a self-contained, well-scoped piece of this task to an isolated sub-agent with its own ' +
-      'fresh context — useful for decomposing a large task into independent chunks so each piece gets a ' +
-      'focused conversation instead of one long, sprawling one (e.g. "implement the backend endpoint" and ' +
-      '"write the frontend form" as two separate delegations). Runs to completion before you continue, one ' +
-      'at a time, not in parallel. The sub-agent reports back a summary; it cannot delegate further. Use ' +
-      'sparingly — only for genuinely separable work, not routine steps you could just do directly.',
-    parameters: {
-      type: 'object',
-      properties: {
-        task: {
-          type: 'string',
-          description: 'The self-contained task for the sub-agent — include enough context to work independently.',
-        },
-        persona: {
-          type: 'string',
-          description:
-            'Optional persona to scope the sub-agent\'s tool access (e.g. "architect" for read-only investigation, "debug" for read+execute). Defaults to full access.',
-        },
-        profile: {
-          type: 'string',
-          description:
-            'Optional provider profile name to run the sub-agent on a different model (e.g. a cheaper/faster one for a simple sub-task). Defaults to the current profile.',
-        },
-      },
-      required: ['task'],
-    },
-    permission: 'execute',
-};
-
 /**
  * The tools this host offers, composed from core's shared schemas with the
  * editor-only ones interleaved in their established positions — the order
@@ -244,7 +213,9 @@ export const agentToolDefinitions: ToolDefinition[] = [
   T.run_tests,
   T.check_package_exists,
   getSymbolsTool(
-    'Outline of a file from the language server: functions, classes, methods with their line ranges. Much cheaper than reading the whole file.',
+    'Outline of a file from the language server: functions, classes, methods with their line ranges. Much cheaper ' +
+      'than reading the whole file. Use it to pick where to read before reading, and to see what a file holds when ' +
+      'you need one thing from it — a symbol name plus its line range turns into a ranged read_file.',
   ),
   FIND_REFERENCES_TOOL,
   GO_TO_DEFINITION_TOOL,
@@ -255,6 +226,9 @@ export const agentToolDefinitions: ToolDefinition[] = [
   T.multi_edit,
   T.create_directory,
   T.ask_user,
+  // Core's shared definition — the extension used to carry its own wording,
+  // and the two drifted. See DELEGATE_TASK_TOOL in core for why it is not in
+  // sharedAgentTools.
   DELEGATE_TASK_TOOL,
   T.list_skills,
   T.load_skill,

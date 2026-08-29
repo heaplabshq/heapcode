@@ -102,7 +102,7 @@ describe('runAgent — native tool calls', () => {
     // Second request must contain the tool result message.
     const second = provider.requests[1]!;
     expect(second.messages.some((m) => m.role === 'tool' && m.content === 'ok:read_file')).toBe(true);
-    expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish']);
+    expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish', 'todo_write']);
   });
 
   it('pairs the tool message to the call id even when the host drops it from the result', async () => {

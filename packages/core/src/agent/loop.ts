@@ -5,8 +5,10 @@ import {
   DEFAULT_CONTEXT_WINDOW,
   estimateMessagesTokens,
 } from '../context/tokens.js';
-import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt } from './prompts.js';
+import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt, resolvePromptTier } from './prompts.js';
+import type { AgentEnvironment, PromptTier } from './promptSections.js';
 import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol.js';
+import { TODO_TOOL, parseTodos, renderTodos, type TodoItem } from './todo.js';
 import {
   DENIED_RESULT_TEXT,
   FINISH_TOOL,
@@ -50,6 +52,12 @@ export interface AgentEvents {
    * The host decides whether/how to persist it; core never writes files.
    */
   onMemoryCandidate?(note: string): void;
+  /**
+   * The agent's task list, each time todo_write updates it. Fired with the
+   * full list, never a delta — the same thing the model was just shown, so a
+   * host can render exactly what the agent believes is left.
+   */
+  onTodoUpdate?(todos: TodoItem[]): void;
 }
 
 export interface AgentOptions {
@@ -135,6 +143,22 @@ export interface AgentOptions {
   maxTokens?: number;
   /** Model context window in tokens; drives usage reporting and compaction. */
   contextWindow?: number;
+  /**
+   * Where the agent runs — working directory, platform, a git snapshot —
+   * rendered into the environment section of the system prompt. Gathered once
+   * by the caller before the run starts, so the whole run sees one snapshot
+   * rather than facts that change underneath it. Ignored when `systemPrompt`
+   * replaces the coding sections (a host that owns its identity describes its
+   * own surroundings).
+   */
+  environment?: AgentEnvironment;
+  /**
+   * The prompt tier for this run, from the profile's `promptProfile` override.
+   * Omitted, the tier is derived from capability — see resolvePromptTier —
+   * so a run against a small-context or text-protocol model gets the lean
+   * section set without anyone configuring anything.
+   */
+  promptTier?: PromptTier;
   /**
    * What this agent's work is made of, for the summary written when a run
    * outgrows the context window.
@@ -399,8 +423,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   let nativeToolCalls = opts.nativeToolCalls;
   let toolProtocolFellBack = false;
 
+  // Fixed for the life of the run, and consulted by both the initial prompt
+  // and the mid-run fallback rewrite, so a protocol change never changes which
+  // sections the model has been told to follow.
+  const promptTier = resolvePromptTier(opts);
+
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
-  const toolsWithFinish = [...tools, FINISH_TOOL];
+  const toolsWithFinish = [...tools, FINISH_TOOL, TODO_TOOL];
 
   // Prefer streaming transport: reasoning models produce bytes immediately but
   // can exceed any sane non-streaming timeout on their full response.
@@ -436,7 +465,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       nativeToolCalls = false;
       messages[0] = {
         role: 'system',
-        content: buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, { maxIterations }),
+        content: buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, {
+          maxIterations,
+          environment: opts.environment,
+          tier: promptTier,
+        }),
       };
       events.onText(TOOL_PROTOCOL_FALLBACK_NOTICE);
       return true;
@@ -489,10 +522,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     return { response: counted(response), streamed };
   };
   const systemPrompt = nativeToolCalls
-    ? buildNativeAgentSystemPrompt(opts.workspaceName, { base: opts.systemPrompt, maxIterations })
+    ? buildNativeAgentSystemPrompt(opts.workspaceName, {
+        base: opts.systemPrompt,
+        maxIterations,
+        environment: opts.environment,
+        tier: promptTier,
+      })
     : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, {
         base: opts.systemPrompt,
         maxIterations,
+        environment: opts.environment,
+        tier: promptTier,
       });
 
   const messages: ChatMessage[] = [
@@ -528,6 +568,16 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   let lastMutationAt = -1;
 
   /**
+   * The run's own task list — populated by todo_write, read by the finish
+   * gate. Unlike the verification gate this one is about the model's own
+   * stated plan: a run that wrote "1. fix parser 2. add test 3. update docs"
+   * and stopped after step 1 used to end with "done".
+   */
+  let todos: TodoItem[] = [];
+  let todoNudges = 0;
+  const MAX_TODO_NUDGES = 2;
+
+  /**
    * Whether repeating this call could return something new.
    *
    * Only look-ups are cached, and only while nothing has been written since:
@@ -539,6 +589,23 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     tool.permission === 'read' || tool.name === 'web_search' || tool.name === 'fetch_url';
 
   const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
+    // Loop-owned bookkeeping, handled before the host roundtrip: the list is
+    // this run's state, not workspace state, so no host has an executor for
+    // it — same shape as finish, which the response path handles itself.
+    if (rawCall.name === TODO_TOOL.name) {
+      events.onToolCall(rawCall);
+      const parsed = parseTodos(rawCall.args ?? {});
+      let result: ToolResult;
+      if (parsed.error) {
+        result = { id: rawCall.id, name: rawCall.name, content: parsed.error, isError: true };
+      } else {
+        todos = parsed.todos;
+        result = { id: rawCall.id, name: rawCall.name, content: renderTodos(todos) };
+        events.onTodoUpdate?.(todos);
+      }
+      events.onToolResult(result);
+      return result;
+    }
     const tool = toolsByName.get(rawCall.name);
     if (!tool) {
       return {
@@ -661,6 +728,34 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     } else {
       if (content.trim()) messages.push({ role: 'assistant', content });
       messages.push({ role: 'user', content: VERIFY_NUDGE });
+    }
+    return true;
+  };
+
+  /**
+   * Same deferral shape, for the model's own task list: a finish with items
+   * still pending is a task ending above its own stated plan. Bounded for the
+   * same reason the verification gate is — a model that keeps finishing over
+   * its own list twice is telling the truth about being done, or is stuck,
+   * and either way more nudging is not the tool for it.
+   */
+  const shouldDeferTodoFinish = (
+    content: string,
+    nativeFinishCall?: { id: string; name: string; args: Record<string, unknown> },
+  ): boolean => {
+    const open = todos.filter((t) => t.status !== 'completed');
+    if (open.length === 0 || todoNudges >= MAX_TODO_NUDGES) return false;
+    todoNudges++;
+    const nudge =
+      `Your todo list still has ${open.length} unfinished item${open.length === 1 ? '' : 's'}:\n` +
+      open.map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`).join('\n') +
+      '\nFinish them, or call todo_write to drop the ones that turned out not to be needed, before finishing.';
+    if (nativeFinishCall) {
+      messages.push({ role: 'assistant', content, toolCalls: [nativeFinishCall] });
+      messages.push({ role: 'tool', content: nudge, toolCallId: nativeFinishCall.id });
+    } else {
+      if (content.trim()) messages.push({ role: 'assistant', content });
+      messages.push({ role: 'user', content: nudge });
     }
     return true;
   };
@@ -874,6 +969,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
             await summarize('Summarize what you did and whether the task is complete.');
           }
           if (shouldDeferFinish(response.content, finishCall)) continue;
+          if (shouldDeferTodoFinish(response.content, finishCall)) continue;
           return finish();
         }
         if (response.toolCalls && response.toolCalls.length > 0) {
@@ -1046,6 +1142,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         const summary = String(first.args?.summary ?? '').trim();
         if (summary) events.onText(summary);
         if (shouldDeferFinish(response.content)) continue;
+        if (shouldDeferTodoFinish(response.content)) continue;
         return finish();
       }
       if (parsed.narration) events.onText(parsed.narration);

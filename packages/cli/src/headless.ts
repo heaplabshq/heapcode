@@ -6,6 +6,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   METHODS,
   applyModeToPersona,
+  buildAgentTask,
   filterToolsForPersona,
   getPersona,
   resolveCapabilities,
@@ -122,7 +123,10 @@ export interface HeadlessOptions {
  * same stream it always did.
  */
 export type HeadlessEvent =
-  | Extract<AgentEvent, { type: 'text' | 'text_delta' | 'plan' | 'tool_call' | 'tool_result' }>
+  | Extract<
+      AgentEvent,
+      { type: 'text' | 'text_delta' | 'plan' | 'tool_call' | 'tool_result' | 'todo_update' }
+    >
   | {
       type: 'result';
       outcome: AgentOutcome;
@@ -307,8 +311,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     // Same task-preamble shape as the interactive UI's runTask: persona
     // constraints + project instructions/memory, then the task itself.
     const instructions = await loadProjectInstructions(root).catch(() => '');
-    const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
-    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${opts.prompt}` : opts.prompt;
+    const fullTask = buildAgentTask({ personaAddendum: persona.taskAddendum, instructions, task: opts.prompt });
 
     const emit = (event: HeadlessEvent): void => {
       if (opts.json) process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -476,6 +479,12 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         case 'tool_result':
           emit(event);
           return;
+        case 'todo_update':
+          // The task list a supervising agent would otherwise have to infer
+          // from tool calls — same reasoning that added filesRead and
+          // filesChanged to the JSON contract.
+          emit(event);
+          return;
         default:
           // reasoning/tool_stream/context_usage/compaction/memory_candidate:
           // the loop produces them, headless has never emitted them, and
@@ -560,7 +569,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
           // instructions still apply to a fix, and the stored turn is the
           // readable prompt, not the preamble-wrapped one.
           outcome = await runAgentTurn(
-            preamble ? `${preamble}\n\n---\n\nTask: ${fixPrompt}` : fixPrompt,
+            buildAgentTask({ personaAddendum: persona.taskAddendum, instructions, task: fixPrompt }),
             trimHistoryForAgent([...conversation.messages, ...turns]),
           );
           turns.push({ role: 'user', content: fixPrompt } as StoredMessage, { role: 'assistant', content: lastText } as StoredMessage);

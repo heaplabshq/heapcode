@@ -143,6 +143,9 @@ describe('core loop driving a browser', () => {
         'read_page',
         'scroll',
         'switch_tab',
+        // Loop-intercepted like finish, never executes against the page: the
+        // browser agent tracks its own steps on long reading runs too.
+        'todo_write',
         'wait',
       ].sort(),
     );

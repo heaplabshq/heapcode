@@ -1,6 +1,7 @@
 import type { ConversationMeta } from './history/types.js';
 import type { ProviderProfileConfig } from './config/profiles.js';
 import type { PermissionMode } from './agent/permissionModes.js';
+import type { TodoItem } from './agent/todo.js';
 
 /**
  * Typed message protocol between the VS Code extension host and the webview UI.
@@ -46,6 +47,8 @@ export interface DisplayMessage {
   plan?: boolean;
   tool?: ToolDisplay;
   status?: { state: string };
+  /** The agent's task list, when this entry is a todo card. */
+  todos?: TodoItem[];
 }
 
 export type PermissionChoice = 'allow' | 'session' | 'always' | 'deny';
@@ -232,6 +235,8 @@ export type ExtensionToWebview =
   | { type: 'agentReasoningEnd' }
   | { type: 'agentToolStream'; chars: number }
   | { type: 'agentPlan'; text: string }
+  /** The agent's task list, rewritten whole by each todo_write. One card per run, updated in place. */
+  | { type: 'agentTodos'; todos: TodoItem[] }
   | {
       type: 'agentToolCall';
       id: string;

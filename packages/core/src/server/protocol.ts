@@ -1,9 +1,11 @@
 import type { AgentOutcome } from '../agent/loop.js';
+import type { TodoItem } from '../agent/todo.js';
 import type { IndexState } from '../rag/indexer.js';
 import type { HitMeta } from '../rag/keywordIndex.js';
 import type { ChatMessage, ModelInfo, TokenUsage } from '../providers/types.js';
 import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
 import type { AgentPersona } from '../agent/personas.js';
+import type { AgentEnvironment } from '../agent/promptSections.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
 import type { PrReviewConfirmation, PrReviewResult } from '../review/prReview.js';
 import type { ReviewClient } from '../review/prReviewFormat.js';
@@ -168,6 +170,13 @@ export interface AgentRunParams {
    * server apply the run_command guard and sub-agent intersection.
    */
   persona?: AgentPersona;
+  /**
+   * The run's environment block, when the host gathered one itself. Absent,
+   * the server gathers it from the session root for local roots — so hosts
+   * that have nothing special to add simply omit the field and get the same
+   * block as everyone else.
+   */
+  environment?: AgentEnvironment;
   /** Correlates `agent/event` notifications and `agent/cancel` to this run. */
   runId: string;
 }
@@ -481,7 +490,8 @@ export type AgentEvent =
   | { type: 'tool_stream'; chars: number }
   | { type: 'context_usage'; usedTokens: number; windowTokens: number }
   | { type: 'compaction'; beforeTokens: number; afterTokens: number }
-  | { type: 'memory_candidate'; note: string };
+  | { type: 'memory_candidate'; note: string }
+  | { type: 'todo_update'; todos: TodoItem[] };
 
 export interface AgentEventParams {
   runId: string;

@@ -15,6 +15,7 @@ import {
   applyModeToPersona,
   askUserAnswerMessage,
   askUserBlocksAction,
+  buildAgentTask,
   buildFallbackAgentSystemPrompt,
   buildNativeAgentSystemPrompt,
   estimateMessagesTokens,
@@ -1456,8 +1457,7 @@ export class WebSession {
     // Same preamble shape as headless and the Ink UI: persona constraints and
     // project instructions, then the task.
     const instructions = await this.deps.loadInstructions?.(this.root).catch(() => '') ?? '';
-    const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
-    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+    const fullTask = buildAgentTask({ personaAddendum: persona.taskAddendum, instructions, task });
 
     // Multiple assistant messages can occur in one run (narration, then a
     // summary). `lastText` tracks the most recently COMPLETED one, mirroring
@@ -1840,6 +1840,14 @@ export class WebSession {
       case 'plan':
         this.turnEntries.push({ role: 'assistant', content: event.text, ui: { plan: true } } as StoredMessage);
         return;
+      case 'todo_update': {
+        // One card per turn, replaced in place — the live answer to "what is
+        // left", not a log of every write the model made.
+        const existing = this.turnEntries.find((m) => m.ui?.todos);
+        if (existing) existing.ui!.todos = event.todos;
+        else this.turnEntries.push({ role: 'assistant', content: '', ui: { todos: event.todos } } as StoredMessage);
+        return;
+      }
       case 'tool_call':
         this.turnEntries.push({
           role: 'assistant',
@@ -2147,6 +2155,13 @@ export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean 
           },
         },
       });
+      continue;
+    }
+
+    // The task-list card before the empty-content skip: its content is always
+    // empty (the state lives in `ui.todos`), which is what that check drops.
+    if (m.ui?.todos) {
+      out.push({ role: 'assistant', content: '', ui: { todos: m.ui.todos } });
       continue;
     }
 

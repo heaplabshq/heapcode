@@ -293,6 +293,12 @@ export class WebSession {
 
   private activeRunId?: string;
   private abort?: AbortController;
+  /**
+   * A profile edit the daemon has not been told about yet, because a run was
+   * in flight when it was saved. Flushed when that run ends — see
+   * `refreshDaemonProfile`.
+   */
+  private profileRefreshPending = false;
   /** Per-run event log, for replay when a browser reattaches mid-run. */
   private readonly buffers = new Map<string, UiEventParams[]>();
 
@@ -1057,9 +1063,15 @@ export class WebSession {
       await this.deps.config.saveProfile(next);
       if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
       if (profile.name === this.profile?.name) {
-        this.profile = await this.deps.config.getProfile(profile.name);
+        const before = this.profile;
+        this.profile = (await this.deps.config.getProfile(profile.name)) ?? next;
         // contextWindow and maxTokens are read off the profile at run time
-        // (see `run`), so the next turn picks them up without a reconnect.
+        // (see `run`), so those two alone still need no reconnect. Everything
+        // else was handed to the daemon once, at hello, and is read from that
+        // copy for the rest of the session -- so saving a role redirect and
+        // stopping here left the daemon running the profile as it was before
+        // the edit, with nothing anywhere saying so.
+        if (apiKey || daemonHeldFieldsChanged(before, this.profile)) await this.refreshDaemonProfile();
       }
       void this.pushState();
       return null;
@@ -1099,6 +1111,44 @@ export class WebSession {
   }
 
   /** Tears down and re-opens the daemon session — used when the profile changes. */
+  /**
+   * Hand the daemon the profile as it now stands.
+   *
+   * The daemon is given the active profile exactly once, at hello, and reads
+   * the role redirects, the endpoint, the key and the capabilities off that
+   * copy from then on (core/src/server/session.ts:135). Nothing in the
+   * protocol pushes a changed profile into a live session, so the only way to
+   * apply an edit is to rebuild the session -- the same thing `useProfile`
+   * does, and for the same reason.
+   *
+   * Never mid-run: closing the connection would kill the run in flight, and a
+   * settings edit must not do that. It waits for the run to end instead. If
+   * the reconnect itself fails the flag stays set, so the next opportunity
+   * tries again rather than leaving the daemon on a profile nobody chose.
+   */
+  private async refreshDaemonProfile(): Promise<void> {
+    if (!this.connection) {
+      // Nothing has started yet, so hello has not happened -- it will carry
+      // the current profile when it does.
+      this.profileRefreshPending = false;
+      return;
+    }
+    if (this.activeRunId) {
+      this.profileRefreshPending = true;
+      return;
+    }
+    await this.reconnect();
+    this.profileRefreshPending = false;
+  }
+
+  /** Apply a profile edit that arrived while a run was in flight. */
+  private flushProfileRefresh(): void {
+    if (!this.profileRefreshPending) return;
+    void this.refreshDaemonProfile().catch(() => {
+      /* Flag stays set; the next run's end tries again. */
+    });
+  }
+
   private async reconnect(): Promise<void> {
     this.connection?.close();
     this.connection = undefined;
@@ -1304,6 +1354,7 @@ export class WebSession {
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
+      this.flushProfileRefresh();
       void this.pushState();
     }
   }
@@ -1361,6 +1412,7 @@ export class WebSession {
       this.activeReview = undefined;
       this.activeRunId = undefined;
       this.abort = undefined;
+      this.flushProfileRefresh();
       void this.pushState();
     }
   }
@@ -1761,6 +1813,34 @@ export function describeCall(name: string, args: Record<string, unknown>): strin
  * silently-clamped context window would misreport the meter and compact at a
  * size the user never chose.
  */
+/**
+ * Fields the host re-sends on every run, so a change to them reaches the
+ * daemon without rebuilding the session.
+ *
+ * Deliberately a list of exceptions rather than a list of what matters. A
+ * profile crosses to the daemon whole and is read from that copy; these two
+ * are the only ones the host also passes per run (see `run`). Anything added
+ * to a profile later is therefore treated as needing a reconnect until
+ * someone proves otherwise, which is the safe direction to be wrong in --
+ * the previous version guessed the other way and left every role redirect
+ * inert.
+ */
+const RESENT_EACH_RUN = new Set<keyof ProviderProfileConfig>(['contextWindow', 'maxTokens']);
+
+/** Did this edit touch anything the daemon is holding its own copy of? */
+function daemonHeldFieldsChanged(
+  before: ProviderProfileConfig | undefined,
+  after: ProviderProfileConfig,
+): boolean {
+  if (!before) return true;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)] as Array<keyof ProviderProfileConfig>);
+  for (const key of keys) {
+    if (RESENT_EACH_RUN.has(key)) continue;
+    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) return true;
+  }
+  return false;
+}
+
 function tokenCount(value: number | null | undefined, label: string): number | null | undefined {
   if (value === undefined || value === null) return value;
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${label} must be a positive whole number of tokens.`);

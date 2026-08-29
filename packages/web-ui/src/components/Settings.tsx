@@ -177,7 +177,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                         key={p.name}
                         profile={p}
                         presets={s.presets?.length ? s.presets : FALLBACK_PRESETS}
-                        otherProfiles={s.profiles.map((o) => o.name).filter((n) => n !== p.name)}
+                        otherProfiles={s.profiles.filter((o) => o.name !== p.name)}
                         startOpen={props.focus === 'context' && p.active}
                         onUse={() => props.onUseProfile(p.name)}
                         onDelete={() => props.onDeleteProfile(p.name)}
@@ -461,8 +461,12 @@ function ProfileRow({
 }: {
   profile: UiProfile;
   presets: UiPreset[];
-  /** Sibling profile names, for "run this role on another provider". */
-  otherProfiles: string[];
+  /**
+   * The sibling profiles, for "run this role on another provider" — whole
+   * profiles rather than names, because a redirected role takes its model
+   * from the target and the row has to be able to say which one that is.
+   */
+  otherProfiles: UiProfile[];
   startOpen?: boolean;
   onUse(): void;
   onDelete(): void;
@@ -870,7 +874,7 @@ function ModelRoles({
   ownProfile,
 }: {
   roles: Record<string, string>;
-  profiles: string[];
+  profiles: UiProfile[];
   onChange(next: Record<string, string>): void;
   listModels?(profileName: string): Promise<string[]>;
   /** Whose endpoint a role uses when it is not redirected elsewhere. */
@@ -892,43 +896,96 @@ function ModelRoles({
             <div key={group}>
               <div className="roles-group">{group}</div>
               {UI_MODEL_ROLES.filter((r) => r.group === group).map((role) => (
-                <div key={role.key} className="role">
-                  <span className="role-label">{role.label}</span>
-                  <ModelInput
-                    value={roles[`${role.key}Model`] ?? ''}
-                    placeholder={role.hint}
-                    aria-label={`${role.label} model`}
-                    onChange={(v) => set(`${role.key}Model`, v)}
-                    // The list has to come from wherever the role actually
-                    // runs: redirect embeddings to a local Ollama and the
-                    // models worth offering are that endpoint's, not this
-                    // profile's.
-                    listModels={() =>
-                      listModels?.(roles[`${role.key}Profile`] || ownProfile) ?? Promise.resolve([])
-                    }
-                  />
-                  {/* The second half of a role: run it against a different
-                      profile's endpoint and key entirely — embeddings on a
-                      local Ollama while the agent stays on a cloud model. */}
-                  <select
-                    className="select role-select"
-                    value={roles[`${role.key}Profile`] ?? ''}
-                    aria-label={`${role.label} profile`}
-                    onChange={(e) => set(`${role.key}Profile`, e.target.value)}
-                  >
-                    <option value="">this profile</option>
-                    {profiles.map((name) => (
-                      <option key={name} value={name}>
-                        on {name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                <RoleRow
+                  key={role.key}
+                  role={role}
+                  roles={roles}
+                  profiles={profiles}
+                  ownProfile={ownProfile}
+                  set={set}
+                  listModels={listModels}
+                />
               ))}
             </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * One role: which model runs it, and whose endpoint runs it.
+ *
+ * The two halves are not independent, which is the whole reason this is its
+ * own component. Redirect a role to another profile and that profile supplies
+ * the model too — `providerForRole` resolves the target and every caller then
+ * reads the role's model off *it* (core/src/server/session.ts:135, and the
+ * same in the extension's `resolveRoleProfile`). A model typed on this row
+ * would be stored, shown, and never used.
+ *
+ * So the box is only a box while the role runs here. Redirected, it becomes a
+ * statement of what will actually run and where to go to change it — which is
+ * the honest version of a field that was quietly inert.
+ */
+function RoleRow({
+  role,
+  roles,
+  profiles,
+  ownProfile,
+  set,
+  listModels,
+}: {
+  role: (typeof UI_MODEL_ROLES)[number];
+  roles: Record<string, string>;
+  profiles: UiProfile[];
+  /** Whose endpoint the role uses when it is not redirected elsewhere. */
+  ownProfile: string;
+  set(key: string, value: string): void;
+  listModels?(profileName: string): Promise<string[]>;
+}): JSX.Element {
+  const targetName = roles[`${role.key}Profile`] ?? '';
+  const target = targetName ? profiles.find((p) => p.name === targetName) : undefined;
+  const inherited = target?.[`${role.key}Model` as keyof UiProfile] as string | undefined;
+
+  return (
+    <div className="role">
+      <span className="role-label">{role.label}</span>
+      {target ? (
+        <span className="role-from" aria-label={`${role.label} model`}>
+          {inherited ? (
+            <>
+              <code>{inherited}</code> — from {target.name}
+            </>
+          ) : (
+            <>no {role.label.toLowerCase()} model on {target.name}; set one there</>
+          )}
+        </span>
+      ) : (
+        <ModelInput
+          value={roles[`${role.key}Model`] ?? ''}
+          placeholder={role.hint}
+          aria-label={`${role.label} model`}
+          onChange={(v) => set(`${role.key}Model`, v)}
+          listModels={() => listModels?.(ownProfile) ?? Promise.resolve([])}
+        />
+      )}
+      {/* The second half of a role: run it against a different profile's
+          endpoint, key and model entirely — embeddings on a local Ollama
+          while the agent stays on a cloud model. */}
+      <select
+        className="select role-select"
+        value={targetName}
+        aria-label={`${role.label} profile`}
+        onChange={(e) => set(`${role.key}Profile`, e.target.value)}
+      >
+        <option value="">this profile</option>
+        {profiles.map((p) => (
+          <option key={p.name} value={p.name}>
+            on {p.name}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

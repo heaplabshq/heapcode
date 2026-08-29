@@ -61,12 +61,22 @@ let workspace: string;
 let daemon: HeapcodeServer;
 let mock: MockServer | undefined;
 let web: RunningWebHost | undefined;
+/**
+ * How many times the host has handed the daemon a session/hello.
+ *
+ * The daemon is given the active profile once, at hello, and reads role
+ * redirects and the endpoint off that copy for the rest of the session — so
+ * "did this edit reach the daemon" is exactly "did the host reconnect", and
+ * there is nothing else to observe it by.
+ */
+let connects: number;
 
 beforeEach(async () => {
   // Short paths — a unix socket path over 104 bytes fails listen() with EINVAL.
   home = await mkdtemp(join(tmpdir(), 'hcwh-'));
   workspace = await mkdtemp(join(tmpdir(), 'hcww-'));
   process.env.HEAPCODE_HOME = home;
+  connects = 0;
 });
 
 afterEach(async () => {
@@ -127,11 +137,13 @@ async function boot(
     port: 0, // ephemeral, so parallel test files never collide
     token: 'test-token',
     ...hostExtras,
-    connect: (hello): Promise<ServerConnection> =>
-      connectToServer(
+    connect: (hello): Promise<ServerConnection> => {
+      connects += 1;
+      return connectToServer(
         { client: { name: 'web-host-test' }, ...hello },
         { address: daemon.address, token: daemon.token, autostart: false },
-      ),
+      );
+    },
   });
   web = host;
   return { root, host };
@@ -1567,6 +1579,99 @@ describe('web host — model roles', () => {
       rerankModel: 'rerank-1',
       agentModel: 'big-agent',
     });
+    browser.close();
+  });
+
+  /**
+   * Saving a role redirect has to reach the daemon.
+   *
+   * The daemon is handed the active profile once, at hello, and resolves
+   * `<role>Profile` off that copy from then on. `saveProfile` used to write
+   * the file, update the host's own copy, and stop — so a user could set
+   * embeddings to a local Ollama, see it stored, reopen the panel and see it
+   * still set, and have semantic search keep reporting no embedder because
+   * the daemon was still running the profile as it stood at hello. Nothing
+   * anywhere said so; switching profiles and back was the only cure, and only
+   * by accident.
+   */
+  it('a role redirect saved on the active profile reaches the daemon', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.sendMessage, { text: 'go' });
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', embeddingsProfile: 'local' },
+    });
+
+    expect(connects).toBe(before + 1);
+    browser.close();
+  });
+
+  it('does not reconnect for the two fields the host re-sends every run', async () => {
+    // contextWindow and maxTokens go out as run parameters, so they take
+    // effect on the next turn on their own. Rebuilding the session for them
+    // would throw away a warm one for nothing.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.sendMessage, { text: 'go' });
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', contextWindow: 64_000, maxTokens: 4_000 },
+    });
+
+    expect(connects).toBe(before);
+    browser.close();
+  });
+
+  it('waits for a run in flight rather than pulling the connection out from under it', async () => {
+    // Reconnecting closes the daemon session, which would kill whatever is
+    // running on it. A settings edit must never do that — so the refresh is
+    // held until the run ends, and then happens rather than being forgotten.
+    const { host } = await boot([
+      { kind: 'sse', chunks: ['<tool name="run_command">\n{"command":"sleep 1"}\n</tool>'] },
+      { kind: 'sse', chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+    ]);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const running = browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, {
+      text: 'go',
+      runId: 'slow',
+    });
+    // The first event means the daemon has the run; the sleep gives a whole
+    // second of margin to save inside it.
+    while (browser.events.length === 0) await new Promise((r) => setTimeout(r, 10));
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', embeddingsProfile: 'local' },
+    });
+    expect(connects).toBe(before);
+
+    await running;
+    // The flush is fired as the run unwinds, not awaited by it.
+    const deadline = Date.now() + 5_000;
+    while (connects === before && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    expect(connects).toBe(before + 1);
+    browser.close();
+  });
+
+  it('does not reconnect for a profile that is not the one in use', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request(UI_METHODS.sendMessage, { text: 'go' });
+    const before = connects;
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'other', preset: 'custom', baseUrl: mock!.baseUrl, model: 'x' },
+    });
+
+    expect(connects).toBe(before);
     browser.close();
   });
 

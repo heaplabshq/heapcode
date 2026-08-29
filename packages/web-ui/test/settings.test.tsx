@@ -331,14 +331,70 @@ describe('role model suggestions', () => {
     await waitFor(() => expect(listModels).toHaveBeenCalledWith('ollama'));
   });
 
-  it('suggests from the TARGET profile once the role is redirected', async () => {
-    // Point embeddings at a local Ollama and the models worth offering are
-    // that endpoint's — listing this profile's would suggest ids the role can
-    // never reach.
+  it('offers nothing to type once the role is redirected', async () => {
+    // There is no box to suggest into: a redirected role takes its model from
+    // the profile it was redirected to, so this row stops asking for one.
     const listModels = vi.fn(() => Promise.resolve([]));
     openRoles(listModels);
     fireEvent.change(screen.getByLabelText('Embeddings profile'), { target: { value: 'local' } });
-    fireEvent.focus(screen.getByLabelText('Embeddings model'));
-    await waitFor(() => expect(listModels).toHaveBeenCalledWith('local'));
+    expect(screen.queryByRole('textbox', { name: 'Embeddings model' })).toBeNull();
+    await waitFor(() => expect(listModels).not.toHaveBeenCalledWith('local'));
+  });
+});
+
+/**
+ * What a redirected role actually runs.
+ *
+ * The row used to show a model box beside the profile dropdown, as though the
+ * two were independent settings. They are not: `providerForRole` resolves the
+ * target profile and the model is then read off *that* one, so a model typed
+ * here was stored, displayed, and never used. Which is how a working config
+ * can sit on disk with semantic search reporting no embedder.
+ */
+describe('a role redirected to another profile', () => {
+  const withTarget: UiSettings = {
+    ...SETTINGS,
+    profiles: [
+      { ...SETTINGS.profiles[0]!, embeddingsProfile: 'local' },
+      {
+        name: 'local',
+        preset: 'ollama',
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'llama',
+        embeddingsModel: 'nomic-embed-text',
+        active: false,
+        hasKey: false,
+        effectiveContextWindow: 8_000,
+      },
+    ],
+  };
+
+  function open(settings: UiSettings): void {
+    render(<Settings {...props({ settings })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    fireEvent.click(screen.getAllByText('Edit')[0]!);
+    fireEvent.click(screen.getByText(/Model roles/));
+  }
+
+  it('names the model the target will run, not an empty box', () => {
+    open(withTarget);
+    expect(screen.getByText('nomic-embed-text')).toBeTruthy();
+    expect(screen.getByText(/from local/)).toBeTruthy();
+  });
+
+  it('says where to set one when the target has none', () => {
+    // The failure this replaces was silent: the role was redirected, the
+    // target had no embeddings model, and the panel showed a blank field that
+    // looked settable.
+    open({
+      ...withTarget,
+      profiles: [withTarget.profiles[0]!, { ...withTarget.profiles[1]!, embeddingsModel: undefined }],
+    });
+    expect(screen.getByText(/no embeddings model on local; set one there/)).toBeTruthy();
+  });
+
+  it('leaves the roles that are not redirected editable', () => {
+    open(withTarget);
+    expect(screen.getByLabelText<HTMLInputElement>('Rerank model')).toBeTruthy();
   });
 });

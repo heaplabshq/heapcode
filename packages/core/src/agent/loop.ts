@@ -179,6 +179,10 @@ const PLAN_REQUEST =
   'Before doing anything, write a concise plan for this task, scaled to what it actually ' +
   'needs. A simple question or lookup needs only 1-2 steps — do not pad it out. Reserve a ' +
   'longer numbered plan (up to ~8 steps) for genuinely multi-step build/edit work. ' +
+  'Each step should be something you will actually do — a file to change, a command to run, a ' +
+  'question to ask. "Investigate the codebase" and "understand the architecture" are not steps; ' +
+  'they are how a plan turns into an hour of reading. Where you do not yet know enough to name a ' +
+  'step, say what you will look at and what would decide it. ' +
   'Plain text only — do NOT call any tools yet.';
 
 /**

@@ -72,13 +72,20 @@ export function wrapUntrusted(content: string): string {
 export const FINISH_TOOL: ToolDefinition = {
   name: 'finish',
   description:
-    'Call this when the task is fully complete (or impossible to complete). This ends the session.',
+    'End the run. Call this when the task is complete, or when you have established that it cannot ' +
+    'be done — a blocked task ends here too, with the summary saying what stopped it. ' +
+    'The summary is the ONLY thing that survives into the conversation: the files you read, the ' +
+    'commands you ran and their output are all discarded when this returns, so anything the next ' +
+    'turn would need has to be in it. Write what changed, what you verified, and what is still ' +
+    'open — not a description of the work as if it were still ahead of you.',
   parameters: {
     type: 'object',
     properties: {
       summary: {
         type: 'string',
-        description: 'What was done, the outcome, and anything the user should know.',
+        description:
+          'What was done, the outcome, and anything the user should know — including what you did ' +
+          'NOT do and why, if anything was left out.',
       },
     },
     required: ['summary'],

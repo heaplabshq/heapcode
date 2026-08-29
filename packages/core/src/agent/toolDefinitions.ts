@@ -34,7 +34,10 @@ export const sharedAgentTools = {
   },
   list_dir: {
     name: 'list_dir',
-    description: 'List files and directories at a workspace-relative path (non-recursive).',
+    description:
+      'List files and directories at a workspace-relative path (non-recursive). For finding where ' +
+      'something lives, repo_map, search or semantic_search get there in one call; use this when you ' +
+      'need to know what is actually in a particular directory.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Workspace-relative path, "." for root' } },
@@ -59,7 +62,10 @@ export const sharedAgentTools = {
   },
   write_file: {
     name: 'write_file',
-    description: 'Create or overwrite a file with the given content.',
+    description:
+      'Create a NEW file, or replace an existing one end to end. Overwrites without warning, so to ' +
+      'change part of a file that already exists use edit_file or multi_edit — write_file on a file ' +
+      'you have not read in full is how unrelated work gets deleted.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -88,7 +94,9 @@ export const sharedAgentTools = {
   },
   rename_file: {
     name: 'rename_file',
-    description: 'Rename or move a file.',
+    description:
+      'Rename or move a file, keeping its contents. References to it elsewhere are not updated — ' +
+      'search for the old path afterwards.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string' }, newPath: { type: 'string' } },
@@ -98,14 +106,18 @@ export const sharedAgentTools = {
   },
   delete_file: {
     name: 'delete_file',
-    description: 'Delete a file.',
+    description:
+      'Delete a file. There is no undo beyond the session checkpoint, so delete only what the task ' +
+      'names or what you created yourself.',
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
     permission: 'destructive',
   },
   semantic_search: {
     name: 'semantic_search',
     description:
-      'Search the codebase by meaning (embeddings), e.g. "where is authentication handled". Falls back to text search when no index exists.',
+      'Search the codebase by meaning (embeddings), e.g. "where is authentication handled". Use it ' +
+      'when you know what something does but not what it is called; use search when you know the ' +
+      'name, the string, or the error text. Falls back to text search when no index exists.',
     parameters: {
       type: 'object',
       properties: { query: { type: 'string', description: 'Natural-language query' } },
@@ -133,9 +145,14 @@ export const sharedAgentTools = {
     name: 'run_command',
     description:
       'Run a shell command (npm/pnpm/git/etc). Returns stdout, stderr, and exit code. ' +
-      'The working directory persists between calls (cd carries over); it starts at the workspace root. ' +
-      'Prefer run_tests for the project\'s test suite. Package installs are checked against the ' +
-      'registry first and blocked if the package name looks hallucinated.',
+      'The working directory persists between calls (cd carries over) and every result says where it ' +
+      'is once it has left the workspace root, so do not re-issue `cd` you have already run. ' +
+      'Prefer run_tests for the project\'s test suite, and the file tools over shell equivalents — ' +
+      'read_file over cat, edit_file over sed, search over grep — since those report better and are ' +
+      'not gated behind the execute permission. Package installs are checked against the registry ' +
+      'first and blocked if the package name looks hallucinated. A command that does not return, like ' +
+      'a dev server or a watcher, is killed on a timeout: start it in the background and check it ' +
+      'separately instead.',
     parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
     permission: 'execute',
   },
@@ -152,7 +169,8 @@ export const sharedAgentTools = {
     name: 'check_package_exists',
     description:
       'Check whether a package name actually exists on npm or PyPI before adding it as a dependency — ' +
-      'catches hallucinated package names before they\'re installed.',
+      'catches hallucinated package names before they\'re installed. One call answers "is this real"; ' +
+      'it is not a way to browse a registry, so do not walk a list of candidate names through it.',
     parameters: {
       type: 'object',
       properties: { registry: { type: 'string', enum: ['npm', 'pypi'] }, name: { type: 'string' } },
@@ -194,7 +212,10 @@ export const sharedAgentTools = {
   },
   multi_edit: {
     name: 'multi_edit',
-    description: 'Apply several search/replace edits to one file atomically (all succeed or none are written). Same matching rules as edit_file.',
+    description:
+      'Apply several search/replace edits to one file atomically — all succeed or none are written. ' +
+      'Same matching rules as edit_file. Prefer this over a run of edit_file calls on the same file: ' +
+      'it cannot leave the file half-changed, and it is one turn instead of five.',
     parameters: {
       type: 'object',
       properties: {
@@ -228,7 +249,11 @@ export const sharedAgentTools = {
   ask_user: {
     name: 'ask_user',
     description:
-      'Ask the user a clarifying question when blocked on a decision only they can make (ambiguous requirements, destructive trade-offs). Use sparingly — prefer sensible defaults.',
+      'Ask the user a question when you are blocked on a decision only they can make — ambiguous ' +
+      'requirements, a destructive trade-off, which of two designs they want. Ask ONE question and ' +
+      'stop; never answer it yourself. Use sparingly: prefer a sensible default and say what you ' +
+      'assumed. But asking beats guessing when the answer changes what gets built, and it beats ' +
+      'searching for an answer the codebase does not contain.',
     parameters: {
       type: 'object',
       properties: {

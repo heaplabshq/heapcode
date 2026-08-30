@@ -292,6 +292,24 @@ describe('runAgent — native tool calls', () => {
     expect(nudge.content).toContain('continue working');
   });
 
+  it('marks every nudge as system content, not as the user speaking', async () => {
+    // Nudges go out as `role: 'user'` because every chat template understands
+    // that role — unmarked, they are forged user turns, and steering is most
+    // needed exactly when the model is least reliable about who said what.
+    // The tag is what the system prompt (prompts.ts) teaches the model to read.
+    const provider = scriptedProvider([
+      { content: 'I listed the files. The task is not complete; the next step will be reading a.ts.' },
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'Task is complete: read the file and confirmed the change.' },
+    ]);
+    const h = harness();
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    const nudge = provider.requests[1]!.messages.at(-1)!;
+    expect(nudge.content.startsWith('<system-reminder>\n')).toBe(true);
+    expect(nudge.content.endsWith('\n</system-reminder>')).toBe(true);
+  });
+
   it('nudges the exact phrasing from the field report ("Now executing steps 2-5")', async () => {
     const provider = scriptedProvider([
       {
@@ -635,6 +653,12 @@ describe('runAgent — native tool calls', () => {
     expect(afterGrant.role).toBe('user');
     expect(afterGrant.content).toContain('keep going');
     expect(afterGrant.content).toMatch(/where you left off/i);
+    // The decision it reports is real — the user answered the question — but
+    // the loop wrote this sentence, so it is tagged and speaks *about* the
+    // user rather than as them.
+    expect(afterGrant.content.startsWith('<system-reminder>\n')).toBe(true);
+    expect(afterGrant.content).toMatch(/The user was asked whether to continue/);
+    expect(afterGrant.content).not.toMatch(/\bI said\b/);
     // A tool message paired to nothing is what makes strict providers reject
     // the whole transcript.
     expect(provider.requests[1]!.messages.some((m) => m.toolCallId === 'steps_1')).toBe(false);
@@ -1275,6 +1299,10 @@ describe('runAgent — structured-text fallback', () => {
     expect(h.calls.length).toBe(1);
     const repairMsg = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
     expect(repairMsg.content).toContain('invalid');
+    // Same REPAIR_PROMPT the native branch sends, so it arrives marked the
+    // same way: identical steering reaching the model with two different
+    // provenances is how a model learns the tag means nothing.
+    expect(repairMsg.content.startsWith('<system-reminder>\n')).toBe(true);
   });
 });
 

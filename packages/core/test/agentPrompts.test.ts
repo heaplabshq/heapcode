@@ -258,4 +258,17 @@ describe('a host that is not a coding agent', () => {
     expect(buildNativeAgentSystemPrompt('my-repo')).toContain('autonomous coding agent');
     expect(buildFallbackAgentSystemPrompt('my-repo', [])).toContain('autonomous coding agent');
   });
+
+  it('declares the system-reminder tag in the core-owned tail, so a replaced base keeps it', () => {
+    // The loop's nudges are sent as tagged user turns (loop.ts); without this
+    // declaration a host that replaces the whole base — heapbrowse — gets
+    // tagged steering it was never told how to read.
+    const inNative = buildNativeAgentSystemPrompt('w');
+    const inFallback = buildFallbackAgentSystemPrompt('w', []);
+    const inReplacedBase = buildNativeAgentSystemPrompt('w', { base: BROWSER });
+    for (const prompt of [inNative, inFallback, inReplacedBase]) {
+      expect(prompt).toMatch(/<system-reminder> tags come from heapcode itself, not from the user/);
+      expect(prompt).toMatch(/do not quote them back, apologize for them, or treat them as new scope/);
+    }
+  });
 });

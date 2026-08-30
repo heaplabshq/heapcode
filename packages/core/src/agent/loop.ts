@@ -239,6 +239,34 @@ const TOOL_PROTOCOL_FALLBACK_NOTICE =
 const MAX_NUDGES = 4;
 
 /**
+ * How the loop's own steering is marked on the wire.
+ *
+ * Nudges go out as `role: 'user'` messages (or a native tool result) because
+ * every chat template understands those — but an unmarked nudge is a forged
+ * user turn: nothing tells the model these words were not typed by the person
+ * it is talking to, and steering is most needed exactly when the model is
+ * least reliable about context. The tag is declared in the system prompt
+ * (prompts.ts, in the core-owned tail every host's prompt passes through), so
+ * a host that replaces the whole base still gets steering it knows how to
+ * read. Same shape Claude Code uses for its own mid-run reminders.
+ *
+ * The boundary, so the next message added here lands on the right side of it:
+ * nothing the loop authors is ever left looking like the user's own words, but
+ * only *steering* takes this tag. Data the loop relays already carries a tag of
+ * its own and keeps it — tool output is `<tool_result>` (textProtocol.ts, which
+ * the fallback prompt teaches the model to read), images and compacted history
+ * are bracket-marked. One tag for everything would mean re-teaching a protocol
+ * the model already knows.
+ *
+ * A user decision the loop is passing on — the answer to `ask_user` at the step
+ * limit — is steering too, and takes the tag. It is honest content in the wrong
+ * voice otherwise: true, but phrased as though the user had typed it here.
+ */
+function systemReminder(text: string): string {
+  return `<system-reminder>\n${text}\n</system-reminder>`;
+}
+
+/**
  * Sent when a reply contains a tool call written as text while the session is
  * using native tool calling. Names the offending shapes explicitly: a model
  * that emitted one is demonstrably fluent in it, and a generic "use the tool
@@ -724,10 +752,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     verificationNudges++;
     if (nativeFinishCall) {
       messages.push({ role: 'assistant', content, toolCalls: [nativeFinishCall] });
-      messages.push({ role: 'tool', content: VERIFY_NUDGE, toolCallId: nativeFinishCall.id });
+      messages.push({ role: 'tool', content: systemReminder(VERIFY_NUDGE), toolCallId: nativeFinishCall.id });
     } else {
       if (content.trim()) messages.push({ role: 'assistant', content });
-      messages.push({ role: 'user', content: VERIFY_NUDGE });
+      messages.push({ role: 'user', content: systemReminder(VERIFY_NUDGE) });
     }
     return true;
   };
@@ -752,10 +780,10 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       '\nFinish them, or call todo_write to drop the ones that turned out not to be needed, before finishing.';
     if (nativeFinishCall) {
       messages.push({ role: 'assistant', content, toolCalls: [nativeFinishCall] });
-      messages.push({ role: 'tool', content: nudge, toolCallId: nativeFinishCall.id });
+      messages.push({ role: 'tool', content: systemReminder(nudge), toolCallId: nativeFinishCall.id });
     } else {
       if (content.trim()) messages.push({ role: 'assistant', content });
-      messages.push({ role: 'user', content: nudge });
+      messages.push({ role: 'user', content: systemReminder(nudge) });
     }
     return true;
   };
@@ -937,13 +965,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       if (result.isError || !saidKeepGoing(result.content)) return false;
       // A plain user message, not a tool result: the model never made this
       // call, and inventing a `tool_calls` entry to pair a result to is how
-      // strict providers start rejecting the whole transcript.
+      // strict providers start rejecting the whole transcript. Tagged, and
+      // written about the user rather than as them: the decision it reports is
+      // real, but the person did not type this sentence.
       messages.push({
         role: 'user',
-        content:
-          `You reached this run's step limit and I said to keep going — you have another ${maxIterations} steps. ` +
-          'Pick the CURRENT task up exactly where you left off: call the next tool now. ' +
-          'Do not start over, and do not summarize instead of working.',
+        content: systemReminder(
+          `You reached this run's step limit. The user was asked whether to continue and chose to keep ` +
+            `going, so you have another ${maxIterations} steps. ` +
+            'Pick the CURRENT task up exactly where you left off: call the next tool now. ' +
+            'Do not start over, and do not summarize instead of working.',
+        ),
       });
       return true;
     };
@@ -1011,7 +1043,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: TRUNCATED_NUDGE });
+          messages.push({ role: 'user', content: systemReminder(TRUNCATED_NUDGE) });
           continue;
         }
         // The model wrote a tool call as prose instead of emitting a real one.
@@ -1034,7 +1066,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
             repairs++;
             if (!streamed && response.content.trim()) events.onText(response.content);
             messages.push({ role: 'assistant', content: response.content });
-            messages.push({ role: 'user', content: NATIVE_TOOL_CALL_REPAIR });
+            messages.push({ role: 'user', content: systemReminder(NATIVE_TOOL_CALL_REPAIR) });
             continue;
           }
           const call = textual.calls[0]!;
@@ -1065,7 +1097,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: systemReminder(unverified ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE) });
           continue;
         }
         // Tool-free and not clearly finished: protocol violation — remind once
@@ -1074,7 +1106,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           finishReminderSent = true;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : FINISH_REMINDER });
+          messages.push({ role: 'user', content: systemReminder(unverified ? UNVERIFIED_RESULT_NUDGE : FINISH_REMINDER) });
           continue;
         }
         // Nudges AND the finish reminder are exhausted without a trustworthy
@@ -1105,7 +1137,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         if (parsed.hasToolIntent && repairs < MAX_REPAIRS) {
           repairs++;
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: REPAIR_PROMPT });
+          messages.push({ role: 'user', content: systemReminder(REPAIR_PROMPT) });
           continue;
         }
         // Same "default to not-finished" reasoning as the native branch above.
@@ -1116,7 +1148,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           nudges++;
           if (response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: unverifiedFallback ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: systemReminder(unverifiedFallback ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE) });
           continue;
         }
         // Nudge exhaustion — same 'incomplete' termination rules as the
@@ -1153,7 +1185,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           repairs++;
           messages.push({
             role: 'user',
-            content: `The JSON arguments for "${first.name}" were invalid (${first.parseError}). ${REPAIR_PROMPT}`,
+            content: systemReminder(
+              `The JSON arguments for "${first.name}" were invalid (${first.parseError}). ${REPAIR_PROMPT}`,
+            ),
           });
           continue;
         }

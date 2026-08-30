@@ -89,9 +89,11 @@ describe('prompt tiers', () => {
       12_000,
     );
     // Raised from 5000 (2026-08, docs/PROMPT_GAP_PLAN.md items 1 and 7) for
-    // the risky-actions section: a small-context model can take an
-    // irreversible step as easily as a frontier one, so that section is the
-    // one lean addition here that pays for its bytes.
+    // the risky-actions section — a small-context model can take an
+    // irreversible step as easily as a frontier one — and the system-reminder
+    // declaration the loop's tagged nudges depend on: a lean model is nudged
+    // most often and least equipped to read an unmarked nudge as anything
+    // but the user's words.
     //
     // This bound is a drift alarm, not a budget to write up against. When a
     // lean rule earns its place, raise the number; never shorten the rule to

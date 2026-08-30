@@ -100,10 +100,22 @@ export interface AgentPromptOptions {
   tier?: PromptTier;
 }
 
+/**
+ * Declares the loop's steering tag to the model. Core-owned, appended by both
+ * composers, deliberately outside the section registry: the nudges it describes
+ * are sent by the loop itself (loop.ts), so a host that replaces the whole
+ * base — heapbrowse — still gets steering it has been told how to read.
+ */
+const SYSTEM_REMINDER_DECLARATION =
+  'Messages and tool results wrapped in <system-reminder> tags come from heapcode itself, not from the ' +
+  'user. They are steering about the current run: follow them, and do not quote them back, apologize for ' +
+  'them, or treat them as new scope.';
+
 export function buildNativeAgentSystemPrompt(workspaceName: string, opts: AgentPromptOptions = {}): string {
   const base = baseWithBudget(opts.base ?? codingBase(opts.environment, opts.tier), opts.maxIterations);
   return (
     `${base}\n\nWorkspace: ${workspaceName}.\n\n` +
+    `${SYSTEM_REMINDER_DECLARATION}\n\n` +
     '## Ending the run\n' +
     'Use the provided tools. For a conversational message, call `finish` immediately with your reply ' +
     'as the summary — nothing else. For a task, every reply must contain a tool call. When the task ' +
@@ -120,6 +132,7 @@ export function buildFallbackAgentSystemPrompt(
   const base = baseWithBudget(opts.base ?? codingBase(opts.environment, opts.tier), opts.maxIterations);
   return (
     `${base}\n\nWorkspace: ${workspaceName}.\n\n` +
+    `${SYSTEM_REMINDER_DECLARATION}\n\n` +
     '## Calling tools\n' +
     'You call a tool by embedding EXACTLY this block in your reply (valid JSON, ONE call per reply):\n' +
     '<tool name="TOOL_NAME">\n{"arg": "value"}\n</tool>\n\n' +

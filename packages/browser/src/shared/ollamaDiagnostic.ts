@@ -25,6 +25,7 @@
  * which is the difference between "run this one command" and "start Ollama".
  */
 
+import { isLoopback, isOriginRefused } from '@heapcode/core/providers';
 import { hasHostPermission, originPatternFor } from './hostPermission.js';
 
 export type Diagnosis =
@@ -89,6 +90,26 @@ export function ollamaOriginsFix(origin: string, platform: string = navigator.pl
 }
 
 /**
+ * Turns core's origin-refusal error into something the user can act on.
+ *
+ * Core can say *that* a local server refused the origin — it sees the 403, the
+ * empty body and the loopback address — but not what to do about it. The two
+ * missing halves live here: the origin, which is `chrome-extension://<id>` and
+ * so is not knowable until install, and the command, which differs per
+ * platform and has to reach the environment the *server* runs in.
+ *
+ * Appended to the run's error text rather than raised as its own UI. It is the
+ * same advice the connection check gives, and the run is just as likely to be
+ * where someone meets it first — a profile set up weeks ago, working right up
+ * until the first question that needed the model.
+ */
+export function withOriginFix(text: string, origin: string, platform?: string): string {
+  if (!isOriginRefused(text)) return text;
+  const fix = platform === undefined ? ollamaOriginsFix(origin) : ollamaOriginsFix(origin, platform);
+  return `${text}\n\nAdd this extension to its allow list, then restart Ollama:\n\n${fix}`;
+}
+
+/**
  * Probe `baseUrl` and say what is wrong in terms the user can act on.
  *
  * `origin` is the extension's own origin, which the panel gets from the worker
@@ -119,15 +140,27 @@ export async function diagnose(
     // We were allowed to read the response, so connectivity is fine and the
     // endpoint itself is objecting.
     //
-    // A 403 with no key sent is Ollama refusing the origin: it rejects a
-    // `chrome-extension://` origin server-side, independently of what Chrome
-    // permits, so this survives even once the host grant is in place. Reading
-    // it as a credential problem would send the user to check a key that the
-    // endpoint never asked for.
-    if (response.status === 403 && !apiKey) {
+    // A 403 is Ollama refusing the origin: it rejects a `chrome-extension://`
+    // origin server-side, independently of what Chrome permits, so this
+    // survives even once the host grant is in place. Reading it as a
+    // credential problem would send the user to check a key that the endpoint
+    // never asked for.
+    //
+    // Judged on the silence, not on whether a key was sent. Ollama implements
+    // no key at all, so people put a placeholder in the field because a key box
+    // looks required — and that alone used to route them to the http-error
+    // branch, which blames the key. What actually separates the two is that
+    // Ollama's refusal says nothing: a server rejecting a real credential
+    // explains itself, and every hosted one does.
+    //
+    // The address still has to agree, so that a hosted endpoint answering an
+    // expired key with an empty 403 is not sent to edit OLLAMA_ORIGINS. A
+    // loopback address is Ollama however it was configured; anywhere else, a
+    // key having been sent means the endpoint is one that wants keys.
+    const body = await response.text().catch(() => '');
+    if (response.status === 403 && !body.trim() && (isLoopback(baseUrl) || !apiKey)) {
       return { kind: 'origin-blocked', origin, fix: ollamaOriginsFix(origin) };
     }
-    const body = await response.text().catch(() => '');
     return { kind: 'http-error', status: response.status, body: body.slice(0, 400) };
   } catch {
     // Opaque: could be refused-origin or nothing-listening. Ask again without

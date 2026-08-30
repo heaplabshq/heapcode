@@ -18,3 +18,10 @@ docs/PROMPT_GAP_PLAN.md
 
 # W0 spike — throwaway, see docs/WEB_APP_PLAN.md
 .scratch/
+
+# The extension's signing key. The PUBLIC half is committed, in
+# packages/browser/src/manifest.config.ts, because pinning the extension ID is
+# the whole point of it. The private half signs a .crx and is needed for
+# nothing else here — Chrome Web Store signs its own — so it stays out of the
+# repo rather than being a secret everyone with a clone holds.
+packages/browser/.keys/

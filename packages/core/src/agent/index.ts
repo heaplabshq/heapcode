@@ -33,6 +33,7 @@ export * from './loop.js';
 export * from './tools.js';
 export * from './textProtocol.js';
 export * from './todo.js';
+export * from './commandRisk.js';
 export * from './permissionModes.js';
 export * from './permissions.js';
 export * from './personas.js';

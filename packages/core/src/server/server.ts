@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { chmod, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
+import { effectivePermission } from '../agent/commandRisk.js';
 import { buildCommitMessages, normalizeCommitMessage } from '../prompts/edit.js';
 import { buildApplyMessages, extractUpdatedCode } from '../prompts/apply.js';
 import { extractFirstCodeBlock } from '../edit/codeBlocks.js';
@@ -221,7 +222,17 @@ export class HeapcodeServer {
         requestPermission: async (call, tool) => {
           const res = await peer.request<PermissionRequestResult>(
             METHODS.permissionRequest,
-            { runId: params.runId, call, permission: tool.permission, toolName: tool.name } satisfies PermissionRequestParams,
+            {
+              runId: params.runId,
+              call,
+              // Escalated here, not just in PermissionEngine: the hosts that
+              // decide from this field alone — headless via resolveUnattended,
+              // web-host via a synthetic tool — have no tool definition to
+              // consult, so an un-escalated `execute` would be the whole of
+              // what they ever saw for `rm -rf` (commandRisk.ts).
+              permission: effectivePermission(call, tool.permission),
+              toolName: tool.name,
+            } satisfies PermissionRequestParams,
             controller.signal,
           );
           return res.granted;

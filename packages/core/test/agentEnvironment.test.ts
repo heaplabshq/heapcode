@@ -88,7 +88,19 @@ describe('prompt tiers', () => {
     expect(buildNativeAgentSystemPrompt('w', { environment: { cwd: '/x', platform: 'linux' } }).length).toBeLessThan(
       12_000,
     );
-    expect(buildNativeAgentSystemPrompt('w', { tier: 'lean' }).length).toBeLessThan(5_000);
+    // Raised from 5000 (2026-08, docs/PROMPT_GAP_PLAN.md items 1 and 7) for
+    // the risky-actions section: a small-context model can take an
+    // irreversible step as easily as a frontier one, so that section is the
+    // one lean addition here that pays for its bytes.
+    //
+    // This bound is a drift alarm, not a budget to write up against. When a
+    // lean rule earns its place, raise the number; never shorten the rule to
+    // fit it. Wording trimmed to buy headroom is wording chosen by a
+    // threshold rather than by what the model needs to be told, and the
+    // sentence that gets cut is always the explanatory half — the part
+    // carrying the reason a rule is followed rather than pattern-matched.
+    // Hence the deliberate ~1k of slack below.
+    expect(buildNativeAgentSystemPrompt('w', { tier: 'lean' }).length).toBeLessThan(7_500);
   });
 });
 

@@ -339,13 +339,21 @@ export const DELEGATE_TASK_TOOL: ToolDefinition = {
     '— e.g. "investigate and summarize how X works" or "write tests for Y". The sub-agent shares this workspace ' +
     'and its edits use the same checkpoints as your own, but cannot delegate further — one level of nesting only. ' +
     'Runs to completion before returning; there is no parallelism. Use it sparingly: genuinely separable work, ' +
-    'not routine steps you could just do directly.',
+    'not routine steps you could just do directly. ' +
+    'The brief is the ceiling of what the sub-agent can do: it has not seen this conversation, does not know what ' +
+    'you have already tried or ruled out, and a terse one-line task gets a shallow generic answer. Brief it like a ' +
+    'colleague who just walked in — the goal, the surrounding context it needs for judgement calls, exact paths ' +
+    'and identifiers rather than "the relevant file" — and never delegate understanding: "based on your findings, ' +
+    'fix the bug" hands your synthesis to the agent. Decide first and delegate the doing, or delegate the ' +
+    'investigation and do the deciding when the report lands.',
   parameters: {
     type: 'object',
     properties: {
       task: {
         type: 'string',
-        description: 'A self-contained description of the sub-task — the sub-agent has no context beyond this.',
+        description:
+          'A self-contained description of the sub-task — the sub-agent has no context beyond this. Include ' +
+          'what you already know and what you have ruled out, so it does not re-derive them.',
       },
       persona: {
         type: 'string',

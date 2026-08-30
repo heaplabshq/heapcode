@@ -111,6 +111,84 @@ describe('agent system prompts', () => {
   it('prefers purpose-built tools over shell equivalents', () => {
     expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/read_file instead\s+of cat/);
   });
+
+  it('names the irreversible actions and asks for a line of warning first', () => {
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/force-pushing, publishing/);
+    expect(prompt).toMatch(/Say what you are about to do and why before one of those/);
+  });
+
+  it('sends risky work through the gated tool rather than the shell equivalent', () => {
+    // The prompt is not the gate — PermissionEngine is. But the engine reads
+    // a tool's static permission class, and `run_command` is `execute`
+    // whatever the command goes on to delete, so a deletion shelled out as
+    // `rm` is one the user is never asked about. Steering the model to
+    // delete_file is what keeps the real gate in the path.
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/delete_file, not `rm` through run_command/);
+    expect(prompt).toMatch(/a deletion nobody had the chance to stop/);
+  });
+
+  it('treats a refusal as an answer instead of something to work around', () => {
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/blocked or refused call is an answer, not an obstacle/);
+    expect(prompt).toMatch(/Do not retry it another way/);
+  });
+
+  it('does not treat an obstacle as authorization to remove it', () => {
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/is not authorization to remove it/);
+    expect(prompt).toMatch(/Unfamiliar files may be the user's work in progress/);
+  });
+
+  it('does not invent a second permission channel through ask_user', () => {
+    // An earlier draft told the model to gate its own destructive actions with
+    // `ask_user` + blocksAction. Nothing enforces that, and the two hosts with
+    // no human answer it "proceed with your best judgment" — manufacturing the
+    // approval it was meant to be asking for (cli/src/headless.ts,
+    // agent/subAgent.ts).
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).not.toContain('ask_user with blocksAction: true');
+  });
+
+
+  it('asks for code that matches its surroundings and no speculative additions', () => {
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/reads like the code around it/);
+    expect(prompt).toMatch(/Default to no comments/);
+    expect(prompt).toMatch(/Three similar lines beat the wrong abstraction/);
+    expect(prompt).toMatch(/never\s+leave an implementation half-done/);
+  });
+
+  it('answers judgement questions instead of implementing them', () => {
+    // "What do you think of migrating to X?" used to get one of two wrong
+    // answers: a wall of analysis, or a half-started migration nobody asked
+    // for. The published agents settle on answer-then-wait.
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/recommendation in two or three sentences/);
+    expect(prompt).toMatch(/start work only once they agree/);
+  });
+
+  it('never trails into a tool call with a colon', () => {
+    // A tool call can render collapsed in every UI we have, so "let me check:"
+    // leaves a dangling sentence wherever it lands.
+    expect(buildNativeAgentSystemPrompt('my-workspace')).toMatch(/Never trail into a tool call with a colon/);
+  });
+
+  it('caps the finishing summary at two sentences', () => {
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toMatch(/one or two sentences: what changed/);
+  });
+
+  it('keeps the reversibility rule in the lean tier, drops the craft', () => {
+    // A small-context model can take an irreversible step as easily as a
+    // frontier one, but cannot afford craft advice it will not follow anyway.
+    const lean = buildNativeAgentSystemPrompt('w', { tier: 'lean' });
+    expect(lean).toMatch(/Actions you cannot take back/);
+    expect(lean).toMatch(/delete_file, not `rm` through run_command/);
+    expect(lean).toMatch(/is not authorization to remove it/);
+    expect(lean).not.toContain('Default to no comments');
+  });
 });
 
 /**

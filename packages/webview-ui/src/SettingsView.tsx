@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ExtensionToWebview, ProviderProfileConfig, SettingsPresetInfo } from '@heapcode/core';
+import type {
+  ExtensionToWebview,
+  ModelAssignment,
+  ModelRole,
+  ModelRoleTable,
+  ProviderProfileConfig,
+  SettingsPresetInfo,
+} from '@heapcode/core';
+import { MODEL_ROLES } from '@heapcode/core';
 import { filterModels } from '@heapcode/core/modelFilter';
 import { postToExtension } from './vscodeApi.js';
 
@@ -8,8 +16,32 @@ export interface SettingsData {
   active: string;
   presets: SettingsPresetInfo[];
   keySaved: Record<string, boolean>;
+  /** Which model on which connection serves each role — one global table. */
+  roles: ModelRoleTable;
+  /** Each role already resolved to a sentence, so this screen states outcomes rather than fields. */
+  roleSummary: Record<ModelRole, string>;
   subAgentsEnabled: boolean;
 }
+
+/** What each role is for, in the order the panel lists them. */
+const ROLE_META: Record<ModelRole, { icon: string; label: string; hint: string }> = {
+  chat: { icon: '💬', label: 'Chat', hint: 'Conversations in the sidebar. Every other role inherits from this one.' },
+  agent: { icon: '🤖', label: 'Agent', hint: 'Agent mode — a strong tool-calling model.' },
+  edit: { icon: '✏️', label: 'Edit', hint: 'Inline edit (Ctrl+I) and commit messages.' },
+  apply: {
+    icon: '🔀',
+    label: 'Apply',
+    hint: 'Fast-apply merge model, used when an edit’s search text does not match. Inherits nothing — unset means edits fall back to selection/insert.',
+  },
+  completion: { icon: '⚡', label: 'Autocomplete', hint: 'Editor ghost text — pick a FIM-capable coder model.' },
+  embeddings: {
+    icon: '🔍',
+    label: 'Embeddings',
+    hint: 'Semantic search and the repo index. Inherits nothing on purpose: a chat model asked to embed returns something that is not an embedding, and that shows up as bad results rather than as an error.',
+  },
+  rerank: { icon: '🔢', label: 'Rerank', hint: 'Reranks search hits. A small fast model works well.' },
+  context: { icon: '📝', label: 'Context', hint: 'A short blurb per chunk at index time. A small fast model works well.' },
+};
 
 /** Working copy of a profile being edited; strings throughout for form binding. */
 interface Draft {
@@ -18,22 +50,15 @@ interface Draft {
   name: string;
   preset: string;
   baseUrl: string;
+  /**
+   * The chat model on this connection.
+   *
+   * Only chat. The other roles are not properties of an endpoint any more —
+   * they live in one global table on the main screen, so this form no longer
+   * carries seven model fields and seven "run this on another profile"
+   * dropdowns.
+   */
   model: string;
-  editModel: string;
-  applyModel: string;
-  completionModel: string;
-  agentModel: string;
-  embeddingsModel: string;
-  rerankModel: string;
-  contextModel: string;
-  /** Name of another configured profile to run this role on entirely — '' = this profile. */
-  editProfile: string;
-  applyProfile: string;
-  completionProfile: string;
-  agentProfile: string;
-  embeddingsProfile: string;
-  rerankProfile: string;
-  contextProfile: string;
   contextWindow: string;
   temperature: string;
   maxTokens: string;
@@ -57,20 +82,6 @@ function toDraft(p: ProviderProfileConfig): Draft {
     preset: p.preset,
     baseUrl: p.baseUrl,
     model: p.model ?? '',
-    editModel: p.editModel ?? '',
-    applyModel: p.applyModel ?? '',
-    completionModel: p.completionModel ?? '',
-    agentModel: p.agentModel ?? '',
-    embeddingsModel: p.embeddingsModel ?? '',
-    rerankModel: p.rerankModel ?? '',
-    contextModel: p.contextModel ?? '',
-    editProfile: p.editProfile ?? '',
-    applyProfile: p.applyProfile ?? '',
-    completionProfile: p.completionProfile ?? '',
-    agentProfile: p.agentProfile ?? '',
-    embeddingsProfile: p.embeddingsProfile ?? '',
-    rerankProfile: p.rerankProfile ?? '',
-    contextProfile: p.contextProfile ?? '',
     contextWindow: p.contextWindow != null ? String(p.contextWindow) : '',
     temperature: p.temperature != null ? String(p.temperature) : '',
     maxTokens: p.maxTokens != null ? String(p.maxTokens) : '',
@@ -87,20 +98,6 @@ function newDraft(preset: SettingsPresetInfo): Draft {
     preset: preset.id,
     baseUrl: preset.defaultBaseUrl,
     model: '',
-    editModel: '',
-    applyModel: '',
-    completionModel: '',
-    agentModel: '',
-    embeddingsModel: '',
-    rerankModel: '',
-    contextModel: '',
-    editProfile: '',
-    applyProfile: '',
-    completionProfile: '',
-    agentProfile: '',
-    embeddingsProfile: '',
-    rerankProfile: '',
-    contextProfile: '',
     contextWindow: '',
     temperature: '',
     maxTokens: '',
@@ -122,20 +119,6 @@ function fromDraft(d: Draft): ProviderProfileConfig {
     baseUrl: d.baseUrl.trim(),
     model: d.model.trim(),
   };
-  if (opt(d.editModel)) profile.editModel = opt(d.editModel);
-  if (opt(d.applyModel)) profile.applyModel = opt(d.applyModel);
-  if (opt(d.completionModel)) profile.completionModel = opt(d.completionModel);
-  if (opt(d.agentModel)) profile.agentModel = opt(d.agentModel);
-  if (opt(d.embeddingsModel)) profile.embeddingsModel = opt(d.embeddingsModel);
-  if (opt(d.rerankModel)) profile.rerankModel = opt(d.rerankModel);
-  if (opt(d.contextModel)) profile.contextModel = opt(d.contextModel);
-  if (opt(d.editProfile)) profile.editProfile = opt(d.editProfile);
-  if (opt(d.applyProfile)) profile.applyProfile = opt(d.applyProfile);
-  if (opt(d.completionProfile)) profile.completionProfile = opt(d.completionProfile);
-  if (opt(d.agentProfile)) profile.agentProfile = opt(d.agentProfile);
-  if (opt(d.embeddingsProfile)) profile.embeddingsProfile = opt(d.embeddingsProfile);
-  if (opt(d.rerankProfile)) profile.rerankProfile = opt(d.rerankProfile);
-  if (opt(d.contextProfile)) profile.contextProfile = opt(d.contextProfile);
   if (num(d.contextWindow) != null) profile.contextWindow = num(d.contextWindow);
   if (num(d.temperature) != null) profile.temperature = num(d.temperature);
   if (num(d.maxTokens) != null) profile.maxTokens = num(d.maxTokens);
@@ -304,55 +287,77 @@ function ModelPickerInput({
   );
 }
 
-/** Compact icon + label + input row for a model role — denser than the stacked Field layout. */
-function RoleField({
-  icon,
-  label,
-  value,
-  onChange,
-  placeholder,
+/**
+ * One role: which connection, which model, and what it resolves to.
+ *
+ * The old screen gave each role a model box plus a "run on profile" dropdown,
+ * on every profile, and left the reader to trace the redirect and then the
+ * fallback chain. This states the outcome in a sentence and lets the model be
+ * picked from any connection, because a role names a model — it is not a
+ * property of an endpoint.
+ */
+function RoleRow({
+  role,
+  assignment,
+  summary,
+  connections,
   models,
-}: {
-  icon: string;
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  models: string[];
-}) {
-  return (
-    <label className="settings-role-field">
-      <span className="settings-role-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="settings-role-label">{label}</span>
-      <ModelPickerInput value={value} onChange={onChange} models={models} placeholder={placeholder} />
-    </label>
-  );
-}
-
-/** "Run this role on a different profile" dropdown — sits under a role's model Field. */
-function RoleProfileSelect({
-  value,
+  onRequestModels,
   onChange,
-  options,
 }: {
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
+  role: ModelRole;
+  assignment?: ModelAssignment;
+  summary: string;
+  connections: string[];
+  models: Record<string, string[]>;
+  onRequestModels: (connection: string) => void;
+  onChange: (assignment?: ModelAssignment) => void;
 }) {
+  const meta = ROLE_META[role];
+  const connection = assignment?.connection ?? connections[0] ?? '';
   return (
-    <label className="settings-field settings-role-profile">
-      <span className="settings-label">↳ run on profile</span>
-      <select className="settings-input" value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">this profile</option>
-        {options.map((name) => (
-          <option key={name} value={name}>
-            {name}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="settings-role-row">
+      <div className="settings-role-head">
+        <span className="settings-role-icon" aria-hidden="true">
+          {meta.icon}
+        </span>
+        <span className="settings-role-label">{meta.label}</span>
+        <span className="settings-role-summary">{summary}</span>
+        {/* Clearing has to be reachable from the same place the choice was
+            made. Chat is what the chain bottoms out at, so it cannot inherit. */}
+        {role !== 'chat' && assignment && (
+          <button className="ghost settings-role-clear" title="Inherit instead" onClick={() => onChange(undefined)}>
+            Inherit
+          </button>
+        )}
+      </div>
+      <div className="settings-role-controls">
+        <select
+          className="settings-input"
+          value={connection}
+          onChange={(e) => {
+            onRequestModels(e.target.value);
+            // Changing the endpoint clears the model: a model id means nothing
+            // on a host that does not serve it, and carrying it across is how
+            // an assignment ends up naming something that fails at request
+            // time rather than here.
+            onChange({ ...assignment, connection: e.target.value, model: '' });
+          }}
+        >
+          {connections.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <ModelPickerInput
+          value={assignment?.model ?? ''}
+          onChange={(model) => onChange(model ? { ...assignment, connection, model } : undefined)}
+          models={models[connection] ?? []}
+          placeholder={meta.hint}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -366,10 +371,29 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [showRoles, setShowRoles] = useState(false);
   const [test, setTest] = useState<TestState>({ status: 'idle', models: [] });
+  /**
+   * Model ids per connection, for the role rows.
+   *
+   * Fetched per connection and on demand rather than all at once, so an
+   * endpoint that is not running costs only the row pointing at it. A local
+   * Ollama that is switched off is the ordinary case for someone whose other
+   * connection is a cloud provider.
+   */
+  const [connectionModels, setConnectionModels] = useState<Record<string, string[]>>({});
+  const requested = useRef(new Set<string>());
+  const requestModels = (connection: string): void => {
+    if (!connection || requested.current.has(connection)) return;
+    requested.current.add(connection);
+    postToExtension({ type: 'settingsListConnectionModels', connection });
+  };
 
   useEffect(() => {
     const onMessage = (e: MessageEvent<ExtensionToWebview>) => {
       const msg = e.data;
+      if (msg.type === 'settingsConnectionModels') {
+        setConnectionModels((m) => ({ ...m, [msg.connection]: msg.models }));
+        return;
+      }
       if (msg.type !== 'settingsModels') return;
       setTest(
         msg.error
@@ -532,30 +556,16 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
         <div className="settings-section">
           <button className="settings-roles-toggle" onClick={() => setShowRoles((v) => !v)}>
             <span className="tools-group-chevron">{showRoles ? '▾' : '▸'}</span>
-            <span className="settings-section-title">Model roles &amp; tuning</span>
+            <span className="settings-section-title">Tuning</span>
           </button>
           {showRoles && (
             <div className="settings-roles-body">
-              <div className="settings-subsection-title">Core roles</div>
-              <RoleField icon="✏️" label="Edit" value={draft.editModel} onChange={(editModel) => set({ editModel })} placeholder={inherits} models={test.models} />
-              <RoleProfileSelect value={draft.editProfile} onChange={(editProfile) => set({ editProfile })} options={otherProfiles} />
-              <RoleField icon="🔀" label="Apply" value={draft.applyModel} onChange={(applyModel) => set({ applyModel })} placeholder="fast-apply merge model" models={test.models} />
-              <RoleProfileSelect value={draft.applyProfile} onChange={(applyProfile) => set({ applyProfile })} options={otherProfiles} />
-              <RoleField icon="⚡" label="Autocomplete" value={draft.completionModel} onChange={(completionModel) => set({ completionModel })} placeholder={inherits} models={test.models} />
-              <RoleProfileSelect value={draft.completionProfile} onChange={(completionProfile) => set({ completionProfile })} options={otherProfiles} />
-              <RoleField icon="🤖" label="Agent" value={draft.agentModel} onChange={(agentModel) => set({ agentModel })} placeholder={inherits} models={test.models} />
-              <RoleProfileSelect value={draft.agentProfile} onChange={(agentProfile) => set({ agentProfile })} options={otherProfiles} />
-
-              <div className="settings-subsection-title">Retrieval roles</div>
-              <RoleField icon="🔍" label="Embeddings" value={draft.embeddingsModel} onChange={(embeddingsModel) => set({ embeddingsModel })} placeholder="for semantic search / RAG" models={test.models} />
-              <RoleProfileSelect value={draft.embeddingsProfile} onChange={(embeddingsProfile) => set({ embeddingsProfile })} options={otherProfiles} />
-              <RoleField icon="🔢" label="Rerank" value={draft.rerankModel} onChange={(rerankModel) => set({ rerankModel })} placeholder="inherits edit → chat model" models={test.models} />
-              <RoleProfileSelect value={draft.rerankProfile} onChange={(rerankProfile) => set({ rerankProfile })} options={otherProfiles} />
-              <RoleField icon="📝" label="Context" value={draft.contextModel} onChange={(contextModel) => set({ contextModel })} placeholder="inherits rerank → edit → chat model" models={test.models} />
-              <RoleProfileSelect value={draft.contextProfile} onChange={(contextProfile) => set({ contextProfile })} options={otherProfiles} />
-
-              <div className="settings-subsection-title">Tuning</div>
-              <Field label="Context window (tokens)" value={draft.contextWindow} onChange={(contextWindow) => set({ contextWindow })} placeholder="auto — provider default, else 32768" type="number" />
+              {/* Tuning describes a MODEL, not an endpoint, so these belong to
+                  the chat assignment above rather than to the connection. A
+                  role assigned its own model on this same endpoint keeps its
+                  own numbers — which is the point: a small rerank model must
+                  not inherit a 128k window because it shares a host. */}
+              <Field label="Context window (tokens)" value={draft.contextWindow} onChange={(contextWindow) => set({ contextWindow })} placeholder="auto — asks the endpoint, else the preset default" type="number" />
               <Field label="Temperature" value={draft.temperature} onChange={(temperature) => set({ temperature })} placeholder="provider default" type="number" />
               <Field label="Max output tokens" value={draft.maxTokens} onChange={(maxTokens) => set({ maxTokens })} placeholder="provider default" type="number" />
               <Field label="Request timeout (seconds)" value={draft.timeoutSec} onChange={(timeoutSec) => set({ timeoutSec })} placeholder="300 — raise for local/slow models on large prompts" type="number" />
@@ -591,8 +601,11 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
     <div className="settings">
       <div className="settings-header">
         <div>
-          <div className="settings-title">Provider profiles</div>
-          <div className="settings-subtitle">AI providers Heap Code connects to — local or cloud.</div>
+          <div className="settings-title">Connections</div>
+          <div className="settings-subtitle">
+            Provider endpoints Heap Code connects to — local or cloud. Which model does what is
+            below.
+          </div>
         </div>
       </div>
       <div className="settings-profile-list">
@@ -613,7 +626,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
               {p.name !== data.active && (
                 <button
                   className="ghost"
-                  title="Make this the active profile"
+                  title="Move chat to this connection"
                   onClick={() => postToExtension({ type: 'settingsActivateProfile', name: p.name })}
                 >
                   Use
@@ -624,7 +637,7 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
               </button>
               <button
                 className="ghost danger"
-                title="Delete profile"
+                title="Delete connection"
                 onClick={() => postToExtension({ type: 'settingsDeleteProfile', name: p.name })}
               >
                 ✕
@@ -637,8 +650,38 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
         className="settings-add"
         onClick={() => openDraft(newDraft(data.presets.find((p) => p.id === 'ollama') ?? data.presets[0]!))}
       >
-        + Add profile
+        + Add connection
       </button>
+
+      <div className="settings-section">
+        <div className="settings-section-title">Model roles</div>
+        <div className="settings-subtitle">
+          One table for the whole app, not one per connection. Each role can run on any
+          connection’s model, and switching what you chat with no longer changes the rest.
+        </div>
+        <div className="settings-roles-body">
+          {MODEL_ROLES.map((role) => (
+            <RoleRow
+              key={role}
+              role={role}
+              assignment={data.roles[role]}
+              summary={data.roleSummary[role]}
+              connections={data.profiles.map((p) => p.name)}
+              models={connectionModels}
+              onRequestModels={requestModels}
+              onChange={(assignment) =>
+                postToExtension({
+                  type: 'settingsSetRole',
+                  role,
+                  // An assignment with no model is not a state anything can
+                  // run on, so it is sent as a clear instead.
+                  assignment: assignment?.model ? assignment : undefined,
+                })
+              }
+            />
+          ))}
+        </div>
+      </div>
       <div className="settings-section">
         <div className="settings-section-title">Agent</div>
         <label className="settings-toggle-row">

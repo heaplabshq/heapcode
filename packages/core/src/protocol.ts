@@ -1,5 +1,6 @@
 import type { ConversationMeta } from './history/types.js';
 import type { ProviderProfileConfig } from './config/profiles.js';
+import type { ModelAssignment, ModelRole, ModelRoleTable } from './config/roles.js';
 import type { PermissionMode } from './agent/permissionModes.js';
 import type { TodoItem } from './agent/todo.js';
 
@@ -111,6 +112,16 @@ export type WebviewToExtension =
   | { type: 'settingsSaveProfile'; original?: string; profile: ProviderProfileConfig; apiKey?: string }
   | { type: 'settingsDeleteProfile'; name: string }
   | { type: 'settingsActivateProfile'; name: string }
+  /**
+   * Assign a role, or clear it (no `assignment`) so it inherits again.
+   *
+   * One message for the whole table rather than a field on a profile, because
+   * a role is not a property of an endpoint any more — it names a model, and
+   * the model may live on any connection (core's config/roles.ts).
+   */
+  | { type: 'settingsSetRole'; role: ModelRole; assignment?: ModelAssignment }
+  /** Model ids for one connection, so a role row can offer a dropdown for it. */
+  | { type: 'settingsListConnectionModels'; connection: string }
   /** Toggles `heapcode.agent.subAgents` — surfaced here so the opt-in isn't only discoverable via native VS Code settings. */
   | { type: 'settingsSetSubAgents'; enabled: boolean }
   /**
@@ -223,9 +234,15 @@ export type ExtensionToWebview =
       active: string;
       presets: SettingsPresetInfo[];
       keySaved: Record<string, boolean>;
+      /** Which model on which connection serves each role — one global table. */
+      roles: ModelRoleTable;
+      /** Each role resolved to a sentence, so the panel states the outcome instead of the fields. */
+      roleSummary: Record<ModelRole, string>;
       /** Current value of `heapcode.agent.subAgents` (default false — an opt-in, autonomy-increasing capability). */
       subAgentsEnabled: boolean;
     }
+  /** Result of 'settingsListConnectionModels'. */
+  | { type: 'settingsConnectionModels'; connection: string; models: string[]; error?: string }
   /** Result of 'settingsTestConnection' — empty `models` + `error` set means the test failed. */
   | { type: 'settingsModels'; models: string[]; error?: string }
   | { type: 'agentText'; text: string }

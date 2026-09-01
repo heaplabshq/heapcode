@@ -16,6 +16,9 @@ import {
   isAbortError,
   parseSlashCommand,
   providerPresets,
+  describeRole,
+  MODEL_ROLES,
+  type ModelRole,
   renderTemplate,
   resolveCapabilities,
   stripToolCallArtifacts,
@@ -309,14 +312,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Everything the settings panel renders: profiles, presets, key status. */
+  /** Everything the settings panel renders: connections, roles, presets, key status. */
   private async postSettingsData(): Promise<void> {
     const profiles = this.profiles.getProfiles();
     const keySaved: Record<string, boolean> = {};
     for (const p of profiles) keySaved[p.name] = await this.profiles.hasApiKey(p.name);
+    const config = this.profiles.getModelConfig();
+    // Resolved, not raw. The panel's job is to answer "what runs rerank?", and
+    // the old one made the reader trace a redirect and a fallback chain to do
+    // it.
+    const roleSummary = Object.fromEntries(
+      MODEL_ROLES.map((role) => [role, describeRole(config, role)]),
+    ) as Record<ModelRole, string>;
     this.post({
       type: 'settingsData',
       profiles,
+      roles: config.roles,
+      roleSummary,
       active: this.profiles.getActiveProfile().name,
       presets: providerPresets.map((p) => ({
         id: p.id,
@@ -639,7 +651,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case 'settingsDeleteProfile': {
         const confirm = await vscode.window.showWarningMessage(
-          `Delete profile "${msg.name}"? Its stored API key is removed too.`,
+          `Delete connection "${msg.name}"? Its stored API key, and any role pointing at it, go too.`,
           { modal: true },
           'Delete',
         );
@@ -651,6 +663,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.profiles.setActiveByName(msg.name);
         await this.postSettingsData();
         break;
+      case 'settingsSetRole':
+        await this.profiles.setRole(msg.role, msg.assignment);
+        await this.postSettingsData();
+        break;
+      case 'settingsListConnectionModels': {
+        // Per connection rather than all at once: the panel asks for the one a
+        // role row is pointing at, and an unreachable endpoint then costs only
+        // that row rather than the whole screen.
+        try {
+          const connection = this.profiles.getProfiles().find((p) => p.name === msg.connection);
+          if (!connection) throw new Error(`No connection named "${msg.connection}".`);
+          const provider = createProvider(connection, await this.profiles.getApiKey(connection));
+          const models = (await provider.listModels()).map((m) => m.id);
+          this.post({ type: 'settingsConnectionModels', connection: msg.connection, models });
+        } catch (err) {
+          this.post({
+            type: 'settingsConnectionModels',
+            connection: msg.connection,
+            models: [],
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        break;
+      }
       case 'settingsSetSubAgents':
         await vscode.workspace.getConfiguration('heapcode.agent').update(
           'subAgents',

@@ -5,31 +5,36 @@ import {
   getPreset,
   getSearchPreset,
   isSearchPresetId,
+  describeRole,
+  migrateProfiles,
+  MODEL_ROLES,
+  resolveRole,
+  toProfile,
   WEB_SEARCH_SECRET_NAME,
   type WebSearchConfig,
   providerPresets,
   resolveCapabilities,
   type ContextWindowSource,
+  type LegacyProviderProfile,
+  type ModelAssignment,
+  type ModelConfig,
   type ModelInfo,
   type ModelRole,
+  type ModelRoleTable,
   type PresetId,
   type Provider,
+  type ProviderConnection,
   type ProviderProfileConfig,
 } from '@heapcode/core';
 
 const LEGACY_KEY_SECRET = 'heapcode.apiKey';
 
-/** Which `*Profile` field on ProviderProfileConfig redirects a given role to another profile. */
-const ROLE_PROFILE_FIELD: Record<ModelRole, keyof ProviderProfileConfig> = {
-  editModel: 'editProfile',
-  applyModel: 'applyProfile',
-  completionModel: 'completionProfile',
-  agentModel: 'agentProfile',
-  embeddingsModel: 'embeddingsProfile',
-  rerankModel: 'rerankProfile',
-  contextModel: 'contextProfile',
-};
-
+/**
+ * The secret-storage key for a connection's API key.
+ *
+ * Keyed by the connection's *name*, which is why migrating from profiles keeps
+ * every name: a rename here means the user re-enters the key.
+ */
 function profileSecretKey(profileName: string): string {
   return `heapcode.apiKey.${profileName}`;
 }
@@ -131,27 +136,73 @@ export class ProfileManager {
     this.changeEmitter.fire();
   }
 
-  getProfiles(): ProviderProfileConfig[] {
+  /**
+   * Connections and the global role table, migrating the pre-split settings on
+   * the way through.
+   *
+   * Computed on read rather than written back, so opening the extension does
+   * not rewrite settings.json on someone's behalf. The old `heapcode.profiles`
+   * stays where it is, ignored, until the user saves something — which also
+   * means downgrading is not destructive.
+   */
+  getModelConfig(): ModelConfig {
     const cfg = vscode.workspace.getConfiguration('heapcode');
-    const profiles = cfg.get<ProviderProfileConfig[]>('profiles', []);
-    if (profiles.length > 0) return profiles;
-    // Legacy fallback: synthesize a profile from the flat v0.1 settings.
-    return [
-      {
-        name: 'default',
-        preset: 'custom',
-        baseUrl: cfg.get<string>('baseUrl', 'http://localhost:11434/v1'),
-        model: cfg.get<string>('model', ''),
-        temperature: cfg.get<number>('temperature'),
-        maxTokens: cfg.get<number>('maxTokens'),
+    const connections = cfg.get<ProviderConnection[]>('connections', []);
+    if (connections.length > 0) {
+      return { connections, roles: cfg.get<ModelRoleTable>('modelRoles', {}) };
+    }
+    const profiles = cfg.get<LegacyProviderProfile[]>('profiles', []);
+    if (profiles.length > 0) {
+      return migrateProfiles(profiles, cfg.get<string>('activeProfile', ''));
+    }
+    // Legacy fallback: synthesize one from the flat v0.1 settings.
+    const model = cfg.get<string>('model', '');
+    return {
+      connections: [
+        { name: 'default', preset: 'custom', baseUrl: cfg.get<string>('baseUrl', 'http://localhost:11434/v1') },
+      ],
+      roles: {
+        chat: {
+          connection: 'default',
+          model,
+          temperature: cfg.get<number>('temperature'),
+          maxTokens: cfg.get<number>('maxTokens'),
+        },
       },
-    ];
+    };
   }
 
+  getConnections(): ProviderConnection[] {
+    return this.getModelConfig().connections;
+  }
+
+  /**
+   * Every connection as a flattened profile carrying the chat model.
+   *
+   * The wire and `createProvider` both speak profiles, so this is the shape
+   * callers keep asking for; the role table beside it is what decides which
+   * model actually serves what.
+   */
+  getProfiles(): ProviderProfileConfig[] {
+    const { connections, roles } = this.getModelConfig();
+    return connections.map((c) =>
+      toProfile(c, roles.chat?.connection === c.name ? roles.chat : { connection: c.name, model: '' }),
+    );
+  }
+
+  getRoles(): ModelRoleTable {
+    return this.getModelConfig().roles;
+  }
+
+  /**
+   * The connection and model chat runs on.
+   *
+   * "Active" is the chat assignment now, not a profile — switching what you
+   * chat with no longer takes the other six roles with it.
+   */
   getActiveProfile(): ProviderProfileConfig {
-    const profiles = this.getProfiles();
-    const activeName = vscode.workspace.getConfiguration('heapcode').get<string>('activeProfile', '');
-    return profiles.find((p) => p.name === activeName) ?? profiles[0]!;
+    const config = this.getModelConfig();
+    return resolveRole(config, 'chat')?.profile ?? this.getProfiles()[0]!;
   }
 
   async getApiKey(profile: ProviderProfileConfig): Promise<string | undefined> {
@@ -165,23 +216,38 @@ export class ProfileManager {
   }
 
   /**
-   * Which profile actually serves a given role: the active profile, unless it names a
-   * different one via its `<role>Profile` field (e.g. `embeddingsProfile`), in which case
-   * that named profile is used instead — its own baseUrl/key/model, not the active one's.
-   * Synchronous (no secret-storage lookup) so it's cheap to call just to check a model name.
+   * The endpoint and model serving a role — one lookup in the global table,
+   * with the inheritance chain in core (config/roles.ts).
+   *
+   * `undefined` means nothing serves it. That is the ordinary state for
+   * embeddings and apply, which inherit nothing on purpose: a chat model asked
+   * to embed returns something that is not an embedding, and a general model
+   * cannot produce a fast-apply merge. Callers treat it as "off", which is
+   * what they already did for an unset role.
+   *
+   * Synchronous (no secret-storage lookup) so it is cheap to call just to
+   * check a model name.
    */
-  resolveRoleProfile(role: ModelRole): ProviderProfileConfig {
-    const active = this.getActiveProfile();
-    const targetName = active[ROLE_PROFILE_FIELD[role]] as string | undefined;
-    if (!targetName || targetName === active.name) return active;
-    return this.getProfiles().find((p) => p.name === targetName) ?? active;
+  resolveRoleProfile(role: ModelRole): ProviderProfileConfig | undefined {
+    return resolveRole(this.getModelConfig(), role)?.profile;
   }
 
-  /** Provider + profile for a role, following its `<role>Profile` redirect (see resolveRoleProfile). */
-  async resolveRole(role: ModelRole): Promise<{ provider: Provider; profile: ProviderProfileConfig }> {
+  /** Provider + profile for a role, or undefined when nothing is assigned to it. */
+  async resolveRole(
+    role: ModelRole,
+  ): Promise<{ provider: Provider; profile: ProviderProfileConfig } | undefined> {
     const profile = this.resolveRoleProfile(role);
+    if (!profile) return undefined;
     const apiKey = await this.getApiKey(profile);
     return { provider: createProvider(profile, apiKey), profile };
+  }
+
+  /** Assigns a role, or clears it (back to inheriting) when given no assignment. */
+  async setRole(role: ModelRole, assignment?: ModelAssignment): Promise<void> {
+    const roles = { ...this.getRoles() };
+    if (assignment) roles[role] = assignment;
+    else delete roles[role];
+    await this.saveRoles(roles);
   }
 
   /** Model-reported context length, looked up once per endpoint+model. */
@@ -223,10 +289,44 @@ export class ProfileManager {
       : { window: DEFAULT_CONTEXT_WINDOW, source: 'default' };
   }
 
+  /**
+   * Writes connections, and the migrated role table alongside them the first
+   * time.
+   *
+   * Migration only reaches disk here, on a real save — the read path computes
+   * it. Without writing the table too, the first save would persist
+   * connections while the roles were still being derived from `profiles`, and
+   * the two would drift the moment anything edited one of them.
+   */
+  private async saveConnections(connections: ProviderConnection[]): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('heapcode');
+    if (cfg.get<ProviderConnection[]>('connections', []).length === 0) {
+      await cfg.update('modelRoles', this.getModelConfig().roles, vscode.ConfigurationTarget.Global);
+    }
+    await cfg.update('connections', connections, vscode.ConfigurationTarget.Global);
+  }
+
+  private async saveRoles(roles: ModelRoleTable): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('heapcode');
+    if (cfg.get<ProviderConnection[]>('connections', []).length === 0) {
+      await cfg.update('connections', this.getModelConfig().connections, vscode.ConfigurationTarget.Global);
+    }
+    await cfg.update('modelRoles', roles, vscode.ConfigurationTarget.Global);
+    this.notifyChanged();
+  }
+
+  /** Kept for callers that still think in profiles; splits and stores both halves. */
   private async saveProfiles(profiles: ProviderProfileConfig[]): Promise<void> {
-    await vscode.workspace
-      .getConfiguration('heapcode')
-      .update('profiles', profiles, vscode.ConfigurationTarget.Global);
+    await this.saveConnections(
+      profiles.map((p) => ({
+        name: p.name,
+        preset: p.preset,
+        baseUrl: p.baseUrl,
+        headers: p.headers,
+        capabilities: p.capabilities,
+        timeoutMs: p.timeoutMs,
+      })),
+    );
   }
 
   private async setActive(name: string): Promise<void> {
@@ -236,19 +336,25 @@ export class ProfileManager {
     this.notifyChanged();
   }
 
-  /** Switch profile by name (used by the in-chat model menu). */
+  /**
+   * Move chat to a connection (used by the in-chat model menu).
+   *
+   * The model is dropped rather than carried over, because a model id means
+   * nothing on an endpoint that does not serve it. The caller picks one next.
+   */
   async setActiveByName(name: string): Promise<void> {
-    if (this.getProfiles().some((p) => p.name === name)) await this.setActive(name);
+    if (!this.getConnections().some((c) => c.name === name)) return;
+    await this.saveRoles({ ...this.getRoles(), chat: { connection: name, model: '' } });
+    await this.setActive(name);
   }
 
-  /** Set the chat model of the active profile (used by the in-chat model menu). */
-  async setChatModel(modelId: string): Promise<void> {
-    const active = this.getActiveProfile();
-    const profiles = this.getProfiles().map((p) =>
-      p.name === active.name ? { ...p, model: modelId } : p,
-    );
-    await this.saveProfiles(profiles);
-    this.notifyChanged();
+  /** Point chat at a model, on a named connection or on the one already in use. */
+  async setChatModel(modelId: string, connection?: string): Promise<void> {
+    const chat = this.getRoles().chat;
+    const target = connection ?? chat?.connection ?? this.getConnections()[0]?.name;
+    if (!target) return;
+    await this.saveRoles({ ...this.getRoles(), chat: { ...chat, connection: target, model: modelId } });
+    if (target !== chat?.connection) await this.setActive(target);
   }
 
   // ---- settings panel (programmatic) ----
@@ -289,6 +395,23 @@ export class ProfileManager {
       profiles = [...existing, clean];
     }
     await this.saveProfiles(profiles);
+    // The editor binds a chat model and its tuning alongside the endpoint, and
+    // `saveProfiles` only stores the endpoint half. Without this, editing the
+    // model in the connection form would silently do nothing.
+    const chat = this.getRoles().chat;
+    if (clean.model && (!chat || chat.connection === original || chat.connection === name)) {
+      await this.saveRoles({
+        ...this.getRoles(),
+        chat: {
+          connection: name,
+          model: clean.model,
+          temperature: clean.temperature,
+          maxTokens: clean.maxTokens,
+          contextWindow: clean.contextWindow,
+          promptTier: clean.promptTier,
+        },
+      });
+    }
 
     if (apiKey === '') await this.secrets.delete(profileSecretKey(name));
     else if (apiKey !== undefined) await this.secrets.store(profileSecretKey(name), apiKey);
@@ -399,163 +522,124 @@ export class ProfileManager {
     await this.selectModelFlow();
   }
 
+  /**
+   * Pick a role, then pick a model for it from ANY connection.
+   *
+   * This used to be a role picker over the active profile's own fields, with a
+   * "this role is redirected elsewhere, go edit that profile" dead end for
+   * anything pointing at another provider. The whole reason the split happened
+   * is that a role is not a property of an endpoint: it names a model, and the
+   * model can live anywhere.
+   */
   async selectModelFlow(): Promise<void> {
-    const profile = this.getActiveProfile();
-
-    type Role =
-      | 'model'
-      | 'editModel'
-      | 'applyModel'
-      | 'completionModel'
-      | 'agentModel'
-      | 'embeddingsModel'
-      | 'rerankModel'
-      | 'contextModel';
-
-    /** A role redirected to another profile shows that instead — this profile's own model field is unused while it's active. */
-    const describeRole = (role: Role, ownDescription: string): string => {
-      if (role === 'model') return ownDescription;
-      const targetName = profile[ROLE_PROFILE_FIELD[role]] as string | undefined;
-      if (!targetName) return ownDescription;
-      const target = this.getProfiles().find((p) => p.name === targetName);
-      if (!target) return `via "${targetName}" (profile not found — falls back here)`;
-      return `via "${targetName}" → ${target[role] || 'not set'}`;
+    const config = this.getModelConfig();
+    const meta: Record<ModelRole, { icon: string; label: string; detail: string }> = {
+      chat: { icon: 'comment-discussion', label: 'Chat', detail: 'Conversations in the sidebar' },
+      edit: { icon: 'edit', label: 'Edit', detail: 'Inline edit (Ctrl+I), commit messages' },
+      apply: {
+        icon: 'git-merge',
+        label: 'Apply',
+        detail: 'Fast-apply merge model for "Apply" on code blocks (e.g. FastApply-1.5B)',
+      },
+      completion: {
+        icon: 'zap',
+        label: 'Autocomplete',
+        detail: 'Ghost text — pick a FIM-capable coder model (qwen2.5-coder, starcoder2…)',
+      },
+      agent: { icon: 'hubot', label: 'Agent', detail: 'Agent mode — pick a strong tool-calling model' },
+      embeddings: { icon: 'search', label: 'Embeddings', detail: 'Semantic search / RAG index' },
+      rerank: {
+        icon: 'list-ordered',
+        label: 'Rerank',
+        detail: 'Reranks semantic-search hits — a small fast model works well',
+      },
+      context: {
+        icon: 'comment',
+        label: 'Context',
+        detail: 'A short blurb per chunk for contextual retrieval (indexing) — a small fast model works well',
+      },
     };
 
-    const inherits = `inherits chat (${profile.model || 'not set'})`;
     const rolePick = await vscode.window.showQuickPick(
-      [
-        {
-          label: '$(comment-discussion) Chat',
-          description: profile.model || 'not set',
-          detail: 'Conversations in the sidebar',
-          role: 'model' as Role,
-        },
-        {
-          label: '$(edit) Edit',
-          description: describeRole('editModel', profile.editModel || inherits),
-          detail: 'Inline edit (Ctrl+I), commit messages',
-          role: 'editModel' as Role,
-        },
-        {
-          label: '$(git-merge) Apply',
-          description: describeRole('applyModel', profile.applyModel || 'not set — uses selection/insert fallback'),
-          detail: 'Fast-apply merge model for "Apply" on code blocks (e.g. FastApply-1.5B)',
-          role: 'applyModel' as Role,
-        },
-        {
-          label: '$(zap) Autocomplete',
-          description: describeRole('completionModel', profile.completionModel || inherits),
-          detail: 'Ghost text — pick a FIM-capable coder model (qwen2.5-coder, starcoder2…)',
-          role: 'completionModel' as Role,
-        },
-        {
-          label: '$(hubot) Agent',
-          description: describeRole('agentModel', profile.agentModel || inherits),
-          detail: 'Agent mode — pick a strong tool-calling model',
-          role: 'agentModel' as Role,
-        },
-        {
-          label: '$(search) Embeddings',
-          description: describeRole('embeddingsModel', profile.embeddingsModel || 'not set'),
-          detail: 'Semantic search / RAG index',
-          role: 'embeddingsModel' as Role,
-        },
-        {
-          label: '$(list-ordered) Rerank',
-          description: describeRole(
-            'rerankModel',
-            profile.rerankModel || `inherits edit/chat (${profile.editModel || profile.model || 'not set'})`,
-          ),
-          detail: 'Reranks semantic-search hits — a small fast model works well',
-          role: 'rerankModel' as Role,
-        },
-        {
-          label: '$(comment) Context',
-          description: describeRole(
-            'contextModel',
-            profile.contextModel ||
-              `inherits rerank/edit/chat (${profile.rerankModel || profile.editModel || profile.model || 'not set'})`,
-          ),
-          detail:
-            'Generates a short blurb per chunk for contextual retrieval (indexing) — a small fast model works well',
-          role: 'contextModel' as Role,
-        },
-      ],
-      { title: `Heap Code: Select model — which role? (${profile.name})` },
+      MODEL_ROLES.map((role) => ({
+        label: `$(${meta[role].icon}) ${meta[role].label}`,
+        // The resolved answer, not the field. Tracing a redirect and a
+        // fallback chain by hand is what this replaces.
+        description: describeRole(config, role),
+        detail: meta[role].detail,
+        role,
+      })),
+      { title: 'Heap Code: which role?' },
     );
     if (!rolePick) return;
     const role = rolePick.role;
+    const roleLabel = rolePick.label.replace(/\$\([\w-]+\) /, '');
 
-    if (role !== 'model') {
-      const redirectTarget = profile[ROLE_PROFILE_FIELD[role]] as string | undefined;
-      if (redirectTarget) {
-        const roleLabel = rolePick.label.replace(/\$\([\w-]+\) /, '');
-        const exists = this.getProfiles().some((p) => p.name === redirectTarget);
-        void vscode.window.showInformationMessage(
-          exists
-            ? `"${roleLabel}" on "${profile.name}" runs on profile "${redirectTarget}" instead (set in Settings → Model roles & tuning). ` +
-              `Edit "${redirectTarget}"'s own model there, or clear the redirect to set a model here.`
-            : `"${roleLabel}" on "${profile.name}" is redirected to profile "${redirectTarget}", which no longer exists — ` +
-              'falling back to this profile. Clear the redirect in Settings → Model roles & tuning.',
-        );
+    // Every connection's models, fetched concurrently. One unreachable
+    // endpoint must not cost the whole list: a local Ollama that is not
+    // running is the ordinary case for someone whose other connection is a
+    // cloud provider, and before roles went global they could not see the
+    // other side's models without switching profile first.
+    const listed = await Promise.all(
+      config.connections.map(async (c) => {
+        try {
+          return (await this.listModels(c.name)).map((m) => ({ connection: c.name, id: m.id }));
+        } catch (err) {
+          this.log.appendLine(`[profiles] listModels(${c.name}) failed: ${String(err)}`);
+          return [];
+        }
+      }),
+    );
+    const models = listed.flat();
+
+    const current = config.roles[role];
+    const items: Array<vscode.QuickPickItem & { connection?: string; clear?: boolean }> = models.map((m) => ({
+      label: `${m.connection} / ${m.id}`,
+      description: current?.connection === m.connection && current.model === m.id ? 'current' : '',
+      connection: m.connection,
+    }));
+    // Clearing has to be reachable from the same place the choice was made.
+    // Chat is what the chain bottoms out at, so it has nothing to clear to.
+    if (role !== 'chat') {
+      items.unshift({ label: '$(discard) Inherit', description: 'clear this role', clear: true });
+    }
+
+    let connection = current?.connection ?? config.connections[0]?.name;
+    let modelId: string | undefined;
+    if (models.length > 0) {
+      const picked = await vscode.window.showQuickPick(items, {
+        title: `Heap Code: ${roleLabel} model`,
+        matchOnDescription: true,
+      });
+      if (!picked) return;
+      if (picked.clear) {
+        await this.setRole(role);
         return;
       }
+      connection = picked.connection;
+      modelId = picked.label.slice(`${picked.connection} / `.length);
     }
 
-    let modelId: string | undefined;
-    try {
-      const models = await this.listModels(this.getActiveProfile().name);
-      if (models.length > 0) {
-        const current = profile[role];
-        const items: vscode.QuickPickItem[] = models.map((m) => ({
-          label: m.id,
-          description: m.id === current ? 'current' : '',
-        }));
-        if (role !== 'model') {
-          items.unshift({
-            label: '$(discard) Inherit from chat model',
-            description: 'clear this role',
-          });
-        }
-        const picked = await vscode.window.showQuickPick(items, {
-          title: `Heap Code: ${rolePick.label.replace(/\$\([\w-]+\) /, '')} model (${profile.name})`,
-          matchOnDescription: true,
-        });
-        if (!picked) return;
-        modelId = picked.label.startsWith('$(discard)') ? '' : picked.label;
-      }
-    } catch (err) {
-      this.log.appendLine(`[profiles] listModels failed: ${String(err)}`);
-    }
-
-    // Azure returns [], and unreachable/unlistable endpoints land here too.
+    if (!connection) return;
+    // Azure returns [], and unreachable or unlistable endpoints land here too.
     modelId ??= await vscode.window.showInputBox({
-      title: `Model id for "${profile.name}" (${role})`,
-      value: profile[role] ?? '',
+      title: `Model id for ${roleLabel} on "${connection}"`,
+      value: current?.model ?? '',
       prompt:
-        profile.preset === 'azure-openai'
+        config.connections.find((c) => c.name === connection)?.preset === 'azure-openai'
           ? 'Your Azure deployment name'
           : 'Could not list models from the endpoint — enter the model id manually',
     });
     if (modelId === undefined) return;
 
-    const profiles = this.getProfiles().map((p) => {
-      if (p.name !== profile.name) return p;
-      const next = { ...p };
-      if (role === 'model') next.model = modelId;
-      else if (modelId === '') delete next[role];
-      else next[role] = modelId;
-      return next;
-    });
-    await this.saveProfiles(profiles);
-    this.notifyChanged();
+    if (role === 'chat') await this.setChatModel(modelId, connection);
+    else await this.setRole(role, { ...current, connection, model: modelId });
   }
 
   async setApiKeyFlow(): Promise<void> {
     const profile = this.getActiveProfile();
     const key = await vscode.window.showInputBox({
-      prompt: `API key for profile "${profile.name}" (leave empty to clear)`,
+      prompt: `API key for connection "${profile.name}" (leave empty to clear)`,
       password: true,
       ignoreFocusOut: true,
     });
@@ -575,9 +659,9 @@ export class ProfileManager {
     const profile = this.getActiveProfile();
     const picked = await vscode.window.showQuickPick(
       [
-        { label: '$(arrow-swap) Switch profile', action: 'switch' },
-        { label: '$(symbol-parameter) Select model', action: 'model' },
-        { label: '$(add) Add profile', action: 'add' },
+        { label: '$(arrow-swap) Switch connection', action: 'switch' },
+        { label: '$(symbol-parameter) Model roles', action: 'model' },
+        { label: '$(add) Add connection', action: 'add' },
         { label: '$(key) Set API key', action: 'key' },
       ],
       { title: `Heap Code — ${profile.name} · ${profile.model || 'no model'}` },

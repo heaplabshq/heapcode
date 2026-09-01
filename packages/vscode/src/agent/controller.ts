@@ -453,9 +453,14 @@ export class AgentController {
     // resolveRoleProfile, not resolveRole: the agent path no longer builds a
     // host-side Provider at all — the server resolves the profile to one
     // itself from the key pushed at hello (custody note, Option A2).
-    const profile = this.profiles.resolveRoleProfile('agentModel');
-    if (!profile.model) {
-      this.post({ type: 'error', message: `Profile "${profile.name}" has no model configured.` });
+    // The agent role, which inherits chat unless something was assigned to it
+    // specifically (core's config/roles.ts).
+    const profile = this.profiles.resolveRoleProfile('agent');
+    if (!profile?.model) {
+      this.post({
+        type: 'error',
+        message: 'No model is set for the agent. Pick one in Settings → Model roles.',
+      });
       return;
     }
     const capabilities = resolveCapabilities(profile);
@@ -463,8 +468,8 @@ export class AgentController {
       this.post({
         type: 'error',
         message:
-          `Profile "${profile.name}" is not marked vision-capable, so images can't be sent. ` +
-          'If your model does support images, set "capabilities": {"vision": true} on the profile (heapcode.profiles).',
+          `Connection "${profile.name}" is not marked vision-capable, so images can't be sent. ` +
+          'If your model does support images, set "capabilities": {"vision": true} on the connection (heapcode.connections).',
       });
       return;
     }
@@ -495,10 +500,9 @@ export class AgentController {
       `[agent] start (${capabilities.nativeToolCalls ? 'native tools' : 'text fallback'}): ${task}`,
     );
 
-    const contextWindow = await this.profiles.contextWindowFor(
-      profile,
-      profile.agentModel || profile.model,
-    );
+    // `profile.model` IS the agent model: a resolved role arrives flattened,
+    // so there is no second field to prefer over it.
+    const contextWindow = await this.profiles.contextWindowFor(profile, profile.model);
     this.contextWindowSource = contextWindow.source;
     this.fileEdits = new Map();
     // Per-tool-call shadow-git checkpoints (PLAN.md M8) — keyed by call id so
@@ -642,7 +646,7 @@ export class AgentController {
       const { outcome } = await peer.request<AgentRunResult>(METHODS.agentRun, {
         runId,
         profileName: profile.name,
-        model: profile.agentModel || profile.model,
+        model: profile.model,
         task: fullTask,
         images,
         workspaceName: path.basename(root.fsPath),

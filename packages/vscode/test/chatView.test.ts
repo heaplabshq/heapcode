@@ -93,6 +93,9 @@ function stubProfiles(profiles: ProviderProfileConfig[], keys: Record<string, st
   return {
     getProfiles: () => profiles,
     getActiveProfile: () => profiles[0]!,
+    // The global role table pushed at hello. One entry is enough here: with
+    // chat assigned, every role that inherits resolves to the same connection.
+    getRoles: () => ({ chat: { connection: profiles[0]!.name, model: profiles[0]!.model } }),
     getApiKey: (p: ProviderProfileConfig) => Promise.resolve(keys[p.name]),
     contextWindowFor: () => Promise.resolve({ window: 32_000, source: 'profile' as const }),
   } as unknown as ProfileManager;

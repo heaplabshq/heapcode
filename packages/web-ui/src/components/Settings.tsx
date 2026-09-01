@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useModal } from '../modal.js';
 import {
   UI_MODEL_ROLES,
+  type UiModelRole,
   type UiPreset,
   type UiProbeProviderParams,
   type UiProbeProviderResult,
   type UiMcpServer,
   type UiProfile,
+  type UiRoleAssignment,
   type UiSaveProfileParams,
   type UiSettings,
 } from '@heapcode/web-host/protocol';
 import { ModelInput } from './ModelInput.js';
+import { markHue } from '../mark.js';
+import { Empty } from './Empty.js';
 
 export interface SettingsProps {
   settings?: UiSettings;
@@ -25,6 +29,16 @@ export interface SettingsProps {
   onUseProfile(name: string): void;
   onDeleteProfile(name: string): void;
   onSaveProfile(profile: UiSaveProfileParams['profile'], apiKey?: string): void;
+  /** Assign a role, or clear it (no assignment) so it inherits again. */
+  onSetRole(role: UiModelRole, assignment?: { connection: string; model: string }): void;
+  /**
+   * Model ids for one connection, for a role row's dropdown.
+   *
+   * Separate from `listModels` (which lists the connection being edited)
+   * because a role row asks about a connection that is not the one in the
+   * form, and one unreachable endpoint must cost only its own row.
+   */
+  listConnectionModels?(connection: string): Promise<string[]>;
   /** Add or replace an MCP server. `spec` is a URL or a command line. */
   onSaveMcpServer(name: string, spec: string): void;
   onDeleteMcpServer(name: string): void;
@@ -54,14 +68,64 @@ export interface UiProfileDraft {
 
 /** Left-nav entries, in the two groups the dialog shows them under. */
 const PAGES = [
-  { id: 'general', group: 'Settings', label: 'General', keywords: 'persona agent sub-agents native tool calling' },
-  { id: 'providers', group: 'Settings', label: 'Providers', keywords: 'profile model api key base url context window tokens' },
-  { id: 'search', group: 'Settings', label: 'Web search', keywords: 'brave tavily serper provider api key' },
-  { id: 'permissions', group: 'Settings', label: 'Permissions', keywords: 'grants always allow reset' },
-  { id: 'skills', group: 'Customize', label: 'Skills', keywords: 'skill instructions' },
-  { id: 'connectors', group: 'Customize', label: 'Connectors', keywords: 'mcp servers tools' },
-  { id: 'memory', group: 'Customize', label: 'Memory', keywords: 'heapcode.md project instructions' },
+  { id: 'general', group: 'General', label: 'General', icon: 'sliders', keywords: 'persona agent sub-agents native tool calling' },
+  { id: 'providers', group: 'General', label: 'Providers', icon: 'plug', keywords: 'profile model api key base url context window tokens' },
+  { id: 'search', group: 'General', label: 'Web search', icon: 'globe', keywords: 'brave tavily serper provider api key' },
+  { id: 'permissions', group: 'General', label: 'Permissions', icon: 'shield', keywords: 'grants always allow reset' },
+  { id: 'skills', group: 'Workspace', label: 'Skills', icon: 'sparkles', keywords: 'skill instructions' },
+  { id: 'connectors', group: 'Workspace', label: 'Connectors', icon: 'link', keywords: 'mcp servers tools' },
+  { id: 'memory', group: 'Workspace', label: 'Memory', icon: 'book', keywords: 'heapcode.md project instructions' },
 ] as const;
+
+/** Inline SVGs so the nav can carry icons without pulling in an icon set. */
+const ICONS: Record<string, JSX.Element> = {
+  sliders: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M2 4h7M2 8h4M2 12h9" strokeLinecap="round" />
+      <circle cx="11.5" cy="4" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="13" cy="12" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  ),
+  plug: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M9 2v3M6 2v3" strokeLinecap="round" />
+      <path d="M5 5h5v2a3 3 0 0 1-3 3H6a3 3 0 0 1-1-1V5Z" strokeLinejoin="round" />
+      <path d="M7.5 10v4" strokeLinecap="round" />
+    </svg>
+  ),
+  globe: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M2.5 8h11M8 2.5c1.6 1.6 2.4 3.5 2.4 5.5S9.6 12 8 13.5C6.4 12 5.6 10 5.6 8S6.4 4 8 2.5Z" />
+    </svg>
+  ),
+  shield: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M8 2 3 4v4c0 3 2.2 5.2 5 6 2.8-.8 5-3 5-6V4l-5-2Z" strokeLinejoin="round" />
+      <path d="M6 8.2 7.4 9.6 10 6.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
+  sparkles: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M8 2.5 9 6l3.5 1L9 8l-1 3.5L7 8l-3.5-1L7 6l1-3.5Z" strokeLinejoin="round" />
+      <path d="M12.5 11.5l.4 1.4 1.4.4-1.4.4-.4 1.4-.4-1.4-1.4-.4 1.4-.4.4-1.4Z" strokeLinejoin="round" />
+    </svg>
+  ),
+  link: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M6.5 9.5 9.5 6.5" strokeLinecap="round" />
+      <path d="M7 4.5 8 3.5a2.5 2.5 0 0 1 3.5 3.5l-1 1" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 11.5 8 12.5a2.5 2.5 0 0 1-3.5-3.5l1-1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
+  book: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M3 3.5C3 2.7 3.7 2 4.5 2H13v10H4.5C3.7 12 3 12.7 3 13.5V3.5Z" strokeLinejoin="round" />
+      <path d="M3 13.5C3 12.7 3.7 12 4.5 12H13" />
+    </svg>
+  ),
+};
 
 type PageId = (typeof PAGES)[number]['id'];
 
@@ -86,7 +150,7 @@ export function Settings(props: SettingsProps): JSX.Element {
   const shown = q
     ? PAGES.filter((p) => `${p.label} ${p.keywords}`.toLowerCase().includes(q))
     : PAGES;
-  const groups = ['Settings', 'Customize'] as const;
+  const groups = ['General', 'Workspace'] as const;
   const dialog = useRef<HTMLDivElement>(null);
   useModal(dialog, props.onClose);
 
@@ -105,7 +169,7 @@ export function Settings(props: SettingsProps): JSX.Element {
             data-autofocus
             className="settings-search"
             value={query}
-            placeholder="Search"
+            placeholder="Search settings"
             aria-label="Search settings"
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -122,6 +186,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                     onClick={() => setPage(p.id)}
                     aria-current={page === p.id}
                   >
+                    <span className="settings-nav-icon">{ICONS[p.icon]}</span>
                     {p.label}
                   </button>
                 ))}
@@ -132,9 +197,12 @@ export function Settings(props: SettingsProps): JSX.Element {
         </nav>
 
         <div className="settings-pane">
-          <button className="icon-btn settings-close" onClick={props.onClose} aria-label="Close settings">
-            ✕
-          </button>
+          <div className="settings-pane-head">
+            <h2>{PAGES.find((p) => p.id === page)?.label}</h2>
+            <button className="icon-btn" onClick={props.onClose} aria-label="Close settings">
+              ✕
+            </button>
+          </div>
 
           {!s ? (
             // Placeholder fields rather than the word "Loading": the dialog is
@@ -148,42 +216,50 @@ export function Settings(props: SettingsProps): JSX.Element {
           ) : (
             <div className="modal-body">
               {page === 'general' && (
-                <Section title="General">
-                  <Field label="Persona">
-                    <select className="select" value={s.persona} onChange={(e) => props.onSetPersona(e.target.value)}>
-                      {s.personas.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <p className="hint">{s.personas.find((p) => p.id === s.persona)?.description}</p>
-
-                  <Toggle
-                    label="Sub-agents"
-                    hint="Lets the agent hand off a self-contained sub-task to a fresh agent (delegate_task)."
-                    checked={s.subAgents}
-                    onChange={props.onToggleSubAgents}
-                  />
-                  <Toggle
-                    label="Native tool calling"
-                    hint="Turn off for endpoints that reject the tools parameter — the agent falls back to the text protocol."
-                    checked={s.nativeToolCalls}
-                    onChange={props.onToggleNativeTools}
-                  />
+                <Section description="How the agent behaves on every task.">
+                  <Group>
+                    <SettingRow label="Persona" hint={s.personas.find((p) => p.id === s.persona)?.description}>
+                      <select
+                        className="select"
+                        aria-label="Persona"
+                        value={s.persona}
+                        onChange={(e) => props.onSetPersona(e.target.value)}
+                      >
+                        {s.personas.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.label}
+                          </option>
+                        ))}
+                      </select>
+                    </SettingRow>
+                    <Toggle
+                      label="Sub-agents"
+                      hint="Lets the agent hand off a self-contained sub-task to a fresh agent (delegate_task)."
+                      checked={s.subAgents}
+                      onChange={props.onToggleSubAgents}
+                    />
+                    <Toggle
+                      label="Native tool calling"
+                      hint="Turn off for endpoints that reject the tools parameter — the agent falls back to the text protocol."
+                      checked={s.nativeToolCalls}
+                      onChange={props.onToggleNativeTools}
+                    />
+                  </Group>
                 </Section>
               )}
 
               {page === 'providers' && (
-                <Section title="Providers">
-                  <ul className="rows">
+                <Section description="Model endpoints this workspace can reach, and which model serves each role.">
+                  <Block
+                    title="Connections"
+                    hint="Where the models come from. Chat runs on the active one."
+                  >
+                  <ul className="conn-list">
                     {s.profiles.map((p) => (
                       <ProfileRow
                         key={p.name}
                         profile={p}
                         presets={s.presets?.length ? s.presets : FALLBACK_PRESETS}
-                        otherProfiles={s.profiles.filter((o) => o.name !== p.name)}
                         startOpen={props.focus === 'context' && p.active}
                         onUse={() => props.onUseProfile(p.name)}
                         onDelete={() => props.onDeleteProfile(p.name)}
@@ -204,36 +280,60 @@ export function Settings(props: SettingsProps): JSX.Element {
                     probeProvider={props.probeProvider}
                     onAdd={props.onSaveProfile}
                   />
+                  </Block>
+
+                  {/* One table for the whole app, below the connections rather
+                      than inside each of them. A role names a model; it is not
+                      a property of an endpoint. */}
+                  <Block
+                    title="Model roles"
+                    hint="Each role can run on any connection’s model. Switching what you chat with no longer changes the rest."
+                  >
+                    <RoleTable
+                      roles={s.roles ?? []}
+                      connections={s.profiles}
+                      onSetRole={props.onSetRole}
+                      listModels={props.listConnectionModels ?? props.listModels}
+                    />
+                  </Block>
                 </Section>
               )}
 
               {page === 'search' && (
-                <Section title="Web search">
-                  <Field label="Provider">
-                    <select
-                      className="select"
-                      value={s.webSearch.provider ?? ''}
-                      onChange={(e) => props.onSetWebSearch({ provider: e.target.value })}
-                    >
-                      <option value="">(not configured)</option>
-                      {s.webSearch.providers.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Toggle
-                    label="Enabled"
-                    hint={s.webSearch.hasKey ? 'An API key is stored.' : 'No API key stored — some providers need one.'}
-                    checked={s.webSearch.enabled}
-                    onChange={(enabled) => props.onSetWebSearch({ enabled })}
-                  />
-                  <SecretField
-                    label="API key"
-                    placeholder={s.webSearch.hasKey ? '•••••••• (stored)' : 'Paste a key to store it'}
-                    onSave={(apiKey) => props.onSetWebSearch({ apiKey })}
-                  />
+                <Section description="Let the agent look things up on the web.">
+                  <Group>
+                    <SettingRow label="Provider" hint="Which search API the agent queries.">
+                      <select
+                        className="select"
+                        aria-label="Provider"
+                        value={s.webSearch.provider ?? ''}
+                        onChange={(e) => props.onSetWebSearch({ provider: e.target.value })}
+                      >
+                        <option value="">(not configured)</option>
+                        {s.webSearch.providers.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </SettingRow>
+                    <Toggle
+                      label="Enabled"
+                      hint="Adds a web_search tool to the agent. Off means it works from the repository alone."
+                      checked={s.webSearch.enabled}
+                      onChange={(enabled) => props.onSetWebSearch({ enabled })}
+                    />
+                    <SecretField
+                      label="API key"
+                      hint={
+                        s.webSearch.hasKey
+                          ? 'A key is stored. Paste a new one to replace it.'
+                          : 'No key stored — most providers need one.'
+                      }
+                      placeholder={s.webSearch.hasKey ? '•••••••• (stored)' : 'Paste a key to store it'}
+                      onSave={(apiKey) => props.onSetWebSearch({ apiKey })}
+                    />
+                  </Group>
                 </Section>
               )}
 
@@ -246,43 +346,50 @@ export function Settings(props: SettingsProps): JSX.Element {
               )}
 
               {page === 'skills' && (
-                <Section title="Skills">
-                  <p className="hint">
-                    Packaged instructions the agent can load on demand, from <code>.heapcode/skills/</code>.
-                  </p>
+                <Section description="Packaged instructions the agent can load on demand, from .heapcode/skills/.">
                   <TextPane load={props.loadSkills} empty="No skills available." />
                 </Section>
               )}
 
               {page === 'memory' && (
-                <Section title="Memory">
-                  <p className="hint">
-                    Project instructions prepended to every task — <code>HEAPCODE.md</code> and{' '}
-                    <code>.heapcode/memory.md</code>. Edit them in the workspace; this is what the agent currently sees.
-                  </p>
+                <Section
+                  description="Project instructions prepended to every task — HEAPCODE.md and .heapcode/memory.md. Edit them in the workspace; this is what the agent currently sees."
+                >
                   <TextPane load={props.loadMemory} empty="No project instructions or memory configured." />
                 </Section>
               )}
 
               {page === 'permissions' && (
-                <Section title="Permissions">
-                  <p className="hint">
-                    Saved &ldquo;Always allow&rdquo; grants for this project. Clearing them means the agent asks again.
-                  </p>
+                <Section description="Saved “Always allow” grants for this project. Clearing them means the agent asks again.">
                   {s.permissionGrants.length === 0 ? (
-                    <p className="hint">No saved grants.</p>
+                    <Empty>Nothing is pre-approved. The agent asks before every action that needs permission.</Empty>
                   ) : (
                     <ul className="rows">
                       {s.permissionGrants.map((g) => (
-                        <li key={g} className="row">
+                        <li key={g} className="row grant-row">
                           <code>{g}</code>
                         </li>
                       ))}
                     </ul>
                   )}
-                  <button className="btn btn-danger" onClick={props.onResetPermissions}>
-                    Clear all grants
-                  </button>
+                  {/* Set apart rather than sitting under the list as one more
+                      button: it undoes every row above it at once. */}
+                  <div className="danger-zone">
+                    <div className="setting-row-text">
+                      <span className="setting-row-label">Reset permissions</span>
+                      <p className="setting-row-hint">
+                        Forgets every grant above. Nothing already done is undone — the agent simply starts asking
+                        again.
+                      </p>
+                    </div>
+                    <button
+                      className="btn btn-danger"
+                      disabled={s.permissionGrants.length === 0}
+                      onClick={props.onResetPermissions}
+                    >
+                      Clear all grants
+                    </button>
+                  </div>
                 </Section>
               )}
             </div>
@@ -310,25 +417,136 @@ function TextPane({ load, empty }: { load?(): Promise<string>; empty: string }):
       .catch((err: Error) => setError(err.message));
   }, [load]);
   if (error) return <p className="banner-error">{error}</p>;
-  if (text === undefined) return <p className="hint">Loading…</p>;
-  return <pre className="settings-text">{text.trim() || empty}</pre>;
+  // Skeleton rather than the word "Loading": these two pages are a wall of
+  // text, and a one-line "Loading…" in a tall pane reads as an empty page.
+  if (text === undefined) {
+    return (
+      <div className="skeleton" aria-label="Loading" aria-busy="true">
+        {[92, 78, 84, 60].map((w, i) => (
+          <div className="skeleton-line" key={i} style={{ width: `${w}%` }} />
+        ))}
+      </div>
+    );
+  }
+  if (!text.trim()) return <Empty>{empty}</Empty>;
+  return <pre className="settings-text">{text.trim()}</pre>;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }): JSX.Element {
+/**
+ * A bordered card of setting rows, hairline-divided.
+ *
+ * Controls used to sit loose in the page body, which left every page reading
+ * as a column of unrelated widgets. Grouping them onto one surface makes the
+ * page's shape visible before any of the labels are read.
+ */
+function Group({ label, children }: { label?: string; children: React.ReactNode }): JSX.Element {
   return (
-    <section className="settings-section">
-      <h3>{title}</h3>
+    <div className="settings-group-wrap">
+      {label && <div className="settings-group-label">{label}</div>}
+      <div className="settings-group">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * One setting: what it is and what it does on the left, the control on the
+ * right.
+ *
+ * The explanation sits under the label rather than under the control, so
+ * running down the left edge answers "what is on this page" without reading
+ * past the widgets.
+ */
+function SettingRow({
+  label,
+  hint,
+  stacked,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  /** For controls too wide to share a line — the control drops below. */
+  stacked?: boolean;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div className={stacked ? 'setting-row setting-row-stacked' : 'setting-row'}>
+      <div className="setting-row-text">
+        <span className="setting-row-label">{label}</span>
+        {hint && <p className="setting-row-hint">{hint}</p>}
+      </div>
+      <div className="setting-row-control">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * A titled part of a page, for the pages that hold more than one idea.
+ *
+ * Providers carries two — the connections and the role table — and they used
+ * to be separated by nothing but a bold line, so the role rows read as more
+ * fields belonging to the connection above them.
+ */
+function Block({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <section className="settings-block">
+      <h3 className="settings-block-title">{title}</h3>
+      {hint && <p className="settings-block-hint">{hint}</p>}
       {children}
     </section>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
+function Section({
+  description,
+  children,
+}: {
+  description?: string;
+  children: React.ReactNode;
+}): JSX.Element {
   return (
-    <label className="field">
-      <span className="field-label">{label}</span>
+    <section className="settings-section">
+      {description && (
+        <div className="settings-section-head">
+          <p className="settings-section-desc">{description}</p>
+        </div>
+      )}
       {children}
-    </label>
+    </section>
+  );
+}
+
+/**
+ * A stacked label + control, with the explanation attached to it.
+ *
+ * `hint` is deliberately outside the `<label>`: a paragraph inside it would
+ * become part of the control's accessible name, so a screen reader would read
+ * the whole explanation back as the field's label.
+ */
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div className="field">
+      <label className="field-inner">
+        <span className="field-label">{label}</span>
+        {children}
+      </label>
+      {hint && <p className="field-hint">{hint}</p>}
+    </div>
   );
 }
 
@@ -343,13 +561,23 @@ function Toggle({
   checked: boolean;
   onChange(v: boolean): void;
 }): JSX.Element {
+  // `htmlFor` rather than wrapping: the label owns only the name, so the hint
+  // beside it stays out of the checkbox's accessible name.
+  const id = useId();
   return (
-    <div className="field">
-      <label className="toggle">
-        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-        <span>{label}</span>
-      </label>
-      {hint && <p className="hint">{hint}</p>}
+    <div className="setting-row">
+      <div className="setting-row-text">
+        <label className="setting-row-label" htmlFor={id}>
+          {label}
+        </label>
+        {hint && <p className="setting-row-hint">{hint}</p>}
+      </div>
+      <div className="setting-row-control">
+        <span className="switch">
+          <input id={id} type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+          <span className="switch-track" aria-hidden="true" />
+        </span>
+      </div>
     </div>
   );
 }
@@ -363,12 +591,14 @@ function Toggle({
  */
 function NumberField({
   label,
+  hint,
   value,
   placeholder,
   onChange,
   step = 1,
 }: {
   label: string;
+  hint?: string;
   value?: number | null;
   placeholder: string;
   onChange(v: number | null): void;
@@ -376,7 +606,7 @@ function NumberField({
   step?: number;
 }): JSX.Element {
   return (
-    <Field label={label}>
+    <Field label={label} hint={hint}>
       <input
         className="card-input"
         type="number"
@@ -402,19 +632,28 @@ function NumberField({
 /** Write-only by construction: it has no value prop, so a key can never render. */
 function SecretField({
   label,
+  hint,
   placeholder,
   onSave,
 }: {
   label: string;
+  hint?: string;
   placeholder: string;
   onSave(value: string): void;
 }): JSX.Element {
   const [value, setValue] = useState('');
+  const id = useId();
   return (
-    <div className="field">
-      <span className="field-label">{label}</span>
-      <div className="field-row">
+    <div className="setting-row setting-row-stacked">
+      <div className="setting-row-text">
+        <label className="setting-row-label" htmlFor={id}>
+          {label}
+        </label>
+        {hint && <p className="setting-row-hint">{hint}</p>}
+      </div>
+      <div className="setting-row-control field-row">
         <input
+          id={id}
           className="card-input"
           type="password"
           value={value}
@@ -440,7 +679,6 @@ function SecretField({
 function ProfileRow({
   profile,
   presets,
-  otherProfiles,
   startOpen,
   onUse,
   onDelete,
@@ -451,12 +689,6 @@ function ProfileRow({
 }: {
   profile: UiProfile;
   presets: UiPreset[];
-  /**
-   * The sibling profiles, for "run this role on another provider" — whole
-   * profiles rather than names, because a redirected role takes its model
-   * from the target and the row has to be able to say which one that is.
-   */
-  otherProfiles: UiProfile[];
   startOpen?: boolean;
   onUse(): void;
   onDelete(): void;
@@ -476,41 +708,59 @@ function ProfileRow({
     promptDetail: profile.promptTier ?? '',
     maxTokens: profile.maxTokens ?? null,
     temperature: profile.temperature ?? null,
-    roles: rolesOf(profile),
   });
 
   return (
-    <li className={`row row-block ${profile.active ? 'row-active' : ''}`}>
-      <div className="row-main">
-        <span className="row-name">
-          {profile.active && <span className="badge badge-ok">active</span>} {profile.name}
+    <li className={profile.active ? 'conn conn-active' : 'conn'}>
+      <div className="conn-head">
+        {/* The endpoint's initial, so a list of four connections is scannable
+            by shape before any of the names are read. */}
+        <span className="conn-mark" style={{ '--mark-h': markHue(profile.name) } as React.CSSProperties} aria-hidden="true">
+          {profile.name.slice(0, 1)}
         </span>
-        <span className="hint">
-          {profile.preset} · {profile.model} · {fmtTokens(profile.effectiveContextWindow)} ctx
-          {profile.maxTokens ? ` · ${fmtTokens(profile.maxTokens)} out` : ''}
-          {profile.hasKey ? ' · key stored' : ''}
-        </span>
-        <div className="row-actions">
+        <div className="conn-id">
+          <div className="conn-title">
+            <span className="conn-name">{profile.name}</span>
+            {profile.active && <span className="badge badge-active">active</span>}
+            {profile.preset !== profile.name && <span className="conn-preset">{profile.preset}</span>}
+          </div>
+          <span className="conn-url">{profile.baseUrl}</span>
+        </div>
+        <div className="conn-actions">
           {!profile.active && (
-            <button className="btn" onClick={onUse}>
+            <button className="btn btn-ghost" onClick={onUse}>
               Use
             </button>
           )}
-          <button className="btn" onClick={() => setEditing((v) => !v)}>
+          <button className="btn btn-ghost" onClick={() => setEditing((v) => !v)}>
             {editing ? 'Close' : 'Edit'}
           </button>
           {!profile.active && (
-            <button className="btn btn-danger" onClick={onDelete}>
+            <button className="btn btn-ghost btn-ghost-danger" onClick={onDelete}>
               Delete
             </button>
           )}
         </div>
       </div>
 
+      {/* The four numbers that decide how this endpoint behaves, each under
+          its own name. They used to be one dim dot-separated sentence, which
+          is unreadable at four facts and unparseable at five. */}
+      <dl className="conn-facts">
+        <Fact label="Model" value={profile.model || 'not set'} dim={!profile.model} />
+        <Fact label="Context" value={`${fmtTokens(profile.effectiveContextWindow)} tokens`} />
+        <Fact
+          label="Max output"
+          value={profile.maxTokens ? `${fmtTokens(profile.maxTokens)} tokens` : 'provider default'}
+          dim={!profile.maxTokens}
+        />
+        <Fact label="API key" value={profile.hasKey ? 'stored' : 'none'} dim={!profile.hasKey} />
+      </dl>
+
       {editing && (
         <div className="profile-edit">
-          <p className="hint">{profile.baseUrl}</p>
-          <Field label="Base URL">
+          <div className="form-head">Edit connection</div>
+          <Field label="Base URL" hint={draft.baseUrl === profile.baseUrl ? undefined : `Saved: ${profile.baseUrl}`}>
             <input
               className="card-input"
               value={draft.baseUrl}
@@ -560,32 +810,39 @@ function ProfileRow({
               ))}
             </select>
           </Field>
-          <NumberField
-            label="Context window (tokens)"
-            value={draft.contextWindow}
-            placeholder={`${profile.effectiveContextWindow} (from preset)`}
-            onChange={(contextWindow) => setDraft({ ...draft, contextWindow })}
-          />
-          <p className="hint">
-            Prompt + output the model can hold. Drives the usage meter and when the conversation is compacted — raise it
-            to match what your endpoint really serves. Empty inherits the preset&rsquo;s.
-          </p>
-          <NumberField
-            label="Max output tokens"
-            value={draft.maxTokens}
-            placeholder="provider default"
-            onChange={(maxTokens) => setDraft({ ...draft, maxTokens })}
-          />
-          <p className="hint">Cap on a single reply. Raise it if long answers or large edits get cut off.</p>
-          <NumberField
-            label="Temperature"
-            value={draft.temperature}
-            placeholder="provider default"
-            onChange={(temperature) => setDraft({ ...draft, temperature })}
-            step={0.1}
-          />
 
-          <Field label="Prompt detail">
+          {/* The three numeric overrides share a row: they are the same kind
+              of answer — a number, or nothing at all — and stacking them made
+              the editor twice as long as the decisions in it. */}
+          <div className="field-grid">
+            <NumberField
+              label="Context window (tokens)"
+              hint="Prompt + output the model can hold. Drives the usage meter and when the conversation is compacted. Empty inherits the preset’s."
+              value={draft.contextWindow}
+              placeholder={`${profile.effectiveContextWindow} (from preset)`}
+              onChange={(contextWindow) => setDraft({ ...draft, contextWindow })}
+            />
+            <NumberField
+              label="Max output tokens"
+              hint="Cap on a single reply. Raise it if long answers or large edits get cut off."
+              value={draft.maxTokens}
+              placeholder="provider default"
+              onChange={(maxTokens) => setDraft({ ...draft, maxTokens })}
+            />
+            <NumberField
+              label="Temperature"
+              hint="Higher wanders more. Leave empty unless the endpoint needs it."
+              value={draft.temperature}
+              placeholder="provider default"
+              onChange={(temperature) => setDraft({ ...draft, temperature })}
+              step={0.1}
+            />
+          </div>
+
+          <Field
+            label="Prompt detail"
+            hint="How much of the agent’s instructions this model receives. Full is the default and the right choice for almost every profile. Lean is for a model that follows short instructions better. Automatic picks between them from the model’s context window and whether it calls tools natively."
+          >
             <select
               className="select"
               value={draft.promptDetail ?? ''}
@@ -597,21 +854,17 @@ function ProfileRow({
               <option value="auto">Automatic — decide from the model</option>
             </select>
           </Field>
-          <p className="hint">
-            How much of the agent&rsquo;s instructions this model receives. Full is the default and the right choice
-            for almost every profile. Lean is for a model that follows short instructions better. Automatic picks
-            between them from the model&rsquo;s context window and whether it calls tools natively.
-          </p>
 
-          <ModelRoles
-            roles={draft.roles ?? {}}
-            profiles={otherProfiles}
-            onChange={(roles) => setDraft({ ...draft, roles })}
-            listModels={listModels}
-            ownProfile={profile.name}
+          <SecretField
+            label="API key"
+            hint={profile.hasKey ? 'A key is stored. Paste a new one to replace it.' : 'Stored outside this project.'}
+            placeholder={profile.hasKey ? '•••••••• (stored — paste to replace)' : 'Paste a key to store it'}
+            onSave={onSaveKey}
           />
 
-          <div className="field-row">
+          {/* Pinned under the form rather than mid-column: it is the one
+              control that ends the edit, so it should be the last thing. */}
+          <div className="form-actions">
             <button
               className="btn btn-primary"
               disabled={!draft.baseUrl.trim() || !draft.model.trim()}
@@ -622,14 +875,19 @@ function ProfileRow({
               Save changes
             </button>
           </div>
-          <SecretField
-            label="API key"
-            placeholder={profile.hasKey ? '•••••••• (stored — paste to replace)' : 'Paste a key to store it'}
-            onSave={onSaveKey}
-          />
         </div>
       )}
     </li>
+  );
+}
+
+/** One labelled fact in a connection's summary strip. */
+function Fact({ label, value, dim }: { label: string; value: string; dim?: boolean }): JSX.Element {
+  return (
+    <div className={dim ? 'conn-fact conn-fact-dim' : 'conn-fact'}>
+      <dt>{label}</dt>
+      <dd title={value}>{value}</dd>
+    </div>
   );
 }
 
@@ -735,8 +993,8 @@ function AddProfile({
 
   if (!open) {
     return (
-      <button className="btn" onClick={() => setOpen(true)}>
-        Add profile
+      <button className="conn-add" onClick={() => setOpen(true)}>
+        + Add connection
       </button>
     );
   }
@@ -745,7 +1003,8 @@ function AddProfile({
 
   return (
     <div className="add-profile">
-      <Field label="Name">
+      <div className="form-head">New connection</div>
+      <Field label="Name" hint="What this endpoint is called in the picker and in the role table.">
         <input className="card-input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
       </Field>
       <Field label="Preset">
@@ -817,19 +1076,21 @@ function AddProfile({
           models={probe.models}
         />
       </Field>
-      <NumberField
-        label="Context window (tokens, optional)"
-        value={draft.contextWindow}
-        placeholder="inherit from preset"
-        onChange={(contextWindow) => setDraft({ ...draft, contextWindow })}
-      />
-      <NumberField
-        label="Max output tokens (optional)"
-        value={draft.maxTokens}
-        placeholder="provider default"
-        onChange={(maxTokens) => setDraft({ ...draft, maxTokens })}
-      />
-      <div className="field-row">
+      <div className="field-grid">
+        <NumberField
+          label="Context window (tokens, optional)"
+          value={draft.contextWindow}
+          placeholder="inherit from preset"
+          onChange={(contextWindow) => setDraft({ ...draft, contextWindow })}
+        />
+        <NumberField
+          label="Max output tokens (optional)"
+          value={draft.maxTokens}
+          placeholder="provider default"
+          onChange={(maxTokens) => setDraft({ ...draft, maxTokens })}
+        />
+      </div>
+      <div className="form-actions">
         <button
           className="btn btn-primary"
           disabled={!valid}
@@ -840,7 +1101,7 @@ function AddProfile({
             setOpen(false);
           }}
         >
-          Save profile
+          Save connection
         </button>
         <button className="btn" onClick={() => setOpen(false)}>
           Cancel
@@ -884,9 +1145,10 @@ function Connectors({
   };
 
   return (
-    <Section title="Connectors">
-      <p className="hint">MCP servers this session can call tools on.</p>
-
+    <Section description="MCP servers this session can call tools on.">
+      {servers.length === 0 && (
+        <Empty>No connectors yet. Add one below and its tools join the agent&rsquo;s toolbox.</Empty>
+      )}
       {servers.length > 0 && (
         <ul className="rows">
           {servers.map((m) => (
@@ -928,35 +1190,38 @@ function Connectors({
         </ul>
       )}
 
-      <Field label="Name">
-        <input
-          className="input"
-          value={name}
-          placeholder="filesystem"
-          aria-label="MCP server name"
-          onChange={(e) => setName(e.target.value)}
-        />
-      </Field>
-      <Field label="Command or URL">
-        <input
-          className="input"
-          value={spec}
-          placeholder="npx -y @modelcontextprotocol/server-filesystem /path — or https://…"
-          aria-label="MCP server command or URL"
-          onChange={(e) => setSpec(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') add();
-          }}
-        />
-      </Field>
-      <p className="hint">
-        A URL is a remote server; anything else is run as a local command. Its tools go through the same permission
-        prompts as everything else.
-      </p>
-      <div className="field-row">
-        <button className="btn btn-primary" disabled={!name.trim() || !spec.trim()} onClick={add}>
-          Add server
-        </button>
+      <div className="settings-card">
+        <div className="form-head">Add a server</div>
+        <Field label="Name">
+          <input
+            className="card-input"
+            value={name}
+            placeholder="filesystem"
+            aria-label="MCP server name"
+            onChange={(e) => setName(e.target.value)}
+          />
+        </Field>
+        <Field label="Command or URL">
+          <input
+            className="card-input"
+            value={spec}
+            placeholder="npx -y @modelcontextprotocol/server-filesystem /path — or https://…"
+            aria-label="MCP server command or URL"
+            onChange={(e) => setSpec(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') add();
+            }}
+          />
+        </Field>
+        <p className="hint">
+          A URL is a remote server; anything else is run as a local command. Its tools go through the same permission
+          prompts as everything else.
+        </p>
+        <div className="form-actions">
+          <button className="btn btn-primary" disabled={!name.trim() || !spec.trim()} onClick={add}>
+            Add server
+          </button>
+        </div>
       </div>
     </Section>
   );
@@ -969,13 +1234,13 @@ function EditServer({ initial, onSave }: { initial: string; onSave(spec: string)
     <div className="profile-edit">
       <Field label="Command or URL">
         <input
-          className="input"
+          className="card-input"
           value={spec}
           aria-label="Edit MCP server command or URL"
           onChange={(e) => setSpec(e.target.value)}
         />
       </Field>
-      <div className="field-row">
+      <div className="form-actions">
         <button className="btn btn-primary" disabled={!spec.trim()} onClick={() => onSave(spec.trim())}>
           Save
         </button>
@@ -984,151 +1249,149 @@ function EditServer({ initial, onSave }: { initial: string; onSave(spec: string)
   );
 }
 
-/** A profile's role overrides, flattened into the draft's `roles` map. */
-function rolesOf(profile: UiProfile): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const role of UI_MODEL_ROLES) {
-    for (const suffix of ['Model', 'Profile'] as const) {
-      const key = `${role.key}${suffix}` as const;
-      out[key] = profile[key] ?? '';
-    }
-  }
-  return out;
-}
-
 /**
- * Per-role model overrides, collapsed by default.
+ * The global role table: which model on which connection serves each role.
  *
- * A profile is one endpoint with one chat model, but the agent does not only
- * chat: it merges edits with a fast-apply model, embeds and reranks for
- * semantic search, and writes per-chunk blurbs at index time. Those were
- * settable in the extension and in config.json but nowhere in the browser, so
- * anyone who wanted local embeddings behind a cloud agent had to leave the web
- * UI to arrange it — even though this host is the one running the index.
+ * It used to be a collapsed block *inside every profile*, with a model box and
+ * a "this profile" dropdown per role. That shape had two costs. Answering
+ * "what runs rerank?" meant following the dropdown to another profile and
+ * reading its field for the same role, which might itself inherit. And because
+ * the block belonged to a profile, switching profiles silently swapped all
+ * seven answers.
  *
- * Collapsed because most profiles never need any of it: everything here
- * inherits, and the placeholders say what from.
+ * Now there is one table. Each row states the resolved outcome — computed by
+ * the host, so the CLI and the extension say the same thing — and lets the
+ * model be picked from any connection.
  */
-function ModelRoles({
+function RoleTable({
   roles,
-  profiles,
-  onChange,
+  connections,
+  onSetRole,
   listModels,
-  ownProfile,
 }: {
-  roles: Record<string, string>;
-  profiles: UiProfile[];
-  onChange(next: Record<string, string>): void;
-  listModels?(profileName: string): Promise<string[]>;
-  /** Whose endpoint a role uses when it is not redirected elsewhere. */
-  ownProfile: string;
+  roles: UiRoleAssignment[];
+  connections: UiProfile[];
+  onSetRole(role: UiModelRole, assignment?: { connection: string; model: string }): void;
+  listModels?(connection: string): Promise<string[]>;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const set = (key: string, value: string): void => onChange({ ...roles, [key]: value });
-  const overridden = Object.values(roles).filter(Boolean).length;
-
   return (
-    <div className="roles">
-      <button className="roles-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        {open ? '▾' : '▸'} Model roles
-        {overridden > 0 && <span className="badge badge-ok">{overridden} set</span>}
-      </button>
-      {open && (
-        <div className="roles-body">
-          {(['Core', 'Retrieval'] as const).map((group) => (
-            <div key={group}>
-              <div className="roles-group">{group}</div>
-              {UI_MODEL_ROLES.filter((r) => r.group === group).map((role) => (
-                <RoleRow
-                  key={role.key}
-                  role={role}
-                  roles={roles}
-                  profiles={profiles}
-                  ownProfile={ownProfile}
-                  set={set}
-                  listModels={listModels}
-                />
-              ))}
-            </div>
-          ))}
+    <div className="roles-body settings-group">
+      {/* Column headers, because three controls in a row with no headings is
+          a form, and this is a table — the same question answered eight times. */}
+      <div className="roles-head" aria-hidden="true">
+        <span>Role</span>
+        <span>Model</span>
+        <span>Connection</span>
+      </div>
+      {(['Core', 'Retrieval'] as const).map((group) => (
+        <div className="roles-section" key={group}>
+          <div className="roles-group">{group}</div>
+          {UI_MODEL_ROLES.filter((r) => r.group === group).map((meta) => {
+            const assignment = roles.find((r) => r.role === meta.key);
+            return (
+              <RoleRow
+                key={meta.key}
+                meta={meta}
+                assignment={assignment}
+                connections={connections}
+                onSetRole={onSetRole}
+                listModels={listModels}
+              />
+            );
+          })}
         </div>
-      )}
+      ))}
     </div>
   );
 }
 
 /**
- * One role: which model runs it, and whose endpoint runs it.
+ * One role: what serves it, and the two controls that change it.
  *
- * The two halves are not independent, which is the whole reason this is its
- * own component. Redirect a role to another profile and that profile supplies
- * the model too — `providerForRole` resolves the target and every caller then
- * reads the role's model off *it* (core/src/server/session.ts:135, and the
- * same in the extension's `resolveRoleProfile`). A model typed on this row
- * would be stored, shown, and never used.
- *
- * So the box is only a box while the role runs here. Redirected, it becomes a
- * statement of what will actually run and where to go to change it — which is
- * the honest version of a field that was quietly inert.
+ * The connection and the model are held locally until a model is settled,
+ * which the first version got wrong in a way that made the row look broken.
+ * It derived the connection straight from the stored assignment and, for a
+ * role that was still inheriting, sent a clear on every change — so picking a
+ * different endpoint stored nothing, the select snapped back to the one chat
+ * was on, and the only models you could ever see were that endpoint's. There
+ * was no order of operations that worked: you cannot name a model on an
+ * endpoint you cannot select first.
  */
 function RoleRow({
-  role,
-  roles,
-  profiles,
-  ownProfile,
-  set,
+  meta,
+  assignment,
+  connections,
+  onSetRole,
   listModels,
 }: {
-  role: (typeof UI_MODEL_ROLES)[number];
-  roles: Record<string, string>;
-  profiles: UiProfile[];
-  /** Whose endpoint the role uses when it is not redirected elsewhere. */
-  ownProfile: string;
-  set(key: string, value: string): void;
-  listModels?(profileName: string): Promise<string[]>;
+  meta: (typeof UI_MODEL_ROLES)[number];
+  assignment?: UiRoleAssignment;
+  connections: UiProfile[];
+  onSetRole(role: UiModelRole, next?: { connection: string; model: string }): void;
+  listModels?(connection: string): Promise<string[]>;
 }): JSX.Element {
-  const targetName = roles[`${role.key}Profile`] ?? '';
-  const target = targetName ? profiles.find((p) => p.name === targetName) : undefined;
-  const inherited = target?.[`${role.key}Model` as keyof UiProfile] as string | undefined;
+  const fallback = connections.find((c) => c.active)?.name ?? connections[0]?.name ?? '';
+  const [connection, setConnection] = useState(assignment?.connection ?? fallback);
+  const [draft, setDraft] = useState(assignment?.model ?? '');
+
+  // Re-sync when the stored assignment changes underneath — a save round-trips
+  // through the host and comes back, and other rows can move this one (setting
+  // chat changes what an inheriting row resolves to).
+  const stored = `${assignment?.connection ?? ''}\u0000${assignment?.model ?? ''}`;
+  const lastStored = useRef(stored);
+  if (lastStored.current !== stored) {
+    lastStored.current = stored;
+    setConnection(assignment?.connection ?? fallback);
+    setDraft(assignment?.model ?? '');
+  }
+
+  const commit = (model: string): void => {
+    const next = model.trim();
+    if (next === (assignment?.model ?? '') && connection === (assignment?.connection ?? fallback)) return;
+    onSetRole(meta.key, next ? { connection, model: next } : undefined);
+  };
 
   return (
     <div className="role">
-      <span className="role-label">{role.label}</span>
-      {target ? (
-        <span className="role-from" aria-label={`${role.label} model`}>
-          {inherited ? (
-            <>
-              <code>{inherited}</code> — from {target.name}
-            </>
-          ) : (
-            <>no {role.label.toLowerCase()} model on {target.name}; set one there</>
-          )}
-        </span>
-      ) : (
-        <ModelInput
-          value={roles[`${role.key}Model`] ?? ''}
-          placeholder={role.hint}
-          aria-label={`${role.label} model`}
-          onChange={(v) => set(`${role.key}Model`, v)}
-          listModels={() => listModels?.(ownProfile) ?? Promise.resolve([])}
-        />
-      )}
-      {/* The second half of a role: run it against a different profile's
-          endpoint, key and model entirely — embeddings on a local Ollama
-          while the agent stays on a cloud model. */}
+      <span className="role-label">{meta.label}</span>
+      <ModelInput
+        // Remounted per connection: the type-ahead caches the first list it
+        // fetched, so without this a row that switched endpoint would keep
+        // suggesting the previous one's models.
+        key={connection}
+        value={draft}
+        // The resolved answer, so an inheriting row says what it inherited
+        // rather than only what it would inherit from.
+        placeholder={assignment?.summary ?? meta.hint}
+        aria-label={`${meta.label} model`}
+        onChange={setDraft}
+        onCommit={commit}
+        listModels={() => listModels?.(connection) ?? Promise.resolve([])}
+      />
       <select
         className="select role-select"
-        value={targetName}
-        aria-label={`${role.label} profile`}
-        onChange={(e) => set(`${role.key}Profile`, e.target.value)}
+        value={connection}
+        aria-label={`${meta.label} connection`}
+        onChange={(e) => {
+          setConnection(e.target.value);
+          // The model goes with it. A model id means nothing on an endpoint
+          // that does not serve it, so an assignment that had one is cleared
+          // back to inheriting until a model on the new endpoint is picked —
+          // rather than left naming something that would fail at request time.
+          setDraft('');
+          if (assignment?.model) onSetRole(meta.key, undefined);
+        }}
       >
-        <option value="">this profile</option>
-        {profiles.map((p) => (
+        {connections.map((p) => (
           <option key={p.name} value={p.name}>
             on {p.name}
           </option>
         ))}
       </select>
+      {/* Only where the list above cannot be trusted to be complete. For
+          embeddings it is not: a provider's /v1/models is a chat catalogue,
+          and OpenRouter leaves its embedding models out of it entirely. */}
+      {meta.note && <p className="hint role-note">{meta.note}</p>}
     </div>
   );
 }
@@ -1136,16 +1399,14 @@ function RoleRow({
 /**
  * Editor draft → the wire shape.
  *
- * `roles` is a nested map because that is what the form binds to; the protocol
- * carries the same thing flat (`agentModel`, `agentProfile`, …) because that is
- * what a stored profile looks like. Flattening here means neither side has to
- * hold the other's shape, and `roles` itself never crosses the wire.
+ * Roles are not in here any more: they are one global table (`ui/setRole`),
+ * not fields on a profile, so this carries only the connection and its chat
+ * model.
  */
 function toSaveParams(draft: UiProfileDraft): UiSaveProfileParams['profile'] {
-  const { roles, promptDetail, ...rest } = draft;
+  const { promptDetail, ...rest } = draft;
   return {
     ...rest,
-    ...(roles ?? {}),
     // '' is the editor's default, which the host stores as the absence of the
     // field rather than as a written-out 'full' — `null` is how a patch says
     // "clear it", the same as the numeric overrides.

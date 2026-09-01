@@ -13,6 +13,7 @@ import {
   type McpManager,
   type ProviderProfileConfig,
   type WebviewToExtension,
+  type ModelRoleTable,
 } from '@heapcode/core';
 import { AgentController } from '../src/agent/controller.js';
 import { ChatViewProvider } from '../src/chatViewProvider.js';
@@ -111,6 +112,10 @@ function stubProfiles(profiles: ProviderProfileConfig[], keys: Record<string, st
     getProfiles: () => profiles,
     getApiKey: (p: ProviderProfileConfig) => Promise.resolve(keys[p.name]),
     resolveRoleProfile: () => profiles[0]!,
+    // The global role table pushed at hello. Embeddings is named explicitly
+    // rather than left to inherit: it inherits nothing, on purpose, so an
+    // absent entry means semantic indexing is off.
+    getRoles: () => roles,
     contextWindowFor: () => Promise.resolve({ window: 32_000, source: 'profile' as const }),
   } as unknown as ProfileManager;
 }
@@ -242,6 +247,7 @@ let home: string;
 let model: ModelServer;
 let core: HeapcodeServer;
 let profile: ProviderProfileConfig;
+let roles: ModelRoleTable;
 let serverOpts: { address: string; token: string; autostart: false };
 
 beforeEach(async () => {
@@ -254,6 +260,7 @@ beforeEach(async () => {
   __setConfig('heapcode.agent', { enable: true, planFirst: false, commandTimeout: 30 });
   model = await startModelServer();
   profile = { name: 'test', preset: 'custom', baseUrl: model.baseUrl, model: 'mock' };
+  roles = { chat: { connection: 'test', model: 'mock' } };
   core = new HeapcodeServer({ home, address: join(home, 't.sock'), idleShutdownMs: 0 });
   await core.listen();
   serverOpts = { address: core.address, token: core.token, autostart: false };
@@ -494,7 +501,7 @@ describe('AgentController — running against the core server', () => {
     }
 
     it('re-indexes a file the agent wrote, with no save and no rebuild', async () => {
-      profile.embeddingsModel = 'embed';
+      roles.embeddings = { connection: 'test', model: 'embed' };
       model.script([toolBlock('write_file', { path: 'fresh.ts', content: 'export const a = 1;\n' }), finishBlock('Wrote it.')]);
       const agent = makeController({ posts: [] });
 
@@ -506,7 +513,7 @@ describe('AgentController — running against the core server', () => {
 
     it('re-indexes a file the agent edited', async () => {
       await writeFile(join(root, 'existing.ts'), 'export const before = 1;\n');
-      profile.embeddingsModel = 'embed';
+      roles.embeddings = { connection: 'test', model: 'embed' };
       model.script([
         toolBlock('edit_file', { path: 'existing.ts', search: 'before = 1', replace: 'after = 2' }),
         finishBlock('Edited it.'),
@@ -521,7 +528,7 @@ describe('AgentController — running against the core server', () => {
 
     it('re-indexes both paths of a rename, so the old one drops out', async () => {
       await writeFile(join(root, 'old.ts'), 'export const moved = 1;\n');
-      profile.embeddingsModel = 'embed';
+      roles.embeddings = { connection: 'test', model: 'embed' };
       model.script([toolBlock('rename_file', { path: 'old.ts', newPath: 'new.ts' }), finishBlock('Renamed it.')]);
       const agent = makeController({ posts: [] });
 
@@ -534,7 +541,7 @@ describe('AgentController — running against the core server', () => {
     }, 15_000);
 
     it('does not re-index when the tool call failed', async () => {
-      profile.embeddingsModel = 'embed';
+      roles.embeddings = { connection: 'test', model: 'embed' };
       // A search string that is not in the file — edit_file refuses.
       await writeFile(join(root, 'untouched.ts'), 'export const a = 1;\n');
       model.script([

@@ -70,7 +70,7 @@ describe('the settings dialog', () => {
     expect(screen.getByText('Persona')).toBeTruthy();
     // Providers exists in the nav but its content is not rendered yet.
     expect(screen.getByRole('button', { name: 'Providers' })).toBeTruthy();
-    expect(screen.queryByText('Add profile')).toBeNull();
+    expect(screen.queryByText('+ Add connection')).toBeNull();
   });
 
   it('reaches every page, including the ones that used to be slash commands', () => {
@@ -91,11 +91,11 @@ describe('the settings dialog', () => {
   });
 
   describe('the provider list', () => {
-    /** Opens Providers → Add profile and returns the preset dropdown + URL field. */
+    /** Opens Providers → Add connection and returns the preset dropdown + URL field. */
     function openAddProfile() {
       render(<Settings {...props()} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       return {
         preset: screen.getAllByRole('combobox').find((el) => el.querySelector('option[value="ollama-cloud"]'))!,
         baseUrl: screen.getByPlaceholderText('http://localhost:11434/v1') as HTMLInputElement,
@@ -129,7 +129,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-oss:120b', 'kimi-k3'] });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
 
       fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
       await waitFor(() => expect(screen.getByText('connected')).toBeTruthy());
@@ -151,7 +151,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: false, models: [], error: 'HTTP 401 Unauthorized' });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
       await waitFor(() => expect(screen.getByText('failed')).toBeTruthy());
       expect(screen.getByText('HTTP 401 Unauthorized')).toBeTruthy();
@@ -161,7 +161,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: ['a'] });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
       await waitFor(() => expect(screen.getByText('connected')).toBeTruthy());
       // A "connected" badge next to a URL that was never tested is a lie.
@@ -175,7 +175,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: [] });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       const preset = screen.getAllByRole('combobox').find((el) => el.querySelector('option[value="ollama-cloud"]'))!;
       fireEvent.change(preset, { target: { value: 'ollama-cloud' } });
       fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-test' } });
@@ -227,177 +227,180 @@ describe('the settings dialog', () => {
 });
 
 describe('model roles', () => {
+  const local = {
+    name: 'local',
+    preset: 'ollama',
+    baseUrl: 'http://localhost:11434/v1',
+    model: '',
+    active: false,
+    hasKey: false,
+    effectiveContextWindow: 8_000,
+  };
+
+  /**
+   * The table is global now, so it is a sibling of the connection list rather
+   * than a collapsed block inside each connection. `summary` is what the host
+   * resolved, which is the thing worth reading: it says what actually serves
+   * the role, including when the role inherited it.
+   */
   const withRoles: UiSettings = {
     ...SETTINGS,
-    profiles: [
-      { ...SETTINGS.profiles[0]!, embeddingsModel: 'nomic-embed', applyModel: 'fast-apply' },
-      {
-        name: 'local',
-        preset: 'ollama',
-        baseUrl: 'http://localhost:11434/v1',
-        model: 'llama',
-        active: false,
-        hasKey: false,
-        effectiveContextWindow: 8_000,
-      },
+    profiles: [SETTINGS.profiles[0]!, local],
+    roles: [
+      { role: 'chat', connection: 'ollama', model: 'llama', summary: 'llama on ollama' },
+      { role: 'agent', summary: 'inherits chat — llama on ollama' },
+      { role: 'apply', connection: 'ollama', model: 'fast-apply', summary: 'fast-apply on ollama' },
+      { role: 'edit', summary: 'inherits chat — llama on ollama' },
+      { role: 'completion', summary: 'inherits chat — llama on ollama' },
+      { role: 'embeddings', connection: 'local', model: 'nomic-embed', summary: 'nomic-embed on local' },
+      { role: 'rerank', summary: 'inherits chat — llama on ollama' },
+      { role: 'context', summary: 'inherits chat — llama on ollama' },
     ],
   };
 
   function openRoles(over: Partial<SettingsProps> = {}): void {
     render(<Settings {...props({ settings: withRoles, ...over })} />);
     fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-    fireEvent.click(screen.getAllByText('Edit')[0]!);
-    fireEvent.click(screen.getByText(/Model roles/));
   }
 
-  it('is collapsed by default, and says how many roles are set', () => {
-    render(<Settings {...props({ settings: withRoles })} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-    fireEvent.click(screen.getAllByText('Edit')[0]!);
-    // Most profiles need none of this, so it stays out of the way — but the
-    // count says whether there is anything behind the toggle.
-    expect(screen.queryByLabelText('Embeddings model')).toBeNull();
-    expect(screen.getByText('2 set')).toBeTruthy();
+  it('is visible without opening a connection, because it is not part of one', () => {
+    // The old block lived inside every profile, so the same seven settings
+    // appeared once per endpoint and switching endpoint changed all of them.
+    openRoles();
+    expect(screen.getByText('Model roles')).toBeTruthy();
+    expect(screen.getByLabelText('Embeddings model')).toBeTruthy();
   });
 
-  it('loads the stored role models into their fields', () => {
+  it('shows each role\'s assigned model and the connection it runs on', () => {
     openRoles();
     expect(screen.getByLabelText<HTMLInputElement>('Embeddings model').value).toBe('nomic-embed');
+    expect(screen.getByLabelText<HTMLSelectElement>('Embeddings connection').value).toBe('local');
     expect(screen.getByLabelText<HTMLInputElement>('Apply model').value).toBe('fast-apply');
-    expect(screen.getByLabelText<HTMLInputElement>('Rerank model').value).toBe('');
   });
 
-  it('offers the other profiles for running a role elsewhere, but not itself', () => {
+  it('states what an inheriting role resolves to, rather than only what it would inherit from', () => {
+    // The question the old screen made you trace a redirect and a fallback
+    // chain to answer.
     openRoles();
-    const select = screen.getByLabelText<HTMLSelectElement>('Embeddings profile');
-    const options = [...select.options].map((o) => o.textContent);
-    // Pointing a role at its own profile is what leaving it unset already means.
-    expect(options).toEqual(['this profile', 'on local']);
+    expect(screen.getByLabelText<HTMLInputElement>('Rerank model').placeholder).toBe(
+      'inherits chat — llama on ollama',
+    );
   });
 
-  it('sends roles flattened, the way a stored profile carries them', () => {
-    const onSaveProfile = vi.fn();
-    openRoles({ onSaveProfile });
-    fireEvent.change(screen.getByLabelText('Rerank model'), { target: { value: 'rerank-1' } });
-    fireEvent.change(screen.getByLabelText('Embeddings profile'), { target: { value: 'local' } });
-    fireEvent.click(screen.getByText('Save changes'));
-
-    const sent = onSaveProfile.mock.calls[0]![0] as Record<string, unknown>;
-    expect(sent).toMatchObject({
-      name: 'ollama',
-      rerankModel: 'rerank-1',
-      embeddingsProfile: 'local',
-      embeddingsModel: 'nomic-embed',
-    });
-    // The form's nested map is an editor detail; it never crosses the wire.
-    expect(sent.roles).toBeUndefined();
+  it('offers every connection for every role, including the one chat is on', () => {
+    openRoles();
+    const select = screen.getByLabelText<HTMLSelectElement>('Embeddings connection');
+    expect([...select.options].map((o) => o.textContent)).toEqual(['on ollama', 'on local']);
   });
 
-  it('sends an emptied field as "", which the host reads as "clear it"', () => {
-    const onSaveProfile = vi.fn();
-    openRoles({ onSaveProfile });
-    fireEvent.change(screen.getByLabelText('Embeddings model'), { target: { value: '' } });
-    fireEvent.click(screen.getByText('Save changes'));
-    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ embeddingsModel: '' });
+  it('saves when the value settles, not on every keystroke', () => {
+    // Each save is a round-trip that re-renders the whole dialog. Persisting
+    // per character would also store `r`, `re`, `rer`… as real assignments.
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
+    const input = screen.getByLabelText('Rerank model');
+    fireEvent.change(input, { target: { value: 'rerank-1' } });
+    expect(onSetRole).not.toHaveBeenCalled();
+
+    fireEvent.blur(input);
+    expect(onSetRole).toHaveBeenCalledWith('rerank', { connection: 'ollama', model: 'rerank-1' });
   });
-});
 
-describe('role model suggestions', () => {
-  const withRoles: UiSettings = {
-    ...SETTINGS,
-    profiles: [
-      SETTINGS.profiles[0]!,
-      {
-        name: 'local',
-        preset: 'ollama',
-        baseUrl: 'http://localhost:11434/v1',
-        model: 'llama',
-        active: false,
-        hasKey: false,
-        effectiveContextWindow: 8_000,
-      },
-    ],
-  };
+  it('emptying a role clears it, so it inherits again', () => {
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
+    const input = screen.getByLabelText('Embeddings model');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    expect(onSetRole).toHaveBeenCalledWith('embeddings', undefined);
+  });
 
-  function openRoles(listModels: (p: string) => Promise<string[]>): void {
-    render(<Settings {...props({ settings: withRoles, listModels })} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-    fireEvent.click(screen.getAllByText('Edit')[0]!);
-    fireEvent.click(screen.getByText(/Model roles/));
-  }
-
-  it('suggests from this profile when the role is not redirected', async () => {
-    const listModels = vi.fn(() => Promise.resolve(['nomic-embed-text']));
-    openRoles(listModels);
+  it('leaving a field untouched saves nothing', () => {
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
     fireEvent.focus(screen.getByLabelText('Embeddings model'));
-    await waitFor(() => expect(listModels).toHaveBeenCalledWith('ollama'));
+    fireEvent.blur(screen.getByLabelText('Embeddings model'));
+    expect(onSetRole).not.toHaveBeenCalled();
   });
 
-  it('offers nothing to type once the role is redirected', async () => {
-    // There is no box to suggest into: a redirected role takes its model from
-    // the profile it was redirected to, so this row stops asking for one.
-    const listModels = vi.fn(() => Promise.resolve([]));
-    openRoles(listModels);
-    fireEvent.change(screen.getByLabelText('Embeddings profile'), { target: { value: 'local' } });
-    expect(screen.queryByRole('textbox', { name: 'Embeddings model' })).toBeNull();
-    await waitFor(() => expect(listModels).not.toHaveBeenCalledWith('local'));
+  it('lets a role point at a connection it is not already assigned to', () => {
+    // The bug this replaces: an inheriting row derived its connection straight
+    // from the stored assignment, so changing the dropdown sent a clear, the
+    // select snapped back to whatever chat was on, and that endpoint's models
+    // were the only ones you could ever see. There was no order of operations
+    // that worked.
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
+    const select = screen.getByLabelText<HTMLSelectElement>('Rerank connection');
+    expect(select.value).toBe('ollama');
+
+    fireEvent.change(select, { target: { value: 'local' } });
+
+    expect(select.value).toBe('local');
+    // Nothing stored yet — a connection with no model is not something to run.
+    expect(onSetRole).not.toHaveBeenCalled();
+
+    const input = screen.getByLabelText('Rerank model');
+    fireEvent.change(input, { target: { value: 'qwen3-rerank' } });
+    fireEvent.blur(input);
+    expect(onSetRole).toHaveBeenCalledWith('rerank', { connection: 'local', model: 'qwen3-rerank' });
   });
-});
 
-/**
- * What a redirected role actually runs.
- *
- * The row used to show a model box beside the profile dropdown, as though the
- * two were independent settings. They are not: `providerForRole` resolves the
- * target profile and the model is then read off *that* one, so a model typed
- * here was stored, displayed, and never used. Which is how a working config
- * can sit on disk with semantic search reporting no embedder.
- */
-describe('a role redirected to another profile', () => {
-  const withTarget: UiSettings = {
-    ...SETTINGS,
-    profiles: [
-      { ...SETTINGS.profiles[0]!, embeddingsProfile: 'local' },
-      {
-        name: 'local',
-        preset: 'ollama',
-        baseUrl: 'http://localhost:11434/v1',
-        model: 'llama',
-        embeddingsModel: 'nomic-embed-text',
-        active: false,
-        hasKey: false,
-        effectiveContextWindow: 8_000,
-      },
-    ],
-  };
+  it('lists the models of the connection the row points at, after it is changed', async () => {
+    // The type-ahead caches the first list it fetched, so the row is remounted
+    // per connection; otherwise it keeps suggesting the previous endpoint's.
+    const listConnectionModels = vi.fn((c: string) =>
+      Promise.resolve(c === 'local' ? ['nomic-embed-text'] : ['gpt-4o']),
+    );
+    openRoles({ listConnectionModels });
+    fireEvent.focus(screen.getByLabelText('Rerank model'));
+    await waitFor(() => expect(listConnectionModels).toHaveBeenCalledWith('ollama'));
 
-  function open(settings: UiSettings): void {
-    render(<Settings {...props({ settings })} />);
+    fireEvent.change(screen.getByLabelText('Rerank connection'), { target: { value: 'local' } });
+    fireEvent.focus(screen.getByLabelText('Rerank model'));
+
+    await waitFor(() => expect(listConnectionModels).toHaveBeenCalledWith('local'));
+    expect(await screen.findByText('nomic-embed-text')).toBeTruthy();
+  });
+
+  it('drops the assignment when its connection changes, rather than leaving it on the wrong host', () => {
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
+    // Embeddings is assigned nomic-embed on local.
+    fireEvent.change(screen.getByLabelText('Embeddings connection'), { target: { value: 'ollama' } });
+    expect(onSetRole).toHaveBeenCalledWith('embeddings', undefined);
+    expect(screen.getByLabelText<HTMLInputElement>('Embeddings model').value).toBe('');
+  });
+
+  it('suggests models from the connection the row points at, not the one being edited', async () => {
+    const listConnectionModels = vi.fn(() => Promise.resolve(['nomic-embed-text']));
+    openRoles({ listConnectionModels });
+    fireEvent.focus(screen.getByLabelText('Embeddings model'));
+    await waitFor(() => expect(listConnectionModels).toHaveBeenCalledWith('local'));
+  });
+
+  /**
+   * Typing into a role field used to move the caret to the settings search box
+   * after the first character.
+   *
+   * Every dialog is opened with an inline `onClose` arrow, so it is a new
+   * function on each render of the component holding it — and `useModal` had
+   * its focus-in call in the same effect as the key handler, keyed on that
+   * function. Any state change behind the dialog therefore re-ran it and
+   * re-focused the dialog's entry point. Nothing else here saves as you type,
+   * which is why it went unnoticed until a field that does.
+   */
+  it('keeps focus where the user put it when the dialog re-renders', () => {
+    const { rerender } = render(<Settings {...props({ settings: withRoles })} />);
     fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-    fireEvent.click(screen.getAllByText('Edit')[0]!);
-    fireEvent.click(screen.getByText(/Model roles/));
-  }
+    const input = screen.getByLabelText('Rerank model');
+    input.focus();
+    expect(document.activeElement).toBe(input);
 
-  it('names the model the target will run, not an empty box', () => {
-    open(withTarget);
-    expect(screen.getByText('nomic-embed-text')).toBeTruthy();
-    expect(screen.getByText(/from local/)).toBeTruthy();
-  });
+    // A fresh props object, exactly as the parent re-rendering produces.
+    rerender(<Settings {...props({ settings: withRoles })} />);
 
-  it('says where to set one when the target has none', () => {
-    // The failure this replaces was silent: the role was redirected, the
-    // target had no embeddings model, and the panel showed a blank field that
-    // looked settable.
-    open({
-      ...withTarget,
-      profiles: [withTarget.profiles[0]!, { ...withTarget.profiles[1]!, embeddingsModel: undefined }],
-    });
-    expect(screen.getByText(/no embeddings model on local; set one there/)).toBeTruthy();
-  });
-
-  it('leaves the roles that are not redirected editable', () => {
-    open(withTarget);
-    expect(screen.getByLabelText<HTMLInputElement>('Rerank model')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText('Rerank model'));
   });
 });
 

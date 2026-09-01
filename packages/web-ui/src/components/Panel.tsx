@@ -11,6 +11,7 @@ import type {
   UiTreeEntry,
 } from '@heapcode/web-host/protocol';
 import { DiffView } from './DiffView.js';
+import { Empty } from './Empty.js';
 import { Preview } from './Preview.js';
 import { IndexView } from './IndexView.js';
 
@@ -59,21 +60,90 @@ export interface PanelProps {
   onSaveArtifact(id: string, path: string, version?: number): void;
 }
 
+/*
+ * Tab icons, inline and stroked from `currentColor` — the same 24-unit grid
+ * and weight the rail uses, so a tab and a nav row are recognisably the same
+ * kind of control.
+ */
+const S = {
+  width: 15,
+  height: 15,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.7,
+  strokeLinecap: 'round' as const,
+  strokeLinejoin: 'round' as const,
+};
+
+/** A file with a plus and a minus in it: what changed. */
+const ICON_CHANGES = (
+  <svg {...S}>
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+    <path d="M14 3v5h5" />
+    <path d="M9 13h4M11 11v4" />
+    <path d="M9 18h4" />
+  </svg>
+);
+const ICON_FILES = (
+  <svg {...S}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </svg>
+);
+/** Stacked layers: the index is the repository, flattened. */
+const ICON_INDEX = (
+  <svg {...S}>
+    <path d="m12 3 9 4.5-9 4.5-9-4.5z" />
+    <path d="m3 12.5 9 4.5 9-4.5" />
+    <path d="m3 17 9 4.5 9-4.5" />
+  </svg>
+);
+const ICON_TERMINAL = (
+  <svg {...S}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="m7 9 3 3-3 3M13 15h4" />
+  </svg>
+);
+/** A window with something rendered in it. */
+const ICON_PREVIEW = (
+  <svg {...S}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M3 9h18" />
+    <path d="m7 16 3-3 2 2 2-2.5 3 3.5" />
+  </svg>
+);
+
+/** The tab strip, in the order the work tends to flow. */
+const TABS: { id: PanelTab; label: string; icon: JSX.Element }[] = [
+  { id: 'changes', label: 'Changes', icon: ICON_CHANGES },
+  { id: 'files', label: 'Files', icon: ICON_FILES },
+  { id: 'index', label: 'Index', icon: ICON_INDEX },
+  { id: 'terminal', label: 'Terminal', icon: ICON_TERMINAL },
+  { id: 'preview', label: 'Preview', icon: ICON_PREVIEW },
+];
+
 export function Panel(props: PanelProps): JSX.Element {
   return (
     <section className="panel" aria-label="Workspace">
-      <div className="panel-tabs">
-        {(['changes', 'files', 'index', 'terminal', 'preview'] as const).map((t) => (
-          <button
-            key={t}
-            className={`panel-tab ${props.tab === t ? 'panel-tab-active' : ''}`}
-            onClick={() => props.onTab(t)}
-          >
-            {t === 'changes' && `Changes${props.changes.length ? ` (${props.changes.length})` : ''}`}
-            {t === 'preview' && `Preview${props.artifacts.length ? ` (${props.artifacts.length})` : ''}`}
-            {t !== 'changes' && t !== 'preview' && t}
-          </button>
-        ))}
+      <div className="panel-tabs" role="tablist">
+        {TABS.map(({ id, label, icon }) => {
+          // The count is a badge rather than "(4)" in the label, so the tab
+          // name stays the same width whether or not there is anything in it.
+          const count = id === 'changes' ? props.changes.length : id === 'preview' ? props.artifacts.length : 0;
+          return (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={props.tab === id}
+              className={props.tab === id ? 'panel-tab panel-tab-active' : 'panel-tab'}
+              onClick={() => props.onTab(id)}
+            >
+              <span className="panel-tab-icon">{icon}</span>
+              {label}
+              {count > 0 && <span className="panel-tab-count">{count}</span>}
+            </button>
+          );
+        })}
         <button className="icon-btn panel-close" onClick={props.onClose} aria-label="Close panel">
           ✕
         </button>
@@ -132,9 +202,8 @@ function Changes(props: PanelProps): JSX.Element {
 
   if (props.changes.length === 0) {
     return (
-      <div className="panel-empty">
-        <p>No changes yet.</p>
-        <p className="hint">Files the agent edits this session show up here, with a diff and a way back.</p>
+      <div className="changes">
+        <Empty>Nothing edited yet. Files the agent changes appear here, with a diff and a way back.</Empty>
         {props.checkpoints.length > 0 && <Checkpoints {...props} />}
       </div>
     );
@@ -168,6 +237,7 @@ function Changes(props: PanelProps): JSX.Element {
         </span>
       </header>
 
+
       <ul className="file-list">
         {props.changes.map((f) => (
           <li key={f.path}>
@@ -195,9 +265,18 @@ function Changes(props: PanelProps): JSX.Element {
                 ) : (
                   <Skeleton lines={5} />
                 )}
-                <button className="link-btn link-btn-danger" onClick={() => props.onRevertFile(f.path)} disabled={props.busy}>
-                  Revert this file
-                </button>
+                {/* In its own bar under the diff, the way a form's commit
+                    control sits under the form — not loose against the next
+                    file's row. */}
+                <div className="file-detail-actions">
+                  <button
+                    className="link-btn link-btn-danger"
+                    onClick={() => props.onRevertFile(f.path)}
+                    disabled={props.busy}
+                  >
+                    Revert this file
+                  </button>
+                </div>
               </div>
             )}
           </li>
@@ -240,7 +319,7 @@ function Checkpoints(props: PanelProps): JSX.Element | null {
       <button className="cp-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         <span className="cp-caret">{open ? '▾' : '▸'}</span>
         Checkpoints
-        <span className="cp-count">{total}</span>
+        <span className="badge cp-count">{total}</span>
       </button>
 
       {open && (
@@ -323,7 +402,7 @@ function Files({ loadTree, loadFile, openPath }: PanelProps): JSX.Element {
     return (
       <div className="file-view">
         <div className="file-view-head">
-          <button className="btn" onClick={() => setFile(undefined)}>
+          <button className="btn btn-ghost" onClick={() => setFile(undefined)}>
             ← Back
           </button>
           <code>{file.path}</code>
@@ -336,7 +415,12 @@ function Files({ loadTree, loadFile, openPath }: PanelProps): JSX.Element {
   return (
     <div className="tree">
       <div className="tree-head">
-        <button className="btn" disabled={!dir} onClick={() => load(dir.split('/').slice(0, -1).join('/'))}>
+        <button
+          className="btn btn-ghost tree-up"
+          disabled={!dir}
+          aria-label="Parent folder"
+          onClick={() => load(dir.split('/').slice(0, -1).join('/'))}
+        >
           ↑
         </button>
         <code>{dir || '/'}</code>
@@ -361,7 +445,11 @@ function Files({ loadTree, loadFile, openPath }: PanelProps): JSX.Element {
               </button>
             </li>
           ))}
-          {entries.length === 0 && <li className="hint">Nothing here — the folder is empty or entirely ignored.</li>}
+          {entries.length === 0 && (
+            <li>
+              <Empty>Nothing here — the folder is empty, or entirely ignored.</Empty>
+            </li>
+          )}
         </ul>
       )}
     </div>
@@ -394,20 +482,19 @@ function Skeleton({ lines }: { lines: number }): JSX.Element {
  */
 function Terminal({ entries }: { entries: TerminalEntry[] }): JSX.Element {
   if (entries.length === 0) {
-    return (
-      <div className="panel-empty">
-        <p>No commands yet.</p>
-        <p className="hint">Anything the agent runs shows up here with its output.</p>
-      </div>
-    );
+    return <Empty>No commands yet. Anything the agent runs appears here, with its output.</Empty>;
   }
   return (
     <div className="terminal">
       {entries.map((e) => (
+        // A card per call, so where one command's output ends and the next
+        // begins is a border rather than a guess about vertical rhythm.
         <div key={e.id} className="term-entry">
-          <div className={`term-cmd ${e.isError ? 'term-error' : ''}`}>
-            <span className="term-prompt">$</span> {e.command}
-            {!e.done && <span className="term-running"> running…</span>}
+          <div className={e.isError ? 'term-cmd term-error' : 'term-cmd'}>
+            <span className="term-prompt">$</span>
+            <span className="term-text">{e.command}</span>
+            {!e.done && <span className="badge badge-off term-running">running</span>}
+            {e.isError && <span className="badge term-failed">failed</span>}
           </div>
           {e.output && <pre className="term-out">{e.output}</pre>}
         </div>

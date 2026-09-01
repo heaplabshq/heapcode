@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -573,5 +573,48 @@ describe('WorkspaceToolExecutor — syntax guard (real live incident: a weak mod
     await writeFile(join(root, 'a.js'), alreadyBroken);
     const result = await executor.execute(call('edit_file', { path: 'a.js', search: 'x();', replace: 'y();' }));
     expect(result.isError).toBeFalsy();
+  });
+});
+
+/**
+ * The network half is covered in core (downloadFile). What is host-specific is
+ * where the bytes are allowed to land, and what is left behind when they don't.
+ */
+describe('download_file', () => {
+  it('refuses a path that escapes the workspace', async () => {
+    // The remote end never names the file — the model does — but a model
+    // acting on a redirect it was handed still has to be jailed like any
+    // other write.
+    // Throws rather than returning a result, same as every other write tool —
+    // the loop's execTool turns it into an error ToolResult (see the note at
+    // the top of this file).
+    await expect(
+      executor.execute(
+        call('download_file', { url: 'https://example.com/a.png', path: '../../.ssh/authorized_keys' }),
+      ),
+    ).rejects.toThrow(/escapes the workspace/);
+  });
+
+  it('refuses a non-http scheme before it reaches the network', async () => {
+    for (const url of ['file:///etc/passwd', 'ftp://example.com/x', 'data:text/plain,hi']) {
+      const res = await executor.execute(call('download_file', { url, path: 'a.bin' }));
+      expect(res.isError, url).toBe(true);
+      expect(res.content, url).toMatch(/Only http and https/);
+    }
+  });
+
+  it('leaves no file behind when the download fails', async () => {
+    // A truncated — or empty — file reads as a successful download to
+    // everything downstream, including the next tool call. Run repeatedly
+    // because the first version of this raced: the write stream was opened
+    // before the request, and a fast failure could have its cleanup complete
+    // before the file finished being created.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const res = await executor.execute(
+        call('download_file', { url: 'http://127.0.0.1:1/nope.png', path: 'assets/nope.png' }),
+      );
+      expect(res.isError).toBe(true);
+      await expect(stat(join(root, 'assets/nope.png'))).rejects.toThrow();
+    }
   });
 });

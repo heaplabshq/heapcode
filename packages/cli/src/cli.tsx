@@ -29,12 +29,14 @@ import {
   profileContextWindow,
 } from '@heapcode/host';
 import {
-  PROFILE_FIELDS,
-  isProfileField,
+  ROLE_NAMES,
+  isRoleName,
+  modelClear,
+  modelList,
+  modelSet,
   profileAdd,
   profileList,
   profileRemove,
-  profileSet,
   profileUse,
 } from './profileCli.js';
 import { runHeadless } from './headless.js';
@@ -74,8 +76,22 @@ function debounceResizeEvents(stream: NodeJS.WriteStream, waitMs = 100): void {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
 
-  if (argv[0] === 'profile') {
+  // `profile` is what this was called when one object was both an endpoint and
+  // a model choice. It still works, and says where each half went, because
+  // scripts and muscle memory both point at it.
+  if (argv[0] === 'connection' || argv[0] === 'profile') {
     const [, sub, arg] = argv;
+    if (argv[0] === 'profile' && sub === 'set') {
+      console.log(
+        'Model roles moved out of profiles: they are one global table now, so a role no longer\n' +
+          'changes when you switch endpoint. Use:\n' +
+          '  heapcode model list\n' +
+          '  heapcode model set <role> <connection> <model>\n' +
+          '  heapcode model clear <role>',
+      );
+      process.exitCode = 1;
+      return;
+    }
     if (sub === 'add') {
       await profileAdd();
       return;
@@ -83,19 +99,36 @@ async function main(): Promise<void> {
     if (sub === 'list') return profileList();
     if (sub === 'use' && arg) return profileUse(arg);
     if (sub === 'remove' && arg) return profileRemove(arg);
+    console.log('Usage: heapcode connection <add|list|use NAME|remove NAME>');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (argv[0] === 'model') {
+    const [, sub, role, connection, ...rest] = argv;
+    if (!sub || sub === 'list') return modelList();
     if (sub === 'set') {
-      const [, , name, field, ...rest] = argv;
-      if (!name || !field || !isProfileField(field)) {
-        console.log('Usage: heapcode profile set NAME FIELD [VALUE]   (omit VALUE to clear)');
-        console.log(`Fields: ${PROFILE_FIELDS.join(', ')}`);
+      // Joined rather than taking one token: a model id with spaces should not
+      // be silently truncated to its first word.
+      const model = rest.join(' ');
+      if (!role || !isRoleName(role) || !connection || !model) {
+        console.log('Usage: heapcode model set ROLE CONNECTION MODEL');
+        console.log(`Roles: ${ROLE_NAMES.join(', ')}`);
         process.exitCode = 1;
         return;
       }
-      // Joined rather than taking one token: a base URL or a model id with
-      // spaces should not be silently truncated to its first word.
-      return profileSet(name, field, rest.join(' ') || undefined);
+      return modelSet(role, connection, model);
     }
-    console.log('Usage: heapcode profile <add|list|use NAME|remove NAME|set NAME FIELD [VALUE]>');
+    if (sub === 'clear') {
+      if (!role || !isRoleName(role)) {
+        console.log('Usage: heapcode model clear ROLE');
+        console.log(`Roles: ${ROLE_NAMES.join(', ')}`);
+        process.exitCode = 1;
+        return;
+      }
+      return modelClear(role);
+    }
+    console.log('Usage: heapcode model <list|set ROLE CONNECTION MODEL|clear ROLE>');
     process.exitCode = 1;
     return;
   }
@@ -222,7 +255,7 @@ async function main(): Promise<void> {
     if (profileName) {
       // An explicit --profile NAME that doesn't exist is a mistake worth surfacing
       // clearly, not something to silently paper over with a fresh setup wizard.
-      console.error(`No profile named "${profileName}". Run "heapcode profile list" to see configured profiles.`);
+      console.error(`No connection named "${profileName}". Run "heapcode connection list" to see them.`);
       process.exitCode = 1;
       return;
     }
@@ -234,6 +267,9 @@ async function main(): Promise<void> {
 
   const secrets = new SecretsStore();
   const contextWindow = profileContextWindow(profile);
+  // What the agent role actually resolves to — chat, unless something was
+  // assigned to agent specifically (core's config/roles.ts).
+  const agentModel = (await config.resolve('agent'))?.model ?? profile.model;
   // Canonicalized once here and threaded through every root-taking class below —
   // see paths.ts's canonicalize() for why they'd otherwise silently disagree.
   const root = canonicalize(process.cwd());
@@ -321,6 +357,7 @@ async function main(): Promise<void> {
       tools={tools}
       workspaceName={basename(root)}
       contextWindow={contextWindow}
+      agentModel={agentModel}
       configStore={config}
       secretsStore={secrets}
       switchProvider={(p) => Promise.resolve({ contextWindow: profileContextWindow(p) })}
@@ -379,13 +416,14 @@ Usage:
   heapcode                          Start an interactive agent session (fresh conversation) in the current directory
   heapcode --continue | -c          Continue this directory's most recent conversation (in-session: /resume picks any)
   heapcode --resume <id>            Continue a specific past conversation by id or unambiguous prefix — printed when a session exits, or shown in /settings and /resume's picker
-  heapcode --profile NAME           Use a specific provider profile for this session
+  heapcode --profile NAME           Pin this session to one provider connection
   heapcode --safe-mode              Ask for permission on every action, even ones with a persisted "Always allow" grant
   heapcode --permission-mode MODE   Start in a permission mode (see below); Shift+Tab cycles it in-session
   heapcode --no-update-check        Skip the startup check against npm for a newer published version (see "Config" below)
   heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG, MCP) with no TTY required — see below
 
-  heapcode profile <add|list|use|remove>   Scriptable profile management (all of it is also available in-session via /profile)
+  heapcode connection <add|list|use|remove>   Provider endpoints (also in-session via /profile)
+  heapcode model <list|set ROLE CONNECTION MODEL|clear ROLE>   Which model serves each role (also /roles)
   heapcode audit                            Local usage/audit dashboard — event names + coarse metadata only, never code/prompts/paths; nothing leaves this machine
   heapcode web [--port N] [--host H]        Serve the browser UI for this workspace on 127.0.0.1 (--host exposes it to your network — see the warning it prints)
 
@@ -449,7 +487,8 @@ run that tool itself. Whatever the command repairs still shows up in the run's c
 In-session commands (type / for the autocomplete menu):
   /help                             Show available commands
   /model [id]                       Switch the model (fetches the provider's model list)
-  /profile [add|list|remove|name]   Switch, add, list, or remove provider profiles
+  /profile [add|list|remove|name]   Switch, add, list, or remove provider connections
+  /roles [role]                     Assign agent, edit, apply, embeddings… to any connection's model
   /persona [name]                   Switch persona: agent, architect (read-only), debug (no edits), reviewer
   /mode [name]                      Permission mode: plan, default, auto-edit, full-auto (Shift+Tab cycles)
   /nativetools [on|off]             Native tool calling vs the text protocol — turn off for models that reject tools
@@ -480,7 +519,7 @@ Per-project session state (history, checkpoints, search index — never in your 
   ~/.heapcode/projects/<name>-<hash>/{conversations.json, permissions.json, shadow-git/, rag-index.json, repo-map.json}
 Per-project CONFIG (meant to live alongside your code, safe to commit and share with a team):
   <cwd>/.heapcode/{HEAPCODE.md, memory.md, instructions/*.md, mcp.json}
-Semantic search needs an embeddings model on the active profile (embeddingsModel, e.g. nomic-embed-text on Ollama) — /settings shows whether one is configured.
+Semantic search needs a model assigned to the embeddings role — "heapcode model set embeddings <connection> nomic-embed-text", or /roles in-session. It inherits nothing on purpose: a chat model asked to embed returns something that is not an embedding, and that surfaces as bad results rather than as an error.
 MCP servers: ~/.heapcode/config.json's "mcpServers", or <cwd>/.heapcode/mcp.json for project-scoped servers.
 Step limit: one run takes at most 100 model turns. In-session it then ASKS whether to keep going (another 100 per yes); headless, with nobody to ask, it stops with a summary of what it did and what remains.
              Set { "maxIterations": N } in ~/.heapcode/config.json to change it for every run, or pass -p --max-iterations N for one.

@@ -1,31 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { Session, type HelloParams, type KeyRequestResult, type ProviderProfileConfig } from '../src/index.js';
+import {
+  Session,
+  type HelloParams,
+  type KeyRequestResult,
+  type ModelRoleTable,
+  type ProviderProfileConfig,
+} from '../src/index.js';
 
 /**
- * Prerequisite 2 of docs/phase3-rag-design.md §5.3. Nothing server-side
- * implemented the `<role>Profile` redirect that both hosts do today
- * (packages/cli/src/provider/roles.ts:30-41,
- * packages/vscode/src/profileManager.ts:164-176) — and RAG is the feature
- * that uses it most, since embeddings/rerank/context each get their own.
+ * Role resolution in the server, after roles became global.
  *
- * The redirect target is normally NOT pushed at hello: all three hosts send
- * only the active profile (App.tsx:426, headless.ts:207, serverLink.ts:91),
- * so `key/request` is the ordinary path here rather than a fallback. These
- * tests are written against that reality.
+ * It used to be two hops: a role read a `<role>Model` field off the active
+ * profile, and a `<role>Profile` field could redirect it to another profile
+ * whose same-named role field was read in turn. Now one table says which model
+ * on which connection serves each role, and this resolves it in one lookup.
+ *
+ * The connection an assignment names is normally NOT pushed at hello — the
+ * hosts send only what the chat role needs (App.tsx, headless.ts,
+ * serverLink.ts) — so `key/request` is the ordinary path here rather than a
+ * fallback. These tests are written against that reality.
  */
 
 function profile(name: string, extra: Partial<ProviderProfileConfig> = {}): ProviderProfileConfig {
   return { name, preset: 'custom', baseUrl: `https://${name}.example`, model: 'chat', ...extra };
 }
 
-function session(active: ProviderProfileConfig, keys: Record<string, string> = {}): Session {
+function session(
+  active: ProviderProfileConfig,
+  roles: ModelRoleTable = {},
+  keys: Record<string, string> = {},
+): Session {
   const hello: HelloParams = {
     token: 't',
-    protocolVersion: 1,
+    protocolVersion: 2,
     client: { name: 'test' },
     root: '/tmp/ws',
     profiles: [active],
     activeProfile: active.name,
+    roles,
     keys,
   };
   return new Session('sess', hello);
@@ -43,117 +55,229 @@ function hostWith(known: Record<string, KeyRequestResult>, session: Session) {
   };
 }
 
+const chatOnCloud: ModelRoleTable = { chat: { connection: 'cloud', model: 'gpt-4o' } };
+
 describe('Session.providerForRole', () => {
-  it('uses the active profile when the role names no redirect', async () => {
-    const s = session(profile('cloud', { embeddingsModel: 'text-embedding-3-small' }), { cloud: 'k' });
+  it('serves a role from the connection its assignment names', async () => {
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'cloud', model: 'text-embedding-3-small' },
+    }, { cloud: 'k' });
     const host = hostWith({}, s);
 
-    const resolved = await s.providerForRole('embeddingsModel', host.requestKey);
+    const resolved = await s.providerForRole('embeddings', host.requestKey);
 
     expect(resolved?.profile.name).toBe('cloud');
+    // The assignment's model wins over whatever chat model the connection
+    // happened to be pushed carrying.
+    expect(resolved?.profile.model).toBe('text-embedding-3-small');
     expect(host.asked).toEqual([]);
   });
 
-  it('uses the active profile when the redirect points back at itself', async () => {
-    // Both hosts treat a self-reference as "no redirect" (roles.ts:31).
-    const s = session(profile('cloud', { embeddingsProfile: 'cloud' }), { cloud: 'k' });
-    const host = hostWith({}, s);
-
-    expect((await s.providerForRole('embeddingsModel', host.requestKey))?.profile.name).toBe('cloud');
-    expect(host.asked).toEqual([]);
-  });
-
-  it('follows the redirect through key/request, since hello only ever pushed the active profile', async () => {
-    const s = session(profile('cloud', { embeddingsProfile: 'ollama' }), { cloud: 'k' });
+  it('fetches a connection it has not been pushed, since hello sends only the chat one', async () => {
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'ollama', model: 'nomic-embed-text' },
+    }, { cloud: 'k' });
     const host = hostWith(
-      { ollama: { profile: profile('ollama', { baseUrl: 'http://localhost:11434/v1', embeddingsModel: 'nomic-embed-text' }) } },
+      { ollama: { profile: profile('ollama', { baseUrl: 'http://localhost:11434/v1' }) } },
       s,
     );
 
-    const resolved = await s.providerForRole('embeddingsModel', host.requestKey);
+    const resolved = await s.providerForRole('embeddings', host.requestKey);
 
     expect(host.asked).toEqual(['ollama']);
     expect(resolved?.profile.name).toBe('ollama');
-    expect(resolved?.profile.embeddingsModel).toBe('nomic-embed-text');
+    expect(resolved?.profile.baseUrl).toBe('http://localhost:11434/v1');
+    expect(resolved?.profile.model).toBe('nomic-embed-text');
   });
 
-  it('resolves each role through its own field, so embeddings and rerank can land on different profiles', async () => {
-    const s = session(profile('cloud', { embeddingsProfile: 'ollama', rerankProfile: 'fast' }), { cloud: 'k' });
+  it('lets each role land on a different connection', async () => {
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'ollama', model: 'nomic-embed-text' },
+      rerank: { connection: 'fast', model: 'rerank-1' },
+    }, { cloud: 'k' });
     const host = hostWith(
       { ollama: { profile: profile('ollama') }, fast: { profile: profile('fast'), apiKey: 'fk' } },
       s,
     );
 
-    expect((await s.providerForRole('embeddingsModel', host.requestKey))?.profile.name).toBe('ollama');
-    expect((await s.providerForRole('rerankModel', host.requestKey))?.profile.name).toBe('fast');
-    expect((await s.providerForRole('contextModel', host.requestKey))?.profile.name).toBe('cloud');
+    expect((await s.providerForRole('embeddings', host.requestKey))?.profile.name).toBe('ollama');
+    expect((await s.providerForRole('rerank', host.requestKey))?.profile.name).toBe('fast');
+    // context inherits rerank, so it lands on the same connection without
+    // needing an assignment of its own.
+    expect((await s.providerForRole('context', host.requestKey))?.profile.model).toBe('rerank-1');
     expect(host.asked).toEqual(['ollama', 'fast']);
   });
 
-  it('falls back to the profile it redirected from when the host does not know the target', async () => {
-    // Same leniency both hosts already have: `?? this.active` (roles.ts:32).
-    const s = session(profile('cloud', { embeddingsProfile: 'typo' }), { cloud: 'k' });
+  it('carries the assignment tuning, not the connection it was pushed with', async () => {
+    // The reason tuning moved onto the assignment: a small model sharing an
+    // endpoint with a large one must not inherit its context window.
+    const s = session(profile('cloud', { contextWindow: 128_000 }), {
+      ...chatOnCloud,
+      rerank: { connection: 'cloud', model: 'small', contextWindow: 8_192, temperature: 0 },
+    }, { cloud: 'k' });
+
+    const resolved = await s.providerForRole('rerank');
+
+    expect(resolved?.profile.contextWindow).toBe(8_192);
+    expect(resolved?.profile.temperature).toBe(0);
+  });
+
+  it('falls back down the chain when the host does not know the connection a role names', async () => {
+    // Only for a role that inherits: the active connection comes back carrying
+    // its chat model, which for edit IS the bottom of its own chain.
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      edit: { connection: 'typo', model: 'ghost' },
+    }, { cloud: 'k' });
     const host = hostWith({}, s);
 
-    expect((await s.providerForRole('embeddingsModel', host.requestKey))?.profile.name).toBe('cloud');
+    const resolved = await s.providerForRole('edit', host.requestKey);
+    expect(resolved?.profile.name).toBe('cloud');
+    expect(resolved?.profile.model).toBe('gpt-4o');
     expect(host.asked).toEqual(['typo']);
   });
 
-  it('asks the host once per profile, not once per call — a keyless local profile never gets a key', async () => {
-    // The regression this guards: `!hasKey(name)` stays true forever for an
-    // Ollama profile, so an unguarded check re-asks on every embedding batch.
-    const s = session(profile('cloud', { embeddingsProfile: 'ollama' }), { cloud: 'k' });
+  it('leaves embeddings off rather than substituting the chat model, when its connection is gone', async () => {
+    // The reported failure. The active connection is pushed carrying its CHAT
+    // model, so falling back handed the embeddings role a chat model:
+    // OpenRouter answered "Model <chat model> does not exist", and the index
+    // was then discarded as written by a different embedder. A chat model
+    // asked to embed is not a degraded answer, it is a wrong one.
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'homelab', model: 'nomic-embed-text' },
+    }, { cloud: 'k' });
+    const host = hostWith({}, s);
+
+    expect(await s.providerForRole('embeddings', host.requestKey)).toBeUndefined();
+    expect(await s.providerForRole('apply', host.requestKey)).toBeUndefined();
+    expect(host.asked).toEqual(['homelab']);
+  });
+
+  it('says in the log why a role was left off, rather than substituting in silence', async () => {
+    const lines: string[] = [];
+    const s = new Session(
+      'sess',
+      {
+        token: 't',
+        protocolVersion: 2,
+        client: { name: 'test' },
+        root: '/tmp/ws',
+        profiles: [profile('cloud')],
+        activeProfile: 'cloud',
+        roles: { ...chatOnCloud, embeddings: { connection: 'homelab', model: 'nomic' } },
+        keys: { cloud: 'k' },
+      },
+      (line) => lines.push(line),
+    );
+
+    await s.providerForRole('embeddings');
+
+    expect(lines.join('\n')).toContain('homelab');
+    expect(lines.join('\n')).toMatch(/not configured/);
+  });
+
+  it('asks the host once per connection, not once per call', async () => {
+    // The regression this guards: `!hasKey(name)` stays true forever for a
+    // keyless Ollama connection, so an unguarded check re-asks on every batch.
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'ollama', model: 'nomic' },
+    }, { cloud: 'k' });
     const host = hostWith({ ollama: { profile: profile('ollama') } }, s);
 
-    for (let i = 0; i < 5; i++) await s.providerForRole('embeddingsModel', host.requestKey);
+    for (let i = 0; i < 5; i++) await s.providerForRole('embeddings', host.requestKey);
 
     expect(host.asked).toEqual(['ollama']);
     expect(s.hasKey('ollama')).toBe(false);
   });
 
-  it('caches the Provider per profile, so a redirect resolves to the same instance', async () => {
-    const s = session(profile('cloud', { embeddingsProfile: 'ollama' }), { cloud: 'k' });
+  it('caches the Provider per connection', async () => {
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'ollama', model: 'nomic' },
+    }, { cloud: 'k' });
     const host = hostWith({ ollama: { profile: profile('ollama') } }, s);
 
-    const first = await s.providerForRole('embeddingsModel', host.requestKey);
-    const second = await s.providerForRole('embeddingsModel', host.requestKey);
+    const first = await s.providerForRole('embeddings', host.requestKey);
+    const second = await s.providerForRole('embeddings', host.requestKey);
 
     expect(first?.provider).toBe(second?.provider);
   });
 
-  it('works with no key requester at all — the redirect just falls back', async () => {
-    const s = session(profile('cloud', { embeddingsProfile: 'ollama' }), { cloud: 'k' });
+  it('works with no key requester at all — an inheriting role falls back, embeddings does not', async () => {
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      edit: { connection: 'ollama', model: 'qwen' },
+      embeddings: { connection: 'ollama', model: 'nomic' },
+    }, { cloud: 'k' });
 
-    expect((await s.providerForRole('embeddingsModel'))?.profile.name).toBe('cloud');
+    expect((await s.providerForRole('edit'))?.profile.name).toBe('cloud');
+    expect(await s.providerForRole('embeddings')).toBeUndefined();
   });
 
-  it('resolves from a named profile rather than the active one when asked to', async () => {
-    const s = session(profile('cloud', { embeddingsProfile: 'ollama' }), { cloud: 'k' });
-    const host = hostWith({ other: { profile: profile('other', { embeddingsProfile: 'elsewhere' }) }, elsewhere: { profile: profile('elsewhere') } }, s);
-    await s.resolveProfile('other', host.requestKey);
+  it('lets a caller pin a role to one connection, overriding the table', async () => {
+    // delegate_task naming a profile is the case this exists for.
+    const s = session(profile('cloud'), chatOnCloud, { cloud: 'k' });
+    const host = hostWith({ other: { profile: profile('other') } }, s);
 
-    const resolved = await s.providerForRole('embeddingsModel', host.requestKey, 'other');
+    const resolved = await s.providerForRole('agent', host.requestKey, 'other');
 
-    expect(resolved?.profile.name).toBe('elsewhere');
+    expect(resolved?.profile.name).toBe('other');
+  });
+
+  it('leaves an unassigned embeddings role off rather than falling back to chat', async () => {
+    // The bug the split exists to kill: a chat model asked to embed returns
+    // something that is not an embedding, and it surfaces as bad search
+    // results rather than as an error.
+    const s = session(profile('cloud'), chatOnCloud, { cloud: 'k' });
+
+    expect(await s.providerForRole('embeddings')).toBeUndefined();
+    expect(await s.providerForRole('apply')).toBeUndefined();
+  });
+
+  it('falls back to the active connection when the host pushed no table at all', async () => {
+    // A host that has not been converted yet still connects, and every role
+    // that inherits resolves to the active connection's own model — which is
+    // what a profile with no role overrides amounted to before the split.
+    // Embeddings still does not: there is nothing to inherit from.
+    const s = session(profile('cloud'), {}, { cloud: 'k' });
+
+    expect((await s.providerForRole('agent'))?.profile.model).toBe('chat');
+    expect(await s.providerForRole('embeddings')).toBeUndefined();
+  });
+
+  it('takes a new table mid-session, so a settings change lands without a reconnect', async () => {
+    const s = session(profile('cloud'), chatOnCloud, { cloud: 'k' });
+
+    s.setRoles({ ...chatOnCloud, edit: { connection: 'cloud', model: 'gpt-4o-mini' } });
+
+    expect((await s.providerForRole('edit'))?.profile.model).toBe('gpt-4o-mini');
   });
 
   it('drops the ask-once record on dispose, along with keys and providers', async () => {
-    const s = session(profile('cloud', { embeddingsProfile: 'ollama' }), { cloud: 'k' });
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'ollama', model: 'nomic' },
+    }, { cloud: 'k' });
     const host = hostWith({ ollama: { profile: profile('ollama') } }, s);
-    await s.providerForRole('embeddingsModel', host.requestKey);
+    await s.providerForRole('embeddings', host.requestKey);
 
     s.dispose();
 
     expect(s.getProfile('cloud')).toBeUndefined();
     expect(s.hasKey('cloud')).toBe(false);
     // Nothing survives the connection (§2) — including "we already asked".
-    expect(await s.providerForRole('embeddingsModel', host.requestKey)).toBeUndefined();
+    expect(await s.providerForRole('embeddings', host.requestKey)).toBeUndefined();
   });
 });
 
 describe('Session.resolveProfile', () => {
-  it('adopts the profile and key the host returns', async () => {
-    const s = session(profile('cloud'), { cloud: 'k' });
+  it('adopts the connection and key the host returns', async () => {
+    const s = session(profile('cloud'), chatOnCloud, { cloud: 'k' });
     const host = hostWith({ other: { profile: profile('other'), apiKey: 'ok' } }, s);
 
     const resolved = await s.resolveProfile('other', host.requestKey);
@@ -162,8 +286,8 @@ describe('Session.resolveProfile', () => {
     expect(s.hasKey('other')).toBe(true);
   });
 
-  it('does not ask for a profile it already holds a key for', async () => {
-    const s = session(profile('cloud'), { cloud: 'k' });
+  it('does not ask for a connection it already holds a key for', async () => {
+    const s = session(profile('cloud'), chatOnCloud, { cloud: 'k' });
     const host = hostWith({}, s);
 
     expect((await s.resolveProfile('cloud', host.requestKey))?.profile.name).toBe('cloud');

@@ -376,7 +376,11 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
 
   return runAgent({
     provider,
-    model: profile.agentModel ?? profile.model,
+    // The connection's model. heapbrowse has one role — the page agent — so
+    // there is no separate agent assignment to prefer over it; the split into
+    // connections and roles (core's config/roles.ts) collapses to a single row
+    // here.
+    model: profile.model,
     task,
     history,
     workspaceName: site ? `the web page at ${site.host}` : 'the current web page',

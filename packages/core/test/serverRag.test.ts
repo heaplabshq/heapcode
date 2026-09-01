@@ -54,11 +54,13 @@ interface Endpoint {
   script: string[];
   /** Per-embeddings-request delay, so a build can be caught mid-flight. */
   delayMs: number;
+  /** Make /embeddings fail, to exercise the error path. */
+  embeddingsFail?: { status: number; body: string };
 }
 
 /** Path-aware OpenAI-compatible fake: embeddings as JSON, chat as an empty reply. */
 async function startEndpoint(): Promise<Endpoint> {
-  const state = { delayMs: 0 };
+  const state: { delayMs: number; embeddingsFail?: { status: number; body: string } } = { delayMs: 0 };
   const embeddingBatches: string[][] = [];
   const chatCalls: Array<{ role: string; content: string }[]> = [];
   const script: string[] = [''];
@@ -72,6 +74,11 @@ async function startEndpoint(): Promise<Endpoint> {
         : {};
       const respond = (): void => {
         if (req.url?.includes('/embeddings')) {
+          if (state.embeddingsFail) {
+            res.writeHead(state.embeddingsFail.status, { 'content-type': 'application/json' });
+            res.end(state.embeddingsFail.body);
+            return;
+          }
           const input = body.input ?? [];
           embeddingBatches.push(input);
           res.writeHead(200, { 'content-type': 'application/json' });
@@ -105,6 +112,12 @@ async function startEndpoint(): Promise<Endpoint> {
     script,
     get delayMs() {
       return state.delayMs;
+    },
+    get embeddingsFail() {
+      return state.embeddingsFail;
+    },
+    set embeddingsFail(fail: { status: number; body: string } | undefined) {
+      state.embeddingsFail = fail;
     },
     set delayMs(ms: number) {
       state.delayMs = ms;
@@ -164,8 +177,9 @@ async function client(hello: Partial<HelloParams> = {}): Promise<RpcPeer> {
     protocolVersion: PROTOCOL_VERSION,
     client: { name: 'test' },
     root,
-    profiles: [profile({ embeddingsModel: 'embed' })],
+    profiles: [profile()],
     activeProfile: 'test',
+    roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' } },
     ...hello,
   } satisfies HelloParams);
   return peer;
@@ -234,9 +248,12 @@ describe('rag/index — full build', () => {
     expect(endpoint.embeddingBatches.length).toBe(before);
   });
 
-  it('reports no-embedder rather than indexing when no embeddings model is configured', async () => {
+  it('reports no-embedder rather than indexing when nothing is assigned to the embeddings role', async () => {
     await writeCorpus();
-    const peer = await client({ profiles: [profile()] });
+    // A role table that exists but leaves embeddings unassigned is a
+    // deliberate "off" — it must not fall back to the chat model, which
+    // cannot embed.
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' } } });
 
     const result = await index(peer, { full: true });
 
@@ -338,8 +355,12 @@ describe('rag/query — nothing binary crosses the wire', () => {
       protocolVersion: PROTOCOL_VERSION,
       client: { name: 'raw' },
       root,
-      profiles: [profile({ embeddingsModel: 'embed' })],
+      profiles: [profile()],
       activeProfile: 'test',
+      // The same embeddings assignment the index was built with. A session
+      // that embeds with a different model does not get to read these vectors
+      // back — they are not comparable — so it would find an empty index.
+      roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' } },
     });
     await vi.waitFor(() => expect(lines.join('')).toContain('sessionId'));
     lines.length = 0;
@@ -532,7 +553,7 @@ describe('host policy stays host policy', () => {
     // keep their current default by passing it per request rather than the
     // server reading either host's config.
     await writeCorpus();
-    const peer = await client({ profiles: [profile({ embeddingsModel: 'embed', contextModel: 'ctx' })] });
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' }, context: { connection: 'test', model: 'ctx' } } });
 
     await index(peer, { full: true, contextualRetrieval: false });
     expect(endpoint.chatCalls).toEqual([]);
@@ -547,7 +568,7 @@ describe('host policy stays host policy', () => {
 
   it('defaults contextual retrieval off when the request says nothing', async () => {
     await writeCorpus();
-    const peer = await client({ profiles: [profile({ embeddingsModel: 'embed', contextModel: 'ctx' })] });
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' }, context: { connection: 'test', model: 'ctx' } } });
 
     await index(peer, { full: true });
 
@@ -559,7 +580,7 @@ describe('host policy stays host policy', () => {
     for (let i = 0; i < 8; i++) {
       await writeFile(join(root, `m${i}.ts`), `export function fn${i}() {\n  return ${i};\n}\n`);
     }
-    const peer = await client({ profiles: [profile({ embeddingsModel: 'embed', rerankModel: 'rr' })] });
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' }, rerank: { connection: 'test', model: 'rr' } } });
     await index(peer, { full: true });
 
     await query(peer, { text: 'fn3', k: 2, rerank: false });
@@ -647,5 +668,57 @@ describe('semantic_search is dispatched server-side', () => {
 
     expect(executed).toContain('semantic_search');
     expect(results[0]).toBe('host fallback');
+  });
+});
+
+/**
+ * Why the index failed, not just that it did.
+ *
+ * The reason used to go nowhere at all. `RagIndexer` wrote it to an `onLog`
+ * that `SessionRag` never passed, and the wire carried the bare state 'error'
+ * — so an unreachable Ollama, a chat model asked to embed, and a rejected key
+ * were indistinguishable from every surface, and none of them said what to fix.
+ */
+describe('rag — reporting why indexing failed', () => {
+  it('carries the reason on the status and on the event, not just the state', async () => {
+    await writeCorpus();
+    const peer = await client();
+    endpoint.embeddingsFail = { status: 401, body: JSON.stringify({ error: { message: 'invalid api key' } }) };
+    const events: RagEventParams[] = [];
+    peer.onNotification(METHODS.ragEvent, (raw) => events.push(raw as RagEventParams));
+
+    await index(peer, { full: true });
+
+    const reported = await status(peer);
+    expect(reported.state).toBe('error');
+    expect(reported.message).toMatch(/invalid api key|401/i);
+
+    const final = events.map((e) => e.event).filter((e) => e.kind === 'state').at(-1);
+    expect(final).toMatchObject({ state: 'error', message: reported.message });
+  });
+
+  it('clears the reason once a build succeeds', async () => {
+    // A stale message under a healthy state reads as a problem that is still
+    // there.
+    await writeCorpus();
+    const peer = await client();
+    endpoint.embeddingsFail = { status: 500, body: '{}' };
+    await index(peer, { full: true });
+    expect((await status(peer)).state).toBe('error');
+
+    endpoint.embeddingsFail = undefined;
+    await index(peer, { full: true });
+
+    const healthy = await status(peer);
+    expect(healthy.state).toBe('idle');
+    expect(healthy.message).toBeUndefined();
+  });
+
+  it('says nothing when there is nothing wrong', async () => {
+    await writeCorpus();
+    const peer = await client();
+    await index(peer, { full: true });
+
+    expect((await status(peer)).message).toBeUndefined();
   });
 });

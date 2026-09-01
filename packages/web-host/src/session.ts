@@ -27,6 +27,8 @@ import {
   createProvider,
   providerPresets,
   resolveCapabilities,
+  describeRole,
+  type ModelRoleTable,
   unifiedDiff,
   type AgentEvent,
   type AgentEventParams,
@@ -144,7 +146,9 @@ import {
   type UiReindexParams,
   type UiRepoMapParams,
   type UiRepoMapResult,
-  type UiRoleFields,
+  type UiConnectionModelsParams,
+  type UiConnectionModelsResult,
+  type UiSetRoleParams,
   type UiSetWorkspaceParams,
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
@@ -221,6 +225,14 @@ export interface DaemonHello {
   root: string;
   profiles: ProviderProfileConfig[];
   activeProfile: string;
+  /**
+   * Which model on which connection serves each role — one global table.
+   *
+   * Required: every path that builds a hello must carry it. `reconnect` once
+   * did not, which made changing a role the one action that left the daemon
+   * with no table.
+   */
+  roles: ModelRoleTable;
   keys: Record<string, string>;
 }
 
@@ -377,9 +389,19 @@ export class WebSession {
     this.artifacts = new ArtifactStore(join(projectStateDir(deps.root), 'artifacts'));
   }
 
+  /**
+   * The model this session's runs use.
+   *
+   * The agent role, which inherits chat unless something was assigned to agent
+   * specifically (core's config/roles.ts). Cached because it is read on every
+   * turn and `agentModel` is refreshed whenever the role table changes.
+   */
   private get model(): string {
-    return this.modelOverride || this.profile?.agentModel || this.profile?.model || '';
+    return this.modelOverride || this.agentModel || this.profile?.model || '';
   }
+
+  /** What the agent role currently resolves to; refreshed with the role table. */
+  private agentModel = '';
 
   // -------------------------------------------------------------------------
   // lifecycle
@@ -394,10 +416,11 @@ export class WebSession {
     const profile = await config.getActiveProfile();
     if (!profile) {
       throw new Error(
-        'No provider profile configured. Run `heapcode profile add` (or start the CLI once) before `heapcode web`.',
+        'No provider connection configured. Run `heapcode connection add` (or start the CLI once) before `heapcode web`.',
       );
     }
     this.profile = profile;
+    this.agentModel = (await config.resolve('agent'))?.model ?? profile.model;
 
     this.history = new JsonConversationStore(conversationsFile(root));
     // Launch default is a fresh conversation, matching `heapcode` itself; the
@@ -438,6 +461,9 @@ export class WebSession {
       root,
       profiles: [profile],
       activeProfile: profile.name,
+      // The whole table, so a role pointing at another connection is resolved
+      // in the daemon, which then asks for that connection through key/request.
+      roles: await config.getRoles(),
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
@@ -997,13 +1023,13 @@ export class WebSession {
     ui.onRequest(UI_METHODS.settings, async (): Promise<UiSettings> => {
       await this.start();
       const cfg = await this.deps.config.load();
+      const modelConfig = await this.deps.config.modelConfig();
       const profiles = await Promise.all(
-        (cfg.profiles ?? []).map(async (p) => ({
+        (await this.deps.config.listProfiles()).map(async (p) => ({
           name: p.name,
           preset: p.preset,
           baseUrl: p.baseUrl,
           model: p.model,
-          ...roleFields(p),
           temperature: p.temperature,
           hasKey: Boolean(await this.deps.secrets.getApiKey(p.name)),
           active: p.name === this.profile?.name,
@@ -1027,6 +1053,14 @@ export class WebSession {
         subAgents: Boolean(this.subAgents),
         nativeToolCalls: this.profile ? resolveCapabilities(this.profile).nativeToolCalls : true,
         profiles,
+        // Resolved here rather than in the browser, so the CLI, the extension
+        // and this screen all say the same thing about the same state.
+        roles: UI_MODEL_ROLES.map((role) => ({
+          role: role.key,
+          connection: modelConfig.roles[role.key]?.connection,
+          model: modelConfig.roles[role.key]?.model,
+          summary: describeRole(modelConfig, role.key),
+        })),
         presets: providerPresets.map((p) => ({
           id: p.id,
           label: p.label,
@@ -1146,19 +1180,76 @@ export class WebSession {
 
     ui.onRequest(UI_METHODS.deleteProfile, async (raw) => {
       const { name } = raw as UiNameParams;
-      if (name === this.profile?.name) throw new Error('Cannot delete the profile currently in use.');
+      if (name === this.profile?.name) throw new Error('Cannot delete the connection currently in use.');
       await this.deps.config.deleteProfile(name);
       await this.deps.secrets.deleteApiKey(name);
       return null;
+    });
+
+    /**
+     * Assign a role, or clear it back to inheriting.
+     *
+     * Separate from `saveProfile` because a role is not a field on a profile
+     * any more. A role naming another connection is resolved in the daemon,
+     * which holds the table — so changing one has to reach it, and the daemon
+     * takes a new table without a reconnect (`session/setRoles` is not a
+     * thing; the table travels at hello, and `refreshDaemonRoles` reconnects
+     * only when it must).
+     */
+    ui.onRequest(UI_METHODS.setRole, async (raw) => {
+      const { role, assignment } = raw as UiSetRoleParams;
+      if (role === 'chat') {
+        if (!assignment) throw new Error('Chat is what the other roles inherit from, so it cannot be cleared.');
+        await this.deps.config.setChatModel(assignment.connection, assignment.model);
+        const next = await this.deps.config.getActiveProfile();
+        if (next) {
+          const before = this.profile;
+          this.profile = next;
+          this.modelOverride = undefined;
+          if (daemonHeldFieldsChanged(before, next)) await this.reconnect();
+        }
+      } else {
+        await this.deps.config.setRole(role, assignment);
+      }
+      this.agentModel = (await this.deps.config.resolve('agent'))?.model ?? this.profile?.model ?? '';
+      // The daemon was handed the table once, at hello. Reconnecting is the
+      // only way to replace it, and leaving it stale would run the old
+      // assignment with nothing anywhere saying so.
+      await this.reconnect();
+      void this.pushState();
+      return null;
+    });
+
+    /**
+     * Model ids for one connection, for a role row's dropdown.
+     *
+     * Per connection and on demand rather than all at once: an endpoint that
+     * is not running then costs only the row pointing at it, and a local
+     * Ollama that is switched off is the ordinary case for someone whose other
+     * connection is a cloud provider.
+     */
+    ui.onRequest(UI_METHODS.listConnectionModels, async (raw): Promise<UiConnectionModelsResult> => {
+      await this.start();
+      const { connection } = raw as UiConnectionModelsParams;
+      try {
+        const { models } = await this.connection!.peer.request<{ models: Array<{ id: string }> }>(
+          METHODS.listModels,
+          { profileName: connection },
+        );
+        return { models: models.map((m) => m.id) };
+      } catch (err) {
+        return { models: [], error: err instanceof Error ? err.message : String(err) };
+      }
     });
 
     ui.onRequest(UI_METHODS.useProfile, async (raw) => {
       const { name } = raw as UiNameParams;
       if (this.activeRunId) throw new Error('A run is in progress; cancel it before switching profiles.');
       const target = await this.deps.config.getProfile(name);
-      if (!target) throw new Error(`No profile named "${name}"`);
+      if (!target) throw new Error(`No connection named "${name}"`);
       await this.deps.config.setActiveProfile(name);
       this.profile = target;
+      this.agentModel = (await this.deps.config.resolve('agent'))?.model ?? target.model;
       this.modelOverride = undefined;
       // The daemon session carries the old profile and key, so it has to be
       // rebuilt — pushing a new profile mid-session is not part of the
@@ -1258,6 +1349,18 @@ export class WebSession {
     });
   }
 
+  /**
+   * Rebuild the daemon session, which is the only way to replace what was
+   * pushed at hello.
+   *
+   * It must carry everything `start` carries. It did not carry `roles`, and
+   * that is the whole of two reported failures: `ui/setRole` calls this, so
+   * changing a role handed the daemon a session with *no role table at all* —
+   * the one edit guaranteed to leave it stale. Embeddings then either ran the
+   * chat model (a 400 from the provider naming a model that cannot embed) or,
+   * once roles that inherit nothing stopped falling back, reported
+   * "no-embedder" for a role that was plainly set.
+   */
   private async reconnect(): Promise<void> {
     this.connection?.close();
     this.connection = undefined;
@@ -1267,6 +1370,7 @@ export class WebSession {
       root: this.root,
       profiles: [profile],
       activeProfile: profile.name,
+      roles: await this.deps.config.getRoles(),
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);
@@ -1355,6 +1459,7 @@ export class WebSession {
         files: number;
         chunks: number;
         available: boolean;
+        message?: string;
       }>(METHODS.ragStatus, {});
       semantic = res;
     } catch {
@@ -2084,34 +2189,12 @@ export function mergeProfile(
   // field rather than a third value — the same distinction the numeric
   // overrides below make.
   if (patch.promptTier !== undefined) next.promptTier = patch.promptTier ?? undefined;
-  // Every role, in one loop rather than fourteen near-identical lines. An
-  // empty string clears the override, which is what the editor sends when the
-  // field is emptied — the role then falls back down its inheritance chain.
-  for (const role of UI_MODEL_ROLES) {
-    for (const suffix of ['Model', 'Profile'] as const) {
-      const key = `${role.key}${suffix}` as const;
-      const value = patch[key];
-      if (value !== undefined) next[key] = value || undefined;
-    }
-  }
   // `?? undefined` is the clear: JSON.stringify drops the key on persist, so
   // the profile goes back to inheriting the preset's value.
   if (patch.contextWindow !== undefined) next.contextWindow = patch.contextWindow ?? undefined;
   if (patch.maxTokens !== undefined) next.maxTokens = patch.maxTokens ?? undefined;
   if (patch.temperature !== undefined) next.temperature = patch.temperature ?? undefined;
   return next;
-}
-
-/** A profile's role fields, for the editor to load. */
-function roleFields(p: ProviderProfileConfig): UiRoleFields {
-  const out: UiRoleFields = {};
-  for (const role of UI_MODEL_ROLES) {
-    for (const suffix of ['Model', 'Profile'] as const) {
-      const key = `${role.key}${suffix}` as const;
-      if (p[key]) out[key] = p[key];
-    }
-  }
-  return out;
 }
 
 /**

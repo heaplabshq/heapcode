@@ -121,10 +121,13 @@ export class ServerLink {
         // index whatever `fsPath` happened to produce — the same posture
         // ShadowGit already takes (extension.ts:85).
         localRoot: !folder || folder.scheme === 'file',
-        // Only the profile in use, per §2's least-exposure argument; anything
-        // else is resolved on demand through key/request.
+        // Only the connection in use, per §2's least-exposure argument;
+        // anything else is resolved on demand through key/request.
         profiles: profile ? [profile] : [],
         activeProfile: profileName,
+        // The whole role table, so the server can resolve a role to another
+        // connection and then ask for that one and its key.
+        roles: this.profiles.getRoles(),
         keys: apiKey ? { [profileName]: apiKey } : {},
       },
       this.options,

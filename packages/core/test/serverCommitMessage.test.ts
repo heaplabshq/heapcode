@@ -23,7 +23,7 @@ import {
  * The one feature on the not-yet-migrated list that was as simple as it
  * looked: a single model call, no tools, no loop, no retry. What is worth
  * pinning is therefore not the loop (there isn't one) but the two things that
- * moved with it — the `editModel` role redirect, and the fence/quote stripping
+ * moved with it — the edit role's assignment, and the fence/quote stripping
  * the extension used to do inline after the call.
  */
 
@@ -115,6 +115,7 @@ async function client(
     root: home,
     profiles: [profile()],
     activeProfile: 'test',
+    roles: {},
     ...hello,
   } satisfies HelloParams);
   return { peer, askedFor };
@@ -187,16 +188,18 @@ describe('git/commitMessage', () => {
     expect(endpoint.requests).toEqual([]);
   });
 
-  it('uses the profile\'s editModel when it has one', async () => {
+  it('uses the model assigned to the edit role', async () => {
     endpoint.reply = 'feat: x';
-    const { peer } = await client({ profiles: [profile({ editModel: 'fast-edit' })] });
+    const { peer } = await client({
+      roles: { chat: { connection: 'test', model: 'chat' }, edit: { connection: 'test', model: 'fast-edit' } },
+    });
 
     await commitMessage(peer, { diff: DIFF });
 
     expect(endpoint.requests[0]!.model).toBe('fast-edit');
   });
 
-  it('falls back to the chat model when editModel is unset', async () => {
+  it('inherits chat when the edit role is unassigned', async () => {
     endpoint.reply = 'feat: x';
     const { peer } = await client();
 
@@ -205,13 +208,13 @@ describe('git/commitMessage', () => {
     expect(endpoint.requests[0]!.model).toBe('chat');
   });
 
-  it('follows an editProfile redirect through key/request, like every other role', async () => {
-    // The redirect target is never pushed at hello — all three hosts send only
-    // the active profile — so this is the ordinary path, not a fallback.
+  it('fetches the assignment\'s connection through key/request, like every other role', async () => {
+    // The connection an assignment names is never pushed at hello — the hosts
+    // send only what chat needs — so this is the ordinary path, not a fallback.
     endpoint.reply = 'feat: x';
-    const other = profile({ name: 'writer', editModel: 'writer-model' });
+    const other = profile({ name: 'writer' });
     const { peer, askedFor } = await client(
-      { profiles: [profile({ editProfile: 'writer' })] },
+      { roles: { chat: { connection: 'test', model: 'chat' }, edit: { connection: 'writer', model: 'writer-model' } } },
       { writer: { profile: other, apiKey: 'k' } },
     );
 
@@ -221,9 +224,11 @@ describe('git/commitMessage', () => {
     expect(endpoint.requests[0]!.model).toBe('writer-model');
   });
 
-  it('falls back to the active profile when the host does not know the redirect target', async () => {
+  it('falls back to the active connection when the host does not know the one named', async () => {
     endpoint.reply = 'feat: x';
-    const { peer, askedFor } = await client({ profiles: [profile({ editProfile: 'typo' })] });
+    const { peer, askedFor } = await client({
+      roles: { chat: { connection: 'test', model: 'chat' }, edit: { connection: 'typo', model: 'ghost' } },
+    });
 
     await commitMessage(peer, { diff: DIFF });
 

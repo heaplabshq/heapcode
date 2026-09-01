@@ -84,7 +84,7 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
 
   process.stdout.write(`\n  Heap Code Web\n\n  ${running.url}\n\n`);
   process.stdout.write(`  Workspace: ${root}\n`);
-  process.stdout.write(`  Profile:   ${profile.name} (${profile.agentModel || profile.model})\n\n`);
+  process.stdout.write(`  Connection: ${profile.name} (${profile.model})\n\n`);
 
   if (!isLoopback(host)) {
     // Loud, because this is the one flag that turns a personal tool into a

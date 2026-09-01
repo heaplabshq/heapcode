@@ -11,7 +11,9 @@ import {
   CWD_MARKER,
   DEFAULT_IGNORE_GLOB,
   detectPackageInstall,
+  downloadFile,
   fetchUrl,
+  formatBytes,
   formatSearchResults,
   isWebSearchEnabled,
   webSearch,
@@ -220,6 +222,7 @@ export const agentToolDefinitions: ToolDefinition[] = [
   FIND_REFERENCES_TOOL,
   GO_TO_DEFINITION_TOOL,
   T.fetch_url,
+  T.download_file,
   // Always offered, executed only when configured — see the CLI executor's
   // note and core's webSearch.ts for why it stays visible while disabled.
   T.web_search,
@@ -297,6 +300,8 @@ export class WorkspaceToolExecutor {
         return `Find definition of ${a.symbol} (from ${a.path})`;
       case 'fetch_url':
         return `Fetch ${a.url}`;
+      case 'download_file':
+        return `Download ${a.url} → ${a.path}`;
       case 'web_search':
         return `Web search: "${a.query}"`;
       case 'multi_edit': {
@@ -557,6 +562,38 @@ export class WorkspaceToolExecutor {
       }
       case 'fetch_url':
         return fetchUrl(a.url ?? '').then(ok, (err: Error) => fail(err.message));
+      case 'download_file': {
+        const uri = this.resolve(a.path);
+        const url = String(a.url ?? '');
+        if (!/^https?:\/\//i.test(url)) return fail('Only http and https URLs can be downloaded.');
+        // Buffered, unlike the CLI's streamed write, because `workspace.fs` has
+        // no append or stream — one writeFile with the whole thing is the only
+        // shape it offers, and it is the shape every other write here uses. The
+        // size cap in downloadFile is therefore also what bounds this buffer.
+        const chunks: Uint8Array[] = [];
+        try {
+          const { bytes, contentType } = await downloadFile(url, (chunk) => {
+            chunks.push(chunk);
+          });
+          const file = new Uint8Array(bytes);
+          let at = 0;
+          for (const chunk of chunks) {
+            file.set(chunk, at);
+            at += chunk.byteLength;
+          }
+          await this.checkpoint.recordBeforeChange(uri);
+          await vscode.workspace.fs.writeFile(uri, file);
+          const type = contentType ? `, ${contentType}` : '';
+          return ok(
+            `Saved ${a.path} (${formatBytes(bytes)}${type}). The contents were not read — ` +
+              'use read_file if it is text you need to see.',
+          );
+        } catch (err) {
+          // Nothing was written unless the whole download succeeded, so there
+          // is no partial file to clean up here.
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+      }
       case 'web_search': {
         const settings = await this.webSearchSettings?.();
         if (!settings || !isWebSearchEnabled(settings.config, settings.apiKey)) {

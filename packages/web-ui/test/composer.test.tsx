@@ -135,3 +135,63 @@ describe('sending', () => {
     expect(onSend).toHaveBeenCalledWith('hello', undefined);
   });
 });
+
+/**
+ * The picker. Paste and drop already worked; the button is for the people who
+ * never discover that paste does, and for an image that is a file on disk
+ * rather than something on the clipboard.
+ */
+describe('the attach button', () => {
+  const png = () =>
+    new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' });
+
+  it('is reachable by its accessible name, not just by its glyph', () => {
+    setup();
+    expect(screen.getByLabelText('Attach images')).toBeTruthy();
+  });
+
+  it('sits inside the input box, before the text area', () => {
+    // It acts on the message being composed, so it belongs with the text
+    // rather than over by Send, which acts on the message as a whole.
+    setup();
+    const picker = screen.getByLabelText('Attach images');
+    const input = screen.getByLabelText('Message');
+    const box = input.closest('.composer-box');
+    expect(box?.contains(picker)).toBe(true);
+    // DOCUMENT_POSITION_FOLLOWING — the input comes after the picker.
+    expect(picker.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('attaches a chosen image and shows it', async () => {
+    setup();
+    const picker = screen.getByLabelText('Attach images') as HTMLInputElement;
+    fireEvent.change(picker, { target: { files: [png()] } });
+    expect(await screen.findByAltText('Attachment 1')).toBeTruthy();
+  });
+
+  it('sends the attachment with the message, then stops carrying it', async () => {
+    const { onSend, input } = setup();
+    const picker = screen.getByLabelText('Attach images') as HTMLInputElement;
+    fireEvent.change(picker, { target: { files: [png()] } });
+    await screen.findByAltText('Attachment 1');
+
+    fireEvent.change(input, { target: { value: 'what is this' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('what is this', [expect.stringContaining('data:image/png')]);
+
+    // An image belongs to the message it was attached to — leaving it staged
+    // would silently re-send it with the next one.
+    expect(screen.queryByAltText('Attachment 1')).toBeNull();
+  });
+
+  it('refuses a non-image and says why, rather than attaching nothing in silence', async () => {
+    const onReject = vi.fn();
+    setup({ onReject });
+    const picker = screen.getByLabelText('Attach images') as HTMLInputElement;
+    fireEvent.change(picker, {
+      target: { files: [new File(['x'], 'notes.txt', { type: 'text/plain' })] },
+    });
+    await vi.waitFor(() => expect(onReject).toHaveBeenCalled());
+    expect(onReject.mock.calls[0]![0]).toMatch(/Only images/);
+  });
+});

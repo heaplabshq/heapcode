@@ -58,6 +58,7 @@ export function IndexView({ status, loadMap, onRebuild, onClear, busy, onOpenPat
           title="Semantic index"
           hint="Embedded chunks — what semantic_search queries. Needs an embeddings model."
           state={status?.semantic.available === false ? 'unavailable' : status?.semantic.state}
+          message={status?.semantic.message}
           rows={[
             ['Files', status?.semantic.files ?? 0],
             ['Chunks', status?.semantic.chunks ?? 0],
@@ -132,11 +133,20 @@ function IndexCard({
   title,
   hint,
   state,
+  message,
   rows,
 }: {
   title: string;
   hint: string;
   state?: string;
+  /**
+   * Why it failed, when it did.
+   *
+   * A badge reading "error" and nothing else is a dead end — an unreachable
+   * endpoint, a model that does not embed, and a rejected key all look the
+   * same from here, and each has a different fix.
+   */
+  message?: string;
   rows: Array<[string, number]>;
 }): JSX.Element {
   const bad = state === 'unavailable' || state === 'not built' || state === 'error';
@@ -152,6 +162,7 @@ function IndexCard({
           <span className="idx-num">{value.toLocaleString()}</span>
         </div>
       ))}
+      {message && <p className="idx-error">{message}</p>}
       <p className="hint">{hint}</p>
     </div>
   );

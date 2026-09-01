@@ -60,6 +60,9 @@ async function connectClient(
     token,
     protocolVersion: PROTOCOL_VERSION,
     client: { name: 'test' },
+    // An empty table is legal and means "nothing assigned"; the field itself
+    // is required, so a hello that forgets it does not compile.
+    roles: {},
     ...hello,
   } satisfies HelloParams);
   return peer;
@@ -96,6 +99,7 @@ describe('HeapcodeServer — authentication', () => {
       root: home,
       profiles: [],
       activeProfile: 'x',
+      roles: {},
     } satisfies HelloParams);
     expect(hello.protocolVersion).toBe(PROTOCOL_VERSION);
     expect(hello.sessionId).toBeTruthy();
@@ -121,6 +125,7 @@ describe('HeapcodeServer — session isolation', () => {
       root: '/a',
       profiles: [profileA],
       activeProfile: 'shared',
+roles: {},
       keys: { shared: 'key-A' },
     });
     const two = new Session('two', {
@@ -130,6 +135,7 @@ describe('HeapcodeServer — session isolation', () => {
       root: '/b',
       profiles: [profileB],
       activeProfile: 'shared',
+roles: {},
       keys: { shared: 'key-B' },
     });
 
@@ -157,6 +163,7 @@ describe('HeapcodeServer — session isolation', () => {
       root: '/a',
       profiles: [{ name: 'p', preset: 'custom', baseUrl: 'http://a/v1', model: 'm' }],
       activeProfile: 'p',
+roles: {},
       keys: { p: 'key' },
     });
     expect(session.hasKey('p')).toBe(true);

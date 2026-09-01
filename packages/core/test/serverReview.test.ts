@@ -263,6 +263,7 @@ async function client(hello: Partial<HelloParams> = {}): Promise<Client> {
     root,
     profiles: [profile()],
     activeProfile: 'test',
+    roles: {},
     ...hello,
   } satisfies HelloParams);
   return state;

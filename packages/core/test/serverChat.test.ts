@@ -65,6 +65,7 @@ async function connectClient(profiles: ProviderProfileConfig[]): Promise<RpcPeer
     root: home,
     profiles,
     activeProfile: 'p',
+    roles: {},
     keys: { p: 'sk-test' },
   } satisfies HelloParams);
   return peer;

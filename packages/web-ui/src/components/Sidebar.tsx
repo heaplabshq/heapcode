@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import type { UiConversationMeta, UiState } from '@heapcode/web-host/protocol';
+import { markHue } from '../mark.js';
 
 export interface SidebarProps {
   /** Collapsed shows the icon rail only; the labels come back on expand. */
@@ -33,12 +34,14 @@ export interface SidebarProps {
  */
 export function Sidebar(props: SidebarProps): JSX.Element {
   const { collapsed, state, status } = props;
-  const [moreOpen, setMoreOpen] = useState(false);
 
   return (
-    <aside className={`rail ${collapsed ? 'rail-collapsed' : ''}`} aria-label="Navigation">
+    <aside className={collapsed ? 'rail rail-collapsed' : 'rail'} aria-label="Navigation">
       <div className="rail-top">
-        {!collapsed && <span className="rail-brand">Heap Code</span>}
+        <span className="rail-logo" aria-hidden="true">
+          <Logo />
+        </span>
+        <span className="rail-brand">Heap Code</span>
         <button
           className="icon-btn rail-collapse"
           onClick={props.onToggleCollapsed}
@@ -60,77 +63,128 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         />
         <RailItem icon={<IconArtifact />} label="Artifacts" collapsed={collapsed} onClick={props.onOpenArtifacts} />
         <RailItem icon={<IconSliders />} label="Customize" collapsed={collapsed} onClick={() => props.onOpenSettings()} />
-
-        {!collapsed && (
-          <>
-            <button
-              className="rail-item rail-more"
-              onClick={() => setMoreOpen((v) => !v)}
-              aria-expanded={moreOpen}
-            >
-              <span className="rail-icon">
-                <IconChevron open={moreOpen} />
-              </span>
-              <span className="rail-label">More</span>
-            </button>
-            {moreOpen && (
-              <div className="rail-sub">
-                <button className="rail-subitem" onClick={props.onOpenPalette}>
-                  Commands <span className="rail-hint">⌘K</span>
-                </button>
-                <button className="rail-subitem" onClick={() => props.onOpenSettings('context')}>
-                  Context &amp; tokens
-                </button>
-              </div>
-            )}
-          </>
-        )}
+        {/* Was behind a "More" chevron with one other item. Two entries is not
+            a submenu; it is two entries. */}
+        <RailItem
+          icon={<IconCommand />}
+          label="Commands"
+          kbd="⌘K"
+          collapsed={collapsed}
+          onClick={props.onOpenPalette}
+        />
       </nav>
 
-      {!collapsed && (
-        <div className="rail-recents">
-          <div className="rail-section">Recents</div>
-          <ul className="convo-list">
-            {props.conversations.length === 0 && <li className="convo-empty">Nothing saved yet.</li>}
-            {props.conversations.map((c) => (
-              <li key={c.id}>
-                <button
-                  className={`convo ${c.active ? 'convo-active' : ''}`}
-                  onClick={() => props.onOpen(c.id)}
-                  disabled={props.busy}
-                  title={props.busy ? 'Stop the current run first' : c.title}
-                >
-                  {/* Filled for the open conversation, hollow otherwise — the
-                      list's only ornament, and it says the one thing a glance
-                      needs: which of these am I in. */}
-                  <span className={`convo-dot ${c.active ? 'convo-dot-on' : ''}`} aria-hidden="true" />
-                  <span className="convo-title">{c.title || 'Untitled'}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* Kept mounted through a collapse so it fades and clips with the rail.
+          Unmounting it made the largest block on the screen vanish a frame
+          before the width started moving, which is most of what "the collapse
+          is not smooth" was. Hidden with `visibility` once the fade is done,
+          so nothing invisible stays in the tab order. */}
+      <div className="rail-recents">
+          {props.conversations.length === 0 && (
+            <>
+              <div className="rail-section">Recents</div>
+              <p className="convo-empty">Nothing saved yet.</p>
+            </>
+          )}
+          {/* Bucketed by when it was last touched. An undivided list of forty
+              titles gives no way to tell this morning's work from last
+              month's, and the date is the only thing anyone sorts by. */}
+          {byAge(props.conversations).map(([when, items]) => (
+            <div key={when}>
+              <div className="rail-section">{when}</div>
+              <ul className="convo-list">
+                {items.map((c) => (
+                  <li key={c.id}>
+                    <button
+                      className={c.active ? 'convo convo-active' : 'convo'}
+                      onClick={() => props.onOpen(c.id)}
+                      disabled={props.busy}
+                      title={props.busy ? 'Stop the current run first' : c.title}
+                    >
+                      {/* Filled for the open conversation, hollow otherwise —
+                          the list's only ornament, and it says the one thing a
+                          glance needs: which of these am I in. */}
+                      <span className={c.active ? 'convo-dot convo-dot-on' : 'convo-dot'} aria-hidden="true" />
+                      <span className="convo-title">{c.title || 'Untitled'}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+      </div>
 
+      {/*
+        * What is answering, not who is signed in.
+        *
+        * This used to be a circular avatar holding the profile's initial next
+        * to the profile's name, which is the signed-in-user control from every
+        * other app on the screen — so `ollama` read as an account. It is a
+        * model on an endpoint. The model id leads, in the same monospace the
+        * settings page uses for it; the connection is the second line; the
+        * mark is a square chip glyph in the connection's own colour rather
+        * than a round initial.
+        */}
       <div className="rail-foot">
-        {!collapsed && (
-          <button
-            className="rail-profile"
-            onClick={() => props.onOpenSettings()}
-            title={state?.profile ? `Profile: ${state.profile} — click for settings` : 'Settings'}
+        <button
+          className="rail-model"
+          onClick={() => props.onOpenSettings('context')}
+          title={
+            state?.model ? `${state.model} on ${state.profile} — models and context` : 'Choose a model'
+          }
+          aria-label={collapsed ? 'Models and context' : undefined}
+        >
+          <span
+            className="rail-model-mark"
+            style={{ '--mark-h': markHue(state?.profile ?? '') } as React.CSSProperties}
+            aria-hidden="true"
           >
-            <span className="rail-avatar">{(state?.profile || '?').slice(0, 1).toUpperCase()}</span>
-            <span className="rail-profile-name">{state?.profile || 'no profile'}</span>
-          </button>
+            <IconChip />
+          </span>
+          <span className="rail-model-text">
+            <span className="rail-model-name">{state?.model || 'no model'}</span>
+            <span className="rail-model-conn">
+              on <span className="rail-model-host">{state?.profile || 'no connection'}</span>
+            </span>
+          </span>
+        </button>
+        {/* Only when something is wrong. A green dot that is green all day is
+            not a status, it is decoration — and it sat next to the model like
+            a presence indicator. Connecting and closed still say so. */}
+        {status !== 'open' && (
+          <span
+            className={`dot dot-${status}`}
+            title={`Connection: ${status}`}
+            aria-label={`Connection ${status}`}
+          />
         )}
-        <span
-          className={`dot dot-${status}`}
-          title={`Connection: ${status}`}
-          aria-label={`Connection ${status}`}
-        />
       </div>
     </aside>
   );
+}
+
+/**
+ * Recents, in the four buckets people actually sort them into.
+ *
+ * Calendar days rather than elapsed hours: something saved at 11pm last night
+ * belongs under Yesterday all through today, not under Today until 11pm.
+ */
+function byAge(list: UiConversationMeta[]): [string, UiConversationMeta[]][] {
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const t0 = midnight.getTime();
+  const day = 86_400_000;
+  const buckets: [string, UiConversationMeta[]][] = [
+    ['Today', []],
+    ['Yesterday', []],
+    ['Previous 7 days', []],
+    ['Older', []],
+  ];
+  for (const c of list) {
+    const i = c.updatedAt >= t0 ? 0 : c.updatedAt >= t0 - day ? 1 : c.updatedAt >= t0 - 7 * day ? 2 : 3;
+    buckets[i]![1].push(c);
+  }
+  return buckets.filter(([, items]) => items.length > 0);
 }
 
 function RailItem({
@@ -142,6 +196,7 @@ function RailItem({
   active,
   badge,
   hint,
+  kbd,
 }: {
   icon: ReactNode;
   label: string;
@@ -151,6 +206,8 @@ function RailItem({
   active?: boolean;
   badge?: number;
   hint?: string;
+  /** Shown at the row's right edge, when there is a shortcut for it. */
+  kbd?: string;
 }): JSX.Element {
   return (
     <button
@@ -162,7 +219,8 @@ function RailItem({
       aria-label={collapsed ? label : undefined}
     >
       <span className="rail-icon">{icon}</span>
-      {!collapsed && <span className="rail-label">{label}</span>}
+      <span className="rail-label">{label}</span>
+      {kbd && <span className="rail-kbd">{kbd}</span>}
       {badge !== undefined && <span className="rail-badge">{badge}</span>}
     </button>
   );
@@ -225,10 +283,45 @@ function IconSliders(): JSX.Element {
   );
 }
 
-function IconChevron({ open }: { open: boolean }): JSX.Element {
+function IconCommand(): JSX.Element {
   return (
-    <svg {...S} style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 120ms' }}>
-      <path d="m6 9 6 6 6-6" />
+    <svg {...S}>
+      <path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" />
+    </svg>
+  );
+}
+
+/** The footer mark: a chip, because what is down there is a model. */
+function IconChip(): JSX.Element {
+  return (
+    <svg {...S} width={13} height={13}>
+      <rect x="7" y="7" width="10" height="10" rx="2" />
+      <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" />
+    </svg>
+  );
+}
+
+/** The product mark — `packages/vscode/media/icon.svg`, the one the extension ships. */
+function Logo(): JSX.Element {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3a4.5 4.5 0 0 0-4.4 3.5A4 4 0 0 0 5 14a3.5 3.5 0 0 0 3 5h1" />
+      <path d="M12 3a4.5 4.5 0 0 1 4.4 3.5A4 4 0 0 1 19 14a3.5 3.5 0 0 1-3 5h-1" />
+      <path d="M12 3v18" />
+      <path d="M9 9.5h-1.5" />
+      <path d="M15 9.5h1.5" />
+      <path d="M9 14.5H7.5" />
+      <path d="M15 14.5h1.5" />
     </svg>
   );
 }

@@ -1,5 +1,6 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { SANDBOX, buildFrameDocument } from '../src/artifactFrame.js';
+import { SANDBOX, buildFrameDocument, mountStandalone } from '../src/artifactFrame.js';
 
 /**
  * The artifact sandbox.
@@ -100,5 +101,48 @@ describe('body rendering', () => {
   it('treats an unknown kind as source rather than guessing', () => {
     const doc = buildFrameDocument({ kind: 'something-new', content: '<b>x</b>' });
     expect(doc).toContain('&lt;b&gt;x&lt;/b&gt;');
+  });
+});
+
+/**
+ * The standalone tab.
+ *
+ * The reason this is tested at all: the obvious way to open an artifact in a
+ * new tab is a `blob:` URL, and a blob URL inherits the creator's origin — the
+ * artifact's scripts would run as the app, holding its cookie. So the tab must
+ * keep the artifact inside the same sandboxed frame the panel uses.
+ */
+describe('a standalone tab', () => {
+  function open(): Document {
+    const doc = document.implementation.createHTMLDocument('');
+    mountStandalone({ document: doc } as unknown as Window, 'Sales dashboard', buildFrameDocument({
+      kind: 'html',
+      content: '<script>parent.document.cookie</script>',
+    }));
+    return doc;
+  }
+
+  it('renders the artifact inside a sandboxed frame, not as the page itself', () => {
+    const doc = open();
+    const frame = doc.querySelector('iframe');
+    expect(frame).not.toBeNull();
+    expect(frame!.getAttribute('sandbox')).toBe(SANDBOX);
+    // The top-level document is ours and holds nothing but the frame — the
+    // artifact's own script is srcdoc text here, never a node in this tree.
+    expect([...doc.body.children].map((e) => e.tagName)).toEqual(['IFRAME']);
+    expect(doc.querySelectorAll('script')).toHaveLength(0);
+  });
+
+  it('never widens the sandbox for the bigger view', () => {
+    const sandbox = open().querySelector('iframe')!.getAttribute('sandbox')!;
+    expect(sandbox).not.toContain('allow-same-origin');
+    expect(sandbox).not.toContain('allow-popups');
+    expect(sandbox).not.toContain('allow-top-navigation');
+  });
+
+  it('carries the artifact through as srcdoc, and titles the tab', () => {
+    const doc = open();
+    expect(doc.title).toBe('Sales dashboard');
+    expect(doc.querySelector('iframe')!.srcdoc).toContain('Content-Security-Policy');
   });
 });

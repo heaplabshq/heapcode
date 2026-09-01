@@ -32,11 +32,14 @@ export async function reviewCurrentPr(
     return;
   }
 
-  // resolveRoleProfile, not resolveRole: this needs the profile's model and
-  // context window, never a Provider.
-  const profile = profiles.getActiveProfile();
-  if (!profile.model) {
-    void vscode.window.showWarningMessage(`Heap Code: profile "${profile.name}" has no model configured.`);
+  // resolveRoleProfile, not resolveRole: this needs the model and context
+  // window, never a Provider. Review is agent work, so it runs on the agent
+  // role rather than on whatever chat happens to be pointing at.
+  const profile = profiles.resolveRoleProfile('agent');
+  if (!profile?.model) {
+    void vscode.window.showWarningMessage(
+      'Heap Code: no model is set for the agent. Pick one in Settings → Model roles.',
+    );
     return;
   }
   const { window: contextWindow } = await profiles.contextWindowFor(profile, profile.model);
@@ -66,7 +69,7 @@ export async function reviewCurrentPr(
 
       const result = await link.reviewRun(
         {
-          model: profile.agentModel || profile.model,
+          model: profile.model,
           temperature: profile.temperature,
           maxTokens: profile.maxTokens,
           contextWindow,

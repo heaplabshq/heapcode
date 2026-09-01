@@ -259,15 +259,13 @@ export function Setup({ onComplete, banner = true, configStore, secretsStore }: 
       {step.kind === 'done' && (
         <Box flexDirection="column">
           <Text color="green">
-            ✓ Saved profile "{step.profile.name}" ({step.profile.model}) and set it active.
+            ✓ Saved connection "{step.profile.name}" ({step.profile.model}) — chat now runs on it.
           </Text>
-          {!step.profile.embeddingsModel && (
-            <Text dimColor>
-              Semantic search needs a separate embeddings model — most chat-only providers don't offer one. Add a
-              provider that does (e.g. Ollama + nomic-embed-text) via "heapcode profile add", then set{' '}
-              {step.profile.name}'s embeddingsProfile to that profile's name in ~/.heapcode/config.json.
-            </Text>
-          )}
+          <Text dimColor>
+            Semantic search needs a separate embeddings model, and most chat-only providers don't offer one. Add a
+            provider that does (e.g. Ollama + nomic-embed-text) with "heapcode connection add", then point the
+            embeddings role at it: "heapcode model set embeddings &lt;connection&gt; nomic-embed-text".
+          </Text>
         </Box>
       )}
     </Box>

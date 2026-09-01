@@ -19,12 +19,25 @@ import { useEffect, useRef, type RefObject } from 'react';
  * The container is queried on each Tab rather than cached: dialogs here grow
  * and shrink as you type (the palette's result list, the settings pages), and a
  * list captured at mount goes stale the moment that happens.
+ *
+ * Moving focus in happens ONCE, on mount, and deliberately does not depend on
+ * `onClose`. Every caller passes an inline arrow, so `onClose` is a new
+ * function on every render of the component that owns the dialog — and while
+ * the focus move lived in the same effect as the key handler, any state change
+ * behind the dialog re-ran it and yanked the caret back to the dialog's entry
+ * point. In Settings that entry point is the search box, so typing into a field
+ * that saves as you type moved focus after the first character, every time.
  */
 export function useModal(container: RefObject<HTMLElement>, onClose: () => void): void {
   // Captured before the effect that moves focus runs, so it is the element that
   // actually opened this — not something the dialog itself focused.
   const opener = useRef<Element | null>(null);
   if (opener.current === null) opener.current = document.activeElement;
+
+  // Read through a ref by the key handler below, so a fresh `onClose` on every
+  // render does not re-subscribe anything or disturb focus.
+  const close = useRef(onClose);
+  close.current = onClose;
 
   useEffect(() => {
     const root = container.current;
@@ -36,10 +49,23 @@ export function useModal(container: RefObject<HTMLElement>, onClose: () => void)
       root.querySelector<HTMLElement>('[data-autofocus]') ?? focusable(root)[0] ?? root;
     initial.focus();
 
+    return () => {
+      const back = opener.current;
+      if (back instanceof HTMLElement && document.contains(back)) back.focus();
+    };
+    // Mount only, deliberately. `container` is a ref (stable) and `onClose` is
+    // read through `close` below; depending on either here re-focuses the
+    // dialog on every render of its parent, which is the bug this shape fixes.
+  }, []);
+
+  useEffect(() => {
+    const root = container.current;
+    if (!root) return;
+
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        close.current();
         return;
       }
       if (e.key !== 'Tab') return;
@@ -58,12 +84,8 @@ export function useModal(container: RefObject<HTMLElement>, onClose: () => void)
     };
 
     root.addEventListener('keydown', onKey);
-    return () => {
-      root.removeEventListener('keydown', onKey);
-      const back = opener.current;
-      if (back instanceof HTMLElement && document.contains(back)) back.focus();
-    };
-  }, [container, onClose]);
+    return () => root.removeEventListener('keydown', onKey);
+  }, [container]);
 }
 
 const FOCUSABLE =

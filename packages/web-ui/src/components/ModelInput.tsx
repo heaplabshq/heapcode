@@ -12,6 +12,15 @@ export interface ModelInputProps {
    */
   listModels?(): Promise<string[]>;
   /**
+   * Called when the value is settled rather than mid-typing: a pick from the
+   * list, Enter, or leaving the field.
+   *
+   * `onChange` fires per keystroke, which is right for a form draft and wrong
+   * for anything that saves. A role row persists, so it would otherwise store
+   * `n`, `nv`, `nvi`… and spend a round-trip on each.
+   */
+  onCommit?(value: string): void;
+  /**
    * Models already in hand, for callers that just fetched them (the "test
    * connection" flow). Takes precedence over `listModels`, and unlike it is
    * re-read as it changes — the lazy path caches its first answer, so a field
@@ -39,6 +48,7 @@ export function ModelInput({
   onChange,
   placeholder,
   listModels,
+  onCommit,
   models: given,
   'aria-label': label,
 }: ModelInputProps): JSX.Element {
@@ -77,6 +87,7 @@ export function ModelInput({
 
   const choose = (model: string): void => {
     onChange(model);
+    onCommit?.(model);
     setOpen(false);
   };
 
@@ -95,6 +106,7 @@ export function ModelInput({
           load();
           setOpen(true);
         }}
+        onBlur={() => onCommit?.(value)}
         onChange={(e) => {
           onChange(e.target.value);
           setActive(0);

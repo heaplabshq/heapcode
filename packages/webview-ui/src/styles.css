@@ -1037,6 +1037,67 @@ select.settings-input {
   appearance: auto;
 }
 
+/* One role: a heading line that states the resolved outcome, then the two
+   controls that change it. Two lines rather than one, because the resolved
+   sentence is the thing worth reading and it does not fit beside a connection
+   dropdown and a model picker. */
+.settings-role-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.settings-role-row:last-child {
+  border-bottom: none;
+}
+
+.settings-role-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The answer to "what actually runs this?", which the old screen made the
+   reader assemble from a redirect and a fallback chain. */
+.settings-role-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.settings-role-clear {
+  flex-shrink: 0;
+  font-size: 0.75em;
+}
+
+/* Under both controls, because it is about the list inside the picker. */
+.settings-role-note {
+  padding-left: 22px;
+  margin-top: 3px;
+  font-size: 0.75em;
+  line-height: 1.4;
+  color: var(--vscode-descriptionForeground);
+}
+
+.settings-role-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 22px;
+}
+
+/* The endpoint name is short; the model id is not, so the picker takes the rest. */
+.settings-role-controls > select.settings-input {
+  flex: 0 0 32%;
+  min-width: 0;
+}
+
 /* Compact icon + label + input row for a model role, denser than the stacked .settings-field layout. */
 .settings-role-field {
   display: flex;
@@ -1054,7 +1115,7 @@ select.settings-input {
 
 .settings-role-label {
   flex-shrink: 0;
-  width: 76px;
+  min-width: 76px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1103,17 +1164,6 @@ select.settings-input {
 .settings-test-error {
   font-size: 0.85em;
   color: var(--vscode-editorError-foreground, #f14c4c);
-}
-
-/* Sits directly under a role's model row — reads as "this model's provider", not a new setting. */
-.settings-role-profile {
-  margin-top: -2px;
-  padding-left: 22px;
-  border-left: 2px solid var(--vscode-panel-border);
-}
-
-.settings-role-profile .settings-input {
-  max-width: 220px;
 }
 
 .settings-key-row {

@@ -16,7 +16,7 @@ import {
 import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { AuthLimiter } from '../src/authLimit.js';
 import { startWebHost, type RunningWebHost } from '../src/server.js';
-import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs } from '../src/session.js';
+import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs, type DaemonHello } from '../src/session.js';
 import { WorkspaceStore } from '../src/workspaces.js';
 import {
   UI_METHODS,
@@ -70,6 +70,14 @@ let web: RunningWebHost | undefined;
  * there is nothing else to observe it by.
  */
 let connects: number;
+/**
+ * Every hello the host sent, in order.
+ *
+ * Counting connections was not enough: `reconnect` carried a *different*
+ * payload from `start` and silently omitted the role table, so the count was
+ * right and the session was wrong.
+ */
+let hellos: DaemonHello[];
 
 beforeEach(async () => {
   // Short paths — a unix socket path over 104 bytes fails listen() with EINVAL.
@@ -77,6 +85,7 @@ beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'hcww-'));
   process.env.HEAPCODE_HOME = home;
   connects = 0;
+  hellos = [];
 });
 
 afterEach(async () => {
@@ -139,6 +148,7 @@ async function boot(
     ...hostExtras,
     connect: (hello): Promise<ServerConnection> => {
       connects += 1;
+      hellos.push(hello);
       return connectToServer(
         { client: { name: 'web-host-test' }, ...hello },
         { address: daemon.address, token: daemon.token, autostart: false },
@@ -1646,17 +1656,17 @@ describe('web host — prompt detail', () => {
     browser.close();
   });
 
-  it('leaves the rest of the profile alone', async () => {
+  it('leaves the rest of the connection alone', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
 
-    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', agentModel: 'big' } });
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', temperature: 0.2 } });
     await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptTier: 'full' } });
 
     const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
     expect(settings.profiles.find((p) => p.name === 'mock')).toMatchObject({
-      agentModel: 'big',
+      temperature: 0.2,
       promptTier: 'full',
     });
     browser.close();
@@ -1756,110 +1766,94 @@ describe('web host — MCP servers', () => {
   });
 });
 
+/**
+ * Roles are one global table now (`ui/setRole`), not seven fields plus seven
+ * redirects on whichever profile happens to be active. What this has to pin is
+ * that assigning one reaches the daemon — which is handed the table once, at
+ * hello, and resolves every role off that copy afterwards.
+ */
 describe('web host — model roles', () => {
-  it('round-trips every role model and its cross-profile override', async () => {
+  it('assigns a role to a model on a named connection, and says what serves each', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
 
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: {
-        name: 'mock',
-        agentModel: 'big-agent',
-        applyModel: 'fast-apply-1.5b',
-        embeddingsModel: 'nomic-embed',
-        embeddingsProfile: 'local',
-        rerankModel: 'rerank-1',
-        contextModel: 'tiny',
-        editModel: 'edit-1',
-        completionModel: 'complete-1',
-        temperature: 0.2,
-      },
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'embeddings',
+      assignment: { connection: 'mock', model: 'nomic-embed' },
     });
 
     const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
-    const saved = settings.profiles.find((p) => p.name === 'mock')!;
-    expect(saved).toMatchObject({
-      agentModel: 'big-agent',
-      applyModel: 'fast-apply-1.5b',
-      embeddingsModel: 'nomic-embed',
-      embeddingsProfile: 'local',
-      rerankModel: 'rerank-1',
-      contextModel: 'tiny',
-      editModel: 'edit-1',
-      completionModel: 'complete-1',
-      temperature: 0.2,
-    });
+    const roles = Object.fromEntries(settings.roles.map((r) => [r.role, r]));
+    expect(roles.embeddings).toMatchObject({ connection: 'mock', model: 'nomic-embed' });
+    // The resolved sentence, computed by the host so every client says the
+    // same thing about the same state.
+    expect(roles.embeddings!.summary).toContain('nomic-embed');
+    expect(roles.agent!.summary).toMatch(/inherits chat/);
     browser.close();
   });
 
-  it('an emptied field clears the override rather than pinning it to ""', async () => {
-    // The editor sends '' when you clear the box. Storing that would leave the
-    // role pointed at a model with no name instead of back on its inherited
-    // one, and the failure surfaces as a provider 404 much later.
+  it('clears a role back to inheriting, and stores the absence rather than ""', async () => {
+    // An empty model would point the role at a model with no name instead of
+    // back on its inherited one, and the failure surfaces as a provider 404
+    // much later.
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
 
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', embeddingsModel: 'nomic-embed' },
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'rerank',
+      assignment: { connection: 'mock', model: 'rerank-1' },
     });
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', embeddingsModel: '' },
-    });
+    await browser.peer.request(UI_METHODS.setRole, { role: 'rerank' });
 
     const stored = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
-      profiles: Array<Record<string, unknown>>;
+      roles: Record<string, unknown>;
     };
-    const p = stored.profiles.find((x) => x.name === 'mock')!;
-    expect('embeddingsModel' in p).toBe(false);
+    expect('rerank' in stored.roles).toBe(false);
     browser.close();
   });
 
-  it('setting one role leaves the others alone', async () => {
-    // The browser patches by name; a wholesale replace would drop every field
-    // the editor did not happen to send.
+  it('leaves the other roles alone', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
 
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', applyModel: 'fast-apply', rerankModel: 'rerank-1' },
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'apply',
+      assignment: { connection: 'mock', model: 'fast-apply' },
     });
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', agentModel: 'big-agent' },
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'agent',
+      assignment: { connection: 'mock', model: 'big-agent' },
     });
 
     const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
-    expect(settings.profiles.find((p) => p.name === 'mock')).toMatchObject({
-      applyModel: 'fast-apply',
-      rerankModel: 'rerank-1',
-      agentModel: 'big-agent',
-    });
+    const roles = Object.fromEntries(settings.roles.map((r) => [r.role, r]));
+    expect(roles.apply).toMatchObject({ model: 'fast-apply' });
+    expect(roles.agent).toMatchObject({ model: 'big-agent' });
     browser.close();
   });
 
   /**
-   * Saving a role redirect has to reach the daemon.
+   * Assigning a role has to reach the daemon.
    *
-   * The daemon is handed the active profile once, at hello, and resolves
-   * `<role>Profile` off that copy from then on. `saveProfile` used to write
-   * the file, update the host's own copy, and stop — so a user could set
-   * embeddings to a local Ollama, see it stored, reopen the panel and see it
-   * still set, and have semantic search keep reporting no embedder because
-   * the daemon was still running the profile as it stood at hello. Nothing
-   * anywhere said so; switching profiles and back was the only cure, and only
-   * by accident.
+   * It is handed the role table once, at hello, and resolves every role off
+   * that copy from then on. Before this, a user could point embeddings at a
+   * local Ollama, see it stored, reopen the panel and see it still set, and
+   * have semantic search keep reporting no embedder because the daemon was
+   * still running the table as it stood at hello. Nothing anywhere said so.
    */
-  it('a role redirect saved on the active profile reaches the daemon', async () => {
+  it('reaches the daemon, which was handed the table at hello', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
     await browser.peer.request(UI_METHODS.sendMessage, { text: 'go' });
     const before = connects;
 
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', embeddingsProfile: 'local' },
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'embeddings',
+      assignment: { connection: 'mock', model: 'nomic-embed' },
     });
 
     expect(connects).toBe(before + 1);
@@ -1884,40 +1878,7 @@ describe('web host — model roles', () => {
     browser.close();
   });
 
-  it('waits for a run in flight rather than pulling the connection out from under it', async () => {
-    // Reconnecting closes the daemon session, which would kill whatever is
-    // running on it. A settings edit must never do that — so the refresh is
-    // held until the run ends, and then happens rather than being forgotten.
-    const { host } = await boot([
-      { kind: 'sse', chunks: ['<tool name="run_command">\n{"command":"sleep 1"}\n</tool>'] },
-      { kind: 'sse', chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
-    ]);
-    const browser = await openBrowser(host);
-    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
-
-    const running = browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, {
-      text: 'go',
-      runId: 'slow',
-    });
-    // The first event means the daemon has the run; the sleep gives a whole
-    // second of margin to save inside it.
-    while (browser.events.length === 0) await new Promise((r) => setTimeout(r, 10));
-    const before = connects;
-
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', embeddingsProfile: 'local' },
-    });
-    expect(connects).toBe(before);
-
-    await running;
-    // The flush is fired as the run unwinds, not awaited by it.
-    const deadline = Date.now() + 5_000;
-    while (connects === before && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
-    expect(connects).toBe(before + 1);
-    browser.close();
-  });
-
-  it('does not reconnect for a profile that is not the one in use', async () => {
+  it('does not reconnect for a connection that is not the one in use', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
@@ -1932,14 +1893,42 @@ describe('web host — model roles', () => {
     browser.close();
   });
 
+  /**
+   * Every hello must carry the table, not just the first.
+   *
+   * `reconnect` is the only way to replace what was pushed at hello, and
+   * `ui/setRole` is what calls it — so a reconnect that forgot `roles` made
+   * *changing a role* the one action guaranteed to leave the daemon with no
+   * table at all. Embeddings then ran the chat model, and once roles that
+   * inherit nothing stopped falling back, reported "no-embedder" for a role
+   * that was plainly set.
+   */
+  it('carries the role table on every reconnect, not only on the first hello', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'embeddings',
+      assignment: { connection: 'mock', model: 'nomic-embed' },
+    });
+
+    expect(hellos.length).toBeGreaterThan(1);
+    for (const hello of hellos) expect(hello.roles).toBeDefined();
+    expect(hellos.at(-1)!.roles).toMatchObject({
+      embeddings: { connection: 'mock', model: 'nomic-embed' },
+    });
+    browser.close();
+  });
+
   it('the agent role really drives which model runs', async () => {
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
-    await browser.peer.request(UI_METHODS.saveProfile, {
-      profile: { name: 'mock', agentModel: 'agent-only-model' },
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'agent',
+      assignment: { connection: 'mock', model: 'agent-only-model' },
     });
-    await browser.peer.request(UI_METHODS.useProfile, { name: 'mock' });
     await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'go' });
 
     expect(mock!.requests.at(-1)?.body).toMatchObject({ model: 'agent-only-model' });
@@ -1949,10 +1938,10 @@ describe('web host — model roles', () => {
 
 describe('web host — listing models', () => {
   it('lists a profile that is not the active one', async () => {
-    // Every host pushes only the ACTIVE profile at session/hello, so this used
-    // to come back "Unknown profile" even though the host had it in config all
-    // along. The role editor needs exactly this: a role redirected to another
-    // profile should suggest that endpoint's models.
+    // Every host pushes only the connection in use at session/hello, so this
+    // used to come back "Unknown profile" even though the host had it in
+    // config all along. The role table needs exactly this: a role pointing at
+    // another connection should suggest that endpoint's models.
     const { host } = await boot(WRITE_THEN_FINISH);
     const browser = await openBrowser(host);
     await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });

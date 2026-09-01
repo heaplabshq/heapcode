@@ -2,61 +2,33 @@ import { getPreset, type PresetId, type ProviderCapabilities } from '../provider
 import { DEFAULT_CONTEXT_WINDOW } from '../context/tokens.js';
 
 /**
- * A named provider configuration. API keys are NOT part of the profile —
- * they live in the IDE's secret storage, keyed by profile name.
+ * One endpoint and one model, flattened — what the runtime speaks.
+ *
+ * This used to be the *stored* shape, and it carried a model choice, seven
+ * per-role model overrides and seven `<role>Profile` redirects all at once.
+ * Those moved to `config/roles.ts`: connections are endpoints, a role table
+ * says which model on which connection serves which role, and resolving a role
+ * produces one of these (see `toProfile`).
+ *
+ * It stays because everything downstream — `createProvider`,
+ * `resolveCapabilities`, `resolveContextWindow`, the agent loop, RAG, PR review
+ * — already took a profile plus a model string. Resolution producing this shape
+ * is what kept the split from rippling into all of them.
+ *
+ * API keys are NOT part of it. They live in each host's secret storage, keyed
+ * by `name`, which is the connection's name.
  */
-/** Roles that can each run against a different configured profile entirely (see `*Profile` fields below). */
-export type ModelRole =
-  | 'editModel'
-  | 'applyModel'
-  | 'completionModel'
-  | 'agentModel'
-  | 'embeddingsModel'
-  | 'rerankModel'
-  | 'contextModel';
-
 export interface ProviderProfileConfig {
+  /** The connection's name — also the key its API key is filed under. */
   name: string;
   preset: PresetId;
   baseUrl: string;
-  /** Chat model id (for Azure: the deployment name). */
+  /** Model id (for Azure: the deployment name). */
   model: string;
-  /** Inline edits, commit messages. Inherits chat when unset. */
-  editModel?: string;
-  /** Fast-apply merge model (e.g. FastApply-1.5B) for applying code blocks to files. */
-  applyModel?: string;
-  /** Ghost-text autocomplete. Inherits chat when unset. */
-  completionModel?: string;
-  /** Agent mode. Inherits chat when unset. */
-  agentModel?: string;
-  embeddingsModel?: string;
-  /** Reranks semantic-search hits. Inherits edit → chat model when unset. */
-  rerankModel?: string;
-  /**
-   * Generates a short contextual blurb per chunk at index time (contextual
-   * retrieval). Inherits rerank → edit → chat model when unset. A small
-   * fast model works well here — it runs once per changed chunk, not once
-   * per query.
-   */
-  contextModel?: string;
-  /**
-   * Run this role against a different configured profile's provider entirely
-   * (its baseUrl/key/model), instead of this one — e.g. embeddings on a local
-   * Ollama profile while chat/agent stay on a cloud profile. Falls back to
-   * this profile when unset, self-referencing, or the named profile doesn't
-   * exist.
-   */
-  editProfile?: string;
-  applyProfile?: string;
-  completionProfile?: string;
-  agentProfile?: string;
-  embeddingsProfile?: string;
-  rerankProfile?: string;
-  contextProfile?: string;
   temperature?: number;
   maxTokens?: number;
   /**
-   * How much of the agent prompt this profile's model is given.
+   * How much of the agent prompt this model is given.
    *
    * 'full' (the default when unset) is every section. 'lean' is the incident
    * rules only — the identity, the untrusted-data and anti-fabrication rules,
@@ -80,7 +52,7 @@ export interface ProviderProfileConfig {
    */
   timeoutMs?: number;
   headers?: Record<string, string>;
-  /** Per-profile overrides of the preset's capability defaults. */
+  /** Per-connection overrides of the preset's capability defaults. */
   capabilities?: Partial<ProviderCapabilities>;
 }
 
@@ -90,7 +62,7 @@ export function resolveCapabilities(profile: ProviderProfileConfig): ProviderCap
 
 /**
  * Effective context window for the meter and compaction:
- * explicit profile setting → preset's known maxContext → conservative default.
+ * explicit setting → preset's known maxContext → conservative default.
  * Without this chain, large-context providers (128k presets) would compact
  * prematurely at the 32k fallback.
  */

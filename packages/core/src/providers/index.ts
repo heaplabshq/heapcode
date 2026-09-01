@@ -24,3 +24,4 @@ export * from './modelFilter.js';
 // import this whole surface exists to avoid. The module is pure config shapes and
 // is already inside this closure via factory.ts.
 export * from '../config/profiles.js';
+export * from '../config/roles.js';

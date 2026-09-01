@@ -164,8 +164,9 @@ async function client(hello: Partial<HelloParams> = {}): Promise<RpcPeer> {
     protocolVersion: PROTOCOL_VERSION,
     client: { name: 'test' },
     root,
-    profiles: [profile({ embeddingsModel: 'embed' })],
+    profiles: [profile()],
     activeProfile: 'test',
+    roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' } },
     ...hello,
   } satisfies HelloParams);
   return peer;
@@ -234,9 +235,12 @@ describe('rag/index — full build', () => {
     expect(endpoint.embeddingBatches.length).toBe(before);
   });
 
-  it('reports no-embedder rather than indexing when no embeddings model is configured', async () => {
+  it('reports no-embedder rather than indexing when nothing is assigned to the embeddings role', async () => {
     await writeCorpus();
-    const peer = await client({ profiles: [profile()] });
+    // A role table that exists but leaves embeddings unassigned is a
+    // deliberate "off" — it must not fall back to the chat model, which
+    // cannot embed.
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' } } });
 
     const result = await index(peer, { full: true });
 
@@ -338,7 +342,7 @@ describe('rag/query — nothing binary crosses the wire', () => {
       protocolVersion: PROTOCOL_VERSION,
       client: { name: 'raw' },
       root,
-      profiles: [profile({ embeddingsModel: 'embed' })],
+      profiles: [profile()],
       activeProfile: 'test',
     });
     await vi.waitFor(() => expect(lines.join('')).toContain('sessionId'));
@@ -532,7 +536,7 @@ describe('host policy stays host policy', () => {
     // keep their current default by passing it per request rather than the
     // server reading either host's config.
     await writeCorpus();
-    const peer = await client({ profiles: [profile({ embeddingsModel: 'embed', contextModel: 'ctx' })] });
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' }, context: { connection: 'test', model: 'ctx' } } });
 
     await index(peer, { full: true, contextualRetrieval: false });
     expect(endpoint.chatCalls).toEqual([]);
@@ -547,7 +551,7 @@ describe('host policy stays host policy', () => {
 
   it('defaults contextual retrieval off when the request says nothing', async () => {
     await writeCorpus();
-    const peer = await client({ profiles: [profile({ embeddingsModel: 'embed', contextModel: 'ctx' })] });
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' }, context: { connection: 'test', model: 'ctx' } } });
 
     await index(peer, { full: true });
 
@@ -559,7 +563,7 @@ describe('host policy stays host policy', () => {
     for (let i = 0; i < 8; i++) {
       await writeFile(join(root, `m${i}.ts`), `export function fn${i}() {\n  return ${i};\n}\n`);
     }
-    const peer = await client({ profiles: [profile({ embeddingsModel: 'embed', rerankModel: 'rr' })] });
+    const peer = await client({ roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' }, rerank: { connection: 'test', model: 'rr' } } });
     await index(peer, { full: true });
 
     await query(peer, { text: 'fn3', k: 2, rerank: false });

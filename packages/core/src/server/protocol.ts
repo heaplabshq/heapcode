@@ -7,6 +7,7 @@ import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../a
 import type { AgentPersona } from '../agent/personas.js';
 import type { AgentEnvironment } from '../agent/promptSections.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
+import type { ModelRoleTable } from '../config/roles.js';
 import type { PrReviewConfirmation, PrReviewResult } from '../review/prReview.js';
 import type { ReviewClient } from '../review/prReviewFormat.js';
 
@@ -21,7 +22,7 @@ import type { ReviewClient } from '../review/prReviewFormat.js';
  */
 
 /** Bumped on any breaking change; it appears in the socket address, so mismatched peers never meet. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC envelopes
@@ -106,10 +107,28 @@ export interface HelloParams {
   client: { name: string; version?: string };
   /** Workspace root this session operates on. */
   root: string;
-  /** Profile configuration, pushed rather than read — the server has no business reading either host's config (§2). */
+  /**
+   * Connection configuration, pushed rather than read — the server has no
+   * business reading either host's config (§2).
+   *
+   * Carried as the flattened `ProviderProfileConfig` rather than as bare
+   * connections because that is the shape `createProvider` consumes; a
+   * connection's `model` here is only the chat model that travelled with it,
+   * and `roles` below is what actually decides which model serves what.
+   */
   profiles: ProviderProfileConfig[];
-  /** Which profile this session's runs use unless a call names another. */
+  /** Which connection this session's runs use unless a call names another. */
   activeProfile: string;
+  /**
+   * Which model on which connection serves each role — one global table, not
+   * one per connection (config/roles.ts).
+   *
+   * Optional so a host that has not been converted yet still connects: an
+   * absent table makes every role resolve to the active connection's own
+   * model, which is what the pre-split behaviour amounted to for a profile
+   * with no role overrides set.
+   */
+  roles?: ModelRoleTable;
   /**
    * Key material for profiles this session expects to use, `profileName` →
    * API key. Held in memory for the session's lifetime and never persisted.

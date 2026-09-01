@@ -1,27 +1,11 @@
 import { createProvider } from '../providers/factory.js';
-import type { ModelRole, ProviderProfileConfig } from '../config/profiles.js';
+import type { ProviderProfileConfig } from '../config/profiles.js';
+import { resolveAssignment, type ModelRole, type ModelRoleTable } from '../config/roles.js';
 import type { Provider } from '../providers/types.js';
 import type { HelloParams, KeyRequestResult } from './protocol.js';
 
-/**
- * Which `<role>Profile` field redirects each role, mirroring
- * packages/cli/src/provider/roles.ts:5-13 and the extension's copy at
- * packages/vscode/src/profileManager.ts. Both of those resolve roles
- * host-side today; this is the one server-side implementation they collapse
- * into (custody note's recommendation, point 4).
- */
-const ROLE_PROFILE_FIELD: Record<ModelRole, keyof ProviderProfileConfig> = {
-  editModel: 'editProfile',
-  applyModel: 'applyProfile',
-  completionModel: 'completionProfile',
-  agentModel: 'agentProfile',
-  embeddingsModel: 'embeddingsProfile',
-  rerankModel: 'rerankProfile',
-  contextModel: 'contextProfile',
-};
-
-/** Asks the host for a profile's key and config (`key/request`, §2 option b). */
-export type KeyRequester = (profileName: string) => Promise<void>;
+/** Asks the host for a connection's key and config (`key/request`, §2 option b). */
+export type KeyRequester = (connectionName: string) => Promise<void>;
 
 /**
  * One host connection's world.
@@ -40,7 +24,16 @@ export type KeyRequester = (profileName: string) => Promise<void>;
 export class Session {
   readonly id: string;
   readonly root: string;
+  /**
+   * The connection a call runs against when it names none.
+   *
+   * This is the chat role's connection, not a "current profile" any more:
+   * which model serves which role is one global table (`roles` below), so
+   * switching what you chat with no longer silently rewrites the other six.
+   */
   readonly activeProfile: string;
+  /** Which model on which connection serves each role. One table, not one per connection. */
+  private roles: ModelRoleTable;
   /** False when `root` is not a real local directory — see HelloParams.localRoot. */
   readonly localRoot: boolean;
 
@@ -64,6 +57,7 @@ export class Session {
     this.root = hello.root;
     this.activeProfile = hello.activeProfile;
     this.localRoot = hello.localRoot ?? true;
+    this.roles = hello.roles ?? {};
     for (const profile of hello.profiles) this.profiles.set(profile.name, profile);
     for (const [name, key] of Object.entries(hello.keys ?? {})) this.keys.set(name, key);
   }
@@ -108,33 +102,78 @@ export class Session {
   }
 
   /**
-   * Provider + profile for a role, following the profile's `<role>Profile`
-   * redirect — e.g. embeddings on a local Ollama profile while chat and agent
-   * stay on a cloud one.
+   * Provider + model for a role: one lookup in the global role table.
    *
-   * This is the server-side twin of `RoleResolver.resolveRole`
-   * (packages/cli/src/provider/roles.ts:36-41) and
-   * `ProfileManager.resolveRole` (packages/vscode/src/profileManager.ts:172-176),
-   * with the same fallbacks: an unset, self-referencing, or unknown target
-   * falls back to the profile being redirected from.
+   * This used to be two hops. A role read a `<role>Model` field off the active
+   * profile, and a `<role>Profile` field could redirect it to *another*
+   * profile, whose same-named role field was then read, itself falling back to
+   * that profile's chat model. Answering "what runs rerank?" meant tracing
+   * that by hand, and switching the active profile silently rewrote all seven
+   * answers at once.
    *
-   * The redirect target is normally *not* in this session — all three hosts
-   * push only the active profile at hello (packages/cli/src/ink/App.tsx:426,
-   * packages/cli/src/headless.ts:207, packages/vscode/src/serverLink.ts:91) —
-   * so `key/request` is the ordinary path here, not the exception. That is
-   * exactly the case protocol §2 named RAG as needing first.
+   * Now the table is global and says outright which model on which connection
+   * serves the role, with one inheritance chain (config/roles.ts) instead of
+   * seven per-profile ones.
+   *
+   * The connection an assignment names is usually *not* in this session — the
+   * hosts push only what the chat role needs at hello — so `key/request` is the
+   * ordinary path here, not the exception. That is exactly the case protocol §2
+   * named RAG as needing first.
+   *
+   * `fromProfile` is a caller pinning the role to one connection (delegate_task
+   * naming a profile, mostly); it still wins over the table.
    */
   async providerForRole(
     role: ModelRole,
     requestKey?: KeyRequester,
     fromProfile?: string,
   ): Promise<{ provider: Provider; profile: ProviderProfileConfig } | undefined> {
-    const baseName = fromProfile ?? this.activeProfile;
-    const base = this.providerFor(baseName);
-    if (!base) return undefined;
-    const targetName = base.profile[ROLE_PROFILE_FIELD[role]] as string | undefined;
-    if (!targetName || targetName === baseName) return base;
-    return (await this.resolveProfile(targetName, requestKey)) ?? base;
+    if (fromProfile) return this.resolveProfile(fromProfile, requestKey);
+
+    const resolved = resolveAssignment(this.roles, role);
+    if (!resolved) {
+      // Two different silences, and they must not be confused.
+      //
+      // An EMPTY table is a host that has not been converted (roles is
+      // optional at hello), and the active connection's own model is the
+      // honest answer — that is what a profile with no role overrides
+      // amounted to before the split.
+      //
+      // A table that exists but leaves this role unassigned is a deliberate
+      // "off": embeddings and apply inherit nothing, and falling back to a
+      // chat model there is the exact bug the split removes. A chat model
+      // asked to embed returns something that is not an embedding, which
+      // shows up as bad search results and never as an error.
+      const noTable = Object.keys(this.roles).length === 0;
+      return noTable ? this.providerFor(this.activeProfile) : undefined;
+    }
+
+    const { assignment } = resolved;
+    const base = await this.resolveProfile(assignment.connection, requestKey);
+    // The named connection is unknown to the host too — fall back rather than
+    // fail, which is what both hosts already did for an unknown profile name.
+    if (!base) return this.providerFor(this.activeProfile);
+
+    // The assignment's model and tuning win over whatever the connection was
+    // pushed carrying: a connection is an endpoint, and its `model` field is
+    // only ever the chat model that happened to travel with it.
+    return {
+      provider: base.provider,
+      profile: {
+        ...base.profile,
+        model: assignment.model,
+        temperature: assignment.temperature ?? base.profile.temperature,
+        maxTokens: assignment.maxTokens ?? base.profile.maxTokens,
+        contextWindow: assignment.contextWindow ?? base.profile.contextWindow,
+        promptTier: assignment.promptTier ?? base.profile.promptTier,
+      },
+    };
+  }
+
+  /** Replace the role table mid-session — the host pushes this when settings change. */
+  setRoles(roles: ModelRoleTable): void {
+    if (this.disposed) return;
+    this.roles = roles;
   }
 
   /** Record a key/profile the host resolved lazily via `key/request` (§2, option b). */

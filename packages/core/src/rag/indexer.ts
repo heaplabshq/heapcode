@@ -4,7 +4,8 @@ import {
   MAX_INDEXED_FILES,
   type FileSource,
 } from '@heapcode/repomap';
-import type { ModelRole, ProviderProfileConfig } from '../config/profiles.js';
+import type { ProviderProfileConfig } from '../config/profiles.js';
+import type { ModelRole } from '../config/roles.js';
 import type { Provider } from '../providers/types.js';
 import { chunkFile, fnv1a, type Chunk } from './chunker.js';
 import { contextualizeChunks } from './contextualize.js';
@@ -30,22 +31,27 @@ export interface RagStore {
   write(text: string): Promise<void>;
 }
 
-export interface ResolvedRole {
+export interface RagResolvedRole {
   provider: Provider;
+  /**
+   * The flattened connection + assignment for the role (see config/roles.ts).
+   * `profile.model` IS the model serving the role — there is no second lookup
+   * for a `<role>Model` field any more, which is what made an unassigned role
+   * silently fall through to a chat model before.
+   */
   profile: ProviderProfileConfig;
 }
 
 /**
- * Which provider/profile serves a role, following any `<role>Profile`
- * redirect. Injected because the three implementations differ in where they
- * read configuration from, not in what they answer: RoleResolver for the CLI,
- * ProfileManager for the extension, Session.providerForRole in the server.
+ * Which provider/model serves a role. Injected because the implementations
+ * differ in where they read configuration from, not in what they answer:
+ * Session.providerForRole in the server, ProfileManager in the extension.
  *
  * Returning undefined means "nothing configured for this role" — the indexer
  * degrades rather than throwing, since a missing rerank or context model is
  * an ordinary state, not a failure.
  */
-export type RagRoleResolver = (role: ModelRole) => Promise<ResolvedRole | undefined>;
+export type RagRoleResolver = (role: ModelRole) => Promise<RagResolvedRole | undefined>;
 
 export interface RagIndexerOptions {
   files: FileSource;
@@ -161,8 +167,8 @@ export class RagIndexer {
   }
 
   private async refreshEmbedder(): Promise<string | undefined> {
-    const resolved = await this.opts.roles('embeddingsModel');
-    this.embedder = resolved?.profile.embeddingsModel || undefined;
+    const resolved = await this.opts.roles('embeddings');
+    this.embedder = resolved?.profile.model || undefined;
     return this.embedder;
   }
 
@@ -302,8 +308,8 @@ export class RagIndexer {
     const fileHash = fnv1a(content);
     if (this.store.fileHash(rel) === fileHash) return false;
 
-    const embeddings = await this.opts.roles('embeddingsModel');
-    this.embedder = embeddings?.profile.embeddingsModel || undefined;
+    const embeddings = await this.opts.roles('embeddings');
+    this.embedder = embeddings?.profile.model || undefined;
     const model = this.embedder;
     if (!embeddings || !model) return false;
 
@@ -357,11 +363,12 @@ export class RagIndexer {
   private async contextsFor(rel: string, content: string, toEmbed: Chunk[], signal?: AbortSignal): Promise<string[]> {
     if (toEmbed.length === 0) return [];
     try {
-      const ctx = await this.opts.roles('contextModel');
-      if (!ctx) return [];
-      const model = ctx.profile.contextModel || ctx.profile.rerankModel || ctx.profile.editModel || ctx.profile.model;
-      if (!model) return [];
-      return await contextualizeChunks(ctx.provider, model, rel, content, toEmbed, signal);
+      // The chain (context → rerank → edit → chat) lives in resolveRole now,
+      // so what comes back is already the model to use. This used to walk it
+      // here, and the extension and server each walked their own copy.
+      const ctx = await this.opts.roles('context');
+      if (!ctx?.profile.model) return [];
+      return await contextualizeChunks(ctx.provider, ctx.profile.model, rel, content, toEmbed, signal);
     } catch {
       return [];
     }
@@ -380,8 +387,8 @@ export class RagIndexer {
   /** Semantic retrieval; empty when there's no embedder or no index. */
   async query(text: string, k = 6, opts: QueryOptions = {}): Promise<SearchHit[]> {
     if (this.store.chunkCount === 0) return [];
-    const embeddings = await this.opts.roles('embeddingsModel');
-    this.embedder = embeddings?.profile.embeddingsModel || undefined;
+    const embeddings = await this.opts.roles('embeddings');
+    this.embedder = embeddings?.profile.model || undefined;
     const model = this.embedder;
     if (!embeddings || !model) return [];
 
@@ -397,12 +404,11 @@ export class RagIndexer {
       hybrid ? this.store.hybridSearch(vector, text, n) : this.store.search(vector, n);
 
     // Rerank: over-fetch, let an LLM pick the hits that actually answer the
-    // query. Its own role, so it can run on a different profile than the
+    // query. Its own role, so it can run on a different connection than the
     // embeddings did. Falls back to vector/hybrid order on any failure.
     if (opts.rerank === false) return doSearch(k);
-    const rerankRole = await this.opts.roles('rerankModel');
-    const rerankModel =
-      rerankRole && (rerankRole.profile.rerankModel || rerankRole.profile.editModel || rerankRole.profile.model);
+    const rerankRole = await this.opts.roles('rerank');
+    const rerankModel = rerankRole?.profile.model;
     if (!rerankRole || !rerankModel) return doSearch(k);
 
     const candidates = doSearch(Math.max(RERANK_CANDIDATES, k));

@@ -239,6 +239,11 @@ export class AgentController {
         // a sub-agent naming another one resolves it through key/request.
         profiles: profile ? [profile] : [],
         activeProfile: profileName,
+        // The whole role table. This connection is its own — the controller
+        // does not share ServerLink's — so omitting it here left every run
+        // with an empty table, and the roles that inherit nothing (embeddings,
+        // apply) unresolvable for the entire session.
+        roles: this.profiles.getRoles(),
         keys: apiKey ? { [profileName]: apiKey } : {},
       },
       this.server,

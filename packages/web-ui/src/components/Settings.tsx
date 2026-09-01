@@ -1126,6 +1126,10 @@ function RoleRow({
           </option>
         ))}
       </select>
+      {/* Only where the list above cannot be trusted to be complete. For
+          embeddings it is not: a provider's /v1/models is a chat catalogue,
+          and OpenRouter leaves its embedding models out of it entirely. */}
+      {meta.note && <p className="hint role-note">{meta.note}</p>}
     </div>
   );
 }

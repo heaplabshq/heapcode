@@ -1,6 +1,6 @@
 import { createProvider } from '../providers/factory.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
-import { resolveAssignment, type ModelRole, type ModelRoleTable } from '../config/roles.js';
+import { roleChain, type ModelRole, type ModelRoleTable } from '../config/roles.js';
 import type { Provider } from '../providers/types.js';
 import type { HelloParams, KeyRequestResult } from './protocol.js';
 
@@ -52,8 +52,12 @@ export class Session {
   private readonly runs = new Map<string, AbortController>();
   private disposed = false;
 
-  constructor(id: string, hello: HelloParams) {
+  /** The daemon log, when the server gave the session one. */
+  private log?: (line: string) => void;
+
+  constructor(id: string, hello: HelloParams, log?: (line: string) => void) {
     this.id = id;
+    this.log = log;
     this.root = hello.root;
     this.activeProfile = hello.activeProfile;
     this.localRoot = hello.localRoot ?? true;
@@ -130,51 +134,67 @@ export class Session {
   ): Promise<{ provider: Provider; profile: ProviderProfileConfig } | undefined> {
     if (fromProfile) return this.resolveProfile(fromProfile, requestKey);
 
-    const resolved = resolveAssignment(this.roles, role);
-    if (!resolved) {
-      // Two different silences, and they must not be confused.
-      //
-      // An EMPTY table is a host that has not been converted (roles is
-      // optional at hello), and the active connection's own model is the
-      // honest answer — that is what a profile with no role overrides
-      // amounted to before the split.
-      //
-      // A table that exists but leaves this role unassigned is a deliberate
-      // "off": embeddings and apply inherit nothing, and falling back to a
-      // chat model there is the exact bug the split removes. A chat model
-      // asked to embed returns something that is not an embedding, which
-      // shows up as bad search results and never as an error.
-      const noTable = Object.keys(this.roles).length === 0;
-      return noTable ? this.providerFor(this.activeProfile) : undefined;
+    // Whether this role has anywhere to fall back to. `embeddings` and `apply`
+    // inherit nothing, and that is load-bearing rather than a detail: handing
+    // either of them a chat model is not a degraded answer, it is a wrong one.
+    const chain = roleChain(role);
+    const inherits = chain.length > 1;
+
+    // Walked here rather than through `resolveRole`, because in a session a
+    // connection that is missing means "not pushed yet" and is fetched over
+    // `key/request` — the opposite of what it means in a host's config, where
+    // missing means deleted.
+    for (const candidate of chain) {
+      const assignment = this.roles[candidate];
+      if (!assignment?.model) continue;
+
+      // A connection the host already pushed is used as-is. Going through
+      // `resolveProfile` would ask for its key over `key/request` even though
+      // it arrived at hello — and a keyless local endpoint has `hasKey` false
+      // forever, so that ask is both pointless and, for a host that does not
+      // implement the callback, a hang.
+      const base = this.getProfile(assignment.connection)
+        ? this.providerFor(assignment.connection)
+        : await this.resolveProfile(assignment.connection, requestKey);
+
+      if (!base) {
+        // Neither this session nor the host knows the connection. Carry on
+        // down the chain rather than substituting: this used to return the
+        // active connection, which comes back carrying its CHAT model because
+        // that is what a connection is pushed with. Embeddings then ran the
+        // chat model — OpenRouter answers "Model <chat model> does not exist"
+        // — and the index was discarded as written by a different embedder,
+        // with nothing anywhere saying a substitution had happened.
+        this.log?.(
+          `role "${role}" names connection "${assignment.connection}", which is not configured` +
+            (inherits ? ' — continuing down its inheritance chain' : ' — leaving the role off'),
+        );
+        continue;
+      }
+
+      // The assignment's model and tuning win over whatever the connection was
+      // pushed carrying: a connection is an endpoint, and its `model` field is
+      // only ever the chat model that happened to travel with it.
+      return {
+        provider: base.provider,
+        profile: {
+          ...base.profile,
+          model: assignment.model,
+          temperature: assignment.temperature ?? base.profile.temperature,
+          maxTokens: assignment.maxTokens ?? base.profile.maxTokens,
+          contextWindow: assignment.contextWindow ?? base.profile.contextWindow,
+          promptTier: assignment.promptTier ?? base.profile.promptTier,
+        },
+      };
     }
 
-    const { assignment } = resolved;
-    // A connection the host already pushed is used as-is. Going through
-    // `resolveProfile` would ask for its key over `key/request` even though it
-    // arrived at hello — and a keyless local endpoint has `hasKey` false
-    // forever, so that ask is both pointless and, for a host that does not
-    // implement the callback, a hang.
-    const base = this.getProfile(assignment.connection)
-      ? this.providerFor(assignment.connection)
-      : await this.resolveProfile(assignment.connection, requestKey);
-    // The named connection is unknown to the host too — fall back rather than
-    // fail, which is what both hosts already did for an unknown profile name.
-    if (!base) return this.providerFor(this.activeProfile);
-
-    // The assignment's model and tuning win over whatever the connection was
-    // pushed carrying: a connection is an endpoint, and its `model` field is
-    // only ever the chat model that happened to travel with it.
-    return {
-      provider: base.provider,
-      profile: {
-        ...base.profile,
-        model: assignment.model,
-        temperature: assignment.temperature ?? base.profile.temperature,
-        maxTokens: assignment.maxTokens ?? base.profile.maxTokens,
-        contextWindow: assignment.contextWindow ?? base.profile.contextWindow,
-        promptTier: assignment.promptTier ?? base.profile.promptTier,
-      },
-    };
+    // Nothing in the chain resolved. An EMPTY table is a host that has not
+    // been converted — `roles` is optional at hello — and for a role that
+    // inherits, the active connection's own model is the honest answer, which
+    // is what a profile with no role overrides amounted to before the split.
+    // Anything else is a deliberate "off".
+    const noTable = Object.keys(this.roles).length === 0;
+    return noTable && inherits ? this.providerFor(this.activeProfile) : undefined;
   }
 
   /** Replace the role table mid-session — the host pushes this when settings change. */

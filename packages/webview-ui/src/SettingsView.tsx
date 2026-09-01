@@ -28,7 +28,7 @@ export interface SettingsData {
 }
 
 /** What each role is for, in the order the panel lists them. */
-const ROLE_META: Record<ModelRole, { icon: string; label: string; hint: string }> = {
+const ROLE_META: Record<ModelRole, { icon: string; label: string; hint: string; note?: string }> = {
   chat: { icon: '💬', label: 'Chat', hint: 'Conversations in the sidebar. Every other role inherits from this one.' },
   agent: { icon: '🤖', label: 'Agent', hint: 'Agent mode — a strong tool-calling model.' },
   edit: { icon: '✏️', label: 'Edit', hint: 'Inline edit (Ctrl+I) and commit messages.' },
@@ -42,6 +42,12 @@ const ROLE_META: Record<ModelRole, { icon: string; label: string; hint: string }
     icon: '🔍',
     label: 'Embeddings',
     hint: 'Semantic search and the repo index. Inherits nothing on purpose: a chat model asked to embed returns something that is not an embedding, and that shows up as bad results rather than as an error.',
+    // The list this row offers cannot be trusted to be complete. A provider's
+    // /v1/models is a chat catalogue: OpenRouter serves embeddings on its own
+    // endpoint and omits those models from that listing entirely, so the
+    // picker shows chat models and nothing else — and picking one is exactly
+    // how you get "Model … does not exist" back from an embeddings request.
+    note: 'Some providers (OpenRouter among them) leave embedding models out of their model list. If you do not see one here, use ✎ and type its id.',
   },
   rerank: { icon: '🔢', label: 'Rerank', hint: 'Reranks search hits. A small fast model works well.' },
   context: { icon: '📝', label: 'Context', hint: 'A short blurb per chunk at index time. A small fast model works well.' },
@@ -405,6 +411,7 @@ function RoleRow({
           placeholder={summary}
         />
       </div>
+      {meta.note && <div className="settings-role-note">{meta.note}</div>}
     </div>
   );
 }

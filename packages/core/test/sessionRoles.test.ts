@@ -125,15 +125,59 @@ describe('Session.providerForRole', () => {
     expect(resolved?.profile.temperature).toBe(0);
   });
 
-  it('falls back to the active connection when the host does not know the target', async () => {
+  it('falls back down the chain when the host does not know the connection a role names', async () => {
+    // Only for a role that inherits: the active connection comes back carrying
+    // its chat model, which for edit IS the bottom of its own chain.
     const s = session(profile('cloud'), {
       ...chatOnCloud,
-      embeddings: { connection: 'typo', model: 'nomic' },
+      edit: { connection: 'typo', model: 'ghost' },
     }, { cloud: 'k' });
     const host = hostWith({}, s);
 
-    expect((await s.providerForRole('embeddings', host.requestKey))?.profile.name).toBe('cloud');
+    const resolved = await s.providerForRole('edit', host.requestKey);
+    expect(resolved?.profile.name).toBe('cloud');
+    expect(resolved?.profile.model).toBe('gpt-4o');
     expect(host.asked).toEqual(['typo']);
+  });
+
+  it('leaves embeddings off rather than substituting the chat model, when its connection is gone', async () => {
+    // The reported failure. The active connection is pushed carrying its CHAT
+    // model, so falling back handed the embeddings role a chat model:
+    // OpenRouter answered "Model <chat model> does not exist", and the index
+    // was then discarded as written by a different embedder. A chat model
+    // asked to embed is not a degraded answer, it is a wrong one.
+    const s = session(profile('cloud'), {
+      ...chatOnCloud,
+      embeddings: { connection: 'homelab', model: 'nomic-embed-text' },
+    }, { cloud: 'k' });
+    const host = hostWith({}, s);
+
+    expect(await s.providerForRole('embeddings', host.requestKey)).toBeUndefined();
+    expect(await s.providerForRole('apply', host.requestKey)).toBeUndefined();
+    expect(host.asked).toEqual(['homelab']);
+  });
+
+  it('says in the log why a role was left off, rather than substituting in silence', async () => {
+    const lines: string[] = [];
+    const s = new Session(
+      'sess',
+      {
+        token: 't',
+        protocolVersion: 2,
+        client: { name: 'test' },
+        root: '/tmp/ws',
+        profiles: [profile('cloud')],
+        activeProfile: 'cloud',
+        roles: { ...chatOnCloud, embeddings: { connection: 'homelab', model: 'nomic' } },
+        keys: { cloud: 'k' },
+      },
+      (line) => lines.push(line),
+    );
+
+    await s.providerForRole('embeddings');
+
+    expect(lines.join('\n')).toContain('homelab');
+    expect(lines.join('\n')).toMatch(/not configured/);
   });
 
   it('asks the host once per connection, not once per call', async () => {
@@ -164,13 +208,15 @@ describe('Session.providerForRole', () => {
     expect(first?.provider).toBe(second?.provider);
   });
 
-  it('works with no key requester at all — the assignment just falls back', async () => {
+  it('works with no key requester at all — an inheriting role falls back, embeddings does not', async () => {
     const s = session(profile('cloud'), {
       ...chatOnCloud,
+      edit: { connection: 'ollama', model: 'qwen' },
       embeddings: { connection: 'ollama', model: 'nomic' },
     }, { cloud: 'k' });
 
-    expect((await s.providerForRole('embeddings'))?.profile.name).toBe('cloud');
+    expect((await s.providerForRole('edit'))?.profile.name).toBe('cloud');
+    expect(await s.providerForRole('embeddings')).toBeUndefined();
   });
 
   it('lets a caller pin a role to one connection, overriding the table', async () => {
@@ -195,12 +241,13 @@ describe('Session.providerForRole', () => {
 
   it('falls back to the active connection when the host pushed no table at all', async () => {
     // A host that has not been converted yet still connects, and every role
-    // resolves to the active connection's own model — which is what a profile
-    // with no role overrides amounted to before the split.
+    // that inherits resolves to the active connection's own model — which is
+    // what a profile with no role overrides amounted to before the split.
+    // Embeddings still does not: there is nothing to inherit from.
     const s = session(profile('cloud'), {}, { cloud: 'k' });
 
     expect((await s.providerForRole('agent'))?.profile.model).toBe('chat');
-    expect((await s.providerForRole('embeddings'))?.profile.name).toBe('cloud');
+    expect(await s.providerForRole('embeddings')).toBeUndefined();
   });
 
   it('takes a new table mid-session, so a settings change lands without a reconnect', async () => {

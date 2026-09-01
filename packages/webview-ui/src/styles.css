@@ -1076,6 +1076,15 @@ select.settings-input {
   font-size: 0.75em;
 }
 
+/* Under both controls, because it is about the list inside the picker. */
+.settings-role-note {
+  padding-left: 22px;
+  margin-top: 3px;
+  font-size: 0.75em;
+  line-height: 1.4;
+  color: var(--vscode-descriptionForeground);
+}
+
 .settings-role-controls {
   display: flex;
   align-items: center;

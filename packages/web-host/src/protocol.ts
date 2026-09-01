@@ -555,14 +555,30 @@ export type UiStateChangedParams = Partial<UiState>;
  * way.
  */
 export const UI_MODEL_ROLES = [
-  { key: 'chat', group: 'Core', label: 'Chat', hint: 'conversations — every other role inherits from this one' },
-  { key: 'agent', group: 'Core', label: 'Agent', hint: 'inherits chat' },
-  { key: 'apply', group: 'Core', label: 'Apply', hint: 'fast-apply merge, when an edit’s search text does not match — inherits nothing' },
-  { key: 'edit', group: 'Core', label: 'Edit', hint: 'inherits chat' },
-  { key: 'completion', group: 'Core', label: 'Autocomplete', hint: 'editor ghost text — used by the extension, not here' },
-  { key: 'embeddings', group: 'Retrieval', label: 'Embeddings', hint: 'semantic search and the repo index — inherits nothing, a chat model cannot embed' },
-  { key: 'rerank', group: 'Retrieval', label: 'Rerank', hint: 'inherits edit → chat' },
-  { key: 'context', group: 'Retrieval', label: 'Context', hint: 'per-chunk blurbs at index time; inherits rerank → edit → chat' },
+  { note: undefined, key: 'chat', group: 'Core', label: 'Chat', hint: 'conversations — every other role inherits from this one' },
+  { note: undefined, key: 'agent', group: 'Core', label: 'Agent', hint: 'inherits chat' },
+  { note: undefined, key: 'apply', group: 'Core', label: 'Apply', hint: 'fast-apply merge, when an edit’s search text does not match — inherits nothing' },
+  { note: undefined, key: 'edit', group: 'Core', label: 'Edit', hint: 'inherits chat' },
+  { note: undefined, key: 'completion', group: 'Core', label: 'Autocomplete', hint: 'editor ghost text — used by the extension, not here' },
+  {
+    key: 'embeddings',
+    group: 'Retrieval',
+    label: 'Embeddings',
+    hint: 'semantic search and the repo index — inherits nothing, a chat model cannot embed',
+    /**
+     * Shown under the row, because the list above it cannot be trusted to be
+     * complete for this one role.
+     *
+     * A provider's `/v1/models` is a chat catalogue. OpenRouter serves
+     * embeddings on its own endpoint and omits those models from that listing
+     * entirely, so the picker offers chat models and nothing else — and
+     * choosing one of them is exactly how you get "Model … does not exist"
+     * back from an embeddings request.
+     */
+    note: 'Some providers (OpenRouter among them) leave embedding models out of their model list. If you do not see one here, type its id — the list is not the whole catalogue.',
+  },
+  { note: undefined, key: 'rerank', group: 'Retrieval', label: 'Rerank', hint: 'inherits edit → chat' },
+  { note: undefined, key: 'context', group: 'Retrieval', label: 'Context', hint: 'per-chunk blurbs at index time; inherits rerank → edit → chat' },
 ] as const;
 
 export type UiModelRole = (typeof UI_MODEL_ROLES)[number]['key'];

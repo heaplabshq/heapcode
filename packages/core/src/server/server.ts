@@ -200,7 +200,7 @@ export class HeapcodeServer {
       if (params.protocolVersion !== PROTOCOL_VERSION) {
         throw new Error(`Protocol version mismatch: server ${PROTOCOL_VERSION}, client ${params.protocolVersion}`);
       }
-      session = new Session(randomUUID(), params);
+      session = new Session(randomUUID(), params, (line) => this.onLog(`[session ${session!.id.slice(0, 8)}] ${line}`));
       this.sessions.add(session);
       this.armIdleTimer();
       this.onLog(`[session ${session.id.slice(0, 8)}] hello from ${params.client.name} root=${params.root}`);

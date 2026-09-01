@@ -70,7 +70,7 @@ describe('the settings dialog', () => {
     expect(screen.getByText('Persona')).toBeTruthy();
     // Providers exists in the nav but its content is not rendered yet.
     expect(screen.getByRole('button', { name: 'Providers' })).toBeTruthy();
-    expect(screen.queryByText('Add profile')).toBeNull();
+    expect(screen.queryByText('+ Add connection')).toBeNull();
   });
 
   it('reaches every page, including the ones that used to be slash commands', () => {
@@ -91,11 +91,11 @@ describe('the settings dialog', () => {
   });
 
   describe('the provider list', () => {
-    /** Opens Providers → Add profile and returns the preset dropdown + URL field. */
+    /** Opens Providers → Add connection and returns the preset dropdown + URL field. */
     function openAddProfile() {
       render(<Settings {...props()} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       return {
         preset: screen.getAllByRole('combobox').find((el) => el.querySelector('option[value="ollama-cloud"]'))!,
         baseUrl: screen.getByPlaceholderText('http://localhost:11434/v1') as HTMLInputElement,
@@ -129,7 +129,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-oss:120b', 'kimi-k3'] });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
 
       fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
       await waitFor(() => expect(screen.getByText('connected')).toBeTruthy());
@@ -151,7 +151,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: false, models: [], error: 'HTTP 401 Unauthorized' });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
       await waitFor(() => expect(screen.getByText('failed')).toBeTruthy());
       expect(screen.getByText('HTTP 401 Unauthorized')).toBeTruthy();
@@ -161,7 +161,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: ['a'] });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
       await waitFor(() => expect(screen.getByText('connected')).toBeTruthy());
       // A "connected" badge next to a URL that was never tested is a lie.
@@ -175,7 +175,7 @@ describe('the settings dialog', () => {
       const probeProvider = vi.fn().mockResolvedValue({ ok: true, models: [] });
       render(<Settings {...props({ probeProvider })} />);
       fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Add profile' }));
+      fireEvent.click(screen.getByRole('button', { name: '+ Add connection' }));
       const preset = screen.getAllByRole('combobox').find((el) => el.querySelector('option[value="ollama-cloud"]'))!;
       fireEvent.change(preset, { target: { value: 'ollama-cloud' } });
       fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-test' } });

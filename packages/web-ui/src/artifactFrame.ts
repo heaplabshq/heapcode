@@ -103,6 +103,39 @@ function format(json: string): string {
   }
 }
 
+/**
+ * Fills a freshly opened tab with one artifact, full-bleed.
+ *
+ * The point is width: a dashboard or a wide table is unreadable in a 420px
+ * panel, and the panel cannot grow past about half the window without taking
+ * the conversation with it.
+ *
+ * The artifact still renders inside a sandboxed frame, with the same
+ * `allow-scripts`-and-nothing-else token list and the same CSP. That is not
+ * belt-and-braces, it is the whole point: the obvious implementation —
+ * `window.open(URL.createObjectURL(new Blob([doc], { type: 'text/html' })))` —
+ * is a hole. A `blob:` URL inherits the origin of whoever created it, so the
+ * artifact's inline scripts would run **as the app**, with its cookie (which
+ * holds the session token) and its `localStorage` in reach. A `data:` URL is
+ * refused for top-level navigation by browsers for the same family of reason.
+ * So the new tab gets a page of ours, and the artifact stays behind the same
+ * boundary it has in the panel.
+ */
+export function mountStandalone(win: Window, title: string, frameDocument: string): void {
+  const doc = win.document;
+  doc.title = title;
+  doc.documentElement.style.colorScheme = 'light dark';
+  doc.body.style.margin = '0';
+  const frame = doc.createElement('iframe');
+  frame.title = title;
+  frame.setAttribute('sandbox', SANDBOX);
+  // Assigned as a property, not written into markup: no attribute escaping to
+  // get wrong, and nothing to get wrong it in.
+  frame.srcdoc = frameDocument;
+  frame.style.cssText = 'display:block;border:0;width:100vw;height:100vh';
+  doc.body.appendChild(frame);
+}
+
 export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Empty } from './Empty.js';
 import type { UiArtifactMeta, UiArtifactResult } from '@heapcode/web-host/protocol';
-import { SANDBOX, buildFrameDocument } from '../artifactFrame.js';
+import { SANDBOX, buildFrameDocument, mountStandalone } from '../artifactFrame.js';
 import { renderMarkdown } from '../markdown.js';
 
 export interface PreviewProps {
@@ -18,6 +19,7 @@ export function Preview(props: PreviewProps): JSX.Element {
   const [version, setVersion] = useState<number>();
   const [mermaidSvg, setMermaidSvg] = useState<string>();
   const [error, setError] = useState<string>();
+  const [blocked, setBlocked] = useState(false);
 
   const { loadArtifact } = props;
   useEffect(() => {
@@ -66,12 +68,10 @@ export function Preview(props: PreviewProps): JSX.Element {
 
   if (props.artifacts.length === 0) {
     return (
-      <div className="panel-empty">
-        <p>No artifacts yet.</p>
-        <p className="hint">
-          Ask for something to look at — a chart, a dashboard, a written report — and it renders here.
-        </p>
-      </div>
+      <Empty>
+        No artifacts yet. Ask for something to look at — a chart, a dashboard, a written report — and it renders
+        here.
+      </Empty>
     );
   }
 
@@ -102,20 +102,40 @@ export function Preview(props: PreviewProps): JSX.Element {
         )}
 
         {artifact && (
-          <button
-            className="btn"
-            onClick={() => {
-              const suggested = `${slug(artifact.title)}.${extFor(artifact.kind, artifact.language)}`;
-              const path = window.prompt('Save to workspace as:', suggested);
-              if (path) props.onSave(artifact.id, path, artifact.version);
-            }}
-          >
-            Save to workspace
-          </button>
+          <div className="preview-bar-actions">
+            {/* A panel is about half a window wide at best. Anything laid out
+                for a screen — a dashboard, a wide table — needs a screen. */}
+            <button
+              className="btn"
+              onClick={() => {
+                // Opened synchronously in the handler, or the popup blocker
+                // takes it. `noopener` is not passed because the handle is
+                // what we write into; the reference back is cut instead.
+                const win = window.open('', '_blank');
+                if (!win) return setBlocked(true);
+                win.opener = null;
+                setBlocked(false);
+                mountStandalone(win, artifact.title, srcDoc);
+              }}
+            >
+              Open in new tab
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                const suggested = `${slug(artifact.title)}.${extFor(artifact.kind, artifact.language)}`;
+                const path = window.prompt('Save to workspace as:', suggested);
+                if (path) props.onSave(artifact.id, path, artifact.version);
+              }}
+            >
+              Save to workspace
+            </button>
+          </div>
         )}
       </div>
 
       {error && <p className="hint">{error}</p>}
+      {blocked && <p className="hint">Your browser blocked the new tab — allow pop-ups for this page to open it.</p>}
 
       {artifact && (
         <iframe

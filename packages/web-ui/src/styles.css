@@ -476,7 +476,7 @@ body {
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 7px 7px 7px 12px;
+  padding: 7px 7px 7px 7px;
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
 }
 .composer-box:focus-within { border-color: var(--accent); }
@@ -533,6 +533,29 @@ body {
 }
 .composer-input:focus { outline: none; }
 .composer-actions { display: flex; align-items: center; gap: 6px; }
+
+/* A <label> doing a button's job, so the file input stays the real control:
+   keyboard focus and the accessible name come from the input, and the label is
+   only what it looks like.
+
+   Sits inside the box to the left of the textarea. `align-self: flex-end`
+   keeps it on the bottom line as the input grows, so it stays beside the row
+   being typed rather than floating up with the top of a tall message. */
+.composer-attach {
+  display: flex; align-items: center; justify-content: center;
+  align-self: flex-end;
+  flex: 0 0 auto;
+  width: 26px; height: 26px; margin-bottom: 2px;
+  border-radius: 8px;
+  color: var(--text-dim); font-size: 17px; line-height: 1;
+  cursor: pointer;
+}
+.composer-attach:hover { background: var(--chip-bg); color: var(--text); }
+.composer-attach:has(input:disabled) { opacity: 0.4; cursor: not-allowed; background: none; }
+/* Not display:none — that takes the input out of the focus order along with
+   the keyboard access it is here to provide. */
+.composer-attach input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.composer-attach:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* Folder, then mode, then model — widest scope first. All three describe the
    message you are about to send, which is why they sit with the input rather

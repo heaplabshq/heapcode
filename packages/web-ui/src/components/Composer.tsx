@@ -216,6 +216,30 @@ export function Composer({
             ))}
           </div>
         )}
+        {/* Left of the input, inside the box: it acts on the message being
+            composed, so it belongs with the text rather than over by Send,
+            which acts on the message as a whole.
+            A label wrapping a hidden input, not a button calling .click() —
+            that shape stays keyboard-reachable and needs no ref. */}
+        <label className="composer-attach" title="Attach images">
+          {/* The glyph is decoration; the accessible name lives on the input,
+              which is the thing that actually takes focus. In a visually
+              hidden span it would make the label read "+Attach images". */}
+          <span aria-hidden="true">+</span>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            aria-label="Attach images"
+            disabled={disabled || busy}
+            onChange={(e) => {
+              void addFiles([...(e.target.files ?? [])]);
+              // Cleared so choosing the same file twice in a row still fires
+              // a change event the second time.
+              e.target.value = '';
+            }}
+          />
+        </label>
         <textarea
           ref={ref}
           className="composer-input"

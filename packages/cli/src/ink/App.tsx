@@ -4,6 +4,10 @@ import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
 import SelectInput from 'ink-select-input';
 import { useTerminalColumns } from './useTerminalColumns.js';
+import { isFailure, readClipboardImage } from '../clipboardImage.js';
+
+/** Matches the web composer's cap, so the two hosts refuse at the same point. */
+const MAX_ATTACHED_IMAGES = 8;
 import {
   builtinPrompts,
   BUILTIN_PERSONAS,
@@ -538,6 +542,16 @@ export function App({
   // two-second "press again to exit" window instead of exiting outright.
   const [composerHasText, setComposerHasText] = useState(false);
   const [clearToken, setClearToken] = useState(0);
+  /**
+   * Images staged by Ctrl+V, as data URLs, sent with the next message.
+   *
+   * A ref alongside the state because `runTask` reads them while assembling
+   * the request and clears them straight after — reading through state there
+   * would send whatever the last render saw, which on a fast second Ctrl+V is
+   * not what is on screen.
+   */
+  const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const pendingImagesRef = useRef<string[]>([]);
   const [exitArmed, setExitArmed] = useState(false);
   const exitTimer = useRef<ReturnType<typeof setTimeout>>();
 
@@ -1634,6 +1648,41 @@ export function App({
     }
   }
 
+  /**
+   * Ctrl+V: attach the clipboard's image, if it holds one.
+   *
+   * Silent when the clipboard holds text or nothing. That is the ordinary
+   * outcome for a key people press out of habit expecting a text paste, and a
+   * banner every time would train them to ignore banners. Only a real problem
+   * — too big, unreadable, no helper installed — says anything.
+   */
+  async function handleAttachImage(): Promise<void> {
+    if (pendingImagesRef.current.length >= MAX_ATTACHED_IMAGES) {
+      pushSystem(`At most ${MAX_ATTACHED_IMAGES} images per message.`);
+      return;
+    }
+    const result = await readClipboardImage();
+    if (result === undefined) return;
+    if (isFailure(result)) {
+      pushSystem(result.reason);
+      return;
+    }
+    const next = [...pendingImagesRef.current, result.dataUrl];
+    pendingImagesRef.current = next;
+    setPendingImages(next);
+    pushSystem(`Attached an image from the clipboard (${Math.max(1, Math.round(result.bytes / 1024))} KB).`);
+  }
+
+  /** Ctrl+X: unattach the most recent image. Silent when there is nothing staged. */
+  function handleRemoveImage(): void {
+    const staged = pendingImagesRef.current;
+    if (staged.length === 0) return;
+    const next = staged.slice(0, -1);
+    pendingImagesRef.current = next;
+    setPendingImages(next);
+    pushSystem(next.length === 0 ? 'Removed the attached image.' : `Removed an image — ${next.length} still attached.`);
+  }
+
   async function handleSubmit(text: string): Promise<void> {
     if (text.startsWith('/')) {
       if (await handleCommand(text)) return;
@@ -1673,6 +1722,9 @@ export function App({
     );
     setError(undefined);
     setBusy(true);
+    const images = pendingImagesRef.current;
+    pendingImagesRef.current = [];
+    setPendingImages([]);
     // Snapshot prior turns BEFORE pushing the new task message.
     const history = trimHistoryForAgent(
       itemsRef.current
@@ -1825,6 +1877,10 @@ export function App({
         model,
         task: fullTask,
         history,
+        // Taken and cleared together: an image belongs to the message it was
+        // attached to, and leaving it staged would silently re-send it with
+        // the next one.
+        images: images.length > 0 ? images : undefined,
         workspaceName,
         tools: offered,
         nativeToolCalls: effectiveNativeToolCalls,
@@ -2070,6 +2126,9 @@ export function App({
         onMentionTrigger={handleMentionTrigger}
         onActivity={setComposerHasText}
         clearToken={clearToken}
+        onAttachImage={() => void handleAttachImage()}
+        onRemoveImage={handleRemoveImage}
+        attachmentCount={pendingImages.length}
       />
       <Box justifyContent="space-between">
         <Box>

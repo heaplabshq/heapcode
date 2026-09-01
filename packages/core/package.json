@@ -29,6 +29,10 @@
       "types": "./src/providers/modelFilter.ts",
       "default": "./src/providers/modelFilter.ts"
     },
+    "./roles": {
+      "types": "./src/config/roles.ts",
+      "default": "./src/config/roles.ts"
+    },
     "./permissionModes": {
       "types": "./src/agent/permissionModes.ts",
       "default": "./src/agent/permissionModes.ts"

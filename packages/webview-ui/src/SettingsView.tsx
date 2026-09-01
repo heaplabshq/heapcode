@@ -7,7 +7,11 @@ import type {
   ProviderProfileConfig,
   SettingsPresetInfo,
 } from '@heapcode/core';
-import { MODEL_ROLES } from '@heapcode/core';
+// The leaf module, not the barrel: `@heapcode/core` pulls in the RAG and node
+// paths, and importing a VALUE from it drags `node:fs`/`node:path` into a
+// browser bundle (the build fails outright). Types are erased, so the type-only
+// import above is free — this one is not. Same reason `./modelFilter` exists.
+import { MODEL_ROLES } from '@heapcode/core/roles';
 import { filterModels } from '@heapcode/core/modelFilter';
 import { postToExtension } from './vscodeApi.js';
 

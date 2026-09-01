@@ -136,8 +136,11 @@ export class RagIndexer {
 
   /** Loads any persisted index and the current embeddings model. Safe to call once at startup. */
   async init(): Promise<void> {
-    await this.load();
+    // Embedder first: `load` needs it to decide whether the index on disk was
+    // written by the same model, and an index written by a different one is
+    // discarded rather than merged into.
     await this.refreshEmbedder();
+    await this.load();
   }
 
   async status(): Promise<{ state: IndexState; files: number; chunks: number }> {
@@ -163,7 +166,7 @@ export class RagIndexer {
 
   /** Serialized index, for a caller that wants to hand it somewhere else. */
   serialize(): string {
-    return this.store.serialize();
+    return this.store.serialize(this.embedder);
   }
 
   private async refreshEmbedder(): Promise<string | undefined> {
@@ -172,11 +175,32 @@ export class RagIndexer {
     return this.embedder;
   }
 
+  /**
+   * Reads the index back, unless a different model wrote it.
+   *
+   * Vectors from two embedding models are not comparable, so an index holding
+   * a mixture answers confidently and wrongly with no error anywhere. Nothing
+   * recorded which model wrote an index before, and the embeddings role was a
+   * field on whichever profile happened to be active — so switching profile
+   * was enough to start interleaving two models' vectors in one file.
+   *
+   * A mismatch leaves the store empty, which every caller already treats as
+   * "no index" and rebuilds from. One cold rebuild beats silently bad search.
+   */
   private async load(): Promise<void> {
     try {
       const text = await this.opts.store.read();
       if (text === undefined) return;
-      this.store = VectorStore.deserialize(text);
+      const written = VectorStore.embedderOf(text);
+      if (this.embedder && written !== this.embedder) {
+        this.opts.onLog?.(
+          written
+            ? `index was built with ${written}, now embedding with ${this.embedder} — rebuilding`
+            : `index predates embedder stamping — rebuilding with ${this.embedder}`,
+        );
+        return;
+      }
+      this.store = VectorStore.deserialize(text, this.embedder);
     } catch {
       // no index yet, or an unreadable one — a cold rebuild is the recovery
     }
@@ -189,7 +213,9 @@ export class RagIndexer {
 
   private async persist(): Promise<void> {
     clearTimeout(this.saveTimer);
-    await this.opts.store.write(this.store.serialize());
+    // Stamped with the model that produced the vectors, so the next load can
+    // tell whether it is safe to read them back.
+    await this.opts.store.write(this.store.serialize(this.embedder));
   }
 
   async clear(): Promise<void> {

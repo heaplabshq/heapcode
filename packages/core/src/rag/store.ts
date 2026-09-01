@@ -19,6 +19,15 @@ export interface SearchHit {
 
 interface SerializedStore {
   version: 1;
+  /**
+   * The model that produced every vector in here.
+   *
+   * Absent in indexes written before this existed, which is why `deserialize`
+   * treats "no stamp" as a mismatch and rebuilds: an unstamped index cannot
+   * prove it is not already a mixture, and one cold rebuild is much cheaper
+   * than search that is quietly wrong.
+   */
+  embedder?: string;
   fileHashes: Record<string, string>;
   records: Array<Omit<VectorRecord, 'vector'> & { vector: number[] }>;
 }
@@ -134,22 +143,47 @@ export class VectorStore {
       .map(([record, score]) => ({ record, score }));
   }
 
-  serialize(): string {
+  serialize(embedder?: string): string {
     const out: SerializedStore = {
       version: 1,
+      embedder,
       fileHashes: Object.fromEntries(this.fileHashes),
       records: this.records.map((r) => ({ ...r, vector: Array.from(r.vector) })),
     };
     return JSON.stringify(out);
   }
 
-  static deserialize(json: string): VectorStore {
+  /**
+   * Reads an index back, but only if the same model produced it.
+   *
+   * Vectors from two different embedding models are not comparable — cosine
+   * distance between them is noise, not a weak signal — so an index holding a
+   * mixture returns confident nonsense with no error anywhere. Nothing
+   * recorded which model wrote an index before this, and the roles were a
+   * field on whichever profile was active, so switching profile was enough to
+   * start interleaving two models' vectors in one file.
+   *
+   * A mismatch (or a missing stamp, which cannot prove it is not already a
+   * mixture) returns an empty store, and the caller rebuilds. One cold rebuild
+   * beats search that is silently wrong.
+   */
+  static deserialize(json: string, embedder?: string): VectorStore {
     const store = new VectorStore();
     const data = JSON.parse(json) as SerializedStore;
     if (data.version !== 1) return store;
+    if (embedder !== undefined && data.embedder !== embedder) return store;
     store.fileHashes = new Map(Object.entries(data.fileHashes));
     store.records = data.records.map((r) => ({ ...r, vector: Float32Array.from(r.vector) }));
     return store;
+  }
+
+  /** The model that produced this store's vectors, when it came from disk. */
+  static embedderOf(json: string): string | undefined {
+    try {
+      return (JSON.parse(json) as SerializedStore).embedder;
+    } catch {
+      return undefined;
+    }
   }
 }
 

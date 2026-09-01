@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -452,5 +452,100 @@ describe('RagIndexer — buildIndex result', () => {
     const after = await index.buildIndex();
 
     expect(after?.files).toBe(7);
+  });
+});
+
+/**
+ * Which model wrote the index.
+ *
+ * Vectors from two embedding models are not comparable — cosine distance
+ * between them is noise, not a weak signal — so an index holding a mixture
+ * answers confidently and wrongly, with no error anywhere to notice.
+ *
+ * Nothing recorded the model before, and the embeddings role was a field on
+ * whichever profile happened to be active. Switching profile was therefore
+ * enough to start interleaving two models' vectors in one file. Making roles
+ * global removes that trigger; this is the guard for every other way it could
+ * happen — editing config by hand, sharing a workspace, changing the model on
+ * purpose.
+ */
+describe('RagIndexer — the embedder stamp', () => {
+  const statePath = (): string => join(root, '.state', RAG_INDEX_FILE);
+
+  it('records the model that produced the vectors', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
+    await index.init();
+    await index.buildIndex();
+
+    expect(JSON.parse(index.serialize()) as { embedder?: string }).toMatchObject({ embedder: 'embed' });
+  });
+
+  it('reads an index back when the same model is still in use', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    const built = await first.buildIndex();
+    expect(built?.chunks).toBeGreaterThan(0);
+
+    const second = indexer(rolesFor({ embeddings: 'embed' }));
+    await second.init();
+
+    expect(second.chunkCount).toBe(built!.chunks);
+  });
+
+  it('discards an index built by a different model rather than searching across both', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    await first.buildIndex();
+
+    const second = indexer(rolesFor({ embeddings: 'other-embed' }));
+    await second.init();
+
+    // Empty, which every caller already treats as "no index" and rebuilds
+    // from. One cold rebuild beats silently bad search.
+    expect(second.chunkCount).toBe(0);
+  });
+
+  it('rebuilds cleanly after the model changes, and restamps', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    await first.buildIndex();
+
+    const second = indexer(rolesFor({ embeddings: 'other-embed' }));
+    await second.init();
+    const rebuilt = await second.buildIndex();
+
+    expect(rebuilt?.chunks).toBeGreaterThan(0);
+    expect(JSON.parse(second.serialize()) as { embedder?: string }).toMatchObject({ embedder: 'other-embed' });
+  });
+
+  it('discards an index that predates stamping, since it cannot prove it is not already a mixture', async () => {
+    await mkdir(join(root, '.state'), { recursive: true });
+    await writeFile(
+      statePath(),
+      JSON.stringify({ version: 1, fileHashes: { 'a.ts': 'h' }, records: [] }),
+      'utf8',
+    );
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
+    await index.init();
+
+    expect(index.fileCount).toBe(0);
+  });
+
+  it('says which models disagreed, rather than rebuilding in silence', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    await first.buildIndex();
+
+    const lines: string[] = [];
+    const second = indexer(rolesFor({ embeddings: 'other-embed' }), { onLog: (l) => lines.push(l) });
+    await second.init();
+
+    expect(lines.join('\n')).toContain('embed');
+    expect(lines.join('\n')).toContain('other-embed');
   });
 });

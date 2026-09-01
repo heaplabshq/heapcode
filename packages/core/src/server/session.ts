@@ -149,7 +149,14 @@ export class Session {
     }
 
     const { assignment } = resolved;
-    const base = await this.resolveProfile(assignment.connection, requestKey);
+    // A connection the host already pushed is used as-is. Going through
+    // `resolveProfile` would ask for its key over `key/request` even though it
+    // arrived at hello — and a keyless local endpoint has `hasKey` false
+    // forever, so that ask is both pointless and, for a host that does not
+    // implement the callback, a hang.
+    const base = this.getProfile(assignment.connection)
+      ? this.providerFor(assignment.connection)
+      : await this.resolveProfile(assignment.connection, requestKey);
     // The named connection is unknown to the host too — fall back rather than
     // fail, which is what both hosts already did for an unknown profile name.
     if (!base) return this.providerFor(this.activeProfile);

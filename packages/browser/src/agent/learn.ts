@@ -76,7 +76,7 @@ export async function learnWorkflow(
   try {
     const provider = createProvider(profile, await loadApiKey(profile.name));
     const response = await provider.chat({
-      model: profile.agentModel ?? profile.model,
+      model: profile.model,
       messages: [
         { role: 'system', content: INSTRUCTION },
         { role: 'user', content: `The request was: ${task}\n\nWhat it did:\n${did}` },

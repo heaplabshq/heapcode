@@ -344,6 +344,10 @@ describe('rag/query — nothing binary crosses the wire', () => {
       root,
       profiles: [profile()],
       activeProfile: 'test',
+      // The same embeddings assignment the index was built with. A session
+      // that embeds with a different model does not get to read these vectors
+      // back — they are not comparable — so it would find an empty index.
+      roles: { chat: { connection: 'test', model: 'chat' }, embeddings: { connection: 'test', model: 'embed' } },
     });
     await vi.waitFor(() => expect(lines.join('')).toContain('sessionId'));
     lines.length = 0;

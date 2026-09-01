@@ -112,7 +112,6 @@ function fromDraft(d: Draft): ProviderProfileConfig {
     const n = Number(s);
     return s.trim() !== '' && Number.isFinite(n) ? n : undefined;
   };
-  const opt = (s: string): string | undefined => (s.trim() !== '' ? s.trim() : undefined);
   const profile: ProviderProfileConfig = {
     name: d.name.trim(),
     preset: d.preset as ProviderProfileConfig['preset'],
@@ -422,8 +421,6 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
   if (draft) {
     const preset = data.presets.find((p) => p.id === draft.preset);
     const keySaved = draft.original ? (data.keySaved[draft.original] ?? false) : false;
-    const inherits = `inherits chat (${draft.model || 'not set'})`;
-    const otherProfiles = data.profiles.map((p) => p.name).filter((n) => n !== draft.name);
     const canTest = draft.baseUrl.trim() !== '' && (draft.apiKey.trim() !== '' || keySaved || !preset?.requiresApiKey);
     const testConnection = () => {
       setTest({ status: 'loading', models: [] });

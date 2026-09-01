@@ -1440,6 +1440,7 @@ export class WebSession {
         files: number;
         chunks: number;
         available: boolean;
+        message?: string;
       }>(METHODS.ragStatus, {});
       semantic = res;
     } catch {

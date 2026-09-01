@@ -1267,6 +1267,15 @@ body {
 .idx-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-dim); }
 .idx-num { color: var(--text); font-variant-numeric: tabular-nums; }
 .idx-card .hint { margin: 6px 0 0; font-size: 11px; }
+/* The reason behind an "error" badge. Wraps rather than truncating: a provider
+   message is the whole point of showing it, and half of one is no help. */
+.idx-error {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
 
 .idx-progress { display: flex; align-items: center; gap: 8px; }
 .idx-progress-track {

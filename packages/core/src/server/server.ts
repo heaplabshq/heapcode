@@ -182,6 +182,7 @@ export class HeapcodeServer {
       rag ??= new SessionRag(active, {
         emit: (event, runId) => void peer.notifyWithBackpressure(METHODS.ragEvent, { runId, event } satisfies RagEventParams),
         requestKey,
+        log: (line) => this.onLog(`[session ${active.id.slice(0, 8)}] ${line}`),
       });
       return rag;
     };

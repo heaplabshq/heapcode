@@ -131,6 +131,14 @@ export class RagIndexer {
    * resolution is async in all three implementations.
    */
   private embedder: string | undefined;
+  /**
+   * Why the last build failed, kept alongside the `error` state.
+   *
+   * The state alone said "error" and the reason went to `onLog`, which the
+   * server did not pass — so nothing anywhere could say what went wrong. A
+   * status with no reason is a dead end for whoever is looking at it.
+   */
+  private lastError: string | undefined;
 
   constructor(private readonly opts: RagIndexerOptions) {}
 
@@ -143,11 +151,13 @@ export class RagIndexer {
     await this.load();
   }
 
-  async status(): Promise<{ state: IndexState; files: number; chunks: number }> {
+  async status(): Promise<{ state: IndexState; files: number; chunks: number; message?: string }> {
+    const state = (await this.refreshEmbedder()) ? this.state : 'no-embedder';
     return {
-      state: (await this.refreshEmbedder()) ? this.state : 'no-embedder',
+      state,
       files: this.store.fileCount,
       chunks: this.store.chunkCount,
+      message: state === 'error' ? this.lastError : undefined,
     };
   }
 
@@ -277,6 +287,7 @@ export class RagIndexer {
     if (!(await this.refreshEmbedder())) return undefined;
 
     this.state = 'indexing';
+    this.lastError = undefined;
     const started = Date.now();
     // Outside the try so a cancelled or failed run still reports what it did.
     let embedded = 0;
@@ -310,7 +321,8 @@ export class RagIndexer {
         this.opts.onLog?.(`indexing cancelled after ${embedded} file(s)`);
       } else {
         this.state = 'error';
-        this.opts.onLog?.(`index failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.lastError = err instanceof Error ? err.message : String(err);
+        this.opts.onLog?.(`index failed: ${this.lastError}`);
       }
     }
     return { files: this.store.fileCount, chunks: this.store.chunkCount, embedded };

@@ -54,11 +54,13 @@ interface Endpoint {
   script: string[];
   /** Per-embeddings-request delay, so a build can be caught mid-flight. */
   delayMs: number;
+  /** Make /embeddings fail, to exercise the error path. */
+  embeddingsFail?: { status: number; body: string };
 }
 
 /** Path-aware OpenAI-compatible fake: embeddings as JSON, chat as an empty reply. */
 async function startEndpoint(): Promise<Endpoint> {
-  const state = { delayMs: 0 };
+  const state: { delayMs: number; embeddingsFail?: { status: number; body: string } } = { delayMs: 0 };
   const embeddingBatches: string[][] = [];
   const chatCalls: Array<{ role: string; content: string }[]> = [];
   const script: string[] = [''];
@@ -72,6 +74,11 @@ async function startEndpoint(): Promise<Endpoint> {
         : {};
       const respond = (): void => {
         if (req.url?.includes('/embeddings')) {
+          if (state.embeddingsFail) {
+            res.writeHead(state.embeddingsFail.status, { 'content-type': 'application/json' });
+            res.end(state.embeddingsFail.body);
+            return;
+          }
           const input = body.input ?? [];
           embeddingBatches.push(input);
           res.writeHead(200, { 'content-type': 'application/json' });
@@ -105,6 +112,12 @@ async function startEndpoint(): Promise<Endpoint> {
     script,
     get delayMs() {
       return state.delayMs;
+    },
+    get embeddingsFail() {
+      return state.embeddingsFail;
+    },
+    set embeddingsFail(fail: { status: number; body: string } | undefined) {
+      state.embeddingsFail = fail;
     },
     set delayMs(ms: number) {
       state.delayMs = ms;
@@ -655,5 +668,57 @@ describe('semantic_search is dispatched server-side', () => {
 
     expect(executed).toContain('semantic_search');
     expect(results[0]).toBe('host fallback');
+  });
+});
+
+/**
+ * Why the index failed, not just that it did.
+ *
+ * The reason used to go nowhere at all. `RagIndexer` wrote it to an `onLog`
+ * that `SessionRag` never passed, and the wire carried the bare state 'error'
+ * — so an unreachable Ollama, a chat model asked to embed, and a rejected key
+ * were indistinguishable from every surface, and none of them said what to fix.
+ */
+describe('rag — reporting why indexing failed', () => {
+  it('carries the reason on the status and on the event, not just the state', async () => {
+    await writeCorpus();
+    const peer = await client();
+    endpoint.embeddingsFail = { status: 401, body: JSON.stringify({ error: { message: 'invalid api key' } }) };
+    const events: RagEventParams[] = [];
+    peer.onNotification(METHODS.ragEvent, (raw) => events.push(raw as RagEventParams));
+
+    await index(peer, { full: true });
+
+    const reported = await status(peer);
+    expect(reported.state).toBe('error');
+    expect(reported.message).toMatch(/invalid api key|401/i);
+
+    const final = events.map((e) => e.event).filter((e) => e.kind === 'state').at(-1);
+    expect(final).toMatchObject({ state: 'error', message: reported.message });
+  });
+
+  it('clears the reason once a build succeeds', async () => {
+    // A stale message under a healthy state reads as a problem that is still
+    // there.
+    await writeCorpus();
+    const peer = await client();
+    endpoint.embeddingsFail = { status: 500, body: '{}' };
+    await index(peer, { full: true });
+    expect((await status(peer)).state).toBe('error');
+
+    endpoint.embeddingsFail = undefined;
+    await index(peer, { full: true });
+
+    const healthy = await status(peer);
+    expect(healthy.state).toBe('idle');
+    expect(healthy.message).toBeUndefined();
+  });
+
+  it('says nothing when there is nothing wrong', async () => {
+    await writeCorpus();
+    const peer = await client();
+    await index(peer, { full: true });
+
+    expect((await status(peer)).message).toBeUndefined();
   });
 });

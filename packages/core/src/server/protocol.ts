@@ -476,6 +476,14 @@ export interface RagStatusResult {
   files: number;
   chunks: number;
   /**
+   * Why, when `state` is 'error'.
+   *
+   * A bare "error" is a dead end for whoever is reading it: an unreachable
+   * Ollama, a model that is not an embedding model, and a 401 all look
+   * identical, and the reason only reached a log the server did not wire up.
+   */
+  message?: string;
+  /**
    * False when the server cannot read this workspace for itself — a VS Code
    * virtual or remote-scheme root, where only the host can resolve paths.
    * RAG is then unavailable rather than silently indexing whatever `fsPath`
@@ -557,7 +565,7 @@ export interface PermissionRequestResult {
  */
 export type RagEvent =
   | { kind: 'progress'; embedded: number; total: number }
-  | { kind: 'state'; state: IndexState; files: number; chunks: number };
+  | { kind: 'state'; state: IndexState; files: number; chunks: number; message?: string };
 
 export interface RagEventParams {
   runId?: string;

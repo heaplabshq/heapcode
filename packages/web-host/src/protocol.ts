@@ -347,6 +347,14 @@ export interface UiIndexStatus {
     chunks: number;
     /** False when the daemon cannot read this workspace itself; RAG is then off. */
     available: boolean;
+    /**
+     * Why, when `state` is 'error'.
+     *
+     * Without it the card said "error" and stopped: an unreachable Ollama, a
+     * chat model asked to embed, and a 401 are indistinguishable, and the
+     * reason was going nowhere at all.
+     */
+    message?: string;
   };
   repoMap: {
     /** Built at least once — `format()` returns nothing before that. */

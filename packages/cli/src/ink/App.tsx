@@ -78,6 +78,7 @@ import {
   type ToolExecuteParams,
   type ToolResult,
   buildAgentTask,
+  daemonLogFile,
 } from '@heapcode/core';
 import {
   DELEGATE_TASK_TOOL,
@@ -1579,7 +1580,8 @@ export function App({
         `Mode        ${getPermissionModeInfo(permissionMode).label} — ${getPermissionModeInfo(permissionMode).hint}`,
         `Web search  ${webSearchStatus}`,
         `Tool proto  ${effectiveNativeToolCalls ? 'native tool calling' : 'text protocol (nativeToolCalls: false)'}`,
-        `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (assign an embeddings model with /roles, e.g. nomic-embed-text)' : ''}`,
+        `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (assign an embeddings model with /roles, e.g. nomic-embed-text)' : ''}${ragStatus?.message ? `\n            ${ragStatus.message}` : ''}`,
+        `Daemon log  ${daemonLogFile()}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
         `Secrets     ${secretsFile()}`,

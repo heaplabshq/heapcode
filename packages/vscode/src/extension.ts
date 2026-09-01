@@ -4,7 +4,7 @@ import {
   configureAstChunker,
   formatAuditDashboard,
   McpManager,
-  type IndexState,
+  type RagStatusResult,
   type McpServerConfig,
 } from '@heapcode/core';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
@@ -129,7 +129,7 @@ export function activate(context: vscode.ExtensionContext): void {
    * (docs/phase3-rag-design.md §4): counts and state arrive from `rag/status`
    * and `rag/event` instead of from a local indexer.
    */
-  let lastRagStatus: { state: IndexState; files: number; chunks: number; available: boolean } = {
+  let lastRagStatus: RagStatusResult = {
     state: 'idle',
     files: 0,
     chunks: 0,
@@ -155,7 +155,13 @@ export function activate(context: vscode.ExtensionContext): void {
         break;
       case 'error':
         ragStatus.text = '$(database) index error';
-        ragStatus.tooltip = 'Heap Code: indexing failed — see the output panel. Click to retry.';
+        // The reason, not a pointer to somewhere else. It used to say "see the
+        // output panel", where nothing was written — the indexer's message
+        // reached an `onLog` the server never passed, so it went nowhere at
+        // all and "error" was the whole story anyone could get.
+        ragStatus.tooltip = s.message
+          ? `Heap Code: indexing failed — ${s.message}\nClick to retry.`
+          : 'Heap Code: indexing failed. Click to retry.';
         break;
       default:
         ragStatus.text = `$(database) ${s.chunks}`;
@@ -243,7 +249,16 @@ export function activate(context: vscode.ExtensionContext): void {
       if (event.kind === 'progress') {
         lastRagStatus = { ...lastRagStatus, state: 'indexing', files: event.total, available: true };
       } else {
-        lastRagStatus = { state: event.state, files: event.files, chunks: event.chunks, available: true };
+        if (event.state === 'error' && event.message && event.message !== lastRagStatus.message) {
+          log.appendLine(`[rag] index failed: ${event.message}`);
+        }
+        lastRagStatus = {
+          state: event.state,
+          files: event.files,
+          chunks: event.chunks,
+          message: event.message,
+          available: true,
+        };
       }
       renderRagStatus();
     }),

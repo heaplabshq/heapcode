@@ -7,6 +7,7 @@ import {
   type UiConversationMeta,
   type UiEventParams,
   type UiHelloResult,
+  type UiConnectionModelsResult,
   type UiListModelsResult,
   type UiProbeProviderParams,
   type UiProbeProviderResult,
@@ -1010,6 +1011,15 @@ export function App(): JSX.Element {
           onToggleNativeTools={(enabled) => act(UI_METHODS.setNativeTools, { enabled })}
           onSetWebSearch={(patch) => act(UI_METHODS.setWebSearch, patch)}
           onUseProfile={(name) => act(UI_METHODS.useProfile, { name })}
+          onSetRole={(role, assignment) => act(UI_METHODS.setRole, { role, assignment })}
+          listConnectionModels={(connection) =>
+            rpc
+              .request<UiConnectionModelsResult>(UI_METHODS.listConnectionModels, { connection })
+              // An endpoint that is not running degrades the row, not the
+              // screen — the row falls back to typing an id by hand.
+              .then((r) => r.models)
+              .catch(() => [])
+          }
           onDeleteProfile={(name) => act(UI_METHODS.deleteProfile, { name })}
           onSaveProfile={(profile: UiProfileDraft, apiKey?: string) =>
             act(UI_METHODS.saveProfile, { profile, apiKey })

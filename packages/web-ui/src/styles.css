@@ -1211,8 +1211,8 @@ body {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--text-dim); margin: 10px 0 4px;
 }
-/* Label, model, "on which profile" — one row per role, so the two halves of a
-   role read as one decision rather than as two unrelated fields. */
+/* Label, model, "on which connection" — one row per role, so the two halves of
+   a role read as one decision rather than as two unrelated fields. */
 .role {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr) auto;
@@ -1221,10 +1221,12 @@ body {
 .role-label { font-size: 12.5px; color: var(--text-dim); }
 .role-input { font-family: var(--mono); font-size: 12px; }
 .role-select { max-width: 16ch; font-size: 12px; }
-/* Stands in for the model box when the role runs on another profile, which
-   supplies the model as well as the endpoint. */
-.role-from { font-size: 12px; color: var(--text-dim); align-self: center; }
-.role-from code { font-family: var(--mono); color: var(--text); }
+/* The role table sits below the connection list rather than inside each
+   connection, so it needs a heading of its own. */
+.settings-subhead {
+  margin: 20px 0 2px;
+  font-size: 12.5px; font-weight: 600; color: var(--text);
+}
 
 @media (max-width: 620px) {
   .role { grid-template-columns: 1fr; gap: 4px; }

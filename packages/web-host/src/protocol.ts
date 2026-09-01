@@ -60,6 +60,8 @@ export const UI_METHODS = {
   saveMcpServer: 'ui/saveMcpServer',
   deleteMcpServer: 'ui/deleteMcpServer',
   useProfile: 'ui/useProfile',
+  setRole: 'ui/setRole',
+  listConnectionModels: 'ui/listConnectionModels',
   runCommand: 'ui/runCommand',
 
   // workspace panel (W6)
@@ -537,27 +539,43 @@ export type UiStateChangedParams = Partial<UiState>;
  * rule the settings form depends on (§6.1).
  */
 /**
- * The non-chat model roles, in the order the editor lists them.
+ * The model roles, in the order the editor lists them.
  *
- * A profile can point each role at its own model, and (via `<role>Profile`) at
- * another profile's provider entirely — embeddings on a local Ollama while the
- * agent stays on a cloud endpoint, say. `label`/`hint` are here rather than in
- * the browser so the three hosts describe the same field the same way.
+ * One global table decides which model on which connection serves each — not a
+ * field on whichever profile happens to be active. `label`/`hint` are here
+ * rather than in the browser so every host describes the same role the same
+ * way.
  */
 export const UI_MODEL_ROLES = [
-  { key: 'agent', group: 'Core', label: 'Agent', hint: 'inherits the chat model' },
-  { key: 'apply', group: 'Core', label: 'Apply', hint: 'fast-apply merge, when an edit’s search text does not match' },
-  { key: 'edit', group: 'Core', label: 'Edit', hint: 'inherits the chat model' },
+  { key: 'chat', group: 'Core', label: 'Chat', hint: 'conversations — every other role inherits from this one' },
+  { key: 'agent', group: 'Core', label: 'Agent', hint: 'inherits chat' },
+  { key: 'apply', group: 'Core', label: 'Apply', hint: 'fast-apply merge, when an edit’s search text does not match — inherits nothing' },
+  { key: 'edit', group: 'Core', label: 'Edit', hint: 'inherits chat' },
   { key: 'completion', group: 'Core', label: 'Autocomplete', hint: 'editor ghost text — used by the extension, not here' },
-  { key: 'embeddings', group: 'Retrieval', label: 'Embeddings', hint: 'semantic search and the repo index' },
+  { key: 'embeddings', group: 'Retrieval', label: 'Embeddings', hint: 'semantic search and the repo index — inherits nothing, a chat model cannot embed' },
   { key: 'rerank', group: 'Retrieval', label: 'Rerank', hint: 'inherits edit → chat' },
   { key: 'context', group: 'Retrieval', label: 'Context', hint: 'per-chunk blurbs at index time; inherits rerank → edit → chat' },
 ] as const;
 
 export type UiModelRole = (typeof UI_MODEL_ROLES)[number]['key'];
 
-/** `{ agentModel, agentProfile, … }` — the shape both directions carry roles in. */
-export type UiRoleFields = Partial<Record<`${UiModelRole}Model` | `${UiModelRole}Profile`, string>>;
+/** One role's assignment as the browser sees it, plus the resolved sentence to show. */
+export interface UiRoleAssignment {
+  role: UiModelRole;
+  /** The connection its own assignment names, absent when the role inherits. */
+  connection?: string;
+  /** The model its own assignment names, absent when the role inherits. */
+  model?: string;
+  /**
+   * What actually serves it, in a sentence — "inherits chat — gpt-4o on cloud",
+   * "not set — semantic search is off".
+   *
+   * Computed by the host so the CLI, the extension and the browser all say the
+   * same thing about the same state. The old editor showed the raw field and a
+   * "this profile" dropdown, and left the reader to walk the chain.
+   */
+  summary: string;
+}
 
 /**
  * How much of the agent prompt a profile's model gets.
@@ -568,10 +586,11 @@ export type UiRoleFields = Partial<Record<`${UiModelRole}Model` | `${UiModelRole
  */
 export type UiPromptDetail = 'full' | 'lean' | 'auto';
 
-export interface UiProfile extends UiRoleFields {
+export interface UiProfile {
   name: string;
   preset: string;
   baseUrl: string;
+  /** The chat model, when chat runs on this connection; empty otherwise. */
   model: string;
   temperature?: number;
   hasKey: boolean;
@@ -631,6 +650,8 @@ export interface UiSettings {
   subAgents: boolean;
   nativeToolCalls: boolean;
   profiles: UiProfile[];
+  /** The global role table, resolved — one row per role, in display order. */
+  roles: UiRoleAssignment[];
   /**
    * Sent from the host rather than restated in the UI: the browser bundle's own
    * copy of this list silently went stale (it is also what makes "pick a
@@ -669,7 +690,7 @@ export interface UiSaveProfileParams {
    * would silently drop `temperature`, `headers`, `capabilities` and the rest.
    * `null` clears a field back to its inherited default.
    */
-  profile: UiRoleFields & {
+  profile: {
     name: string;
     preset?: string;
     baseUrl?: string;
@@ -686,6 +707,29 @@ export interface UiSaveProfileParams {
 
 export interface UiNameParams {
   name: string;
+}
+
+/**
+ * `ui/setRole` — assign a role, or clear it back to inheriting.
+ *
+ * Not part of `ui/saveProfile`, because a role is not a property of a profile
+ * any more: it names a model, and the model can live on any connection.
+ */
+export interface UiSetRoleParams {
+  role: UiModelRole;
+  /** Absent clears the role, so it inherits again. */
+  assignment?: { connection: string; model: string };
+}
+
+/** `ui/listConnectionModels` — model ids for one connection, for a role row's dropdown. */
+export interface UiConnectionModelsParams {
+  connection: string;
+}
+
+export interface UiConnectionModelsResult {
+  models: string[];
+  /** Set when the endpoint could not be reached or listed — the row degrades, the screen does not. */
+  error?: string;
 }
 
 export interface UiResetPermissionsResult {

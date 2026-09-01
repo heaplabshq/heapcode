@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { useModal } from '../modal.js';
 import {
   UI_MODEL_ROLES,
+  type UiModelRole,
   type UiPreset,
   type UiProbeProviderParams,
   type UiProbeProviderResult,
   type UiMcpServer,
   type UiProfile,
+  type UiRoleAssignment,
   type UiSaveProfileParams,
   type UiSettings,
 } from '@heapcode/web-host/protocol';
@@ -25,6 +27,16 @@ export interface SettingsProps {
   onUseProfile(name: string): void;
   onDeleteProfile(name: string): void;
   onSaveProfile(profile: UiSaveProfileParams['profile'], apiKey?: string): void;
+  /** Assign a role, or clear it (no assignment) so it inherits again. */
+  onSetRole(role: UiModelRole, assignment?: { connection: string; model: string }): void;
+  /**
+   * Model ids for one connection, for a role row's dropdown.
+   *
+   * Separate from `listModels` (which lists the connection being edited)
+   * because a role row asks about a connection that is not the one in the
+   * form, and one unreachable endpoint must cost only its own row.
+   */
+  listConnectionModels?(connection: string): Promise<string[]>;
   /** Add or replace an MCP server. `spec` is a URL or a command line. */
   onSaveMcpServer(name: string, spec: string): void;
   onDeleteMcpServer(name: string): void;
@@ -183,7 +195,6 @@ export function Settings(props: SettingsProps): JSX.Element {
                         key={p.name}
                         profile={p}
                         presets={s.presets?.length ? s.presets : FALLBACK_PRESETS}
-                        otherProfiles={s.profiles.filter((o) => o.name !== p.name)}
                         startOpen={props.focus === 'context' && p.active}
                         onUse={() => props.onUseProfile(p.name)}
                         onDelete={() => props.onDeleteProfile(p.name)}
@@ -203,6 +214,21 @@ export function Settings(props: SettingsProps): JSX.Element {
                     presets={s.presets?.length ? s.presets : FALLBACK_PRESETS}
                     probeProvider={props.probeProvider}
                     onAdd={props.onSaveProfile}
+                  />
+
+                  {/* One table for the whole app, below the connections rather
+                      than inside each of them. A role names a model; it is not
+                      a property of an endpoint. */}
+                  <h3 className="settings-subhead">Model roles</h3>
+                  <p className="hint">
+                    Each role can run on any connection&rsquo;s model. Switching what you chat with no longer
+                    changes the rest.
+                  </p>
+                  <RoleTable
+                    roles={s.roles ?? []}
+                    connections={s.profiles}
+                    onSetRole={props.onSetRole}
+                    listModels={props.listConnectionModels ?? props.listModels}
                   />
                 </Section>
               )}
@@ -440,7 +466,6 @@ function SecretField({
 function ProfileRow({
   profile,
   presets,
-  otherProfiles,
   startOpen,
   onUse,
   onDelete,
@@ -451,12 +476,6 @@ function ProfileRow({
 }: {
   profile: UiProfile;
   presets: UiPreset[];
-  /**
-   * The sibling profiles, for "run this role on another provider" — whole
-   * profiles rather than names, because a redirected role takes its model
-   * from the target and the row has to be able to say which one that is.
-   */
-  otherProfiles: UiProfile[];
   startOpen?: boolean;
   onUse(): void;
   onDelete(): void;
@@ -476,7 +495,6 @@ function ProfileRow({
     promptDetail: profile.promptTier ?? '',
     maxTokens: profile.maxTokens ?? null,
     temperature: profile.temperature ?? null,
-    roles: rolesOf(profile),
   });
 
   return (
@@ -602,14 +620,6 @@ function ProfileRow({
             for almost every profile. Lean is for a model that follows short instructions better. Automatic picks
             between them from the model&rsquo;s context window and whether it calls tools natively.
           </p>
-
-          <ModelRoles
-            roles={draft.roles ?? {}}
-            profiles={otherProfiles}
-            onChange={(roles) => setDraft({ ...draft, roles })}
-            listModels={listModels}
-            ownProfile={profile.name}
-          />
 
           <div className="field-row">
             <button
@@ -984,146 +994,96 @@ function EditServer({ initial, onSave }: { initial: string; onSave(spec: string)
   );
 }
 
-/** A profile's role overrides, flattened into the draft's `roles` map. */
-function rolesOf(profile: UiProfile): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const role of UI_MODEL_ROLES) {
-    for (const suffix of ['Model', 'Profile'] as const) {
-      const key = `${role.key}${suffix}` as const;
-      out[key] = profile[key] ?? '';
-    }
-  }
-  return out;
-}
-
 /**
- * Per-role model overrides, collapsed by default.
+ * The global role table: which model on which connection serves each role.
  *
- * A profile is one endpoint with one chat model, but the agent does not only
- * chat: it merges edits with a fast-apply model, embeds and reranks for
- * semantic search, and writes per-chunk blurbs at index time. Those were
- * settable in the extension and in config.json but nowhere in the browser, so
- * anyone who wanted local embeddings behind a cloud agent had to leave the web
- * UI to arrange it — even though this host is the one running the index.
+ * It used to be a collapsed block *inside every profile*, with a model box and
+ * a "this profile" dropdown per role. That shape had two costs. Answering
+ * "what runs rerank?" meant following the dropdown to another profile and
+ * reading its field for the same role, which might itself inherit. And because
+ * the block belonged to a profile, switching profiles silently swapped all
+ * seven answers.
  *
- * Collapsed because most profiles never need any of it: everything here
- * inherits, and the placeholders say what from.
+ * Now there is one table. Each row states the resolved outcome — computed by
+ * the host, so the CLI and the extension say the same thing — and lets the
+ * model be picked from any connection.
  */
-function ModelRoles({
+function RoleTable({
   roles,
-  profiles,
-  onChange,
+  connections,
+  onSetRole,
   listModels,
-  ownProfile,
 }: {
-  roles: Record<string, string>;
-  profiles: UiProfile[];
-  onChange(next: Record<string, string>): void;
-  listModels?(profileName: string): Promise<string[]>;
-  /** Whose endpoint a role uses when it is not redirected elsewhere. */
-  ownProfile: string;
+  roles: UiRoleAssignment[];
+  connections: UiProfile[];
+  onSetRole(role: UiModelRole, assignment?: { connection: string; model: string }): void;
+  listModels?(connection: string): Promise<string[]>;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const set = (key: string, value: string): void => onChange({ ...roles, [key]: value });
-  const overridden = Object.values(roles).filter(Boolean).length;
-
   return (
-    <div className="roles">
-      <button className="roles-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        {open ? '▾' : '▸'} Model roles
-        {overridden > 0 && <span className="badge badge-ok">{overridden} set</span>}
-      </button>
-      {open && (
-        <div className="roles-body">
-          {(['Core', 'Retrieval'] as const).map((group) => (
-            <div key={group}>
-              <div className="roles-group">{group}</div>
-              {UI_MODEL_ROLES.filter((r) => r.group === group).map((role) => (
-                <RoleRow
-                  key={role.key}
-                  role={role}
-                  roles={roles}
-                  profiles={profiles}
-                  ownProfile={ownProfile}
-                  set={set}
-                  listModels={listModels}
-                />
-              ))}
-            </div>
-          ))}
+    <div className="roles-body">
+      {(['Core', 'Retrieval'] as const).map((group) => (
+        <div key={group}>
+          <div className="roles-group">{group}</div>
+          {UI_MODEL_ROLES.filter((r) => r.group === group).map((meta) => {
+            const assignment = roles.find((r) => r.role === meta.key);
+            return (
+              <RoleRow
+                key={meta.key}
+                meta={meta}
+                assignment={assignment}
+                connections={connections}
+                onSetRole={onSetRole}
+                listModels={listModels}
+              />
+            );
+          })}
         </div>
-      )}
+      ))}
     </div>
   );
 }
 
-/**
- * One role: which model runs it, and whose endpoint runs it.
- *
- * The two halves are not independent, which is the whole reason this is its
- * own component. Redirect a role to another profile and that profile supplies
- * the model too — `providerForRole` resolves the target and every caller then
- * reads the role's model off *it* (core/src/server/session.ts:135, and the
- * same in the extension's `resolveRoleProfile`). A model typed on this row
- * would be stored, shown, and never used.
- *
- * So the box is only a box while the role runs here. Redirected, it becomes a
- * statement of what will actually run and where to go to change it — which is
- * the honest version of a field that was quietly inert.
- */
+/** One role: what serves it, and the two controls that change it. */
 function RoleRow({
-  role,
-  roles,
-  profiles,
-  ownProfile,
-  set,
+  meta,
+  assignment,
+  connections,
+  onSetRole,
   listModels,
 }: {
-  role: (typeof UI_MODEL_ROLES)[number];
-  roles: Record<string, string>;
-  profiles: UiProfile[];
-  /** Whose endpoint the role uses when it is not redirected elsewhere. */
-  ownProfile: string;
-  set(key: string, value: string): void;
-  listModels?(profileName: string): Promise<string[]>;
+  meta: (typeof UI_MODEL_ROLES)[number];
+  assignment?: UiRoleAssignment;
+  connections: UiProfile[];
+  onSetRole(role: UiModelRole, next?: { connection: string; model: string }): void;
+  listModels?(connection: string): Promise<string[]>;
 }): JSX.Element {
-  const targetName = roles[`${role.key}Profile`] ?? '';
-  const target = targetName ? profiles.find((p) => p.name === targetName) : undefined;
-  const inherited = target?.[`${role.key}Model` as keyof UiProfile] as string | undefined;
+  const connection = assignment?.connection ?? connections.find((c) => c.active)?.name ?? connections[0]?.name ?? '';
 
   return (
     <div className="role">
-      <span className="role-label">{role.label}</span>
-      {target ? (
-        <span className="role-from" aria-label={`${role.label} model`}>
-          {inherited ? (
-            <>
-              <code>{inherited}</code> — from {target.name}
-            </>
-          ) : (
-            <>no {role.label.toLowerCase()} model on {target.name}; set one there</>
-          )}
-        </span>
-      ) : (
-        <ModelInput
-          value={roles[`${role.key}Model`] ?? ''}
-          placeholder={role.hint}
-          aria-label={`${role.label} model`}
-          onChange={(v) => set(`${role.key}Model`, v)}
-          listModels={() => listModels?.(ownProfile) ?? Promise.resolve([])}
-        />
-      )}
-      {/* The second half of a role: run it against a different profile's
-          endpoint, key and model entirely — embeddings on a local Ollama
-          while the agent stays on a cloud model. */}
+      <span className="role-label">{meta.label}</span>
+      <ModelInput
+        value={assignment?.model ?? ''}
+        // The resolved answer, so an inheriting row says what it inherited
+        // rather than only what it would inherit from.
+        placeholder={assignment?.summary ?? meta.hint}
+        aria-label={`${meta.label} model`}
+        onChange={(v) => onSetRole(meta.key, v ? { connection, model: v } : undefined)}
+        listModels={() => listModels?.(connection) ?? Promise.resolve([])}
+      />
       <select
         className="select role-select"
-        value={targetName}
-        aria-label={`${role.label} profile`}
-        onChange={(e) => set(`${role.key}Profile`, e.target.value)}
+        value={connection}
+        aria-label={`${meta.label} connection`}
+        onChange={(e) =>
+          // Changing the endpoint clears the model: a model id means nothing on
+          // a host that does not serve it, and carrying one across is how an
+          // assignment ends up naming something that fails at request time
+          // rather than here.
+          onSetRole(meta.key, assignment?.model ? { connection: e.target.value, model: '' } : undefined)
+        }
       >
-        <option value="">this profile</option>
-        {profiles.map((p) => (
+        {connections.map((p) => (
           <option key={p.name} value={p.name}>
             on {p.name}
           </option>
@@ -1136,16 +1096,14 @@ function RoleRow({
 /**
  * Editor draft → the wire shape.
  *
- * `roles` is a nested map because that is what the form binds to; the protocol
- * carries the same thing flat (`agentModel`, `agentProfile`, …) because that is
- * what a stored profile looks like. Flattening here means neither side has to
- * hold the other's shape, and `roles` itself never crosses the wire.
+ * Roles are not in here any more: they are one global table (`ui/setRole`),
+ * not fields on a profile, so this carries only the connection and its chat
+ * model.
  */
 function toSaveParams(draft: UiProfileDraft): UiSaveProfileParams['profile'] {
-  const { roles, promptDetail, ...rest } = draft;
+  const { promptDetail, ...rest } = draft;
   return {
     ...rest,
-    ...(roles ?? {}),
     // '' is the editor's default, which the host stores as the absence of the
     // field rather than as a written-out 'full' — `null` is how a patch says
     // "clear it", the same as the numeric overrides.

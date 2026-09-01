@@ -669,7 +669,7 @@ export function App({
         // The whole table, not just chat's: a role pointing at another
         // connection is resolved server-side, which then asks for that
         // connection and its key through `key/request`.
-        roles: roles ?? (await configStore?.getRoles()),
+        roles: roles ?? (await configStore?.getRoles()) ?? {},
         keys: apiKey ? { [active.profile.name]: apiKey } : {},
       },
       server,

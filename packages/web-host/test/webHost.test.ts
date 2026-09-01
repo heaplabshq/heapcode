@@ -16,7 +16,7 @@ import {
 import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { AuthLimiter } from '../src/authLimit.js';
 import { startWebHost, type RunningWebHost } from '../src/server.js';
-import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs } from '../src/session.js';
+import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs, type DaemonHello } from '../src/session.js';
 import { WorkspaceStore } from '../src/workspaces.js';
 import {
   UI_METHODS,
@@ -70,6 +70,14 @@ let web: RunningWebHost | undefined;
  * there is nothing else to observe it by.
  */
 let connects: number;
+/**
+ * Every hello the host sent, in order.
+ *
+ * Counting connections was not enough: `reconnect` carried a *different*
+ * payload from `start` and silently omitted the role table, so the count was
+ * right and the session was wrong.
+ */
+let hellos: DaemonHello[];
 
 beforeEach(async () => {
   // Short paths — a unix socket path over 104 bytes fails listen() with EINVAL.
@@ -77,6 +85,7 @@ beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'hcww-'));
   process.env.HEAPCODE_HOME = home;
   connects = 0;
+  hellos = [];
 });
 
 afterEach(async () => {
@@ -139,6 +148,7 @@ async function boot(
     ...hostExtras,
     connect: (hello): Promise<ServerConnection> => {
       connects += 1;
+      hellos.push(hello);
       return connectToServer(
         { client: { name: 'web-host-test' }, ...hello },
         { address: daemon.address, token: daemon.token, autostart: false },
@@ -1880,6 +1890,34 @@ describe('web host — model roles', () => {
     });
 
     expect(connects).toBe(before);
+    browser.close();
+  });
+
+  /**
+   * Every hello must carry the table, not just the first.
+   *
+   * `reconnect` is the only way to replace what was pushed at hello, and
+   * `ui/setRole` is what calls it — so a reconnect that forgot `roles` made
+   * *changing a role* the one action guaranteed to leave the daemon with no
+   * table at all. Embeddings then ran the chat model, and once roles that
+   * inherit nothing stopped falling back, reported "no-embedder" for a role
+   * that was plainly set.
+   */
+  it('carries the role table on every reconnect, not only on the first hello', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.setRole, {
+      role: 'embeddings',
+      assignment: { connection: 'mock', model: 'nomic-embed' },
+    });
+
+    expect(hellos.length).toBeGreaterThan(1);
+    for (const hello of hellos) expect(hello.roles).toBeDefined();
+    expect(hellos.at(-1)!.roles).toMatchObject({
+      embeddings: { connection: 'mock', model: 'nomic-embed' },
+    });
     browser.close();
   });
 

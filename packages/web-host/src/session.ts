@@ -225,8 +225,14 @@ export interface DaemonHello {
   root: string;
   profiles: ProviderProfileConfig[];
   activeProfile: string;
-  /** Which model on which connection serves each role — one global table. */
-  roles?: ModelRoleTable;
+  /**
+   * Which model on which connection serves each role — one global table.
+   *
+   * Required: every path that builds a hello must carry it. `reconnect` once
+   * did not, which made changing a role the one action that left the daemon
+   * with no table.
+   */
+  roles: ModelRoleTable;
   keys: Record<string, string>;
 }
 
@@ -1343,6 +1349,18 @@ export class WebSession {
     });
   }
 
+  /**
+   * Rebuild the daemon session, which is the only way to replace what was
+   * pushed at hello.
+   *
+   * It must carry everything `start` carries. It did not carry `roles`, and
+   * that is the whole of two reported failures: `ui/setRole` calls this, so
+   * changing a role handed the daemon a session with *no role table at all* —
+   * the one edit guaranteed to leave it stale. Embeddings then either ran the
+   * chat model (a 400 from the provider naming a model that cannot embed) or,
+   * once roles that inherit nothing stopped falling back, reported
+   * "no-embedder" for a role that was plainly set.
+   */
   private async reconnect(): Promise<void> {
     this.connection?.close();
     this.connection = undefined;
@@ -1352,6 +1370,7 @@ export class WebSession {
       root: this.root,
       profiles: [profile],
       activeProfile: profile.name,
+      roles: await this.deps.config.getRoles(),
       keys: apiKey ? { [profile.name]: apiKey } : {},
     });
     this.registerDaemonHandlers(this.connection.peer);

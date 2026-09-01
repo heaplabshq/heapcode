@@ -123,12 +123,14 @@ export interface HelloParams {
    * Which model on which connection serves each role — one global table, not
    * one per connection (config/roles.ts).
    *
-   * Optional so a host that has not been converted yet still connects: an
-   * absent table makes every role resolve to the active connection's own
-   * model, which is what the pre-split behaviour amounted to for a profile
-   * with no role overrides set.
+   * Required, and deliberately so. It was optional at first, on the theory
+   * that a host which had not been converted should still connect — and the
+   * cost of that was three hello sites forgetting it in silence, each turning
+   * into a session that ran the wrong model with nothing anywhere saying so.
+   * An empty table is still legal and means "nothing assigned"; omitting the
+   * field is now a compile error at every call site.
    */
-  roles?: ModelRoleTable;
+  roles: ModelRoleTable;
   /**
    * Key material for profiles this session expects to use, `profileName` →
    * API key. Held in memory for the session's lifetime and never persisted.

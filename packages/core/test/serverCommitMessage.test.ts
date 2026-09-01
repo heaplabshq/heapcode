@@ -115,6 +115,7 @@ async function client(
     root: home,
     profiles: [profile()],
     activeProfile: 'test',
+    roles: {},
     ...hello,
   } satisfies HelloParams);
   return { peer, askedFor };

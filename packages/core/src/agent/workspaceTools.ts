@@ -25,6 +25,16 @@ export const MAX_OUTPUT_CHARS = 8_000;
 export const MAX_SEARCH_RESULTS = 40;
 export const MAX_SEARCH_FILES = 2_000;
 export const MAX_FETCH_CHARS = 20_000;
+/**
+ * Ceiling on a single download_file, in bytes.
+ *
+ * Enforced twice — on the Content-Length the server declares, and again while
+ * the body streams, because a server that lies about the length (or omits it,
+ * which is legal and common for a chunked response) would otherwise be the one
+ * that fills the disk. 100 MB is above any plausible asset and well under
+ * anything that hurts.
+ */
+export const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
 // A fast-apply model must re-emit the whole file — same ceiling inline-edit's own apply
 // action uses, past which the round-trip cost outweighs skipping the merge and just failing.
 export const MAX_APPLY_MERGE_CHARS = 40_000;
@@ -164,6 +174,80 @@ export async function fetchUrl(url: string): Promise<string> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Download a URL to a path, without ever holding the whole file in memory.
+ *
+ * Streamed rather than buffered, which is the only reason a size cap can be
+ * honest: `await res.arrayBuffer()` has already allocated the thing you were
+ * trying to refuse by the time you can measure it. The declared Content-Length
+ * is checked first because it is free, and the running total is checked as
+ * chunks arrive because the declaration is a claim by the server, not a fact.
+ *
+ * Uses safeFetch, so the same SSRF guard fetch_url has applies on the initial
+ * URL and on every redirect hop: a URL the agent was handed by a web page must
+ * not become a way to read the loopback interface. The consequence — which the
+ * caller sees as an error and not as a bug — is that a download from the
+ * user's own dev server is refused.
+ *
+ * `write` is the caller's to do. This returns the bytes' destination-agnostic
+ * facts so the executor can jail the path with the same `resolve` every other
+ * write tool uses, rather than this function growing its own idea of where the
+ * workspace is.
+ */
+export async function downloadFile(
+  url: string,
+  write: (chunk: Uint8Array) => Promise<void> | void,
+): Promise<{ bytes: number; contentType: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+  try {
+    const res = await safeFetch(url, {
+      signal: controller.signal,
+      headers: { 'user-agent': 'HeapCode-Agent', accept: '*/*' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} for ${url}`);
+
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) {
+      throw new Error(
+        `${url} is ${Math.round(declared / 1024 / 1024)} MB, over the ${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB limit.`,
+      );
+    }
+    if (!res.body) throw new Error(`${url} returned no body.`);
+
+    let bytes = 0;
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      // Checked as it arrives, not at the end: a server that under-declares
+      // its length must not get to write the overage to disk first.
+      if (bytes > MAX_DOWNLOAD_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error(
+          `${url} exceeds the ${Math.round(MAX_DOWNLOAD_BYTES / 1024 / 1024)} MB limit (the server did not declare its size).`,
+        );
+      }
+      await write(value);
+    }
+    if (bytes === 0) throw new Error(`${url} returned an empty file.`);
+    return { bytes, contentType: (res.headers.get('content-type') ?? '').split(';')[0]!.trim() };
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') throw new Error(`Timed out downloading ${url}`);
+    throw err instanceof Error ? err : new Error(String(err));
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Human-readable size, for a result line the model and the user both read. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** Install-command shapes we recognize per package registry (order doesn't matter — first match wins). */

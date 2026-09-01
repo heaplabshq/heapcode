@@ -102,7 +102,7 @@ describe('runAgent — native tool calls', () => {
     // Second request must contain the tool result message.
     const second = provider.requests[1]!;
     expect(second.messages.some((m) => m.role === 'tool' && m.content === 'ok:read_file')).toBe(true);
-    expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish']);
+    expect(second.tools?.map((t) => t.name)).toEqual(['read_file', 'write_file', 'finish', 'todo_write']);
   });
 
   it('pairs the tool message to the call id even when the host drops it from the result', async () => {
@@ -290,6 +290,24 @@ describe('runAgent — native tool calls', () => {
     const nudge = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
     expect(nudge.role).toBe('user');
     expect(nudge.content).toContain('continue working');
+  });
+
+  it('marks every nudge as system content, not as the user speaking', async () => {
+    // Nudges go out as `role: 'user'` because every chat template understands
+    // that role — unmarked, they are forged user turns, and steering is most
+    // needed exactly when the model is least reliable about who said what.
+    // The tag is what the system prompt (prompts.ts) teaches the model to read.
+    const provider = scriptedProvider([
+      { content: 'I listed the files. The task is not complete; the next step will be reading a.ts.' },
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'Task is complete: read the file and confirmed the change.' },
+    ]);
+    const h = harness();
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    const nudge = provider.requests[1]!.messages.at(-1)!;
+    expect(nudge.content.startsWith('<system-reminder>\n')).toBe(true);
+    expect(nudge.content.endsWith('\n</system-reminder>')).toBe(true);
   });
 
   it('nudges the exact phrasing from the field report ("Now executing steps 2-5")', async () => {
@@ -635,6 +653,12 @@ describe('runAgent — native tool calls', () => {
     expect(afterGrant.role).toBe('user');
     expect(afterGrant.content).toContain('keep going');
     expect(afterGrant.content).toMatch(/where you left off/i);
+    // The decision it reports is real — the user answered the question — but
+    // the loop wrote this sentence, so it is tagged and speaks *about* the
+    // user rather than as them.
+    expect(afterGrant.content.startsWith('<system-reminder>\n')).toBe(true);
+    expect(afterGrant.content).toMatch(/The user was asked whether to continue/);
+    expect(afterGrant.content).not.toMatch(/\bI said\b/);
     // A tool message paired to nothing is what makes strict providers reject
     // the whole transcript.
     expect(provider.requests[1]!.messages.some((m) => m.toolCallId === 'steps_1')).toBe(false);
@@ -1275,6 +1299,10 @@ describe('runAgent — structured-text fallback', () => {
     expect(h.calls.length).toBe(1);
     const repairMsg = provider.requests[1]!.messages[provider.requests[1]!.messages.length - 1]!;
     expect(repairMsg.content).toContain('invalid');
+    // Same REPAIR_PROMPT the native branch sends, so it arrives marked the
+    // same way: identical steering reaching the model with two different
+    // provenances is how a model learns the tag means nothing.
+    expect(repairMsg.content.startsWith('<system-reminder>\n')).toBe(true);
   });
 });
 
@@ -1480,5 +1508,128 @@ describe('the verification nudge', () => {
     expect(nudge.role).toBe('tool');
     expect(nudge.content).toContain('look');
     expect(nudge.content).not.toContain('run_tests');
+  });
+});
+
+/**
+ * Going in circles.
+ *
+ * The prompt tells the agent not to repeat a call it has already made, and a
+ * determined loop does anyway — one real run made 81 web searches on a single
+ * question, six of them character-for-character identical, and another read
+ * one file ten times in overlapping slices. Telling it again next turn does
+ * not help: the turn that repeats is the turn that already had the answer.
+ *
+ * So the second identical look-up does not go out. It returns the first
+ * answer, labelled — which costs nothing and puts the information back in
+ * front of a model that may have lost it to compaction, which is usually why
+ * it asked twice.
+ */
+describe('an identical look-up, made twice', () => {
+  const READ_TWICE = [
+    { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+    { content: '', toolCalls: [{ id: 'c2', name: 'read_file', args: { path: 'a.ts' } }] },
+    { content: 'Done.' },
+  ];
+
+  it('is answered from the first result instead of being executed again', async () => {
+    const provider = scriptedProvider(READ_TWICE);
+    const executed: string[] = [];
+    const h = harness({
+      execute: (call: ToolCall) => {
+        executed.push(call.name);
+        return Promise.resolve({ id: call.id, name: call.name, content: 'the file' });
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+
+    expect(executed).toEqual(['read_file']);
+    expect(h.results).toHaveLength(2);
+    expect(h.results[1]!.content).toContain('the file');
+    expect(h.results[1]!.content).toContain('already made this exact call');
+  });
+
+  it('runs again when the arguments differ at all', async () => {
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: '', toolCalls: [{ id: 'c2', name: 'read_file', args: { path: 'b.ts' } }] },
+      { content: 'Done.' },
+    ]);
+    const executed: string[] = [];
+    const h = harness({
+      execute: (call: ToolCall) => {
+        executed.push(String((call.args as { path?: string }).path));
+        return Promise.resolve({ id: call.id, name: call.name, content: 'x' });
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(executed).toEqual(['a.ts', 'b.ts']);
+  });
+
+  it('runs again after a write, because the answer may have changed', async () => {
+    // Re-reading a file you have just edited is not a repeat — it is the
+    // point. Caching that would be worse than the loop it prevents.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: '', toolCalls: [{ id: 'c2', name: 'write_file', args: { path: 'a.ts', content: 'new' } }] },
+      { content: '', toolCalls: [{ id: 'c3', name: 'read_file', args: { path: 'a.ts' } }] },
+      { content: 'Done.' },
+    ]);
+    const executed: string[] = [];
+    const h = harness({
+      execute: (call: ToolCall) => {
+        executed.push(call.name);
+        return Promise.resolve({ id: call.id, name: call.name, content: 'x' });
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(executed).toEqual(['read_file', 'write_file', 'read_file']);
+  });
+
+  it('never caches a command, however read-only it looks', async () => {
+    // `pwd` twice is fine, and the loop has no way to tell which commands have
+    // effects — so run_command is always executed.
+    const provider = scriptedProvider([
+      { content: '', toolCalls: [{ id: 'c1', name: 'run_command', args: { command: 'pwd' } }] },
+      { content: '', toolCalls: [{ id: 'c2', name: 'run_command', args: { command: 'pwd' } }] },
+      { content: 'Done.' },
+    ]);
+    const executed: string[] = [];
+    const h = harness({
+      tools: [
+        { name: 'run_command', description: 'Run', parameters: {}, permission: 'execute' },
+        { name: 'finish', description: 'Finish', parameters: {}, permission: 'read' },
+      ],
+      execute: (call: ToolCall) => {
+        executed.push(call.name);
+        return Promise.resolve({ id: call.id, name: call.name, content: 'ok' });
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(executed).toEqual(['run_command', 'run_command']);
+  });
+
+  it('does not cache a failure, so a transient one can be retried', async () => {
+    const provider = scriptedProvider(READ_TWICE);
+    let attempt = 0;
+    const h = harness({
+      execute: (call: ToolCall) => {
+        attempt += 1;
+        return Promise.resolve({
+          id: call.id,
+          name: call.name,
+          content: attempt === 1 ? 'boom' : 'the file',
+          isError: attempt === 1,
+        });
+      },
+    });
+
+    await runAgent({ ...h.options, provider, nativeToolCalls: true });
+    expect(attempt).toBe(2);
+    expect(h.results[1]!.content).toBe('the file');
   });
 });

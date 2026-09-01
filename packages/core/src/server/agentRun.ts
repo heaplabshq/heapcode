@@ -1,4 +1,5 @@
 import { runAgent } from '../agent/loop.js';
+import { gatherAgentEnvironment } from '../agent/environment.js';
 import { filesystemMutatingBlockedMessage, getPersona, looksFilesystemMutating } from '../agent/personas.js';
 import { runSubAgent } from '../agent/subAgent.js';
 import type { ToolCall, ToolDefinition, ToolResult } from '../agent/tools.js';
@@ -45,6 +46,18 @@ export async function runAgentForSession(
   const resolved = session.providerFor(profileName);
   if (!resolved) throw new Error(`Unknown profile "${profileName}" for this session.`);
 
+  // Gathered once here — not per turn — so the whole run sees one snapshot of
+  // the branch and working tree rather than facts that shift under it. The
+  // gatherer never throws; a remote root or a broken git just yields fewer
+  // fields. A host that sent its own environment (params.environment) wins,
+  // for the same reason it wins on persona: it may know things the server
+  // can't see from here.
+  const environment =
+    params.environment ??
+    (session.localRoot
+      ? await gatherAgentEnvironment(session.root, { modelId: params.model })
+      : undefined);
+
   // Host-resolved when sent (see AgentRunParams.persona); the default only
   // matters for a caller that omits it entirely.
   const persona = params.persona ?? getPersona(undefined);
@@ -71,6 +84,9 @@ export async function runAgentForSession(
         profile: resolved.profile,
         nativeToolCalls: params.nativeToolCalls,
         contextWindow: params.contextWindow,
+        // The parent's snapshot, not a fresh one: a sub-agent that gathered
+        // its own would see the parent's uncommitted edits as the user's.
+        environment,
         tools: subAgentTools,
         persona,
         workspaceName: params.workspaceName,
@@ -157,6 +173,8 @@ export async function runAgentForSession(
     tools: params.tools,
     nativeToolCalls: params.nativeToolCalls,
     contextWindow: params.contextWindow,
+    environment,
+    promptTier: resolved.profile.promptTier,
     plan: params.plan,
     planOnly: params.planOnly,
     resumePlan: params.resumePlan,
@@ -184,6 +202,7 @@ export async function runAgentForSession(
       onContextUsage: (usedTokens, windowTokens) => host.emit({ type: 'context_usage', usedTokens, windowTokens }),
       onCompaction: (beforeTokens, afterTokens) => host.emit({ type: 'compaction', beforeTokens, afterTokens }),
       onMemoryCandidate: (note) => host.emit({ type: 'memory_candidate', note }),
+      onTodoUpdate: (todos) => host.emit({ type: 'todo_update', todos }),
       onUsage: addUsage,
     },
   });

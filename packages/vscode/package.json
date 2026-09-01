@@ -278,7 +278,7 @@
         "heapcode.profiles": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. Each role (edit/apply/completion/agent/embeddings/rerank) can also be pointed at a *different* profile entirely via its `<role>Profile` field (e.g. `embeddingsProfile: \"my-ollama-profile\"`) — lets you mix providers per role, e.g. embeddings on local Ollama while chat/agent use a cloud profile. API keys are NOT stored here — use the *Heap Code: Set API Key* command (OS keychain). Presets: `openai`, `ollama`, `ollama-cloud`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
+          "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. Each role (edit/apply/completion/agent/embeddings/rerank) can also be pointed at a *different* profile entirely via its `<role>Profile` field (e.g. `embeddingsProfile: \"my-ollama-profile\"`) — lets you mix providers per role, e.g. embeddings on local Ollama while chat/agent use a cloud profile. API keys are NOT stored here — use the *Heap Code: Set API Key* command (OS keychain). `promptTier` (`full`/`lean`/`auto`) controls how much of the agent's instructions this model receives; unset means `full`. Presets: `openai`, `ollama`, `ollama-cloud`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
           "items": {
             "type": "object",
             "required": [
@@ -334,6 +334,15 @@
               },
               "contextModel": {
                 "type": "string"
+              },
+              "promptTier": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "lean",
+                  "auto"
+                ],
+                "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every profile. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the model's context window and whether it calls tools natively."
               },
               "editProfile": {
                 "type": "string",

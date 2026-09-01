@@ -39,6 +39,7 @@ import {
   type ToolDefinition,
   type ToolExecuteParams,
   type ToolResult,
+  buildAgentTask,
 } from '@heapcode/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
@@ -512,8 +513,7 @@ export class AgentController {
       ? vscode.workspace.asRelativePath(activeEditor.document.uri, false)
       : undefined;
     const instructions = await loadProjectInstructions(activeFilePath);
-    const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
-    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+    const fullTask = buildAgentTask({ personaAddendum: persona.taskAddendum, instructions, task });
     const planGate = cfg.get<boolean>('planGate', false);
     const planFirst = cfg.get<boolean>('planFirst', true);
     let capturedPlanText: string | undefined;
@@ -578,6 +578,8 @@ export class AgentController {
             case 'plan':
               capturedPlanText = event.text;
               return this.post({ type: 'agentPlan', text: event.text });
+            case 'todo_update':
+              return this.post({ type: 'agentTodos', todos: event.todos });
             case 'tool_call': {
               const call: ToolCall = { id: event.id, name: event.name, args: event.args };
               const description = this.describe(call);

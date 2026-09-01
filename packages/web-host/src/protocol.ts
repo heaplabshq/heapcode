@@ -4,6 +4,7 @@ import type {
   ContextWindowSource,
   PermissionChoice,
   PermissionClass,
+  TodoItem,
 } from '@heapcode/core';
 
 /**
@@ -210,6 +211,11 @@ export interface UiMessage {
       done?: boolean;
     };
     plan?: boolean;
+    /**
+     * The agent's task list — one entry per run, holding the latest
+     * todo_write state (the web-host updates it in place, never appends).
+     */
+    todos?: TodoItem[];
     /** A collapsed "thinking" block — the model's reasoning, kept for reloads. */
     reasoning?: boolean;
     /** True only in `pending`: this entry is still being streamed into. */
@@ -553,6 +559,15 @@ export type UiModelRole = (typeof UI_MODEL_ROLES)[number]['key'];
 /** `{ agentModel, agentProfile, … }` — the shape both directions carry roles in. */
 export type UiRoleFields = Partial<Record<`${UiModelRole}Model` | `${UiModelRole}Profile`, string>>;
 
+/**
+ * How much of the agent prompt a profile's model gets.
+ *
+ * Unset means 'full', which is also what most people should leave it on.
+ * 'lean' is for a model that follows short instructions better; 'auto' asks
+ * for the choice to be made from the model's context window and protocol.
+ */
+export type UiPromptDetail = 'full' | 'lean' | 'auto';
+
 export interface UiProfile extends UiRoleFields {
   name: string;
   preset: string;
@@ -569,6 +584,8 @@ export interface UiProfile extends UiRoleFields {
   effectiveContextWindow: number;
   /** Output cap per reply. Absent means the provider's own default. */
   maxTokens?: number;
+  /** Unset = 'full'. */
+  promptTier?: UiPromptDetail;
 }
 
 export interface UiMcpServer {
@@ -660,6 +677,8 @@ export interface UiSaveProfileParams {
     contextWindow?: number | null;
     maxTokens?: number | null;
     temperature?: number | null;
+    /** `null` clears the setting, which means 'full'. */
+    promptTier?: UiPromptDetail | null;
   };
   /** Write-only. Omitted leaves any existing key untouched. */
   apiKey?: string;

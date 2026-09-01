@@ -97,6 +97,45 @@ export function isToolsUnsupported(message: string): boolean {
  */
 export class ProviderBodyError extends ProviderError {}
 
+/**
+ * A local server, by the address alone. Loopback only: a LAN address is
+ * someone else's machine, where a 403 really can be an access control.
+ */
+export function isLoopback(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ollama refusing the caller's browser origin, which is not an auth failure
+ * however much the status code looks like one.
+ *
+ * Ollama answers any request carrying an `Origin` it does not recognise with a
+ * bare 403 and an empty body — the same shape for every caller, with nothing
+ * in it to read. Its default allow list covers `http://localhost:*`, `file://`,
+ * `tauri://`, `app://` and `vscode-webview://`, so a CLI (which sends no
+ * Origin at all) and a page served from localhost both sail through. A browser
+ * extension does not: its origin is `chrome-extension://<id>`, which is on
+ * nobody's list until the user puts it there.
+ *
+ * Read as a credential problem — which is what 401 and 403 mean everywhere
+ * else — this sends the user to check an API key that Ollama never asked for
+ * and does not implement. Hence the narrow test: loopback, 403, and a body
+ * with nothing in it. A server rejecting a real credential says so.
+ */
+export function isOriginRefusal(status: number, url: string, detail: string): boolean {
+  return status === 403 && !detail && isLoopback(url);
+}
+
+/** Whether a message came from the branch above — see the browser host, which appends the fix. */
+export function isOriginRefused(message: string): boolean {
+  return /refusing this origin \(403\)/.test(message);
+}
+
 export async function describeHttpError(res: Response): Promise<ProviderError> {
   let error: ProviderErrorBody | undefined;
   try {
@@ -109,6 +148,14 @@ export async function describeHttpError(res: Response): Promise<ProviderError> {
   switch (res.status) {
     case 401:
     case 403:
+      if (isOriginRefusal(res.status, res.url, detail)) {
+        return new ProviderError(
+          `The server at ${new URL(res.url).origin} is refusing this origin (403). ` +
+            'It is not asking for a key — it does not recognise where the request came from. ' +
+            'Ollama only answers origins in OLLAMA_ORIGINS, and a browser extension is not on its default list.',
+          res.status,
+        );
+      }
       return new ProviderError(`Authentication failed (${res.status}). Check your API key.${suffix}`, res.status);
     case 404:
       // A router that names the upstream it picked has already accepted the

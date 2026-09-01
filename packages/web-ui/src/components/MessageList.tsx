@@ -183,6 +183,27 @@ const Row = memo(function Row({
           <div dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }} />
         </div>
       );
+    case 'tasks':
+      // One card that updates in place, beside the plan: the list answers
+      // "what is left", and a stack of stale copies would answer it five
+      // times, all wrong but the last.
+      return (
+        <div className="tasks">
+          <div className="plan-title">Tasks</div>
+          <ul className="tasks-list">
+            {item.todos.map((t, i) => (
+              // `key` by index, not content: the list is replaced whole, so
+              // an item's identity is its position, not what it says.
+              <li key={i} className={`task task-${t.status}`}>
+                <span className="task-mark" aria-hidden>
+                  {t.status === 'completed' ? '✔' : t.status === 'in_progress' ? '▸' : '·'}
+                </span>
+                {t.content}
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
     case 'reasoning':
       return <Reasoning text={item.text} streaming={item.streaming} />;
     case 'notice':

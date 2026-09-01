@@ -4,6 +4,7 @@ import {
   diagnose,
   ollamaOriginsFix,
   parseModels,
+  withOriginFix,
 } from '../src/shared/ollamaDiagnostic.js';
 import { originPatternFor } from '../src/shared/hostPermission.js';
 
@@ -133,32 +134,73 @@ describe('host permission', () => {
   });
 });
 
-describe('a 403 from a keyless endpoint', () => {
+describe('a silent 403', () => {
+  // Ollama's actual refusal, verified against 0.33.2: status 403, no headers
+  // explaining anything, `Content-Length: 0`. The silence is the signal — this
+  // fixture used to send a "Forbidden" body, which no real Ollama does.
+  const refused = () => new Response(null, { status: 403 });
+
   it('is read as a refused origin, not a bad API key', async () => {
-    // Ollama rejects a chrome-extension origin server-side with 403, and once
-    // the host grant is in place that 403 becomes readable. Treating it as a
-    // credential problem would point at a key the endpoint never wanted.
-    const result = await diagnose(
-      'http://localhost:11434/v1',
-      ORIGIN,
-      undefined,
-      fetchStub(() => new Response('Forbidden', { status: 403 })),
-      granted,
-    );
+    const result = await diagnose('http://localhost:11434/v1', ORIGIN, undefined, fetchStub(refused), granted);
     expect(result.kind).toBe('origin-blocked');
     if (result.kind === 'origin-blocked') expect(result.fix).toContain('OLLAMA_ORIGINS');
   });
 
-  it('is still read as a bad key when a key was actually sent', async () => {
+  it('is read the same way when a placeholder key was typed into the box', async () => {
+    // The box looks required, so people fill it in. Ollama implements no key,
+    // so that placeholder says nothing about why the request was refused —
+    // and sending them to check it is the whole bug.
+    const result = await diagnose('http://localhost:11434/v1', ORIGIN, 'ollama', fetchStub(refused), granted);
+    expect(result.kind).toBe('origin-blocked');
+  });
+
+  it('still blames the key when a hosted endpoint refuses one', async () => {
+    // Not loopback and a key was sent: an endpoint that wants keys, refusing
+    // one. Sending this user to edit OLLAMA_ORIGINS would be the same mistake
+    // in the other direction.
+    const result = await diagnose('https://ollama.com/v1', ORIGIN, 'wrong-key', fetchStub(refused), granted);
+    expect(result.kind).toBe('http-error');
+    expect(summarize(result)).toMatch(/API key/i);
+  });
+
+  it('leaves a 403 that explains itself alone', async () => {
+    // A server that says why is not the silent refusal, whatever the address.
     const result = await diagnose(
-      'https://ollama.com/v1',
+      'http://localhost:11434/v1',
       ORIGIN,
-      'wrong-key',
-      fetchStub(() => new Response('Forbidden', { status: 403 })),
+      undefined,
+      fetchStub(() => new Response('{"error":"quota exceeded"}', { status: 403 })),
       granted,
     );
     expect(result.kind).toBe('http-error');
-    expect(summarize(result)).toMatch(/API key/i);
+  });
+});
+
+describe('the run-time error a refused origin produces', () => {
+  // The path the user actually hits: a profile that has worked for weeks,
+  // and the first question that needs the model fails mid-run. Settings'
+  // connection check has this advice; nothing was carrying it to here.
+  const refusal =
+    'Agent error: The server at http://localhost:11434 is refusing this origin (403). ' +
+    'It is not asking for a key — it does not recognise where the request came from. ' +
+    'Ollama only answers origins in OLLAMA_ORIGINS, and a browser extension is not on its default list.';
+
+  it('appends the command, with this extension`s own origin in it', () => {
+    const out = withOriginFix(refusal, ORIGIN, 'MacIntel');
+    expect(out).toContain(refusal);
+    expect(out).toContain('launchctl setenv OLLAMA_ORIGINS');
+    expect(out).toContain(ORIGIN);
+  });
+
+  it('leaves every other error untouched', () => {
+    // Including the auth failure this used to be mistaken for: a real bad key
+    // must not come with instructions for editing an unrelated variable.
+    for (const text of [
+      'Agent error: Authentication failed (401). Check your API key.',
+      'Agent error: Rate limited (429). Try again shortly.',
+      'Done.',
+    ])
+      expect(withOriginFix(text, ORIGIN, 'MacIntel')).toBe(text);
   });
 });
 

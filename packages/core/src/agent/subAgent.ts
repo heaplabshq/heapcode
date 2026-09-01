@@ -1,4 +1,5 @@
 import { runAgent } from './loop.js';
+import { buildAgentTask } from './task.js';
 import {
   filesystemMutatingBlockedMessage,
   filterToolsForPersona,
@@ -8,6 +9,7 @@ import {
   type AgentPersona,
 } from './personas.js';
 import type { ToolCall, ToolDefinition, ToolResult } from './tools.js';
+import type { AgentEnvironment } from './promptSections.js';
 import type { Provider, TokenUsage } from '../providers/types.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
 
@@ -37,6 +39,8 @@ export interface SubAgentContext {
   profile: ProviderProfileConfig;
   nativeToolCalls: boolean;
   contextWindow?: number;
+  /** The parent's environment snapshot — see runAgentForSession. */
+  environment?: AgentEnvironment;
   /** Base tools offered to the sub-agent — must NOT include delegate_task itself (one level of nesting only). */
   tools: ToolDefinition[];
   /** The parent's own persona — a sub-agent can never be more permissive than it (intersectPersonas). */
@@ -123,10 +127,12 @@ export async function runSubAgent(call: ToolCall, ctx: SubAgentContext): Promise
   const outcome = await runAgent({
     provider,
     model,
-    task: [SUB_AGENT_SCOPE_ADDENDUM, persona.taskAddendum, task].filter(Boolean).join('\n\n---\n\n'),
+    task: buildAgentTask({ scopeAddendum: SUB_AGENT_SCOPE_ADDENDUM, personaAddendum: persona.taskAddendum, task }),
     workspaceName: ctx.workspaceName,
     tools: subTools,
     nativeToolCalls: ctx.nativeToolCalls,
+    environment: ctx.environment,
+    promptTier: ctx.profile.promptTier,
     execute: subExecute,
     requestPermission: (subCall, tool) => ctx.requestPermission(subCall, tool),
     beforeToolCall: async (subCall) => {

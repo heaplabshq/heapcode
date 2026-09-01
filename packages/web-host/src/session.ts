@@ -15,6 +15,7 @@ import {
   applyModeToPersona,
   askUserAnswerMessage,
   askUserBlocksAction,
+  buildAgentTask,
   buildFallbackAgentSystemPrompt,
   buildNativeAgentSystemPrompt,
   estimateMessagesTokens,
@@ -695,14 +696,17 @@ export class WebSession {
     // the system prompt. Building the fallback prompt twice — once with the
     // real tools and once with none — separates the two exactly, instead of
     // either double-counting them or hiding them inside "system".
+    // The same number the run will be given, so the breakdown prices the
+    // prompt the model actually gets — the budget section is part of it now.
+    const maxIterations = (await this.deps.config.load()).maxIterations ?? DEFAULT_MAX_ITERATIONS;
     let systemTokens: number;
     let toolTokens: number;
     if (nativeToolCalls) {
-      systemTokens = estimateTokens(buildNativeAgentSystemPrompt(workspaceName));
+      systemTokens = estimateTokens(buildNativeAgentSystemPrompt(workspaceName, { maxIterations }));
       toolTokens = estimateTokens(JSON.stringify(tools));
     } else {
-      const withTools = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, tools));
-      systemTokens = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, []));
+      const withTools = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, tools, { maxIterations }));
+      systemTokens = estimateTokens(buildFallbackAgentSystemPrompt(workspaceName, [], { maxIterations }));
       toolTokens = Math.max(0, withTools - systemTokens);
     }
 
@@ -1012,6 +1016,7 @@ export class WebSession {
           // resolved where it matters — the run, the meter, the breakdown.
           effectiveContextWindow: profileContextWindow(p),
           maxTokens: p.maxTokens,
+          promptTier: p.promptTier,
         })),
       );
       const connected = new Set(this.session!.mcpManager.connectedServerNames());
@@ -1453,8 +1458,7 @@ export class WebSession {
     // Same preamble shape as headless and the Ink UI: persona constraints and
     // project instructions, then the task.
     const instructions = await this.deps.loadInstructions?.(this.root).catch(() => '') ?? '';
-    const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
-    const fullTask = preamble ? `${preamble}\n\n---\n\nTask: ${task}` : task;
+    const fullTask = buildAgentTask({ personaAddendum: persona.taskAddendum, instructions, task });
 
     // Multiple assistant messages can occur in one run (narration, then a
     // summary). `lastText` tracks the most recently COMPLETED one, mirroring
@@ -1837,6 +1841,14 @@ export class WebSession {
       case 'plan':
         this.turnEntries.push({ role: 'assistant', content: event.text, ui: { plan: true } } as StoredMessage);
         return;
+      case 'todo_update': {
+        // One card per turn, replaced in place — the live answer to "what is
+        // left", not a log of every write the model made.
+        const existing = this.turnEntries.find((m) => m.ui?.todos);
+        if (existing) existing.ui!.todos = event.todos;
+        else this.turnEntries.push({ role: 'assistant', content: '', ui: { todos: event.todos } } as StoredMessage);
+        return;
+      }
       case 'tool_call':
         this.turnEntries.push({
           role: 'assistant',
@@ -2068,6 +2080,10 @@ export function mergeProfile(
   }
   if (patch.baseUrl !== undefined) next.baseUrl = patch.baseUrl;
   if (patch.model !== undefined) next.model = patch.model;
+  // `null` is the editor's "back to automatic", which is the absence of the
+  // field rather than a third value — the same distinction the numeric
+  // overrides below make.
+  if (patch.promptTier !== undefined) next.promptTier = patch.promptTier ?? undefined;
   // Every role, in one loop rather than fourteen near-identical lines. An
   // empty string clears the override, which is what the editor sends when the
   // field is emptied — the role then falls back down its inheritance chain.
@@ -2144,6 +2160,13 @@ export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean 
           },
         },
       });
+      continue;
+    }
+
+    // The task-list card before the empty-content skip: its content is always
+    // empty (the state lives in `ui.todos`), which is what that check drops.
+    if (m.ui?.todos) {
+      out.push({ role: 'assistant', content: '', ui: { todos: m.ui.todos } });
       continue;
     }
 

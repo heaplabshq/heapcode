@@ -1,4 +1,5 @@
 import type { PermissionChoice } from '../protocol.js';
+import { effectivePermission } from './commandRisk.js';
 import { resolvePermission, type PermissionMode } from './permissionModes.js';
 import type { PermissionClass, ToolCall, ToolDefinition } from './tools.js';
 
@@ -79,22 +80,29 @@ export class PermissionEngine {
   }
 
   async request(call: ToolCall, tool: ToolDefinition, description: string): Promise<boolean> {
-    if (tool.permission === 'read') return true;
+    // The class a call is judged at, not the one its tool declares: a shell
+    // command carries its own risk in an argument, and `run_command` is
+    // `execute` whether it lists a directory or erases one (commandRisk.ts).
+    // Applied before every use below, the grant key included — otherwise an
+    // "Always allow run_command" granted for `npm test` would sit in front of
+    // an `rm -rf`, which is how a permission system stops meaning anything.
+    const permission = effectivePermission(call, tool.permission);
+    if (permission === 'read') return true;
 
     const safeMode = this.opts.safeMode?.() ?? false;
-    const key = `${tool.permission}.${call.name}`;
+    const key = `${permission}.${call.name}`;
 
     // Coarse metadata only (tool name + permission class + decision) — never
     // the description text, which can carry command args and file paths.
     const audit = (decision: string): void =>
-      this.opts.track?.('permission.decision', { tool: call.name, permission: tool.permission, decision });
+      this.opts.track?.('permission.decision', { tool: call.name, permission, decision });
 
     const mode = this.opts.mode?.() ?? 'default';
     if (!safeMode) {
       // The mode is consulted before grants: it is the coarser, more
       // deliberate switch, and a user who just put the session in auto should
       // not still be prompted for something they never granted individually.
-      const resolution = resolvePermission(tool.permission, mode);
+      const resolution = resolvePermission(permission, mode);
       if (resolution === 'allow') {
         this.opts.log?.(`[perm] auto-allowed (${mode} mode): ${description}`);
         audit('auto-mode');
@@ -129,9 +137,9 @@ export class PermissionEngine {
 
     const req: PermissionRequest = {
       description,
-      permission: tool.permission,
+      permission,
       // A destructive action is never made permanent — the user re-confirms every time.
-      allowPersist: tool.permission !== 'destructive' && !safeMode,
+      allowPersist: permission !== 'destructive' && !safeMode,
     };
     const choice = (await this.requester?.(req)) ?? (await this.opts.fallbackRequester?.(req));
     if (choice === undefined) {

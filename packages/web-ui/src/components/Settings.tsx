@@ -44,6 +44,8 @@ export interface UiProfileDraft {
   model: string;
   /** `null` clears the override so the preset's default applies again. */
   contextWindow?: number | null;
+  /** '' means automatic — the same "no override" the host stores as absent. */
+  promptDetail?: string;
   maxTokens?: number | null;
   temperature?: number | null;
   /** `<role>Model` / `<role>Profile`; '' clears back to the inherited value. */
@@ -471,6 +473,7 @@ function ProfileRow({
     baseUrl: profile.baseUrl,
     model: profile.model,
     contextWindow: profile.contextWindow ?? null,
+    promptDetail: profile.promptTier ?? '',
     maxTokens: profile.maxTokens ?? null,
     temperature: profile.temperature ?? null,
     roles: rolesOf(profile),
@@ -581,6 +584,24 @@ function ProfileRow({
             onChange={(temperature) => setDraft({ ...draft, temperature })}
             step={0.1}
           />
+
+          <Field label="Prompt detail">
+            <select
+              className="select"
+              value={draft.promptDetail ?? ''}
+              aria-label="Prompt detail"
+              onChange={(e) => setDraft({ ...draft, promptDetail: e.target.value })}
+            >
+              <option value="">Full — every section (default)</option>
+              <option value="lean">Lean — the essential rules only</option>
+              <option value="auto">Automatic — decide from the model</option>
+            </select>
+          </Field>
+          <p className="hint">
+            How much of the agent&rsquo;s instructions this model receives. Full is the default and the right choice
+            for almost every profile. Lean is for a model that follows short instructions better. Automatic picks
+            between them from the model&rsquo;s context window and whether it calls tools natively.
+          </p>
 
           <ModelRoles
             roles={draft.roles ?? {}}
@@ -1121,6 +1142,13 @@ function RoleRow({
  * hold the other's shape, and `roles` itself never crosses the wire.
  */
 function toSaveParams(draft: UiProfileDraft): UiSaveProfileParams['profile'] {
-  const { roles, ...rest } = draft;
-  return { ...rest, ...(roles ?? {}) };
+  const { roles, promptDetail, ...rest } = draft;
+  return {
+    ...rest,
+    ...(roles ?? {}),
+    // '' is the editor's default, which the host stores as the absence of the
+    // field rather than as a written-out 'full' — `null` is how a patch says
+    // "clear it", the same as the numeric overrides.
+    promptTier: promptDetail === 'lean' || promptDetail === 'auto' ? promptDetail : null,
+  };
 }

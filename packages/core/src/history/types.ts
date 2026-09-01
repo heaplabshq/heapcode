@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../providers/types.js';
 import type { ToolDisplay } from '../protocol.js';
+import type { TodoItem } from '../agent/todo.js';
 
 /**
  * A stored chat message. `content` is what the LLM saw (template-expanded,
@@ -23,6 +24,12 @@ export interface StoredMessage extends ChatMessage {
      * back to it as if it were dialogue.
      */
     reasoning?: boolean;
+    /**
+     * The agent's task list, updated in place by each todo_write — one entry
+     * shows the latest state, not a history of writes. Furniture like a tool
+     * chip: rendered, never fed back as context.
+     */
+    todos?: TodoItem[];
   };
 }
 

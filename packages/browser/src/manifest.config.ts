@@ -25,8 +25,40 @@ import pkg from '../package.json' with { type: 'json' };
  * required (PRD §7.2). Two different problems with two different fixes, which
  * is why the diagnostic reports them separately.
  */
+/**
+ * Pins the extension ID.
+ *
+ * Without it Chrome derives an unpacked extension's ID from the absolute path
+ * it was loaded from, so the ID changes the moment the build output moves or
+ * the extension is removed and re-added from somewhere else. That is invisible
+ * until something outside the browser has been told the old ID — and here that
+ * is exactly the case we ship for. A local Ollama has to list
+ * `chrome-extension://<id>` in OLLAMA_ORIGINS (see shared/ollamaDiagnostic.ts),
+ * and a silently-changed ID turns that back into the 403 the user already
+ * fixed once, with nothing to say why.
+ *
+ * This is the PUBLIC half of an RSA keypair and is meant to be committed:
+ * publishing it is what makes the ID reproducible for everyone building this
+ * repo. The private half signs a .crx, which nothing here does — the Web Store
+ * signs its own — so it is generated to packages/browser/.keys/ and gitignored
+ * rather than shared.
+ *
+ * Derived ID: cbockgpkngiajhbhpidaolpneikomoeb
+ *
+ * REPLACE THIS WHEN THE EXTENSION IS FIRST UPLOADED TO THE CHROME WEB STORE.
+ * The store issues its own keypair and its own ID, and ignores this field.
+ * Chrome's documented flow is to upload the zip, read Package → "View public
+ * key" in the dashboard, and paste that value here: that, and only that, makes
+ * the ID a developer sees locally the same one users get. Leaving this key in
+ * place after publishing is not dangerous, it just means dev and production
+ * disagree about the ID again — the one thing this field exists to prevent.
+ */
+const PUBLIC_KEY =
+  'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoZhAPBdGXQGPVhEODTQ9CoSi0TUbmj1SMlXmtuol99WgnmjrszJfGmGc+1topLufOJjiC3U7S5YApgbVj1giZmU+s9dvoDAchCisKxDaNdTQS2zEQESkw3y0RW4kzhj3WXSG+0T7+wQfyDgo0wV1ihzzk0Ms+B/piA1kojTK1B8J1767v3zc77LIvfMjZtpobV+qXl0oV4xVtm2x1lGSVUVcSLzzVYGgRc/b5UpkJldPPbmqEODeQtZtsn8WhzKclpCaKl1qhCRX3tDUfR7xO18lM6L1pKpaKb/DYBYZwNthl9tUp0Q+00iGTj1KzG3SbLmM+K7LRd0G1iIXIafZawIDAQAB';
+
 export default defineManifest({
   manifest_version: 3,
+  key: PUBLIC_KEY,
   name: 'heapbrowse',
   version: pkg.version,
   description: pkg.description,

@@ -56,6 +56,45 @@ describe('OpenAICompatibleProvider.streamChat', () => {
     await expect(run).rejects.toThrowError(/Authentication failed \(401\).*bad key/);
   });
 
+  it('reads a silent 403 from a local server as a refused origin, not a bad key', async () => {
+    // Ollama's actual answer to a request carrying an Origin it does not
+    // recognise, verified against 0.33.2: 403, `Content-Length: 0`, nothing
+    // else. A browser extension's origin is on nobody's default list, so this
+    // is the first thing a local-first user of heapbrowse hits — and
+    // "Check your API key" points at a key Ollama does not implement.
+    server = await startMockServer({ kind: 'json', status: 403, body: '' });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl, apiKey: 'ollama' });
+
+    const run = async () => {
+      for await (const _ of provider.streamChat({ model: 'm', messages: [] })) {
+        // no-op
+      }
+    };
+    await expect(run).rejects.toThrowError(/refusing this origin \(403\)/);
+    await expect(run).rejects.toThrowError(/OLLAMA_ORIGINS/);
+    // The wrong advice specifically, since a placeholder key is exactly what
+    // people type into a box that looks required.
+    await expect(run).rejects.not.toThrowError(/Check your API key/);
+  });
+
+  it('still blames the key when a 403 explains itself', async () => {
+    // A hosted endpoint refusing a real credential says why. Only the silence
+    // is diagnostic.
+    server = await startMockServer({
+      kind: 'json',
+      status: 403,
+      body: { error: { message: 'invalid api key' } },
+    });
+    const provider = new OpenAICompatibleProvider({ baseUrl: server.baseUrl, apiKey: 'wrong' });
+
+    const run = async () => {
+      for await (const _ of provider.streamChat({ model: 'm', messages: [] })) {
+        // no-op
+      }
+    };
+    await expect(run).rejects.toThrowError(/Authentication failed \(403\).*invalid api key/);
+  });
+
   it('surfaces the network cause when the server is unreachable', async () => {
     // Grab an ephemeral port and free it again → connecting yields ECONNREFUSED.
     const closed = await startMockServer({ kind: 'sse', chunks: [] });

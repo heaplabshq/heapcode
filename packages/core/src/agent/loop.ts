@@ -5,8 +5,10 @@ import {
   DEFAULT_CONTEXT_WINDOW,
   estimateMessagesTokens,
 } from '../context/tokens.js';
-import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt } from './prompts.js';
+import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt, resolvePromptTier } from './prompts.js';
+import type { AgentEnvironment, PromptTierSetting } from './promptSections.js';
 import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol.js';
+import { TODO_TOOL, parseTodos, renderTodos, type TodoItem } from './todo.js';
 import {
   DENIED_RESULT_TEXT,
   FINISH_TOOL,
@@ -50,6 +52,12 @@ export interface AgentEvents {
    * The host decides whether/how to persist it; core never writes files.
    */
   onMemoryCandidate?(note: string): void;
+  /**
+   * The agent's task list, each time todo_write updates it. Fired with the
+   * full list, never a delta — the same thing the model was just shown, so a
+   * host can render exactly what the agent believes is left.
+   */
+  onTodoUpdate?(todos: TodoItem[]): void;
 }
 
 export interface AgentOptions {
@@ -136,6 +144,22 @@ export interface AgentOptions {
   /** Model context window in tokens; drives usage reporting and compaction. */
   contextWindow?: number;
   /**
+   * Where the agent runs — working directory, platform, a git snapshot —
+   * rendered into the environment section of the system prompt. Gathered once
+   * by the caller before the run starts, so the whole run sees one snapshot
+   * rather than facts that change underneath it. Ignored when `systemPrompt`
+   * replaces the coding sections (a host that owns its identity describes its
+   * own surroundings).
+   */
+  environment?: AgentEnvironment;
+  /**
+   * How much of the prompt this run gets, from the profile's `promptTier`.
+   * Omitted, the run gets the full section set; 'auto' asks for the tier to
+   * be derived from the model's context window and protocol. See
+   * resolvePromptTier.
+   */
+  promptTier?: PromptTierSetting;
+  /**
    * What this agent's work is made of, for the summary written when a run
    * outgrows the context window.
    *
@@ -179,6 +203,10 @@ const PLAN_REQUEST =
   'Before doing anything, write a concise plan for this task, scaled to what it actually ' +
   'needs. A simple question or lookup needs only 1-2 steps — do not pad it out. Reserve a ' +
   'longer numbered plan (up to ~8 steps) for genuinely multi-step build/edit work. ' +
+  'Each step should be something you will actually do — a file to change, a command to run, a ' +
+  'question to ask. "Investigate the codebase" and "understand the architecture" are not steps; ' +
+  'they are how a plan turns into an hour of reading. Where you do not yet know enough to name a ' +
+  'step, say what you will look at and what would decide it. ' +
   'Plain text only — do NOT call any tools yet.';
 
 /**
@@ -209,6 +237,34 @@ const TOOL_PROTOCOL_FALLBACK_NOTICE =
   '`"capabilities": {"nativeToolCalls": false}` on the profile — "/nativetools off" in the terminal does it for you.';
 
 const MAX_NUDGES = 4;
+
+/**
+ * How the loop's own steering is marked on the wire.
+ *
+ * Nudges go out as `role: 'user'` messages (or a native tool result) because
+ * every chat template understands those — but an unmarked nudge is a forged
+ * user turn: nothing tells the model these words were not typed by the person
+ * it is talking to, and steering is most needed exactly when the model is
+ * least reliable about context. The tag is declared in the system prompt
+ * (prompts.ts, in the core-owned tail every host's prompt passes through), so
+ * a host that replaces the whole base still gets steering it knows how to
+ * read. Same shape Claude Code uses for its own mid-run reminders.
+ *
+ * The boundary, so the next message added here lands on the right side of it:
+ * nothing the loop authors is ever left looking like the user's own words, but
+ * only *steering* takes this tag. Data the loop relays already carries a tag of
+ * its own and keeps it — tool output is `<tool_result>` (textProtocol.ts, which
+ * the fallback prompt teaches the model to read), images and compacted history
+ * are bracket-marked. One tag for everything would mean re-teaching a protocol
+ * the model already knows.
+ *
+ * A user decision the loop is passing on — the answer to `ask_user` at the step
+ * limit — is steering too, and takes the tag. It is honest content in the wrong
+ * voice otherwise: true, but phrased as though the user had typed it here.
+ */
+function systemReminder(text: string): string {
+  return `<system-reminder>\n${text}\n</system-reminder>`;
+}
 
 /**
  * Sent when a reply contains a tool call written as text while the session is
@@ -395,8 +451,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   let nativeToolCalls = opts.nativeToolCalls;
   let toolProtocolFellBack = false;
 
+  // Fixed for the life of the run, and consulted by both the initial prompt
+  // and the mid-run fallback rewrite, so a protocol change never changes which
+  // sections the model has been told to follow.
+  const promptTier = resolvePromptTier(opts);
+
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
-  const toolsWithFinish = [...tools, FINISH_TOOL];
+  const toolsWithFinish = [...tools, FINISH_TOOL, TODO_TOOL];
 
   // Prefer streaming transport: reasoning models produce bytes immediately but
   // can exceed any sane non-streaming timeout on their full response.
@@ -430,7 +491,14 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       if (!isToolsUnsupported(message)) return false;
       toolProtocolFellBack = true;
       nativeToolCalls = false;
-      messages[0] = { role: 'system', content: buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish) };
+      messages[0] = {
+        role: 'system',
+        content: buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, {
+          maxIterations,
+          environment: opts.environment,
+          tier: promptTier,
+        }),
+      };
       events.onText(TOOL_PROTOCOL_FALLBACK_NOTICE);
       return true;
     };
@@ -482,8 +550,18 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     return { response: counted(response), streamed };
   };
   const systemPrompt = nativeToolCalls
-    ? buildNativeAgentSystemPrompt(opts.workspaceName, opts.systemPrompt)
-    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, opts.systemPrompt);
+    ? buildNativeAgentSystemPrompt(opts.workspaceName, {
+        base: opts.systemPrompt,
+        maxIterations,
+        environment: opts.environment,
+        tier: promptTier,
+      })
+    : buildFallbackAgentSystemPrompt(opts.workspaceName, toolsWithFinish, {
+        base: opts.systemPrompt,
+        maxIterations,
+        environment: opts.environment,
+        tier: promptTier,
+      });
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -496,7 +574,66 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const hasVerifyTool = tools.some((t) => t.verifies);
   let dirtySinceVerify = false;
 
+  /**
+   * Results of look-up calls already made this run, keyed by call.
+   *
+   * The prompt tells the agent not to repeat itself, and a determined loop
+   * does anyway: one real run made 81 web searches on a single question, six
+   * of them character-for-character identical, and another re-read one file
+   * ten times in overlapping slices. Telling it again in the next turn's
+   * system prompt does not help, because the turn that repeats is the turn
+   * that already had the answer.
+   *
+   * So the second identical call does not go out. It returns the first
+   * answer, labelled — which costs nothing, and puts the information back in
+   * front of a model that may have lost it to compaction, which is usually
+   * why it asked twice.
+   */
+  const lookupCache = new Map<string, { at: number; result: ToolResult }>();
+  /** Calls made so far, so a cached entry can be compared against the last write. */
+  let callsMade = 0;
+  /** When the workspace last changed. A read from before that may legitimately differ now. */
+  let lastMutationAt = -1;
+
+  /**
+   * The run's own task list — populated by todo_write, read by the finish
+   * gate. Unlike the verification gate this one is about the model's own
+   * stated plan: a run that wrote "1. fix parser 2. add test 3. update docs"
+   * and stopped after step 1 used to end with "done".
+   */
+  let todos: TodoItem[] = [];
+  let todoNudges = 0;
+  const MAX_TODO_NUDGES = 2;
+
+  /**
+   * Whether repeating this call could return something new.
+   *
+   * Only look-ups are cached, and only while nothing has been written since:
+   * re-reading a file you have just edited is not a repeat, it is the point.
+   * `run_command` is never cached however read-only it looks — `pwd` twice is
+   * fine, and the loop has no way to know which commands have effects.
+   */
+  const cacheableLookup = (tool: ToolDefinition): boolean =>
+    tool.permission === 'read' || tool.name === 'web_search' || tool.name === 'fetch_url';
+
   const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
+    // Loop-owned bookkeeping, handled before the host roundtrip: the list is
+    // this run's state, not workspace state, so no host has an executor for
+    // it — same shape as finish, which the response path handles itself.
+    if (rawCall.name === TODO_TOOL.name) {
+      events.onToolCall(rawCall);
+      const parsed = parseTodos(rawCall.args ?? {});
+      let result: ToolResult;
+      if (parsed.error) {
+        result = { id: rawCall.id, name: rawCall.name, content: parsed.error, isError: true };
+      } else {
+        todos = parsed.todos;
+        result = { id: rawCall.id, name: rawCall.name, content: renderTodos(todos) };
+        events.onTodoUpdate?.(todos);
+      }
+      events.onToolResult(result);
+      return result;
+    }
     const tool = toolsByName.get(rawCall.name);
     if (!tool) {
       return {
@@ -508,6 +645,26 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     }
     const call: ToolCall = { ...rawCall, args: unwrapMisenvelopedArgs(rawCall.args, tool) };
     events.onToolCall(call);
+
+    const at = callsMade++;
+    const key = cacheableLookup(tool) ? `${call.name}:${JSON.stringify(call.args ?? {})}` : undefined;
+    const cached = key ? lookupCache.get(key) : undefined;
+    if (cached && cached.at > lastMutationAt) {
+      // Said plainly, and with the answer attached: an agent that is going in
+      // circles needs to be told which circle, not merely refused.
+      const repeated: ToolResult = {
+        ...cached.result,
+        id: call.id,
+        content:
+          'You already made this exact call earlier in this run and nothing has changed since. ' +
+          'Here is what it returned — use it rather than calling again, and if it does not answer ' +
+          'your question, a different call or a question to the user will.\n\n' +
+          cached.result.content,
+      };
+      events.onToolResult(repeated);
+      return repeated;
+    }
+
     let result: ToolResult;
     const decision =
       tool.permission === 'read' ? true : await opts.requestPermission(call, tool);
@@ -531,6 +688,11 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           if (tool.verifies) dirtySinceVerify = false;
           else if (tool.permission === 'write') dirtySinceVerify = true;
         }
+        // Anything that is not a look-up may have changed the workspace —
+        // including a shell command, which is how most non-obvious changes
+        // happen. Every cached read from before now is suspect.
+        if (!cacheableLookup(tool)) lastMutationAt = at;
+        else if (key && !result.isError) lookupCache.set(key, { at, result });
       } catch (err) {
         result = {
           id: call.id,
@@ -590,10 +752,38 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     verificationNudges++;
     if (nativeFinishCall) {
       messages.push({ role: 'assistant', content, toolCalls: [nativeFinishCall] });
-      messages.push({ role: 'tool', content: VERIFY_NUDGE, toolCallId: nativeFinishCall.id });
+      messages.push({ role: 'tool', content: systemReminder(VERIFY_NUDGE), toolCallId: nativeFinishCall.id });
     } else {
       if (content.trim()) messages.push({ role: 'assistant', content });
-      messages.push({ role: 'user', content: VERIFY_NUDGE });
+      messages.push({ role: 'user', content: systemReminder(VERIFY_NUDGE) });
+    }
+    return true;
+  };
+
+  /**
+   * Same deferral shape, for the model's own task list: a finish with items
+   * still pending is a task ending above its own stated plan. Bounded for the
+   * same reason the verification gate is — a model that keeps finishing over
+   * its own list twice is telling the truth about being done, or is stuck,
+   * and either way more nudging is not the tool for it.
+   */
+  const shouldDeferTodoFinish = (
+    content: string,
+    nativeFinishCall?: { id: string; name: string; args: Record<string, unknown> },
+  ): boolean => {
+    const open = todos.filter((t) => t.status !== 'completed');
+    if (open.length === 0 || todoNudges >= MAX_TODO_NUDGES) return false;
+    todoNudges++;
+    const nudge =
+      `Your todo list still has ${open.length} unfinished item${open.length === 1 ? '' : 's'}:\n` +
+      open.map((t) => `- ${t.content}${t.status === 'in_progress' ? ' (in progress)' : ''}`).join('\n') +
+      '\nFinish them, or call todo_write to drop the ones that turned out not to be needed, before finishing.';
+    if (nativeFinishCall) {
+      messages.push({ role: 'assistant', content, toolCalls: [nativeFinishCall] });
+      messages.push({ role: 'tool', content: systemReminder(nudge), toolCallId: nativeFinishCall.id });
+    } else {
+      if (content.trim()) messages.push({ role: 'assistant', content });
+      messages.push({ role: 'user', content: systemReminder(nudge) });
     }
     return true;
   };
@@ -775,13 +965,17 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       if (result.isError || !saidKeepGoing(result.content)) return false;
       // A plain user message, not a tool result: the model never made this
       // call, and inventing a `tool_calls` entry to pair a result to is how
-      // strict providers start rejecting the whole transcript.
+      // strict providers start rejecting the whole transcript. Tagged, and
+      // written about the user rather than as them: the decision it reports is
+      // real, but the person did not type this sentence.
       messages.push({
         role: 'user',
-        content:
-          `You reached this run's step limit and I said to keep going — you have another ${maxIterations} steps. ` +
-          'Pick the CURRENT task up exactly where you left off: call the next tool now. ' +
-          'Do not start over, and do not summarize instead of working.',
+        content: systemReminder(
+          `You reached this run's step limit. The user was asked whether to continue and chose to keep ` +
+            `going, so you have another ${maxIterations} steps. ` +
+            'Pick the CURRENT task up exactly where you left off: call the next tool now. ' +
+            'Do not start over, and do not summarize instead of working.',
+        ),
       });
       return true;
     };
@@ -807,6 +1001,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
             await summarize('Summarize what you did and whether the task is complete.');
           }
           if (shouldDeferFinish(response.content, finishCall)) continue;
+          if (shouldDeferTodoFinish(response.content, finishCall)) continue;
           return finish();
         }
         if (response.toolCalls && response.toolCalls.length > 0) {
@@ -848,7 +1043,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: TRUNCATED_NUDGE });
+          messages.push({ role: 'user', content: systemReminder(TRUNCATED_NUDGE) });
           continue;
         }
         // The model wrote a tool call as prose instead of emitting a real one.
@@ -871,7 +1066,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
             repairs++;
             if (!streamed && response.content.trim()) events.onText(response.content);
             messages.push({ role: 'assistant', content: response.content });
-            messages.push({ role: 'user', content: NATIVE_TOOL_CALL_REPAIR });
+            messages.push({ role: 'user', content: systemReminder(NATIVE_TOOL_CALL_REPAIR) });
             continue;
           }
           const call = textual.calls[0]!;
@@ -902,7 +1097,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           nudges++;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: systemReminder(unverified ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE) });
           continue;
         }
         // Tool-free and not clearly finished: protocol violation — remind once
@@ -911,7 +1106,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           finishReminderSent = true;
           if (!streamed && response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: unverified ? UNVERIFIED_RESULT_NUDGE : FINISH_REMINDER });
+          messages.push({ role: 'user', content: systemReminder(unverified ? UNVERIFIED_RESULT_NUDGE : FINISH_REMINDER) });
           continue;
         }
         // Nudges AND the finish reminder are exhausted without a trustworthy
@@ -942,7 +1137,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         if (parsed.hasToolIntent && repairs < MAX_REPAIRS) {
           repairs++;
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: REPAIR_PROMPT });
+          messages.push({ role: 'user', content: systemReminder(REPAIR_PROMPT) });
           continue;
         }
         // Same "default to not-finished" reasoning as the native branch above.
@@ -953,7 +1148,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           nudges++;
           if (response.content.trim()) events.onText(response.content);
           messages.push({ role: 'assistant', content: response.content });
-          messages.push({ role: 'user', content: unverifiedFallback ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE });
+          messages.push({ role: 'user', content: systemReminder(unverifiedFallback ? UNVERIFIED_RESULT_NUDGE : CONTINUE_NUDGE) });
           continue;
         }
         // Nudge exhaustion — same 'incomplete' termination rules as the
@@ -979,6 +1174,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         const summary = String(first.args?.summary ?? '').trim();
         if (summary) events.onText(summary);
         if (shouldDeferFinish(response.content)) continue;
+        if (shouldDeferTodoFinish(response.content)) continue;
         return finish();
       }
       if (parsed.narration) events.onText(parsed.narration);
@@ -989,7 +1185,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           repairs++;
           messages.push({
             role: 'user',
-            content: `The JSON arguments for "${first.name}" were invalid (${first.parseError}). ${REPAIR_PROMPT}`,
+            content: systemReminder(
+              `The JSON arguments for "${first.name}" were invalid (${first.parseError}). ${REPAIR_PROMPT}`,
+            ),
           });
           continue;
         }

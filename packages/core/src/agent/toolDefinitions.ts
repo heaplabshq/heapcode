@@ -5,9 +5,9 @@ import type { ToolDefinition } from './tools.js';
  *
  * A record rather than an array on purpose: the two hosts present these in
  * the same relative order but interleave their own extras (the extension's
- * language-server tools, its delegate_task), and the order tools are offered
- * in is part of the prompt. Each host composes its own ordered list from
- * these, so neither's ordering changes as a side effect of sharing them.
+ * language-server tools), and the order tools are offered in is part of the
+ * prompt. Each host composes its own ordered list from these, so neither's
+ * ordering changes as a side effect of sharing them.
  *
  * get_symbols is not here — its description names the mechanism behind it,
  * which genuinely differs (tree-sitter in the CLI, the language server in the
@@ -20,7 +20,10 @@ export const sharedAgentTools = {
       'Read a file (or a line range of it). Returns content with line numbers. ' +
       'For files over ~300 lines, calling this with no range first returns a symbol outline ' +
       'instead of the full text — call again with start_line/end_line for the section you need, ' +
-      'or repeat the unranged call to force the full contents.',
+      'or repeat the unranged call to force the full contents. ' +
+      'Read only the part you need: when you know roughly where something is, a range beats the ' +
+      'whole file. And do not re-read a file you have just edited to verify the change — edit_file ' +
+      'already showed you the changed region, so a re-read spends a turn confirming what you know.',
     parameters: {
       type: 'object',
       properties: {
@@ -34,7 +37,10 @@ export const sharedAgentTools = {
   },
   list_dir: {
     name: 'list_dir',
-    description: 'List files and directories at a workspace-relative path (non-recursive).',
+    description:
+      'List files and directories at a workspace-relative path (non-recursive). For finding where ' +
+      'something lives, repo_map, search or semantic_search get there in one call; use this when you ' +
+      'need to know what is actually in a particular directory.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string', description: 'Workspace-relative path, "." for root' } },
@@ -44,7 +50,9 @@ export const sharedAgentTools = {
   },
   search: {
     name: 'search',
-    description: 'Search file contents with a regex. Returns file:line matches.',
+    description:
+      'Search file contents with a regex. Returns file:line matches. Cheaper than reading files to ' +
+      'find something: prefer this, semantic_search, or get_symbols over opening files to look.',
     parameters: {
       type: 'object',
       properties: {
@@ -57,7 +65,13 @@ export const sharedAgentTools = {
   },
   write_file: {
     name: 'write_file',
-    description: 'Create or overwrite a file with the given content.',
+    description:
+      'Create a NEW file, or replace an existing one end to end. Overwrites without warning, so to ' +
+      'change part of a file that already exists use edit_file or multi_edit — write_file on a file ' +
+      'you have not read in full is how unrelated work gets deleted. ' +
+      'Before creating a new file, check that one does not already exist for the job (repo_map or ' +
+      'search): extending an existing file is nearly always the smaller change, and a second file ' +
+      'doing the same thing is a fork future readers have to reconcile.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -86,7 +100,9 @@ export const sharedAgentTools = {
   },
   rename_file: {
     name: 'rename_file',
-    description: 'Rename or move a file.',
+    description:
+      'Rename or move a file, keeping its contents. References to it elsewhere are not updated — ' +
+      'search for the old path afterwards.',
     parameters: {
       type: 'object',
       properties: { path: { type: 'string' }, newPath: { type: 'string' } },
@@ -96,14 +112,18 @@ export const sharedAgentTools = {
   },
   delete_file: {
     name: 'delete_file',
-    description: 'Delete a file.',
+    description:
+      'Delete a file. There is no undo beyond the session checkpoint, so delete only what the task ' +
+      'names or what you created yourself.',
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
     permission: 'destructive',
   },
   semantic_search: {
     name: 'semantic_search',
     description:
-      'Search the codebase by meaning (embeddings), e.g. "where is authentication handled". Falls back to text search when no index exists.',
+      'Search the codebase by meaning (embeddings), e.g. "where is authentication handled". Use it ' +
+      'when you know what something does but not what it is called; use search when you know the ' +
+      'name, the string, or the error text. Falls back to text search when no index exists.',
     parameters: {
       type: 'object',
       properties: { query: { type: 'string', description: 'Natural-language query' } },
@@ -131,9 +151,14 @@ export const sharedAgentTools = {
     name: 'run_command',
     description:
       'Run a shell command (npm/pnpm/git/etc). Returns stdout, stderr, and exit code. ' +
-      'The working directory persists between calls (cd carries over); it starts at the workspace root. ' +
-      'Prefer run_tests for the project\'s test suite. Package installs are checked against the ' +
-      'registry first and blocked if the package name looks hallucinated.',
+      'The working directory persists between calls (cd carries over) and every result says where it ' +
+      'is once it has left the workspace root, so do not re-issue `cd` you have already run. ' +
+      'Prefer run_tests for the project\'s test suite, and the file tools over shell equivalents — ' +
+      'read_file over cat, edit_file over sed, search over grep — since those report better and are ' +
+      'not gated behind the execute permission. Package installs are checked against the registry ' +
+      'first and blocked if the package name looks hallucinated. A command that does not return, like ' +
+      'a dev server or a watcher, is killed on a timeout: start it in the background and check it ' +
+      'separately instead.',
     parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
     permission: 'execute',
   },
@@ -150,7 +175,8 @@ export const sharedAgentTools = {
     name: 'check_package_exists',
     description:
       'Check whether a package name actually exists on npm or PyPI before adding it as a dependency — ' +
-      'catches hallucinated package names before they\'re installed.',
+      'catches hallucinated package names before they\'re installed. One call answers "is this real"; ' +
+      'it is not a way to browse a registry, so do not walk a list of candidate names through it.',
     parameters: {
       type: 'object',
       properties: { registry: { type: 'string', enum: ['npm', 'pypi'] }, name: { type: 'string' } },
@@ -160,7 +186,10 @@ export const sharedAgentTools = {
   },
   fetch_url: {
     name: 'fetch_url',
-    description: 'Fetch a web page or API over HTTP(S) — documentation, READMEs, API responses. HTML is reduced to readable text.',
+    description:
+      'Fetch a web page or API over HTTP(S) — documentation, READMEs, API responses. HTML is reduced ' +
+      'to readable text. One good page beats another five searches: when a search result looks right, ' +
+      'read it rather than searching again.',
     parameters: { type: 'object', properties: { url: { type: 'string', description: 'http(s):// URL' } }, required: ['url'] },
     permission: 'execute',
     // Arbitrary third-party content — same injection posture as MCP (PLAN.md M7).
@@ -171,7 +200,9 @@ export const sharedAgentTools = {
     description:
       'Search the web and get back titles, URLs and snippets. Use for current information, ' +
       'library docs, error messages, and anything outside this repository. Follow up with ' +
-      'fetch_url to read a result in full — snippets alone are rarely enough to answer from.',
+      'fetch_url to read a result in full — snippets alone are rarely enough to answer from. ' +
+      'Two or three searches settle most questions; if yours is not settled by then, rewording it ' +
+      'again will not settle it either — read one of the results properly, or ask the user.',
     parameters: {
       type: 'object',
       properties: {
@@ -187,7 +218,10 @@ export const sharedAgentTools = {
   },
   multi_edit: {
     name: 'multi_edit',
-    description: 'Apply several search/replace edits to one file atomically (all succeed or none are written). Same matching rules as edit_file.',
+    description:
+      'Apply several search/replace edits to one file atomically — all succeed or none are written. ' +
+      'Same matching rules as edit_file. Prefer this over a run of edit_file calls on the same file: ' +
+      'it cannot leave the file half-changed, and it is one turn instead of five.',
     parameters: {
       type: 'object',
       properties: {
@@ -221,7 +255,11 @@ export const sharedAgentTools = {
   ask_user: {
     name: 'ask_user',
     description:
-      'Ask the user a clarifying question when blocked on a decision only they can make (ambiguous requirements, destructive trade-offs). Use sparingly — prefer sensible defaults.',
+      'Ask the user a question when you are blocked on a decision only they can make — ambiguous ' +
+      'requirements, a destructive trade-off, which of two designs they want. Ask ONE question and ' +
+      'stop; never answer it yourself. Use sparingly: prefer a sensible default and say what you ' +
+      'assumed. But asking beats guessing when the answer changes what gets built, and it beats ' +
+      'searching for an answer the codebase does not contain.',
     parameters: {
       type: 'object',
       properties: {
@@ -279,3 +317,51 @@ export function getSymbolsTool(description: string): ToolDefinition {
     permission: 'read',
   };
 }
+
+/**
+ * Delegate a sub-task to a fresh sub-agent. In core (not the sharedAgentTools
+ * record) because no host bakes it into its standing list: execution needs
+ * cross-cutting context the executors have no business knowing, so hosts
+ * always *offer* it and the server does the recursing — while sub-agents are
+ * disabled, calling it returns an informative "disabled" error instead of
+ * running, which is what keeps the model honest about a capability it cannot
+ * currently use.
+ *
+ * One wording for every host: the two copies this replaced had drifted into
+ * saying different things about the same tool, and the model's choice to
+ * delegate should not depend on which host it is running in.
+ */
+export const DELEGATE_TASK_TOOL: ToolDefinition = {
+  name: 'delegate_task',
+  description:
+    'Delegate a self-contained sub-task to a fresh sub-agent with its own context window (no memory of this ' +
+    'conversation). Use it for a chunk of work whose intermediate exploration would just clutter your own context ' +
+    '— e.g. "investigate and summarize how X works" or "write tests for Y". The sub-agent shares this workspace ' +
+    'and its edits use the same checkpoints as your own, but cannot delegate further — one level of nesting only. ' +
+    'Runs to completion before returning; there is no parallelism. Use it sparingly: genuinely separable work, ' +
+    'not routine steps you could just do directly. ' +
+    'The brief is the ceiling of what the sub-agent can do: it has not seen this conversation, does not know what ' +
+    'you have already tried or ruled out, and a terse one-line task gets a shallow generic answer. Brief it like a ' +
+    'colleague who just walked in — the goal, the surrounding context it needs for judgement calls, exact paths ' +
+    'and identifiers rather than "the relevant file" — and never delegate understanding: "based on your findings, ' +
+    'fix the bug" hands your synthesis to the agent. Decide first and delegate the doing, or delegate the ' +
+    'investigation and do the deciding when the report lands.',
+  parameters: {
+    type: 'object',
+    properties: {
+      task: {
+        type: 'string',
+        description:
+          'A self-contained description of the sub-task — the sub-agent has no context beyond this. Include ' +
+          'what you already know and what you have ruled out, so it does not re-derive them.',
+      },
+      persona: {
+        type: 'string',
+        description: 'Optional: agent, architect, debug, or reviewer. Can never be more permissive than your own persona.',
+      },
+      profile: { type: 'string', description: 'Optional: run the sub-agent on a different configured provider profile.' },
+    },
+    required: ['task'],
+  },
+  permission: 'execute',
+};

@@ -56,6 +56,19 @@ export interface ProviderProfileConfig {
   temperature?: number;
   maxTokens?: number;
   /**
+   * How much of the agent prompt this profile's model is given.
+   *
+   * 'full' (the default when unset) is every section. 'lean' is the incident
+   * rules only — the identity, the untrusted-data and anti-fabrication rules,
+   * verify, and the reply style — for a model that follows short instructions
+   * better. 'auto' decides from the model's context window and protocol.
+   *
+   * Full by default rather than derived, because quietly shortening the prompt
+   * makes the agent behave differently with nothing saying so, and the
+   * difference surfaces as a model ignoring an instruction it never received.
+   */
+  promptTier?: 'full' | 'lean' | 'auto';
+  /**
    * Model context window in tokens (prompt + output). Drives the context
    * usage meter and automatic conversation compaction. Default 32768.
    */

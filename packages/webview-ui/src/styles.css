@@ -572,6 +572,57 @@ button.ghost:not(:disabled):hover {
   flex: 1;
 }
 
+/* Task list card — the live todo_write state, one card per run. */
+.todos-card {
+  margin: 4px 14px;
+  border-left: 2px solid var(--vscode-focusBorder);
+  padding: 3px 12px 6px;
+}
+
+.todos-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 2px;
+}
+
+.todos-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.9em;
+}
+
+.todo {
+  display: flex;
+  gap: 7px;
+  padding: 1px 0;
+  color: var(--vscode-descriptionForeground);
+}
+
+.todo-mark {
+  width: 1em;
+  flex: none;
+  text-align: center;
+}
+
+.todo-in_progress {
+  color: var(--vscode-foreground);
+}
+
+.todo-in_progress .todo-mark {
+  color: var(--vscode-focusBorder);
+}
+
+.todo-completed .todo-mark {
+  color: var(--vscode-testing-iconPassed, var(--vscode-charts-green));
+}
+
+/* Done items step back so the unfinished ones read first. */
+.todo-completed {
+  opacity: 0.7;
+}
+
 .plan-body {
   padding: 0 12px 4px;
 }

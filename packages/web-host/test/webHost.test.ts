@@ -1609,6 +1609,60 @@ describe('web host — the daemon going away', () => {
   }, 30_000);
 });
 
+describe('web host — prompt detail', () => {
+  /**
+   * Which tier a profile's model gets. Settable only by hand-editing
+   * config.json before this, which is where a setting goes to be undiscovered.
+   */
+  it('stores the chosen tier on the profile', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveProfile, {
+      profile: { name: 'mock', promptTier: 'lean' },
+    });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    expect(settings.profiles.find((p) => p.name === 'mock')?.promptTier).toBe('lean');
+    browser.close();
+  });
+
+  it('clears it back to automatic on null, rather than storing a third value', async () => {
+    // "Automatic" has to be the ABSENCE of the field — a stored "auto" would
+    // have to be understood by every reader of the config, and the loop's
+    // capability check already answers the question.
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptTier: 'lean' } });
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptTier: null } });
+
+    const stored = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
+      profiles: Array<Record<string, unknown>>;
+    };
+    expect('promptTier' in stored.profiles.find((p) => p.name === 'mock')!).toBe(false);
+    browser.close();
+  });
+
+  it('leaves the rest of the profile alone', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', agentModel: 'big' } });
+    await browser.peer.request(UI_METHODS.saveProfile, { profile: { name: 'mock', promptTier: 'full' } });
+
+    const settings = await browser.peer.request<UiSettings>(UI_METHODS.settings);
+    expect(settings.profiles.find((p) => p.name === 'mock')).toMatchObject({
+      agentModel: 'big',
+      promptTier: 'full',
+    });
+    browser.close();
+  });
+});
+
 describe('web host — MCP servers', () => {
   /**
    * Adding one used to mean leaving the browser and editing

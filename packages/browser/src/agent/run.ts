@@ -9,6 +9,7 @@ import {
   type ToolResult,
 } from '@heapcode/core/agent';
 import { createProvider, resolveContextWindow, resolveCapabilities } from '@heapcode/core/providers';
+import { withOriginFix } from '../shared/ollamaDiagnostic.js';
 import type { ChatMessage } from '@heapcode/core/providers';
 import { loadApiKey, loadFiles, loadUseDebugger, type StoredProfile } from '../shared/settings.js';
 import { availableLabels, loadProfileEnabled, loadUserProfile } from '../shared/profile.js';
@@ -466,7 +467,9 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     },
     requestPermission,
     events: {
-      onText: (text) => events.onText(text),
+      // A refused origin is the one run error with a one-command fix, and the
+      // extension's own origin is half of that command (shared/ollamaDiagnostic).
+      onText: (text) => events.onText(withOriginFix(text, `chrome-extension://${chrome.runtime.id}`)),
       onTextDelta: (text) => events.onTextDelta(text),
       onTextEnd: () => events.onTextEnd(),
       onReasoningDelta: (text) => events.onReasoningDelta(text),

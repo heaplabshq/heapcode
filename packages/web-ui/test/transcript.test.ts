@@ -73,6 +73,39 @@ describe('transcript reducer', () => {
     expect((t.items[0] as ToolItem).isError).toBe(true);
   });
 
+  it('updates the task list in place within a run, and gives the next run its own card', () => {
+    // The list answers "what is left" — a stack of stale copies would answer
+    // it five times, all wrong but the last. But the scoping matters as much
+    // as the in-place update: a second run must not rewrite the first run's
+    // card, because a reload (fromMessages) shows one card per stored turn.
+    const first = fold([
+      { type: 'todo_update', todos: [{ content: 'a', status: 'in_progress' }, { content: 'b', status: 'pending' }] },
+      { type: 'todo_update', todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] },
+    ]);
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]).toMatchObject({ kind: 'tasks' });
+    expect((first.items[0] as { todos: { content: string; status: string }[] }).todos).toEqual([
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'in_progress' },
+    ]);
+
+    const second = fold(
+      [
+        { type: 'todo_update', todos: [{ content: 'c', status: 'in_progress' }] },
+      ],
+      // A user message between the runs: the turn boundary.
+      {
+        ...first,
+        items: [...first.items, { kind: 'text', id: 'u1', role: 'user', text: 'again' }],
+      },
+    );
+    expect(second.items.map((i) => i.kind)).toEqual(['tasks', 'text', 'tasks']);
+    expect((second.items[0] as { todos: unknown[] }).todos).toEqual([
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'in_progress' },
+    ]);
+  });
+
   it('keeps sub-agent calls linked to their parent, for nesting', () => {
     const t = fold([
       { type: 'tool_call', id: 'p', name: 'delegate_task', args: { task: 'investigate' } },

@@ -1107,27 +1107,75 @@ body {
 
 /* ---------- diffs ---------- */
 .diff {
-  margin: 0 0 8px; padding: 8px 0;
+  --diff-no: 2ch;
+  margin: 0 0 8px; padding: 6px 0;
   background: var(--code-bg); border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  font-family: var(--mono); font-size: 12px; line-height: 1.55;
   overflow-x: auto;
 }
-.diff-line { padding: 0 10px; white-space: pre; }
-.diff-add { background: rgb(46 160 67 / 0.14); color: #1a7f37; }
-.diff-del { background: rgb(200 52 43 / 0.12); color: var(--danger); }
-.diff-hunk { color: var(--text-dim); background: var(--chip-bg); }
-.diff-meta { color: var(--text-dim); }
+/* Two line-number columns, the marker, then the code. The gutter is sized
+   from the largest number in this particular diff. */
+.diff-line {
+  display: grid;
+  grid-template-columns: var(--diff-no) var(--diff-no) 1.5ch 1fr;
+  gap: 0 8px; padding: 0 10px; white-space: pre;
+}
+/* Never part of a selection: copying a diff should give you code, not code
+   with `+` and `-` down the left of it. */
+.diff-no, .diff-sign {
+  user-select: none; -webkit-user-select: none;
+  color: var(--text-dim); text-align: right;
+}
+.diff-sign { text-align: center; }
+.diff-text { min-width: 0; }
+.diff-add { background: rgb(46 160 67 / 0.13); color: #1a7f37; }
+.diff-del { background: rgb(200 52 43 / 0.11); color: var(--danger); }
+.diff-add .diff-no, .diff-add .diff-sign { color: #1a7f37; }
+.diff-del .diff-no, .diff-del .diff-sign { color: var(--danger); }
+/* What actually differs inside a replaced line, rather than "this whole line
+   is red and that whole line is green". */
+.diff-word {
+  background: rgb(46 160 67 / 0.30); color: inherit;
+  border-radius: 3px; padding: 1px 0;
+}
+.diff-del .diff-word { background: rgb(200 52 43 / 0.26); }
+.diff-hunk, .diff-meta { display: block; color: var(--text-dim); }
+.diff-hunk { background: var(--chip-bg); padding: 1px 10px; margin: 4px 0 2px; }
+.diff-hunk:first-child { margin-top: 0; }
+.diff-meta { padding: 0 10px; }
+/* The rest of a long diff. Quiet, and full width so it reads as the end of
+   the block rather than as another line in it. */
+.diff-more {
+  display: block; width: 100%; margin-top: 4px;
+  background: none; border: 0; border-top: 1px solid var(--border);
+  cursor: pointer; color: var(--text-dim);
+  font: inherit; font-family: var(--sans); font-size: 11.5px; padding: 6px 10px;
+  text-align: left;
+}
+.diff-more:hover { background: var(--hover); color: var(--text); }
 
 /* Both dark selectors, not just the media query. With only the media query,
    a viewer whose OS is light but who chose the dark theme got dark-background
    diffs with the light palette's near-black green on them. */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .diff-add { color: #7ee787; }
-  :root:not([data-theme='light']) .diff-del { color: #ffa198; }
+  :root:not([data-theme='light']) .diff-add,
+  :root:not([data-theme='light']) .diff-add .diff-no,
+  :root:not([data-theme='light']) .diff-add .diff-sign { color: #7ee787; }
+  :root:not([data-theme='light']) .diff-del,
+  :root:not([data-theme='light']) .diff-del .diff-no,
+  :root:not([data-theme='light']) .diff-del .diff-sign { color: #ffa198; }
+  :root:not([data-theme='light']) .diff-word { background: rgb(63 185 80 / 0.32); }
+  :root:not([data-theme='light']) .diff-del .diff-word { background: rgb(248 81 73 / 0.30); }
 }
-:root[data-theme='dark'] .diff-add { color: #7ee787; }
-:root[data-theme='dark'] .diff-del { color: #ffa198; }
+:root[data-theme='dark'] .diff-add,
+:root[data-theme='dark'] .diff-add .diff-no,
+:root[data-theme='dark'] .diff-add .diff-sign { color: #7ee787; }
+:root[data-theme='dark'] .diff-del,
+:root[data-theme='dark'] .diff-del .diff-no,
+:root[data-theme='dark'] .diff-del .diff-sign { color: #ffa198; }
+:root[data-theme='dark'] .diff-word { background: rgb(63 185 80 / 0.32); }
+:root[data-theme='dark'] .diff-del .diff-word { background: rgb(248 81 73 / 0.30); }
 
 /* A diff in a tool chip is capped the way `.chip-body` is: an edit to a large
    file must not push the rest of the conversation off the screen. */

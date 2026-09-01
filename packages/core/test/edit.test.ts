@@ -50,6 +50,72 @@ describe('unifiedDiff', () => {
     expect(diff).toContain('+new');
     expect(diff.split('\n').some((l) => l.startsWith('-'))).toBe(false); // no removed line, only the hunk header's own "-"
   });
+
+  /*
+   * The reason this stopped being a prefix/suffix trim.
+   *
+   * That version called everything between the first and last change one
+   * block, so a file edited in two places printed every untouched line
+   * between them as removed and then added again — and the counts it implied
+   * are what the `+n −n` badges are computed from.
+   */
+  it('leaves untouched lines between two edits alone', () => {
+    const before = Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n');
+    const after = before.split('\n');
+    after[1] = 'CHANGED 1';
+    after[10] = 'CHANGED 10';
+    const diff = unifiedDiff(before, after.join('\n'));
+    const removed = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'));
+    const added = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++'));
+    expect(removed).toEqual(['-line 1', '-line 10']);
+    expect(added).toEqual(['+CHANGED 1', '+CHANGED 10']);
+    // Far enough apart that their context windows do not touch, so two hunks.
+    expect(diff.split('\n').filter((l) => l.startsWith('@@'))).toHaveLength(2);
+  });
+
+  it('keeps two nearby edits in one hunk rather than splitting on a shared line', () => {
+    const before = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
+    const after = before.split('\n');
+    after[4] = 'A';
+    after[6] = 'B';
+    const diff = unifiedDiff(before, after.join('\n'));
+    expect(diff.split('\n').filter((l) => l.startsWith('@@'))).toHaveLength(1);
+    // The line between them is context, not a removal and an addition.
+    expect(diff).toContain(' line 5');
+  });
+
+  it('numbers each hunk against both files', () => {
+    const before = ['a', 'b', 'c', 'd'].join('\n');
+    const after = ['a', 'B', 'c', 'd'].join('\n');
+    expect(unifiedDiff(before, after).split('\n')[0]).toBe('@@ -1,4 +1,4 @@');
+  });
+
+  it('numbers a pure insertion from the line before it, the way git does', () => {
+    // A hunk that removes nothing has an old count of zero; starting it at
+    // line 1 rather than at the preceding line is how `-0,0` gets misread.
+    const diff = unifiedDiff('a\nb\nc', 'a\nb\nc\nd');
+    expect(diff.split('\n')[0]).toBe('@@ -2,2 +2,3 @@');
+  });
+
+  it('falls back to one block when the two sides are too far apart to diff cheaply', () => {
+    // Past the edit-distance bound the search is abandoned. "Everything
+    // changed" is both the cheap answer and the true one for a rewrite.
+    const before = Array.from({ length: 1200 }, (_, i) => `old ${i}`).join('\n');
+    const after = Array.from({ length: 1200 }, (_, i) => `new ${i}`).join('\n');
+    const diff = unifiedDiff(before, after);
+    expect(diff.split('\n').filter((l) => l.startsWith('-'))).toHaveLength(1200);
+    expect(diff.split('\n').filter((l) => l.startsWith('+'))).toHaveLength(1200);
+  });
+
+  it('diffs a large file with a small edit without breaking a sweat', () => {
+    const before = Array.from({ length: 20_000 }, (_, i) => `line ${i}`).join('\n');
+    const after = before.split('\n');
+    after[9_000] = 'CHANGED';
+    const started = Date.now();
+    const diff = unifiedDiff(before, after.join('\n'));
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(diff.split('\n').filter((l) => l.startsWith('-'))).toEqual(['-line 9000']);
+  });
 });
 
 describe('findBestMatch', () => {

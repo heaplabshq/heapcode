@@ -11,6 +11,10 @@ const MAX_ATTACHED_IMAGES = 8;
 import {
   builtinPrompts,
   BUILTIN_PERSONAS,
+  MODEL_ROLES,
+  describeRole,
+  isModelRole,
+  type ModelRoleTable,
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODES,
   DEFAULT_MAX_ITERATIONS,
@@ -120,7 +124,8 @@ const TOOL_SUMMARY_CHARS = 4000;
 
 const COMMANDS: SlashCommand[] = [
   { name: '/help', description: 'Show available commands' },
-  { name: '/model', args: '[id]', description: 'Switch the model (fetches the provider’s list)' },
+  { name: '/model', args: '[id]', description: 'Switch the chat model — lists every connection’s models' },
+  { name: '/roles', args: '[role]', description: 'Assign agent, edit, apply, embeddings… to any connection’s model' },
   { name: '/profile', args: '[add|list|remove|name]', description: 'Switch, add, list, or remove provider profiles' },
   { name: '/persona', args: '[name]', description: 'Switch persona: agent, architect, debug, reviewer' },
   { name: '/mode', args: '[name]', description: 'Permission mode: plan, default, auto-edit, full-auto (Shift+Tab cycles)' },
@@ -191,6 +196,17 @@ export interface AppProps {
   tools: ToolDefinition[];
   workspaceName: string;
   contextWindow: number;
+  /**
+   * The model the agent role resolves to. Inherits chat unless something was
+   * assigned to agent specifically (core's config/roles.ts); omitted in tests,
+   * where the chat model stands in.
+   */
+  agentModel?: string;
+  /**
+   * The role table pushed at hello. Read from `configStore` when omitted;
+   * passed directly only by tests, which have no config file.
+   */
+  roles?: ModelRoleTable;
   /** Enables /model and /profile persistence; omitted in tests. */
   configStore?: ConfigStore;
   /** Needed by "/profile add" (stores the API key) and "/profile remove" (deletes it). */
@@ -250,6 +266,8 @@ export function App({
   tools,
   workspaceName,
   contextWindow,
+  agentModel,
+  roles,
   configStore,
   secretsStore,
   switchProvider,
@@ -275,7 +293,9 @@ export function App({
   // Session state that /model and /profile can change mid-session. The props
   // are just the initial values resolved by cli.tsx.
   const [active, setActive] = useState({ profile, contextWindow });
-  const [model, setModel] = useState(profile.agentModel || profile.model);
+  // The agent role's model, which inherits chat unless it was assigned its own
+  // (core's config/roles.ts). Resolved once in cli.tsx; /model keeps it current.
+  const [model, setModel] = useState(agentModel || profile.model);
   /**
    * Derived from the live profile, not from the launch-time prop. The prop is
    * resolved once in cli.tsx, so it went stale the moment the session switched
@@ -645,6 +665,10 @@ export function App({
         root: cwd ?? process.cwd(),
         profiles: [active.profile],
         activeProfile: active.profile.name,
+        // The whole table, not just chat's: a role pointing at another
+        // connection is resolved server-side, which then asks for that
+        // connection and its key through `key/request`.
+        roles: roles ?? (await configStore?.getRoles()),
         keys: apiKey ? { [active.profile.name]: apiKey } : {},
       },
       server,
@@ -976,50 +1000,163 @@ export function App({
     });
   }
 
-  async function applyModel(id: string): Promise<void> {
-    setModel(id);
-    // Keep agentModel in sync when the profile pins one — otherwise the
-    // switch would silently not apply (runAgent prefers agentModel).
-    const updated: ProviderProfileConfig = {
-      ...active.profile,
-      model: id,
-      ...(active.profile.agentModel ? { agentModel: id } : {}),
-    };
-    setActive((a) => ({ ...a, profile: updated }));
-    if (configStore) {
-      await configStore.saveProfile(updated);
-      pushSystem(`Model set to ${id} (saved to profile "${updated.name}").`);
-    } else {
+  /**
+   * Points chat at a model, and says so if the agent is not following.
+   *
+   * /model sets the CHAT role. Agent inherits it unless something was assigned
+   * to agent specifically, and in that case changing chat would look like it
+   * did nothing — so the message names where the run is actually going rather
+   * than leaving the user to wonder. `connection` defaults to the one in use.
+   */
+  async function applyModel(id: string, connection?: string): Promise<void> {
+    const target = connection ?? active.profile.name;
+    if (!configStore) {
+      setModel(id);
+      setActive((a) => ({ ...a, profile: { ...a.profile, model: id } }));
       pushSystem(`Model set to ${id} for this session.`);
+      return;
     }
+    await configStore.setChatModel(target, id);
+    const chat = await configStore.resolve('chat');
+    const agent = await configStore.resolve('agent');
+    if (chat) {
+      const next = await switchProvider?.(chat);
+      setActive({ profile: chat, contextWindow: next?.contextWindow ?? active.contextWindow });
+    }
+    setModel(agent?.model ?? id);
+    const pinned = agent && agent.model !== id;
+    pushSystem(
+      pinned
+        ? `Chat model set to ${id} on "${target}". The agent still runs ${agent.model} — /roles agent changes that.`
+        : `Model set to ${id} on "${target}".`,
+    );
+  }
+
+  /**
+   * Every configured connection's models, in one list.
+   *
+   * Fetched concurrently and per connection, because one unreachable endpoint
+   * must not cost the whole picker: a local Ollama that is not running is the
+   * ordinary case for someone whose other connection is a cloud provider, and
+   * before roles went global that user simply could not see the other side's
+   * models at all without switching profiles first.
+   *
+   * The value is `connection\u0000model` rather than a bare id, since two
+   * endpoints can and do serve models with the same name.
+   */
+  async function listAllModels(): Promise<Array<{ label: string; value: string }>> {
+    const { peer } = await ensureConnection();
+    const connections = (await configStore?.listConnections()) ?? [{ name: active.profile.name }];
+    const perConnection = await Promise.all(
+      connections.map(async (c) => {
+        try {
+          const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
+            profileName: c.name,
+          } satisfies ListModelsParams);
+          return models.map((m) => ({ connection: c.name, id: m.id }));
+        } catch {
+          // Unreachable or unlistable — the rest of the list is still useful,
+          // and /model <id> still works for an endpoint that lists nothing.
+          return [];
+        }
+      }),
+    );
+    return perConnection.flat().map(({ connection, id }) => ({
+      label:
+        connection === active.profile.name && id === active.profile.model
+          ? `${connection} / ${id} (current)`
+          : `${connection} / ${id}`,
+      value: `${connection}\u0000${id}`,
+    }));
   }
 
   async function handleModel(arg?: string): Promise<void> {
     if (arg) return applyModel(arg);
     try {
-      // Server-side: it already holds this profile's key and Provider, so the
-      // CLI has no reason to build a second one just to read a model list.
-      const { peer } = await ensureConnection();
-      const { models } = await peer.request<ListModelsResult>(METHODS.listModels, {
-        profileName: active.profile.name,
-      } satisfies ListModelsParams);
-      if (models.length === 0) {
-        pushSystem('This endpoint does not list models. Set one directly with "/model <id>".');
+      const items = await listAllModels();
+      if (items.length === 0) {
+        pushSystem('No endpoint listed any models. Set one directly with "/model <id>".');
         return;
       }
       setPicker({
-        title: `Select a model (current: ${model})`,
-        items: models.map((m) => ({ label: m.id === model ? `${m.id} (current)` : m.id, value: m.id })),
+        title: `Select a model (current: ${active.profile.name} / ${active.profile.model})`,
+        items,
         // Provider lists run to the hundreds — arrow-keying to a known id is
         // the slowest possible way to pick one.
         filterable: true,
-        onPick: (id) => {
+        onPick: (value) => {
           setPicker(undefined);
-          void applyModel(id);
+          const [connection, id] = value.split('\u0000');
+          void applyModel(id!, connection);
         },
       });
     } catch (err) {
       pushSystem(`Could not fetch models: ${err instanceof Error ? err.message : String(err)}. Set one directly with "/model <id>".`);
+    }
+  }
+
+  /**
+   * `/roles` — assign a model to a role, from any connection.
+   *
+   * This is the whole reason the split happened. A role used to be a field on
+   * whichever profile happened to be active, so setting embeddings meant
+   * setting it again on every other profile, and switching profiles silently
+   * changed it.
+   */
+  async function handleRoles(arg?: string): Promise<void> {
+    if (!configStore) {
+      pushSystem('Role assignment is unavailable in this session.');
+      return;
+    }
+    const show = async (): Promise<void> => {
+      const config = await configStore.modelConfig();
+      pushSystem(MODEL_ROLES.map((r) => `  ${r.padEnd(11)} ${describeRole(config, r)}`).join('\n'));
+    };
+    if (!arg) {
+      await show();
+      setPicker({
+        title: 'Assign a role',
+        items: MODEL_ROLES.map((r) => ({ label: r, value: r })),
+        onPick: (role) => {
+          setPicker(undefined);
+          void handleRoles(role);
+        },
+      });
+      return;
+    }
+    if (!isModelRole(arg)) {
+      pushSystem(`"${arg}" is not a role. One of: ${MODEL_ROLES.join(', ')}.`);
+      return;
+    }
+    const role = arg;
+    try {
+      const items = await listAllModels();
+      setPicker({
+        title: `Which model serves "${role}"?`,
+        items:
+          // Clearing is the difference between "runs a model I chose" and
+          // "follows the chain", and it needs to be reachable from the same
+          // place the choice was made. Chat has nothing to fall back to.
+          role === 'chat' ? items : [{ label: '— inherit (clear this role)', value: '' }, ...items],
+        filterable: true,
+        onPick: (value) => {
+          setPicker(undefined);
+          void (async () => {
+            if (!value) await configStore.setRole(role);
+            else {
+              const [connection, id] = value.split('\u0000');
+              if (role === 'chat') await configStore.setChatModel(connection!, id!);
+              else await configStore.setRole(role, { connection: connection!, model: id! });
+            }
+            if (role === 'agent' || role === 'chat') {
+              setModel((await configStore.resolve('agent'))?.model ?? model);
+            }
+            await show();
+          })();
+        },
+      });
+    } catch (err) {
+      pushSystem(`Could not fetch models: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -1076,10 +1213,13 @@ export function App({
         const next = await switchProvider(target);
         await configStore.setActiveProfile(target.name);
         setActive({ profile: target, contextWindow: next.contextWindow });
-        setModel(target.agentModel || target.model);
-        pushSystem(`Switched to profile "${target.name}" (${target.preset}, ${target.agentModel || target.model}).`);
+        pushSystem(`Chat moved to "${target.name}" (${target.preset}) — pick a model for it.`);
+        // A model id means nothing on an endpoint that does not serve it, so
+        // switching connections deliberately drops it rather than carrying one
+        // across and failing at the first request.
+        await handleModel();
       } catch (err) {
-        pushSystem(`Could not switch profile: ${err instanceof Error ? err.message : String(err)}`);
+        pushSystem(`Could not switch connection: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
     if (sub) return apply(sub);
@@ -1430,16 +1570,16 @@ export function App({
     pushSystem(
       [
         `Session     ${conversationRef.current.id.slice(0, 8)}  (heapcode --resume ${conversationRef.current.id.slice(0, 8)} to continue this later)`,
-        `Profile     ${p.name} (${p.preset})`,
+        `Connection  ${p.name} (${p.preset})`,
         `Endpoint    ${p.baseUrl}`,
-        `Model       ${model}${p.agentModel && p.agentModel !== p.model ? ` (agent: ${p.agentModel})` : ''}`,
+        `Model       ${p.model}${model && model !== p.model ? ` (agent: ${model})` : ''}`,
         `Persona     ${persona.label}`,
         `Sub-agents  ${subAgentsEnabled ? 'on' : 'off'} (/subagents to toggle)`,
         `Safe mode   ${safeMode ? 'on (--safe-mode)' : 'off'}`,
         `Mode        ${getPermissionModeInfo(permissionMode).label} — ${getPermissionModeInfo(permissionMode).hint}`,
         `Web search  ${webSearchStatus}`,
         `Tool proto  ${effectiveNativeToolCalls ? 'native tool calling' : 'text protocol (nativeToolCalls: false)'}`,
-        `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (set embeddingsModel on the profile, e.g. nomic-embed-text)' : ''}`,
+        `Search      ${ragStatus?.available ? `${ragStatus.state} — ${ragStatus.files} files, ${ragStatus.chunks} chunks` : 'unavailable'}${ragStatus?.state === 'no-embedder' ? ' (assign an embeddings model with /roles, e.g. nomic-embed-text)' : ''}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
         `Secrets     ${secretsFile()}`,
@@ -1457,6 +1597,9 @@ export function App({
         return true;
       case '/model':
         await handleModel(rest[0]);
+        return true;
+      case '/roles':
+        await handleRoles(rest[0]);
         return true;
       case '/profile':
       case '/provider':
@@ -1924,16 +2067,16 @@ export function App({
     }
   }
 
-  /** A freshly added profile becomes the active one for both the config and this session. */
+  /** A freshly added connection takes over the chat role, for both the config and this session. */
   function completeSetup(added: ProviderProfileConfig): void {
     setSetupActive(false);
     void (async () => {
       try {
         const next = await switchProvider!(added);
-        await configStore!.setActiveProfile(added.name);
+        await configStore!.setChatModel(added.name, added.model);
         setActive({ profile: added, contextWindow: next.contextWindow });
-        setModel(added.agentModel || added.model);
-        pushSystem(`Profile "${added.name}" added and active (${added.preset}, ${added.model}).`);
+        setModel((await configStore!.resolve('agent'))?.model ?? added.model);
+        pushSystem(`Connection "${added.name}" added, and chat now runs on it (${added.preset}, ${added.model}).`);
       } catch (err) {
         pushSystem(`Profile "${added.name}" was saved, but activating it failed: ${err instanceof Error ? err.message : String(err)}`);
       }

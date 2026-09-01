@@ -239,9 +239,15 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
   const profile = opts.profileName ? await config.getProfile(opts.profileName) : await config.getActiveProfile();
 
   if (!profile) {
-    printError(opts.json, 'No provider profile configured. Run "heapcode profile add" first.');
+    printError(opts.json, 'No provider connection configured. Run "heapcode connection add" first.');
     return 1;
   }
+  // What the agent role resolves to. `--profile NAME` pins the run to one
+  // connection, and the agent's own assignment does not apply there — naming a
+  // connection is a request to run on it, not on whatever the table says.
+  const agentModel = opts.profileName
+    ? profile.model
+    : ((await config.resolve('agent'))?.model ?? profile.model);
 
   let connection: Awaited<ReturnType<typeof connectToServer>> | undefined;
   try {
@@ -357,6 +363,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
         root,
         profiles: [profile],
         activeProfile: profile.name,
+        roles: await config.getRoles(),
         keys: apiKey ? { [profile.name]: apiKey } : {},
       },
       opts.server,
@@ -507,7 +514,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       const result = await peer.request<AgentRunResult>(METHODS.agentRun, {
         runId,
         profileName: profile.name,
-        model: profile.agentModel || profile.model,
+        model: agentModel,
         task,
         history: turnHistory,
         workspaceName: basename(root),
@@ -595,12 +602,12 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     const diff = changes.diff === undefined ? undefined : clampDiff(changes.diff);
 
     // The agent model, not profile.model — that is what actually consumed the
-    // tokens when a profile routes agent turns to a different model. The
-    // long-standing `model` field above keeps reporting profile.model.
+    // tokens when the agent role is assigned its own model. The long-standing
+    // `model` field above keeps reporting the chat model.
     const runUsage: RunUsage = {
       ...usage,
       elapsedMs: Date.now() - startedAt,
-      model: profile.agentModel || profile.model,
+      model: agentModel,
       profile: profile.name,
     };
 

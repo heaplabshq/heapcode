@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ExtensionToWebview,
   ModelAssignment,
@@ -169,11 +169,18 @@ function Field({
 function ModelPickerInput({
   value,
   onChange,
+  onCommit,
   models,
   placeholder,
 }: {
   value: string;
   onChange: (v: string) => void;
+  /**
+   * Called when the value is settled — a pick, or leaving the manual field —
+   * rather than per keystroke. `onChange` is right for a form draft and wrong
+   * for a role row, which saves: it would otherwise store `n`, `nv`, `nvi`…
+   */
+  onCommit?: (v: string) => void;
   models: string[];
   placeholder?: string;
 }) {
@@ -181,6 +188,7 @@ function ModelPickerInput({
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const ref = useRef<HTMLDivElement>(null);
+  const commit = onCommit ?? (() => {});
 
   useEffect(() => {
     if (!open) return;
@@ -212,6 +220,7 @@ function ModelPickerInput({
           value={value}
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={(e) => commit(e.target.value)}
         />
         {models.length > 0 && (
           <button className="ghost" title="Pick from the tested model list" onClick={() => setManual(false)}>
@@ -262,6 +271,7 @@ function ModelPickerInput({
               className={`menu-item${value === '' ? ' active' : ''}`}
               onClick={() => {
                 onChange('');
+                commit('');
                 setOpen(false);
                 setFilter('');
               }}
@@ -275,6 +285,7 @@ function ModelPickerInput({
                 className={`menu-item${m === value ? ' active' : ''}`}
                 onClick={() => {
                   onChange(m);
+                  commit(m);
                   setOpen(false);
                   setFilter('');
                 }}
@@ -298,6 +309,11 @@ function ModelPickerInput({
  * fallback chain. This states the outcome in a sentence and lets the model be
  * picked from any connection, because a role names a model — it is not a
  * property of an endpoint.
+ *
+ * The connection and the model are held locally until a model settles. A row
+ * that read its connection straight from the stored assignment could not point
+ * anywhere new: an inheriting role has none, so there was nothing to change and
+ * nothing to list models from except whatever chat was on.
  */
 function RoleRow({
   role,
@@ -317,7 +333,34 @@ function RoleRow({
   onChange: (assignment?: ModelAssignment) => void;
 }) {
   const meta = ROLE_META[role];
-  const connection = assignment?.connection ?? connections[0] ?? '';
+  const fallback = assignment?.connection ?? connections[0] ?? '';
+  const [connection, setConnection] = useState(fallback);
+  const [draft, setDraft] = useState(assignment?.model ?? '');
+
+  // Re-sync when the stored assignment changes underneath: a save round-trips
+  // through the extension and comes back, and setting chat moves what every
+  // inheriting row resolves to.
+  const stored = `${assignment?.connection ?? ''}\u0000${assignment?.model ?? ''}`;
+  const lastStored = useRef(stored);
+  if (lastStored.current !== stored) {
+    lastStored.current = stored;
+    setConnection(assignment?.connection ?? connections[0] ?? '');
+    setDraft(assignment?.model ?? '');
+  }
+
+  // Asked for on mount, not only when the dropdown moves. Without this a row
+  // never has a list to offer until you change its connection, so it falls
+  // back to a bare text box on the very first look.
+  useEffect(() => {
+    if (connection) onRequestModels(connection);
+  }, [connection, onRequestModels]);
+
+  const commit = (model: string): void => {
+    const next = model.trim();
+    if (next === (assignment?.model ?? '') && connection === (assignment?.connection ?? '')) return;
+    onChange(next ? { ...assignment, connection, model: next } : undefined);
+  };
+
   return (
     <div className="settings-role-row">
       <div className="settings-role-head">
@@ -339,12 +382,13 @@ function RoleRow({
           className="settings-input"
           value={connection}
           onChange={(e) => {
-            onRequestModels(e.target.value);
-            // Changing the endpoint clears the model: a model id means nothing
-            // on a host that does not serve it, and carrying it across is how
-            // an assignment ends up naming something that fails at request
-            // time rather than here.
-            onChange({ ...assignment, connection: e.target.value, model: '' });
+            setConnection(e.target.value);
+            // The model goes with it: an id means nothing on an endpoint that
+            // does not serve it. An assignment that had one is cleared back to
+            // inheriting rather than left naming something that would fail at
+            // request time.
+            setDraft('');
+            if (assignment?.model) onChange(undefined);
           }}
         >
           {connections.map((name) => (
@@ -354,10 +398,11 @@ function RoleRow({
           ))}
         </select>
         <ModelPickerInput
-          value={assignment?.model ?? ''}
-          onChange={(model) => onChange(model ? { ...assignment, connection, model } : undefined)}
+          value={draft}
+          onChange={setDraft}
+          onCommit={commit}
           models={models[connection] ?? []}
-          placeholder={meta.hint}
+          placeholder={summary}
         />
       </div>
     </div>
@@ -384,11 +429,14 @@ export function SettingsView({ data }: { data: SettingsData | null }) {
    */
   const [connectionModels, setConnectionModels] = useState<Record<string, string[]>>({});
   const requested = useRef(new Set<string>());
-  const requestModels = (connection: string): void => {
+  // Stable identity: every role row asks for its connection's models from an
+  // effect, and a fresh function each render would re-run all eight of them on
+  // every keystroke anywhere in this dialog.
+  const requestModels = useCallback((connection: string): void => {
     if (!connection || requested.current.has(connection)) return;
     requested.current.add(connection);
     postToExtension({ type: 'settingsListConnectionModels', connection });
-  };
+  }, []);
 
   useEffect(() => {
     const onMessage = (e: MessageEvent<ExtensionToWebview>) => {

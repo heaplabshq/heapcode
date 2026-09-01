@@ -293,28 +293,83 @@ describe('model roles', () => {
     expect([...select.options].map((o) => o.textContent)).toEqual(['on ollama', 'on local']);
   });
 
-  it('assigns a role through its own message, not by saving a profile', () => {
+  it('saves when the value settles, not on every keystroke', () => {
+    // Each save is a round-trip that re-renders the whole dialog. Persisting
+    // per character would also store `r`, `re`, `rer`… as real assignments.
     const onSetRole = vi.fn();
     openRoles({ onSetRole });
-    fireEvent.change(screen.getByLabelText('Rerank model'), { target: { value: 'rerank-1' } });
+    const input = screen.getByLabelText('Rerank model');
+    fireEvent.change(input, { target: { value: 'rerank-1' } });
+    expect(onSetRole).not.toHaveBeenCalled();
+
+    fireEvent.blur(input);
     expect(onSetRole).toHaveBeenCalledWith('rerank', { connection: 'ollama', model: 'rerank-1' });
   });
 
   it('emptying a role clears it, so it inherits again', () => {
     const onSetRole = vi.fn();
     openRoles({ onSetRole });
-    fireEvent.change(screen.getByLabelText('Embeddings model'), { target: { value: '' } });
+    const input = screen.getByLabelText('Embeddings model');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
     expect(onSetRole).toHaveBeenCalledWith('embeddings', undefined);
   });
 
-  it('drops the model when the connection changes, rather than carrying it across', () => {
-    // A model id means nothing on a host that does not serve it, and carrying
-    // one across is how an assignment ends up naming something that fails at
-    // request time instead of here.
+  it('leaving a field untouched saves nothing', () => {
     const onSetRole = vi.fn();
     openRoles({ onSetRole });
+    fireEvent.focus(screen.getByLabelText('Embeddings model'));
+    fireEvent.blur(screen.getByLabelText('Embeddings model'));
+    expect(onSetRole).not.toHaveBeenCalled();
+  });
+
+  it('lets a role point at a connection it is not already assigned to', () => {
+    // The bug this replaces: an inheriting row derived its connection straight
+    // from the stored assignment, so changing the dropdown sent a clear, the
+    // select snapped back to whatever chat was on, and that endpoint's models
+    // were the only ones you could ever see. There was no order of operations
+    // that worked.
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
+    const select = screen.getByLabelText<HTMLSelectElement>('Rerank connection');
+    expect(select.value).toBe('ollama');
+
+    fireEvent.change(select, { target: { value: 'local' } });
+
+    expect(select.value).toBe('local');
+    // Nothing stored yet — a connection with no model is not something to run.
+    expect(onSetRole).not.toHaveBeenCalled();
+
+    const input = screen.getByLabelText('Rerank model');
+    fireEvent.change(input, { target: { value: 'qwen3-rerank' } });
+    fireEvent.blur(input);
+    expect(onSetRole).toHaveBeenCalledWith('rerank', { connection: 'local', model: 'qwen3-rerank' });
+  });
+
+  it('lists the models of the connection the row points at, after it is changed', async () => {
+    // The type-ahead caches the first list it fetched, so the row is remounted
+    // per connection; otherwise it keeps suggesting the previous endpoint's.
+    const listConnectionModels = vi.fn((c: string) =>
+      Promise.resolve(c === 'local' ? ['nomic-embed-text'] : ['gpt-4o']),
+    );
+    openRoles({ listConnectionModels });
+    fireEvent.focus(screen.getByLabelText('Rerank model'));
+    await waitFor(() => expect(listConnectionModels).toHaveBeenCalledWith('ollama'));
+
+    fireEvent.change(screen.getByLabelText('Rerank connection'), { target: { value: 'local' } });
+    fireEvent.focus(screen.getByLabelText('Rerank model'));
+
+    await waitFor(() => expect(listConnectionModels).toHaveBeenCalledWith('local'));
+    expect(await screen.findByText('nomic-embed-text')).toBeTruthy();
+  });
+
+  it('drops the assignment when its connection changes, rather than leaving it on the wrong host', () => {
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
+    // Embeddings is assigned nomic-embed on local.
     fireEvent.change(screen.getByLabelText('Embeddings connection'), { target: { value: 'ollama' } });
-    expect(onSetRole).toHaveBeenCalledWith('embeddings', { connection: 'ollama', model: '' });
+    expect(onSetRole).toHaveBeenCalledWith('embeddings', undefined);
+    expect(screen.getByLabelText<HTMLInputElement>('Embeddings model').value).toBe('');
   });
 
   it('suggests models from the connection the row points at, not the one being edited', async () => {
@@ -322,6 +377,30 @@ describe('model roles', () => {
     openRoles({ listConnectionModels });
     fireEvent.focus(screen.getByLabelText('Embeddings model'));
     await waitFor(() => expect(listConnectionModels).toHaveBeenCalledWith('local'));
+  });
+
+  /**
+   * Typing into a role field used to move the caret to the settings search box
+   * after the first character.
+   *
+   * Every dialog is opened with an inline `onClose` arrow, so it is a new
+   * function on each render of the component holding it — and `useModal` had
+   * its focus-in call in the same effect as the key handler, keyed on that
+   * function. Any state change behind the dialog therefore re-ran it and
+   * re-focused the dialog's entry point. Nothing else here saves as you type,
+   * which is why it went unnoticed until a field that does.
+   */
+  it('keeps focus where the user put it when the dialog re-renders', () => {
+    const { rerender } = render(<Settings {...props({ settings: withRoles })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    const input = screen.getByLabelText('Rerank model');
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    // A fresh props object, exactly as the parent re-rendering produces.
+    rerender(<Settings {...props({ settings: withRoles })} />);
+
+    expect(document.activeElement).toBe(screen.getByLabelText('Rerank model'));
   });
 });
 

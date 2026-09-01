@@ -1043,7 +1043,18 @@ function RoleTable({
   );
 }
 
-/** One role: what serves it, and the two controls that change it. */
+/**
+ * One role: what serves it, and the two controls that change it.
+ *
+ * The connection and the model are held locally until a model is settled,
+ * which the first version got wrong in a way that made the row look broken.
+ * It derived the connection straight from the stored assignment and, for a
+ * role that was still inheriting, sent a clear on every change — so picking a
+ * different endpoint stored nothing, the select snapped back to the one chat
+ * was on, and the only models you could ever see were that endpoint's. There
+ * was no order of operations that worked: you cannot name a model on an
+ * endpoint you cannot select first.
+ */
 function RoleRow({
   meta,
   assignment,
@@ -1057,31 +1068,57 @@ function RoleRow({
   onSetRole(role: UiModelRole, next?: { connection: string; model: string }): void;
   listModels?(connection: string): Promise<string[]>;
 }): JSX.Element {
-  const connection = assignment?.connection ?? connections.find((c) => c.active)?.name ?? connections[0]?.name ?? '';
+  const fallback = connections.find((c) => c.active)?.name ?? connections[0]?.name ?? '';
+  const [connection, setConnection] = useState(assignment?.connection ?? fallback);
+  const [draft, setDraft] = useState(assignment?.model ?? '');
+
+  // Re-sync when the stored assignment changes underneath — a save round-trips
+  // through the host and comes back, and other rows can move this one (setting
+  // chat changes what an inheriting row resolves to).
+  const stored = `${assignment?.connection ?? ''}\u0000${assignment?.model ?? ''}`;
+  const lastStored = useRef(stored);
+  if (lastStored.current !== stored) {
+    lastStored.current = stored;
+    setConnection(assignment?.connection ?? fallback);
+    setDraft(assignment?.model ?? '');
+  }
+
+  const commit = (model: string): void => {
+    const next = model.trim();
+    if (next === (assignment?.model ?? '') && connection === (assignment?.connection ?? fallback)) return;
+    onSetRole(meta.key, next ? { connection, model: next } : undefined);
+  };
 
   return (
     <div className="role">
       <span className="role-label">{meta.label}</span>
       <ModelInput
-        value={assignment?.model ?? ''}
+        // Remounted per connection: the type-ahead caches the first list it
+        // fetched, so without this a row that switched endpoint would keep
+        // suggesting the previous one's models.
+        key={connection}
+        value={draft}
         // The resolved answer, so an inheriting row says what it inherited
         // rather than only what it would inherit from.
         placeholder={assignment?.summary ?? meta.hint}
         aria-label={`${meta.label} model`}
-        onChange={(v) => onSetRole(meta.key, v ? { connection, model: v } : undefined)}
+        onChange={setDraft}
+        onCommit={commit}
         listModels={() => listModels?.(connection) ?? Promise.resolve([])}
       />
       <select
         className="select role-select"
         value={connection}
         aria-label={`${meta.label} connection`}
-        onChange={(e) =>
-          // Changing the endpoint clears the model: a model id means nothing on
-          // a host that does not serve it, and carrying one across is how an
-          // assignment ends up naming something that fails at request time
-          // rather than here.
-          onSetRole(meta.key, assignment?.model ? { connection: e.target.value, model: '' } : undefined)
-        }
+        onChange={(e) => {
+          setConnection(e.target.value);
+          // The model goes with it. A model id means nothing on an endpoint
+          // that does not serve it, so an assignment that had one is cleared
+          // back to inheriting until a model on the new endpoint is picked —
+          // rather than left naming something that would fail at request time.
+          setDraft('');
+          if (assignment?.model) onSetRole(meta.key, undefined);
+        }}
       >
         {connections.map((p) => (
           <option key={p.name} value={p.name}>

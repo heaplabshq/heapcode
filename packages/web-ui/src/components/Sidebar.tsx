@@ -209,19 +209,27 @@ function RailItem({
   /** Shown at the row's right edge, when there is a shortcut for it. */
   kbd?: string;
 }): JSX.Element {
+  const tip = hint ?? label;
   return (
     <button
       className={`rail-item ${active ? 'rail-item-active' : ''}`}
       onClick={onClick}
       disabled={disabled}
-      // Collapsed, the tooltip is the only label there is.
-      title={hint ?? (collapsed ? label : undefined)}
+      // Collapsed, the tooltip is the only label there is. The native title is
+      // unreliable in embedded webviews (long delay, often suppressed), so a
+      // custom tooltip element carries it instead — see `.rail-tip` in styles.
+      title={collapsed ? undefined : hint}
       aria-label={collapsed ? label : undefined}
     >
       <span className="rail-icon">{icon}</span>
       <span className="rail-label">{label}</span>
       {kbd && <span className="rail-kbd">{kbd}</span>}
       {badge !== undefined && <span className="rail-badge">{badge}</span>}
+      {collapsed && (
+        <span className="rail-tip" aria-hidden="true">
+          {tip}
+        </span>
+      )}
     </button>
   );
 }

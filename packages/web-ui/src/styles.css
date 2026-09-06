@@ -160,7 +160,14 @@ body {
   transition: padding 190ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 .rail-item:hover:not(:disabled) { background: var(--hover); }
-.rail-item:disabled { opacity: 0.45; cursor: not-allowed; }
+/* Dimmed by its parts, not as a whole: `opacity` on the button would take the
+   tooltip down with it, and the tooltip on a disabled row is the one that
+   says why it is disabled. */
+.rail-item:disabled { cursor: not-allowed; }
+.rail-item:disabled .rail-icon,
+.rail-item:disabled .rail-label,
+.rail-item:disabled .rail-kbd,
+.rail-item:disabled .rail-badge { opacity: 0.45; }
 .rail-item-active { background: var(--hover-strong); }
 /* As tall as the label's line box, so a row is the same height whether or not
    the label is there — collapsing used to lift every icon by five pixels. */
@@ -192,6 +199,36 @@ body {
 .rail-collapsed .rail-item { padding: 7px 12px; }
 /* Collapsed there is no label to sit beside, so the count rides the icon. */
 .rail-collapsed .rail-badge { margin: 0 0 0 -6px; align-self: flex-start; padding: 0 4px; }
+
+/* Custom tooltip for the collapsed rail. The native title is unreliable in
+   embedded webviews (long delay, often suppressed), so each item carries its
+   own tooltip element. `position: fixed` escapes the rail's overflow-x:hidden
+   (no transformed ancestor exists, so fixed is viewport-relative); it sits to
+   the right of the 56px rail, vertically centred on the row. Hidden until the
+   row is hovered or focused, and never rendered when expanded.
+
+   `left` is tied to `.rail-collapsed { width: 56px }` and to the rail being
+   the flex root's first child, so it starts at viewport x=0. Move either and
+   this has to move with it. */
+.rail-tip {
+  position: fixed; left: 60px;
+  z-index: 40;
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px; font-size: 12px; white-space: nowrap;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
+  pointer-events: none;
+  opacity: 0; visibility: hidden;
+  transition: opacity 90ms ease, visibility 0s linear 90ms;
+}
+/* Disabled rows included, deliberately. A disabled item is the one case where
+   the tooltip carries something the label does not — "Stop the current run
+   first" — and the native `title` this replaced did show on disabled buttons. */
+.rail-item:hover .rail-tip,
+.rail-item:focus-visible .rail-tip {
+  opacity: 1; visibility: visible;
+  transition: opacity 90ms ease 220ms, visibility 0s linear 220ms;
+}
 
 /* The list is the only thing here that scrolls; nav and footer stay put. */
 .rail-recents {
@@ -1344,7 +1381,7 @@ body {
   padding: 14px 20px; border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
-.settings-pane-head h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.settings-pane-head h2 { margin: 0; font-size: 15px; font-weight: 500; }
 .settings-pane .modal-body { flex: 1 1 auto; padding: 18px 22px 22px; overflow-y: auto; }
 /* One page at a time, so the section's own rule and heading are redundant. */
 .settings-pane .settings-section { padding: 0; border-bottom: 0; }

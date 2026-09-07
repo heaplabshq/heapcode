@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- **`heapcode connection` and `heapcode model` replace `heapcode profile`.** A provider is a *connection* — an endpoint and its key — and a model serving a role is a separate thing: `heapcode connection <add|list|use|remove>` manages endpoints, `heapcode model <list|set|clear> <role> <connection> <model>` manages the one global role table. Setting embeddings once now sets it once, not again on every profile, and switching which endpoint you chat with no longer silently rewrites the other seven roles. `heapcode model set edit cloud gpt-4o` runs `edit` on a cloud model while chat stays local. Old configs migrate on first read
+- **A role never runs on a model it was not assigned** — an assignment's own model and tuning win over whatever the connection was pushed carrying, so a role pointed at a big model cannot execute on the endpoint's default
+- **Paste or attach a screenshot in the composer.** `Ctrl/Cmd+V` with an image on the clipboard attaches it to the next message (via `pngpaste` on macOS, `PowerShell` on Windows, `wl-paste`/`xclip` on Linux); a path to an image file works too. The agent sees it on that turn
+- **`download_file` — fetch a URL to disk without a shell.** Same SSRF guard as `fetch_url` (no loopback or metadata endpoints, redirects re-checked every hop), a size cap, a checkpoint, and the workspace jail — none of which `curl` through `run_command` had
+- **`/mcp add` — register an MCP server without editing JSON.** stdio, HTTP or SSE, written to `~/.heapcode/config.json` or a project's `.heapcode/mcp.json`, the same file the extension and the browser UI read
+- **The agent loop stops going in circles** — a run repeating a failing action, or narrating several turns without calling a tool, is stopped with a summary instead of spending its whole budget. The loop's own nudges are marked as system content so the model does not read them as the user, and a shell command is judged by what it does, not which tool ran it
+- **The semantic index records its embedder** and refuses to load one built by a different model instead of mixing incomparable vectors; a failed index build now says why
+- **A local endpoint refusing our `Origin`** is reported as needing `OLLAMA_ORIGINS`, not as a bad key
+
 ## 0.5.0
 
 - **Fixed: heapcode could not run on Windows at all.** Each project's state directory is named after its own path, so on Windows the drive letter's colon rode along into the name — and `:` is illegal in a Windows filename. Every attempt to save anything under `~/.heapcode/projects/` died with a bare `ENOENT` naming a path that looked perfectly ordinary. The first command of the first session hit it

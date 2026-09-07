@@ -24,7 +24,7 @@ Heap Code does send anonymous usage telemetry by default (which features get use
 |---|---|
 | Ollama, LM Studio, vLLM, LocalAI | Ollama Cloud, OpenAI, Azure OpenAI, OpenRouter, Groq, Together AI, NVIDIA NIM |
 
-…plus any custom OpenAI-spec endpoint. Providers are **named profiles** — switch from the status bar, with separate model roles for **chat / edit / apply / completion / agent / embeddings / rerank** per profile. Any role can also run on a *different* profile entirely (Settings → Model roles & tuning → "run on profile") — e.g. embeddings on a local Ollama profile while chat/agent use a cloud profile.
+…plus any custom OpenAI-spec endpoint. A provider is a named **connection** (an endpoint + its key); one global **role table** — **chat / edit / apply / completion / agent / embeddings / rerank / context** — says which model on which connection serves each role. Every role can point at a different connection: embeddings on a local Ollama box while chat and agent run on a cloud model. Set it on the settings screen, or with `heapcode model` in the CLI.
 
 ## Features
 

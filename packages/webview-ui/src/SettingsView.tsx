@@ -364,6 +364,10 @@ function RoleRow({
   const commit = (model: string): void => {
     const next = model.trim();
     if (next === (assignment?.model ?? '') && connection === (assignment?.connection ?? '')) return;
+    // Chat is the bottom of every inheritance chain — it has no "inherit"
+    // state, so a blank model is not a way to clear it. Sending the clear
+    // deletes the chat assignment and the extension loses its model app-wide.
+    if (!next && role === 'chat') return;
     onChange(next ? { ...assignment, connection, model: next } : undefined);
   };
 
@@ -392,9 +396,11 @@ function RoleRow({
             // The model goes with it: an id means nothing on an endpoint that
             // does not serve it. An assignment that had one is cleared back to
             // inheriting rather than left naming something that would fail at
-            // request time.
+            // request time. Chat is the exception — it cannot inherit, so its
+            // model stays until one is picked on the new endpoint and `commit`
+            // switches both together.
             setDraft('');
-            if (assignment?.model) onChange(undefined);
+            if (assignment?.model && role !== 'chat') onChange(undefined);
           }}
         >
           {connections.map((name) => (

@@ -338,11 +338,18 @@ export function migrateProfiles(
   >) {
     const redirect = active[fields.profile] as string | undefined;
     // The redirect names a *profile*, and the model then came from that
-    // profile's own field for the same role — falling back to its chat model,
-    // exactly as the old two-hop resolution did.
+    // profile's own field for the same role. For a role that inherited chat
+    // (edit, agent, completion, rerank, context) the old two-hop resolution
+    // then fell back to that profile's chat model — but `apply` and
+    // `embeddings` inherit nothing (ROLE_FALLBACK), and their old resolvers
+    // read only the role-specific field: an unset one meant the feature was
+    // off. Handing either a chat model here is not a degraded migration, it is
+    // a wrong one (a chat model asked to embed breaks the index).
     const target = redirect ? profiles.find((p) => p.name === redirect) : undefined;
     const source = target ?? active;
-    const model = (source[fields.model] as string | undefined) || (target ? target.model : undefined);
+    const inherits = ROLE_FALLBACK[role].length > 0;
+    const model =
+      (source[fields.model] as string | undefined) || (target && inherits ? target.model : undefined);
     // `active[fields.model]` alone when there is no redirect: an unset role
     // stayed unset and inherited, and it should keep inheriting rather than be
     // pinned to whatever chat happened to be at migration time.

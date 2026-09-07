@@ -172,6 +172,22 @@ describe('migrateProfiles', () => {
     expect(roles.rerank).toEqual({ connection: 'homelab', model: 'llama3.1' });
   });
 
+  it('never gives a chat-model fallback to embeddings or apply — they inherit nothing', () => {
+    // The old resolvers read only `<role>Model` off the redirect target; an
+    // unset one meant the feature was off. A chat model in `roles.embeddings`
+    // would have RagIndexer embed with it, and the fingerprint check then
+    // discards every good index as written by a different embedder.
+    const { roles } = migrateProfiles(
+      [
+        { ...legacy[0]!, embeddingsProfile: 'homelab', applyProfile: 'homelab' },
+        { ...legacy[1]!, embeddingsModel: undefined, applyModel: undefined, model: 'llama3.1' },
+      ],
+      'work',
+    );
+    expect(roles.embeddings).toBeUndefined();
+    expect(roles.apply).toBeUndefined();
+  });
+
   it('takes the first profile when no active one is named', () => {
     expect(migrateProfiles(legacy).roles.chat?.connection).toBe('work');
   });

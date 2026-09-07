@@ -424,8 +424,13 @@ export class WebSession {
     const root = this.root;
     const profile = await config.getActiveProfile();
     if (!profile) {
+      const connections = await config.listConnections();
       throw new Error(
-        'No provider connection configured. Run `heapcode connection add` (or start the CLI once) before `heapcode web`.',
+        connections.length > 0
+          ? `Chat has no model set. Run \`heapcode model set chat ${
+              (await config.getRoles()).chat?.connection ?? connections[0]!.name
+            } <model>\` before \`heapcode web\`.`
+          : 'No provider connection configured. Run `heapcode connection add` (or start the CLI once) before `heapcode web`.',
       );
     }
     this.profile = profile;

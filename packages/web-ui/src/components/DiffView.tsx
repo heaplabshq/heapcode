@@ -115,9 +115,12 @@ function parse(diff: string): Row[] {
   const rows: Row[] = [];
   let oldNo = 0;
   let newNo = 0;
-  // `edit_file` prefixes its diff with a plain sentence, and the `---`/`+++`
-  // headers come before the first hunk. Neither has a line number, so nothing
-  // is numbered until a hunk header says where we are.
+  // `edit_file` prefixes its diff with a plain sentence and, for a git-style
+  // diff, `---`/`+++` file headers — all before the first hunk. Nothing is
+  // numbered until a hunk header says where we are. Once inside a hunk every
+  // body line carries exactly one `+`/`-`/space prefix, so it is classified by
+  // that alone: a removed line whose own content is `---` (a Markdown rule, a
+  // YAML `---`, a `-- comment`) is a deletion, not a header.
   let inHunk = false;
 
   for (const line of diff.split('\n')) {
@@ -127,7 +130,7 @@ function parse(diff: string): Row[] {
       newNo = Number(header[2]);
       inHunk = true;
       rows.push({ kind: 'hunk', text: line });
-    } else if (!inHunk || line.startsWith('+++') || line.startsWith('---')) {
+    } else if (!inHunk) {
       rows.push({ kind: 'meta', text: line });
     } else if (line.startsWith('+')) {
       rows.push({ kind: 'add', text: line.slice(1), newNo: newNo++ });
@@ -231,8 +234,10 @@ export function isDiffText(text: string): boolean {
  * Added/removed line counts for a diff, for the chip's `+n −n` badge.
  *
  * Counted from the diff body only — lines before the first hunk header are the
- * tool's own prose ("Edited src/foo.ts.") and file headers, and counting a
- * `--- a/foo` as a removal is how a one-line edit ends up claiming two.
+ * tool's own prose ("Edited src/foo.ts.") and any file headers. Inside a hunk
+ * every line carries one `+`/`-`/space prefix, so it is counted by that alone:
+ * a removed `---` (a Markdown rule, a `-- comment`) is one deletion, not a
+ * header to skip.
  */
 export function diffStats(text: string): { added: number; removed: number } {
   let added = 0;
@@ -244,7 +249,6 @@ export function diffStats(text: string): { added: number; removed: number } {
       continue;
     }
     if (!inHunk) continue;
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
     if (line.startsWith('+')) added++;
     else if (line.startsWith('-')) removed++;
   }

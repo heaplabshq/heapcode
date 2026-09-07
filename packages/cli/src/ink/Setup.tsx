@@ -140,6 +140,12 @@ export function Setup({ onComplete, banner = true, configStore, secretsStore }: 
       const config = configStore ?? new ConfigStore();
       const secrets = secretsStore ?? new SecretsStore();
       await config.saveProfile(step.profile);
+      // Onboarding — first run and `heapcode connection add` alike — asks for
+      // one model and promises chat runs on it. `saveProfile` only adopts that
+      // model when chat has nowhere else to point, so a second connection would
+      // otherwise be saved with its model discarded and chat left where it was.
+      // Point chat at what the user just picked.
+      if (step.profile.model) await config.setChatModel(step.profile.name, step.profile.model);
       if (step.apiKey) await secrets.setApiKey(step.profile.name, step.apiKey);
       if (!cancelled) setStep({ kind: 'done', profile: step.profile });
     })();

@@ -1348,6 +1348,11 @@ function RoleRow({
   const commit = (model: string): void => {
     const next = model.trim();
     if (next === (assignment?.model ?? '') && connection === (assignment?.connection ?? fallback)) return;
+    // Chat is the bottom of every inheritance chain, so it has no "inherit"
+    // state to fall back to — an empty model is not a way to clear it. The
+    // host rejects a chat clear anyway; not sending one keeps the row from
+    // round-tripping an error just because the field was blanked.
+    if (!next && meta.key === 'chat') return;
     onSetRole(meta.key, next ? { connection, model: next } : undefined);
   };
 
@@ -1378,8 +1383,11 @@ function RoleRow({
           // that does not serve it, so an assignment that had one is cleared
           // back to inheriting until a model on the new endpoint is picked —
           // rather than left naming something that would fail at request time.
+          // Chat is the exception: it cannot be cleared (every other role
+          // inherits from it), so its current model stays put until one is
+          // picked on the new endpoint and `commit` switches both together.
           setDraft('');
-          if (assignment?.model) onSetRole(meta.key, undefined);
+          if (assignment?.model && meta.key !== 'chat') onSetRole(meta.key, undefined);
         }}
       >
         {connections.map((p) => (

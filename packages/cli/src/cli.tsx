@@ -259,9 +259,23 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    // No profile configured — walk straight into onboarding instead of erroring
-    // out and telling the user to run a separate command (Setup's own banner
-    // explains what's happening; no extra console.log needed here).
+    // A configured connection with no model on the chat role — the state
+    // `heapcode connection use` leaves behind until a model is picked. Running
+    // onboarding here would add a duplicate connection; point at the fix instead.
+    const connections = await config.listConnections();
+    if (connections.length > 0) {
+      const target = (await config.getRoles()).chat?.connection ?? connections[0]!.name;
+      console.error(
+        `Chat has no model set. Pick one:\n` +
+          `  heapcode model set chat ${target} <model>\n` +
+          `("heapcode model list" shows what each role runs on.)`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    // Nothing configured at all — walk straight into onboarding instead of
+    // erroring out and telling the user to run a separate command (Setup's own
+    // banner explains what's happening; no extra console.log needed here).
     profile = await profileAdd();
   }
 

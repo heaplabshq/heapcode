@@ -147,4 +147,15 @@ describe('connection use', () => {
 
     expect((await store().getRoles()).chat).toEqual({ connection: 'cloud', model: '' });
   });
+
+  it('leaves chat unresolvable but the connections intact — the state bare `heapcode` must not treat as unconfigured', async () => {
+    // `getActiveProfile()` is undefined (no model), yet `listConnections()` is
+    // non-empty: cli.tsx keys on exactly this to print "pick a model" instead
+    // of launching onboarding and adding a duplicate connection.
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await profileUse('cloud');
+
+    expect(await store().getActiveProfile()).toBeUndefined();
+    expect((await store().listConnections()).map((c) => c.name)).toEqual(['local', 'cloud']);
+  });
 });

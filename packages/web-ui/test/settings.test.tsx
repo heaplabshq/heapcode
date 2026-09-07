@@ -346,6 +346,27 @@ describe('model roles', () => {
     expect(onSetRole).toHaveBeenCalledWith('rerank', { connection: 'local', model: 'qwen3-rerank' });
   });
 
+  it('never clears chat — not when its connection changes, not when its model is emptied', () => {
+    // Chat is the bottom of every inheritance chain, so it has no inherit
+    // state. A clear deletes the assignment: on the web the host rejects it,
+    // in the extension it strips the model app-wide.
+    const onSetRole = vi.fn();
+    openRoles({ onSetRole });
+
+    fireEvent.change(screen.getByLabelText<HTMLSelectElement>('Chat connection'), { target: { value: 'local' } });
+    expect(onSetRole).not.toHaveBeenCalled();
+
+    const input = screen.getByLabelText('Chat model');
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    expect(onSetRole).not.toHaveBeenCalled();
+
+    // A real model on the new connection still switches it, both halves together.
+    fireEvent.change(input, { target: { value: 'qwen3' } });
+    fireEvent.blur(input);
+    expect(onSetRole).toHaveBeenCalledWith('chat', { connection: 'local', model: 'qwen3' });
+  });
+
   it('lists the models of the connection the row points at, after it is changed', async () => {
     // The type-ahead caches the first list it fetched, so the row is remounted
     // per connection; otherwise it keeps suggesting the previous endpoint's.

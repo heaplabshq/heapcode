@@ -664,7 +664,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.postSettingsData();
         break;
       case 'settingsSetRole':
-        await this.profiles.setRole(msg.role, msg.assignment);
+        try {
+          await this.profiles.setRole(msg.role, msg.assignment);
+        } catch (err) {
+          void vscode.window.showErrorMessage(`Heap Code: ${err instanceof Error ? err.message : String(err)}`);
+        }
         await this.postSettingsData();
         break;
       case 'settingsListConnectionModels': {

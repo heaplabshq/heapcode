@@ -244,6 +244,14 @@ export class ProfileManager {
 
   /** Assigns a role, or clears it (back to inheriting) when given no assignment. */
   async setRole(role: ModelRole, assignment?: ModelAssignment): Promise<void> {
+    // Chat is what every other role inherits from, so it has nothing to fall
+    // back to — deleting it leaves `getActiveProfile()` resolving to a bare
+    // `getProfiles()[0]` with no model, and the agent, inline edit, commit
+    // messages and PR review all fail. The settings UI does not offer to clear
+    // it; this refuses any other caller that tries.
+    if (role === 'chat' && !assignment) {
+      throw new Error('Chat is what the other roles inherit from, so it cannot be cleared.');
+    }
     const roles = { ...this.getRoles() };
     if (assignment) roles[role] = assignment;
     else delete roles[role];

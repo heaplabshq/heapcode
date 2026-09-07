@@ -54,6 +54,13 @@ describe('diffStats', () => {
   it('is zero for text with no hunk at all', () => {
     expect(diffStats('nothing to see')).toEqual({ added: 0, removed: 0 });
   });
+
+  it('counts an in-hunk line whose own content is --- or +++', () => {
+    // A removed Markdown rule / YAML separator / `-- comment`, or a `++`
+    // increment, is a body line — not a file header to skip.
+    const diff = ['@@ -1,3 +1,2 @@', ' title', '----', '---', '+++new'].join('\n');
+    expect(diffStats(diff)).toEqual({ added: 1, removed: 2 });
+  });
 });
 
 /**
@@ -129,5 +136,19 @@ describe('DiffView', () => {
     const first = view.querySelector('.diff-line')!;
     expect(first.className).toContain('diff-meta');
     expect(first.querySelector('.diff-no')).toBeNull();
+  });
+
+  it('treats an in-hunk --- line as a deletion, keeping the numbers in step', () => {
+    // A removed Markdown `---` rule used to parse as a file header: rendered
+    // without a gutter marker and, worse, not advancing the old-file line
+    // number, so every row below it was off by one.
+    const view = rows(['@@ -1,3 +1,2 @@', ' # Title', '----', ' body'].join('\n'));
+    const lines = [...view.querySelectorAll('.diff-line:not(.diff-hunk)')];
+    expect(lines.map((r) => r.className.includes('diff-del'))).toEqual([false, true, false]);
+    expect(lines.map((r) => [...r.querySelectorAll('.diff-no')].map((n) => n.textContent))).toEqual([
+      ['1', '1'],
+      ['2', ''],
+      ['3', '2'],
+    ]);
   });
 });

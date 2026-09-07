@@ -14,7 +14,7 @@ A local, capped usage log (`~/.heapcode/audit.json`, event names + coarse metada
 |---|---|
 | Ollama, LM Studio, vLLM, LocalAI | OpenAI, Azure OpenAI, OpenRouter, Groq, Together AI, NVIDIA NIM |
 
-…plus any custom OpenAI-spec endpoint. Providers are named profiles, each with its own model roles (chat / agent / embeddings / rerank) — switch anytime with `/profile` or `--profile NAME`.
+…plus any custom OpenAI-spec endpoint. A provider is a named **connection** (an endpoint + its key); one global **role table** says which model on which connection serves each role (chat / edit / apply / completion / agent / embeddings / rerank / context). Manage them with `heapcode connection` / `heapcode model`, or `/profile` and `/roles` in-session.
 
 ## Install
 
@@ -68,13 +68,14 @@ Recommended local models: chat/agent `llama3.1:8b`+ · embeddings `nomic-embed-t
 heapcode                          Start an interactive agent session (fresh conversation) in the current directory
 heapcode --continue | -c          Continue this directory's most recent conversation (in-session: /resume picks any)
 heapcode --resume <id>            Continue a specific past conversation by id or unambiguous prefix
-heapcode --profile NAME           Use a specific provider profile for this session
+heapcode --profile NAME           Pin this session to one provider connection
 heapcode --safe-mode              Ask for permission on every action, even ones with a persisted "Always allow" grant
 heapcode --no-update-check        Skip the startup check against npm for a newer published version
 heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG, MCP) with no TTY required
 
-heapcode profile <add|list|use|remove>   Scriptable profile management (also available in-session via /profile)
-heapcode audit                            Local usage/audit dashboard
+heapcode connection <add|list|use NAME|remove NAME>   Provider endpoints (also in-session via /profile)
+heapcode model <list|set ROLE CONN MODEL|clear ROLE>  The global role table (also in-session via /roles)
+heapcode audit                                        Local usage/audit dashboard
 ```
 
 ### Headless (`-p`) flags

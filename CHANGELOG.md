@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0
+
+- **Model roles are one global table, not fourteen fields on every profile.** A provider is now a *connection* — an endpoint, its key, its headers — and which model serves each role (chat / edit / apply / completion / agent / embeddings / rerank / context) is a separate assignment that can point at *any* connection. The settings screen shows one role table with a model box and a connection dropdown per row, states what an inheriting role currently resolves to, and lets a role point somewhere its connection was never "active" for. Switching what you chat with no longer drags the other seven roles along with it. Existing profiles migrate on first read; a role that inherited before still inherits, and `apply`/`embeddings` — which inherit nothing on purpose — are never handed a chat model by the migration
+- **A role never runs on a model it was not assigned.** A connection is pushed to the daemon carrying only its chat model; an assignment's own model and tuning now always win over that, so a role pointed at a big cloud model can no longer silently execute on whatever the endpoint was pushed with
+- **Prompt tier is a setting, not a guess** — Full, Lean, or Auto, chosen from the settings screen (and the CLI), defaulting to Full. Lean trims the system prompt for small local models that a full one crowds out of their context
+- **The agent loop stops going in circles.** A run that has repeated the same failing action, or narrated three turns running without calling a tool, is now noticed and stopped with a summary rather than burning its whole budget — one real case spent 147 steps and wrote nothing. The loop's own "keep going" nudges are marked as system content, so the model no longer reads them as the user speaking, and a shell command is judged by what it does (a `curl … > file` is a write) rather than by which tool asked to run it
+- **`download_file` — a real tool for fetching a URL to disk**, so a download stops being a `curl` through `run_command`. It goes through the same SSRF guard as `fetch_url` (no loopback, no metadata endpoints, redirects re-checked every hop), a size cap, and a checkpoint, and it writes into the workspace jail — none of which a shell pipe had
+- **The semantic index records which model embedded it** and refuses to load one built by a different embedder rather than interleaving two models' vectors and answering confidently wrong. When an index build fails it now says why instead of only that it did
+- **A local server refusing our `Origin` is not a bad API key.** That case now says what actually happened — set `OLLAMA_ORIGINS` (or the equivalent) — instead of sending the user to re-check a key that was never the problem
+
 ## heapbrowse 0.1.0
 
 First release of **heapbrowse** — a separate product in this repo (`packages/browser`), built on the same `@heapcode/core` agent loop. A Chrome side-panel agent that reads the page you are on and can operate it: search, filter, compare across pages, fill a form from your saved details, and hand the page back for the steps only a person can do.

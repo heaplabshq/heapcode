@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://browse.heaplabs.dev/sitemap.xml

@@ -21,6 +21,13 @@ export interface ComposerProps {
    */
   seed?: string;
   onSeedUsed?(): void;
+  /**
+   * Set while an earlier message is being edited: shows the bar that says so,
+   * and sending reverts the conversation (and code) to that point. Cleared by
+   * `onCancelEdit`.
+   */
+  editing?: boolean;
+  onCancelEdit?(): void;
 }
 
 /**
@@ -43,6 +50,8 @@ export function Composer({
   onReject,
   seed,
   onSeedUsed,
+  editing,
+  onCancelEdit,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState('');
   const [images, setImages] = useState<string[]>([]);
@@ -199,6 +208,13 @@ export function Composer({
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
+        {editing && (
+          <div className="editing-bar" role="status">
+            ✎ Editing an earlier message — sending reverts the conversation (and any code the agent changed
+            after it) to that point.
+            <button onClick={onCancelEdit}>Cancel</button>
+          </div>
+        )}
         {images.length > 0 && (
           <div className="attachments" aria-label={`${images.length} attached image(s)`}>
             {images.map((src, i) => (
@@ -216,6 +232,30 @@ export function Composer({
             ))}
           </div>
         )}
+        {/* Left of the input, inside the box: it acts on the message being
+            composed, so it belongs with the text rather than over by Send,
+            which acts on the message as a whole.
+            A label wrapping a hidden input, not a button calling .click() —
+            that shape stays keyboard-reachable and needs no ref. */}
+        <label className="composer-attach" title="Attach images">
+          {/* The glyph is decoration; the accessible name lives on the input,
+              which is the thing that actually takes focus. In a visually
+              hidden span it would make the label read "+Attach images". */}
+          <span aria-hidden="true">+</span>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            aria-label="Attach images"
+            disabled={disabled || busy}
+            onChange={(e) => {
+              void addFiles([...(e.target.files ?? [])]);
+              // Cleared so choosing the same file twice in a row still fires
+              // a change event the second time.
+              e.target.value = '';
+            }}
+          />
+        </label>
         <textarea
           ref={ref}
           className="composer-input"
@@ -277,6 +317,14 @@ export function Composer({
                 setMenuDismissed(true);
                 return;
               }
+            }
+            if (e.key === 'Escape' && editing) {
+              // Cancelling the edit beats cancelling a run: the bar is the
+              // thing the user is looking at, and Stop is still Escape once it
+              // is out of the way.
+              e.preventDefault();
+              onCancelEdit?.();
+              return;
             }
             if (e.key === 'Escape' && busy) {
               e.preventDefault();

@@ -54,6 +54,7 @@ describe('protocol round-trip cost', () => {
       root: home,
       profiles: [],
       activeProfile: 'p',
+      roles: {},
     } satisfies HelloParams);
 
     // Stand in for a host executing a tool: answer immediately, so what's
@@ -76,6 +77,7 @@ describe('protocol round-trip cost', () => {
         root: home,
         profiles: [],
         activeProfile: 'p',
+        roles: {},
       } satisfies HelloParams);
     }
     const elapsed = Date.now() - started;
@@ -100,6 +102,7 @@ describe('protocol round-trip cost', () => {
       root: home,
       profiles: [],
       activeProfile: 'p',
+      roles: {},
     } satisfies HelloParams);
 
     let received = 0;
@@ -120,6 +123,7 @@ describe('protocol round-trip cost', () => {
       root: home,
       profiles: [],
       activeProfile: 'p',
+      roles: {},
     } satisfies HelloParams);
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(received).toBe(0); // they went server-ward; nothing echoes back

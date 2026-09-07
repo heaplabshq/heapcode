@@ -86,11 +86,14 @@ export async function runSubAgent(call: ToolCall, ctx: SubAgentContext): Promise
       provider = resolved.provider;
       profile = resolved.profile;
     }
-    // Unknown profile name — falls back to the parent's own, same lenient
-    // pattern the role-profile redirects (RoleResolver) already use.
+    // Unknown connection name — falls back to the parent's own, the same
+    // lenient pattern role resolution uses for an assignment whose connection
+    // is gone (config/roles.ts).
   }
-  const model = profile.agentModel || profile.model;
-  if (!model) return { id: call.id, name: call.name, content: `Profile "${profile.name}" has no model configured.`, isError: true };
+  // `profile.model` IS the agent model: a resolved role arrives already
+  // flattened, so there is no second `agentModel` field to prefer over it.
+  const model = profile.model;
+  if (!model) return { id: call.id, name: call.name, content: `Connection "${profile.name}" has no model configured.`, isError: true };
 
   const requestedPersona = getPersona(call.args.persona ? String(call.args.persona) : undefined);
   const persona = intersectPersonas(ctx.persona, requestedPersona);

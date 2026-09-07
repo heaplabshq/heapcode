@@ -6,7 +6,7 @@ import { render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { ChatResponse, Conversation, McpManager, Provider, ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
+import type { ChatResponse, Conversation, McpManager, ModelRoleTable, Provider, ProviderProfileConfig, ToolDefinition } from '@heapcode/core';
 import { HeapcodeServer, INIT_TASK } from '@heapcode/core';
 import { SecretsStore } from '@heapcode/host';
 import { ConfigStore } from '@heapcode/host';
@@ -235,6 +235,8 @@ let home: string;
 let model: ModelServer;
 let core: HeapcodeServer;
 let profile: ProviderProfileConfig;
+/** The global role table this session pushes at hello (core's config/roles.ts). */
+let roles: ModelRoleTable;
 let serverOpts: { address: string; token: string; autostart: false };
 
 beforeEach(async () => {
@@ -243,6 +245,7 @@ beforeEach(async () => {
   vi.stubEnv('HEAPCODE_HOME', home);
   model = await startModelServer();
   profile = { name: 'test', preset: 'custom', baseUrl: model.baseUrl, model: 'mock' };
+  roles = { chat: { connection: 'test', model: 'mock' } };
   core = new HeapcodeServer({ home, address: join(home, 't.sock'), idleShutdownMs: 0 });
   await core.listen();
   serverOpts = { address: core.address, token: core.token, autostart: false };
@@ -272,11 +275,11 @@ function recordingProvider(reply: string): Provider & { requests: Array<Array<{ 
 /**
  * Turns on semantic indexing for one test. RAG runs in the server now, so
  * there is nothing to stub: the server indexes `root` for real and answers
- * over the socket. `embeddingsModel` is off by default so the rest of the
- * suite sees no embeddings traffic at all.
+ * over the socket. The embeddings role is unassigned by default — it inherits
+ * nothing, so the rest of the suite sees no embeddings traffic at all.
  */
 function withEmbeddings(): void {
-  profile.embeddingsModel = 'embed';
+  roles.embeddings = { connection: 'test', model: 'embed' };
 }
 
 /**
@@ -319,6 +322,7 @@ function renderApp(overrides: {
   return render(
     <App
       profile={profile}
+      roles={roles}
       conversation={overrides.conversation}
       historyStore={overrides.historyStore}
       executor={executor}
@@ -919,8 +923,8 @@ exit 0
     stdin.write('\r');
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(lastFrame()).toContain('Profile     test (custom)');
-    // The profile's endpoint is the harness's model server now, not a dummy.
+    expect(lastFrame()).toContain('Connection  test (custom)');
+    // The connection's endpoint is the harness's model server now, not a dummy.
     expect(lastFrame()).toContain('Endpoint    ' + model.baseUrl);
     expect(lastFrame()).toContain('Model       mock');
   });
@@ -1020,7 +1024,7 @@ exit 0
     expect(lastFrame()).toContain('Which provider?');
   });
 
-  it('/profile list shows configured profiles with the active one marked', async () => {
+  it('/profile list shows configured connections with the chat one marked', async () => {
     const conversation: Conversation = { id: 'c1', title: 't', updatedAt: 0, messages: [] };
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
     const configStore = new ConfigStore(join(root, 'config.json'));
@@ -1041,7 +1045,7 @@ exit 0
     await new Promise((r) => setTimeout(r, 50));
 
     expect(lastFrame()).toContain('* test');
-    expect(lastFrame()).toContain('other  (ollama, llama)');
+    expect(lastFrame()).toContain('other');
   });
 
   /**
@@ -1076,7 +1080,7 @@ exit 0
 
     stdin.write('nvidia ultra');
     await vi.waitFor(
-      () => expect(lastFrame()).toContain('❯ nvidia/nemotron-3-ultra-550b-a55b:free'),
+      () => expect(lastFrame()).toContain('❯ test / nvidia/nemotron-3-ultra-550b-a55b:free'),
       { timeout: 2_000 },
     );
     expect(lastFrame()).not.toContain('anthropic/claude-opus-4');
@@ -1722,8 +1726,8 @@ exit 0
     const historyStore = { save: vi.fn() } as unknown as JsonConversationStore;
     const { writeFile } = await import('node:fs/promises');
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-    profile.embeddingsModel = 'embed';
-    profile.contextModel = 'ctx';
+    roles.embeddings = { connection: 'test', model: 'embed' };
+    roles.context = { connection: 'test', model: 'ctx' };
 
     renderApp({ provider: fakeProvider('unused'), conversation, historyStore, cwd: root });
 

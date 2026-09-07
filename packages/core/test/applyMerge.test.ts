@@ -38,7 +38,7 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-async function boot(reply: string, extras: Record<string, unknown> = {}): Promise<RpcPeer> {
+async function boot(reply: string, applyModel?: string): Promise<RpcPeer> {
   // A JSON completion, not SSE: this path uses provider.chat(), which does not
   // stream.
   mock = await startMockServer({
@@ -56,7 +56,7 @@ async function boot(reply: string, extras: Record<string, unknown> = {}): Promis
   });
   const peer = new RpcPeer(socket, 'c');
   const profiles: ProviderProfileConfig[] = [
-    { name: 'p', preset: 'custom', baseUrl: mock.baseUrl, model: 'chat-model', ...extras },
+    { name: 'p', preset: 'custom', baseUrl: mock.baseUrl, model: 'chat-model' },
   ];
   await peer.request(METHODS.hello, {
     token: server.token,
@@ -65,6 +65,13 @@ async function boot(reply: string, extras: Record<string, unknown> = {}): Promis
     root: home,
     profiles,
     activeProfile: 'p',
+    roles: {
+      chat: { connection: 'p', model: 'chat-model' },
+      // Apply inherits nothing: unassigned means there is no merge model, not
+      // "use the chat model", which would send a general model a format it
+      // does not produce.
+      ...(applyModel ? { apply: { connection: 'p', model: applyModel } } : {}),
+    },
     keys: { p: 'sk-test' },
   } satisfies HelloParams);
   return peer;
@@ -77,7 +84,7 @@ describe('apply/merge', () => {
     const merged = 'function greet() {\n  return "hello";\n}';
     // The newline hugging each tag is the tag's, not the file's, so
     // extractUpdatedCode strips one from each end.
-    const peer = await boot(`<updated-code>\n${merged}\n</updated-code>`, { applyModel: 'fast-apply' });
+    const peer = await boot(`<updated-code>\n${merged}\n</updated-code>`, 'fast-apply');
     const res = await peer.request<ApplyMergeResult>(METHODS.applyMerge, {
       original: FILE,
       snippet: 'return "hello";',
@@ -86,13 +93,13 @@ describe('apply/merge', () => {
   });
 
   it('calls the apply model, not the chat model', async () => {
-    const peer = await boot('<updated-code>x</updated-code>', { applyModel: 'fast-apply' });
+    const peer = await boot('<updated-code>x</updated-code>', 'fast-apply');
     await peer.request(METHODS.applyMerge, { original: FILE, snippet: 'x' });
     expect(mock!.requests.at(-1)?.body).toMatchObject({ model: 'fast-apply' });
   });
 
   it('says nothing, and spends no model call, when no apply model is set', async () => {
-    // Most profiles have none. The caller then reports the edit that did not
+    // Most setups have none. The caller then reports the edit that did not
     // apply, exactly as it did before this method existed.
     const peer = await boot('<updated-code>x</updated-code>');
     const res = await peer.request<ApplyMergeResult>(METHODS.applyMerge, { original: FILE, snippet: 'x' });
@@ -101,7 +108,7 @@ describe('apply/merge', () => {
   });
 
   it('says nothing when the model answers with prose instead of code', async () => {
-    const peer = await boot('I would put it after the return statement.', { applyModel: 'fast-apply' });
+    const peer = await boot('I would put it after the return statement.', 'fast-apply');
     const res = await peer.request<ApplyMergeResult>(METHODS.applyMerge, { original: FILE, snippet: 'x' });
     expect(res.merged).toBeUndefined();
   });
@@ -109,13 +116,13 @@ describe('apply/merge', () => {
   it('accepts a bare code fence when the tags are missing', async () => {
     // Small models drop the <updated-code> wrapper often enough to be worth
     // catching, and a fenced block is unambiguous enough to trust.
-    const peer = await boot('```\nmerged body\n```', { applyModel: 'fast-apply' });
+    const peer = await boot('```\nmerged body\n```', 'fast-apply');
     const res = await peer.request<ApplyMergeResult>(METHODS.applyMerge, { original: FILE, snippet: 'x' });
     expect(res.merged).toContain('merged body');
   });
 
   it('says nothing for an empty request rather than calling the model', async () => {
-    const peer = await boot('<updated-code>x</updated-code>', { applyModel: 'fast-apply' });
+    const peer = await boot('<updated-code>x</updated-code>', 'fast-apply');
     expect((await peer.request<ApplyMergeResult>(METHODS.applyMerge, { original: '', snippet: 'x' })).merged)
       .toBeUndefined();
     expect((await peer.request<ApplyMergeResult>(METHODS.applyMerge, { original: FILE, snippet: ' ' })).merged)

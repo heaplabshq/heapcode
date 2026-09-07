@@ -26,6 +26,26 @@ export interface ComposerProps {
   onActivity?(hasText: boolean, text: string): void;
   /** Increment to clear the buffer from outside (Ctrl+C-clears-input). */
   clearToken?: number;
+  /**
+   * Ctrl+V — attach whatever image is on the system clipboard.
+   *
+   * Not "paste": the terminal already owns Cmd+V/middle-click and delivers the
+   * clipboard's TEXT as keystrokes, which is the behaviour people want and
+   * which this must not take away. An image has no keystrokes, so it needs a
+   * key of its own that goes and asks the OS (see clipboardImage.ts).
+   */
+  onAttachImage?(): void;
+  /**
+   * Ctrl+X — drop the most recently attached image.
+   *
+   * Attaching without a way to unattach is a trap: the only escape was to send
+   * the message you did not want to send. Last-one-off rather than a picker,
+   * because a terminal has nothing to click and pressing it again walks back
+   * through the rest.
+   */
+  onRemoveImage?(): void;
+  /** Images staged for the next message, shown above the input so they cannot be forgotten. */
+  attachmentCount?: number;
 }
 
 // Commands keep growing (guardrail: every feature gets a slash command) —
@@ -148,6 +168,9 @@ export function Composer({
   onMentionTrigger,
   onActivity,
   clearToken,
+  onAttachImage,
+  onRemoveImage,
+  attachmentCount = 0,
 }: ComposerProps): React.ReactElement {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -347,7 +370,8 @@ export function Composer({
         else if (input === 'w') {
           const head = valueRef.current.slice(0, cur).replace(/\S+\s*$/, '');
           setBuffer(head + valueRef.current.slice(cur), head.length);
-        }
+        } else if (input === 'v') onAttachImage?.();
+        else if (input === 'x') onRemoveImage?.();
         return;
       }
       if (key.meta) return;
@@ -375,6 +399,20 @@ export function Composer({
 
   return (
     <Box flexDirection="column">
+      {/* Above the box, not inside it: the input's width arithmetic (see
+          wrapValue) assumes the border contains exactly the typed rows, and a
+          terminal that wraps a row the layout did not account for is the bug
+          that rewrite exists to prevent. */}
+      {attachmentCount > 0 && (
+        <Box paddingLeft={2}>
+          <Text color="cyan">
+            {attachmentCount} image{attachmentCount === 1 ? '' : 's'} attached
+          </Text>
+          {/* The way back out, said where the thing to undo is shown. A key
+              nobody is told about is a key nobody presses. */}
+          <Text dimColor> — ctrl+x removes the last</Text>
+        </Box>
+      )}
       <Box borderStyle="round" borderColor={disabled ? 'gray' : 'cyan'} paddingX={1}>
         <Text color={disabled ? 'gray' : 'cyan'} bold>
           {'❯ '}

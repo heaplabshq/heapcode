@@ -1,16 +1,23 @@
 import React from 'react';
 import { render } from 'ink';
-import type { ProviderProfileConfig } from '@heapcode/core';
+import {
+  describeRole,
+  isModelRole,
+  MODEL_ROLES,
+  type ModelRole,
+  type ProviderProfileConfig,
+} from '@heapcode/core';
 import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { Setup } from './ink/Setup.js';
 
 /**
- * `heapcode profile add` and the automatic first-run flow (no profile
+ * `heapcode connection add` and the automatic first-run flow (no connection
  * configured yet) both mount this same Ink onboarding component — arrow-key
  * provider/model selection, inline text inputs — instead of a separate
  * plain-readline wizard, so setup feels like the same product as the rest
  * of the terminal UI (and matches Claude Code's own onboarding shape).
- * Resolves with the saved, now-active profile once the user completes it.
+ * Resolves with the saved connection, which chat now runs on, once the user
+ * completes it.
  */
 export function profileAdd(): Promise<ProviderProfileConfig> {
   return new Promise((resolve) => {
@@ -33,111 +40,120 @@ export function profileAdd(): Promise<ProviderProfileConfig> {
   });
 }
 
+/**
+ * `heapcode connection list` — the endpoints, and which one chat is on.
+ *
+ * Roles are deliberately not printed here any more. They are no longer a
+ * property of a connection: one global table says which model on which
+ * connection serves each role, and `heapcode model list` prints it. Repeating
+ * it under every endpoint is what made the old output impossible to read.
+ */
 export async function profileList(): Promise<void> {
   const config = new ConfigStore();
-  const cfg = await config.load();
-  if (cfg.profiles.length === 0) {
-    console.log('No profiles configured yet. Run "heapcode profile add".');
+  const connections = await config.listConnections();
+  if (connections.length === 0) {
+    console.log('No connections configured yet. Run "heapcode connection add".');
     return;
   }
-  for (const p of cfg.profiles) {
-    const active = p.name === cfg.activeProfile ? '*' : ' ';
-    console.log(`${active} ${p.name}  (${p.preset}, ${p.model})`);
-    // Roles only when set — a profile that inherits everything should print
-    // as one line, not as a wall of blanks.
-    for (const field of PROFILE_FIELDS) {
-      const value = p[field];
-      if (value !== undefined && value !== '') console.log(`    ${field}: ${String(value)}`);
-    }
+  const chat = (await config.getRoles()).chat;
+  for (const c of connections) {
+    const active = c.name === chat?.connection ? '*' : ' ';
+    console.log(`${active} ${c.name}  (${c.preset}, ${c.baseUrl})`);
   }
+  console.log('\n"heapcode model list" shows which model serves each role.');
 }
 
 /**
- * Profile fields `heapcode profile set` can write.
+ * `heapcode model list` — the whole role table, resolved.
  *
- * The onboarding flow covers the four a profile cannot work without; these are
- * the rest — mostly the per-role model overrides, which had no CLI surface at
- * all. `applyModel` in particular is `edit_file`'s fallback when a
- * search/replace does not match, and it is worth the most on exactly the small
- * local models a terminal user is likeliest to be running.
+ * The point of printing it resolved is that the old settings screen made the
+ * reader trace a redirect and a fallback chain by hand to answer "what runs
+ * rerank?". Each line states the outcome and says when it was inherited.
  */
-export const PROFILE_FIELDS = [
-  'model',
-  'baseUrl',
-  'agentModel',
-  'applyModel',
-  'editModel',
-  'completionModel',
-  'embeddingsModel',
-  'rerankModel',
-  'contextModel',
-  'agentProfile',
-  'applyProfile',
-  'editProfile',
-  'completionProfile',
-  'embeddingsProfile',
-  'rerankProfile',
-  'contextProfile',
-  'promptTier',
-] as const satisfies ReadonlyArray<keyof ProviderProfileConfig>;
-
-/**
- * Fields that take one of a fixed set of values rather than free text.
- *
- * Every other field here is a model id or a profile name, which this command
- * cannot check — a typo surfaces at the provider. These it can, and should:
- * `promptTier` silently ignoring "leen" would leave the user believing
- * they had changed how the agent is prompted.
- */
-const ENUM_FIELDS: Partial<Record<ProfileField, readonly string[]>> = {
-  promptTier: ['full', 'lean', 'auto'],
-};
-
-export type ProfileField = (typeof PROFILE_FIELDS)[number];
-
-export function isProfileField(name: string): name is ProfileField {
-  return (PROFILE_FIELDS as readonly string[]).includes(name);
-}
-
-/**
- * `heapcode profile set <name> <field> [value]`.
- *
- * An omitted value clears the field, which is the difference between "this
- * role runs on some model I chose" and "this role inherits" — storing an empty
- * string instead would point the role at a model with no name and fail much
- * later, at the provider.
- */
-export async function profileSet(name: string, field: ProfileField, value?: string): Promise<void> {
+export async function modelList(): Promise<void> {
   const config = new ConfigStore();
-  const profile = await config.getProfile(name);
-  if (!profile) {
-    console.error(`No profile named "${name}". Run "heapcode profile list" to see them.`);
-    process.exitCode = 1;
+  const model = await config.modelConfig();
+  if (model.connections.length === 0) {
+    console.log('No connections configured yet. Run "heapcode connection add".');
     return;
   }
-  const allowed = ENUM_FIELDS[field];
-  if (value && allowed && !allowed.includes(value)) {
-    console.error(`"${value}" is not a valid ${field}. Use one of: ${allowed.join(', ')}.`);
-    process.exitCode = 1;
-    return;
+  for (const role of MODEL_ROLES) {
+    console.log(`  ${role.padEnd(11)} ${describeRole(model, role)}`);
   }
-  const next: ProviderProfileConfig = { ...profile };
-  if (value === undefined || value === '') delete next[field];
-  else Object.assign(next, { [field]: value });
-  await config.saveProfile(next);
-  console.log(value ? `${name}.${field} = ${value}` : `${name}.${field} cleared (inherits again)`);
 }
 
+/**
+ * `heapcode model set <role> <connection> <model>`.
+ *
+ * Both halves at once, always. An assignment naming a connection but no model
+ * is a state nothing can run on, and it was reachable before: `profile use`
+ * moved the active profile while leaving a model id that the new endpoint did
+ * not serve.
+ */
+export async function modelSet(role: ModelRole, connection: string, model: string): Promise<void> {
+  const config = new ConfigStore();
+  if (!(await config.getConnection(connection))) {
+    console.error(`No connection named "${connection}". Run "heapcode connection list" to see them.`);
+    process.exitCode = 1;
+    return;
+  }
+  if (role === 'chat') await config.setChatModel(connection, model);
+  else await config.setRole(role, { connection, model });
+  console.log(`${role} → ${model} on ${connection}`);
+}
+
+/**
+ * `heapcode model clear <role>` — back to inheriting.
+ *
+ * Clearing is the difference between "this role runs a model I chose" and
+ * "this role follows chat". Storing an empty model instead would point the
+ * role at a model with no name and fail much later, at the provider.
+ */
+export async function modelClear(role: ModelRole): Promise<void> {
+  if (role === 'chat') {
+    console.error('Chat is what the other roles inherit from, so it cannot be cleared. Set it to another model instead.');
+    process.exitCode = 1;
+    return;
+  }
+  const config = new ConfigStore();
+  await config.setRole(role);
+  console.log(`${role} cleared — ${describeRole(await config.modelConfig(), role)}`);
+}
+
+export function isRoleName(name: string): name is ModelRole {
+  return isModelRole(name);
+}
+
+export const ROLE_NAMES = MODEL_ROLES;
+
+/** `heapcode connection use <name>` — moves chat to an endpoint, without a model. */
 export async function profileUse(name: string): Promise<void> {
   const config = new ConfigStore();
   await config.setActiveProfile(name);
-  console.log(`Active profile: ${name}`);
+  console.log(
+    `Chat moved to "${name}". Pick a model for it: heapcode model set chat ${name} <model>` +
+      '\n(A model id means nothing on an endpoint that does not serve it, so it is not carried across.)',
+  );
 }
 
+/**
+ * `heapcode connection remove <name>`.
+ *
+ * Takes its API key with it, and any role assignment pointing at it — a
+ * settings screen listing a model on an endpoint that no longer exists reads
+ * as a bug rather than as a fallback. Roles that lose their assignment go back
+ * to inheriting, which is stated rather than left to be discovered.
+ */
 export async function profileRemove(name: string): Promise<void> {
   const config = new ConfigStore();
   const secrets = new SecretsStore();
-  await config.deleteProfile(name);
+  const before = await config.getRoles();
+  const orphaned = (Object.keys(before) as ModelRole[]).filter((r) => before[r]?.connection === name);
+  await config.deleteConnection(name);
   await secrets.deleteApiKey(name);
-  console.log(`Removed profile "${name}".`);
+  console.log(`Removed connection "${name}".`);
+  if (orphaned.length > 0) {
+    const model = await config.modelConfig();
+    for (const role of orphaned) console.log(`  ${role} → ${describeRole(model, role)}`);
+  }
 }

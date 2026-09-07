@@ -104,9 +104,11 @@ describe('tool chips', () => {
     ]);
     const { container } = render(<MessageList transcript={t} />);
 
-    // Open by default — the diff is the point of the call.
-    expect(container.querySelector('.diff-add')?.textContent).toBe('+const a = 2;');
-    expect(container.querySelector('.diff-del')?.textContent).toBe('-const a = 1;');
+    // Open by default — the diff is the point of the call. The marker lives
+    // in the gutter now, so the text cell is the code and nothing else.
+    expect(container.querySelector('.diff-add .diff-text')?.textContent).toBe('const a = 2;');
+    expect(container.querySelector('.diff-del .diff-text')?.textContent).toBe('const a = 1;');
+    expect(container.querySelector('.diff-add .diff-sign')?.textContent).toBe('+');
     expect(container.querySelector('.diff-hunk')).not.toBeNull();
     // The context line stays uncoloured.
     expect(container.querySelector('.diff-line.diff-add ~ .diff-add')).toBeNull();

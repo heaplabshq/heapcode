@@ -195,6 +195,34 @@ export const sharedAgentTools = {
     // Arbitrary third-party content — same injection posture as MCP (PLAN.md M7).
     untrustedOutput: true,
   },
+  download_file: {
+    name: 'download_file',
+    description:
+      'Download a file from the internet and save it into the workspace — an image, a font, a PDF, ' +
+      'an archive. Use this rather than curl or wget through run_command: those are classed as plain ' +
+      'shell commands, so nothing records that a file arrived from outside. ' +
+      'For a page you want to READ, use fetch_url instead — this saves bytes to disk and shows you ' +
+      'none of them. Saving an image does not let you see it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'http(s):// URL of the file to download' },
+        path: {
+          type: 'string',
+          description: 'Where to save it, relative to the workspace. Include the file extension.',
+        },
+      },
+      required: ['url', 'path'],
+    },
+    // `write`, not `execute`: what this does that matters is land a file in the
+    // workspace, and the permission the user is asked for should describe the
+    // effect they care about rather than the network call that caused it.
+    permission: 'write',
+    // The bytes are never shown to the model — only the path, size and type —
+    // so the content cannot carry an injection. What IS attacker-influenced is
+    // the filename a redirect can suggest, which is why the caller names the
+    // path and the server never gets to.
+  },
   web_search: {
     name: 'web_search',
     description:

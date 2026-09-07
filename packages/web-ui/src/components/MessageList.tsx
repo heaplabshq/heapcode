@@ -25,9 +25,20 @@ export interface MessageListProps {
   busy?: boolean;
   /** When the run started, for the indicator's elapsed counter. */
   runStartedAt?: number;
+  /** Edit a sent prompt: loads it into the composer; sending truncates + resends. */
+  onEdit?(ordinal: number, text: string): void;
+  /** Restore the workspace to the checkpoint before this turn (conversation stays). */
+  onRestore?(ordinal: number): void;
 }
 
-export function MessageList({ transcript, onOpenPath, busy, runStartedAt }: MessageListProps): JSX.Element {
+export function MessageList({
+  transcript,
+  onOpenPath,
+  busy,
+  runStartedAt,
+  onEdit,
+  onRestore,
+}: MessageListProps): JSX.Element {
   const end = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
@@ -115,7 +126,7 @@ export function MessageList({ transcript, onOpenPath, busy, runStartedAt }: Mess
         </div>
       )}
       {shown.map((item) => (
-        <Row key={item.id} item={item} onOpenPath={onOpenPath} />
+        <Row key={item.id} item={item} onOpenPath={onOpenPath} busy={busy} onEdit={onEdit} onRestore={onRestore} />
       ))}
       {transcript.compacted && (
         <div className="notice">
@@ -139,9 +150,15 @@ export function MessageList({ transcript, onOpenPath, busy, runStartedAt }: Mess
 const Row = memo(function Row({
   item,
   onOpenPath,
+  busy,
+  onEdit,
+  onRestore,
 }: {
   item: Item;
   onOpenPath?(path: string): void;
+  busy?: boolean;
+  onEdit?(ordinal: number, text: string): void;
+  onRestore?(ordinal: number): void;
 }): JSX.Element | null {
   switch (item.kind) {
     case 'text':
@@ -160,6 +177,32 @@ const Row = memo(function Row({
             // page holds the socket that runs commands.
             dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }}
           />
+          {/* Edit/restore a sent prompt. Only a real user turn carries an
+              ordinal, and only one with a checkpoint can be rewound — so the
+              buttons key off those, and hide while a run is in flight (the
+              host refuses them then anyway). */}
+          {item.role === 'user' && item.ordinal !== undefined && !busy && (onEdit || onRestore) && (
+            <div className="msg-actions">
+              {onEdit && (
+                <button
+                  className="edit-msg"
+                  title="Edit this message — reverts the code and conversation to this point and resends"
+                  onClick={() => onEdit(item.ordinal!, item.text)}
+                >
+                  Edit
+                </button>
+              )}
+              {onRestore && item.checkpoint && (
+                <button
+                  className="edit-msg restore-msg"
+                  title="Restore workspace files to the state before this message ran (conversation stays)"
+                  onClick={() => onRestore(item.ordinal!)}
+                >
+                  Restore
+                </button>
+              )}
+            </div>
+          )}
           {/* Three pulsing dots, not a text caret. A blinking accent-coloured
               block is the shape of an editor cursor, which in a read-only
               transcript reads as "type here" — and it borrowed the accent

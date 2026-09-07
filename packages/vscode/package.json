@@ -278,7 +278,7 @@
         "heapcode.profiles": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Named provider profiles. Each item: `{ name, preset, baseUrl, model, temperature?, maxTokens?, headers?, capabilities? }`. Each role (edit/apply/completion/agent/embeddings/rerank) can also be pointed at a *different* profile entirely via its `<role>Profile` field (e.g. `embeddingsProfile: \"my-ollama-profile\"`) — lets you mix providers per role, e.g. embeddings on local Ollama while chat/agent use a cloud profile. API keys are NOT stored here — use the *Heap Code: Set API Key* command (OS keychain). `promptTier` (`full`/`lean`/`auto`) controls how much of the agent's instructions this model receives; unset means `full`. Presets: `openai`, `ollama`, `ollama-cloud`, `azure-openai`, `openrouter`, `together`, `groq`, `nvidia-nim`, `lmstudio`, `vllm`, `localai`, `custom`.",
+          "markdownDescription": "**Superseded by `heapcode.connections` + `heapcode.modelRoles`.** Read once and migrated automatically on first use, then ignored; it is left in place so downgrading is not destructive. A profile used to be an endpoint *and* a model choice *and* seven per-role overrides, which meant switching profile silently changed every role. Delete this once you have confirmed the migrated settings look right.",
           "items": {
             "type": "object",
             "required": [
@@ -395,10 +395,363 @@
             }
           }
         },
+        "heapcode.connections": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Provider endpoints. Each item: `{ name, preset, baseUrl, headers?, capabilities?, timeoutMs? }`. No models and no roles — which model serves what is `heapcode.modelRoles`, one table for the whole extension. API keys are NOT stored here: use the *Heap Code: Set API Key* command (OS keychain), which files the key under the connection's `name`.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "preset",
+              "baseUrl"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Also the key its API key is filed under — renaming means re-entering the key."
+              },
+              "preset": {
+                "type": "string",
+                "enum": [
+                  "openai",
+                  "ollama",
+                  "ollama-cloud",
+                  "azure-openai",
+                  "openrouter",
+                  "together",
+                  "groq",
+                  "nvidia-nim",
+                  "lmstudio",
+                  "vllm",
+                  "localai",
+                  "custom"
+                ]
+              },
+              "baseUrl": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object"
+              },
+              "capabilities": {
+                "type": "object"
+              },
+              "timeoutMs": {
+                "type": "number",
+                "description": "Per-request timeout in ms: full response for non-streaming calls, time-to-first-token for streaming/agent calls. Default 300000. Raise for local/slow endpoints. On the connection rather than the model because it describes how long this box takes to answer."
+              }
+            }
+          }
+        },
+        "heapcode.modelRoles": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "Which model on which connection serves each role — **one table for the whole extension**, not one per connection. A role with no entry inherits (agent/edit/completion → chat; rerank → edit → chat; context → rerank → edit → chat). `embeddings` and `apply` inherit nothing.",
+          "properties": {
+            "chat": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "Conversations in the sidebar. Every other role inherits from this one."
+            },
+            "agent": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "Agent mode. Inherits chat."
+            },
+            "edit": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "Inline edit (Ctrl+I) and commit messages. Inherits chat."
+            },
+            "apply": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "Fast-apply merge model, used when an edit's search text does not match (e.g. FastApply-1.5B). Inherits NOTHING — unset means edits fall back to selection/insert, which is a worse edit but a correct one."
+            },
+            "completion": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "Editor ghost text — a FIM-capable coder model. Inherits chat."
+            },
+            "embeddings": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "Semantic search and the repo index. Inherits NOTHING on purpose: a chat model asked to embed returns something that is not an embedding, and that surfaces as bad search results rather than as an error."
+            },
+            "rerank": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "Reranks semantic-search hits. Inherits edit, then chat."
+            },
+            "context": {
+              "type": "object",
+              "required": [
+                "connection",
+                "model"
+              ],
+              "properties": {
+                "connection": {
+                  "type": "string",
+                  "description": "Name of an entry in `heapcode.connections`."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model id on that connection (for Azure: the deployment name)."
+                },
+                "temperature": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "contextWindow": {
+                  "type": "number",
+                  "description": "Context window in tokens (prompt + output). Drives the usage meter and automatic compaction. Unset asks the endpoint, then falls back to the preset's number."
+                },
+                "promptTier": {
+                  "type": "string",
+                  "enum": [
+                    "full",
+                    "lean",
+                    "auto"
+                  ],
+                  "description": "How much of the agent's instructions this model receives. Unset means \"full\" — every section, and the right choice for almost every model. \"lean\" is for a model that follows short instructions better. \"auto\" picks between them from the context window and whether the model calls tools natively."
+                }
+              },
+              "description": "A short blurb per chunk at index time (contextual retrieval). Inherits rerank, then edit, then chat."
+            }
+          },
+          "additionalProperties": false
+        },
         "heapcode.activeProfile": {
           "type": "string",
           "default": "",
-          "description": "Name of the active provider profile. Switch via the status bar."
+          "description": "Name of the connection chat runs on. Switch via the status bar. Which model it uses lives in `heapcode.modelRoles.chat`."
         },
         "heapcode.customPrompts": {
           "type": "array",
@@ -426,12 +779,12 @@
         "heapcode.baseUrl": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Legacy fallback endpoint, used only when `heapcode.profiles` is empty. Prefer profiles."
+          "markdownDescription": "Legacy fallback endpoint, used only when `heapcode.connections` and `heapcode.profiles` are both empty."
         },
         "heapcode.model": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Legacy fallback model, used only when `heapcode.profiles` is empty. Prefer profiles."
+          "markdownDescription": "Legacy fallback model, used only when `heapcode.connections` and `heapcode.profiles` are both empty."
         },
         "heapcode.temperature": {
           "type": "number",

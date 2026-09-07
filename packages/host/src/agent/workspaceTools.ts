@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { once } from 'node:events';
+import { createWriteStream, realpathSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -14,8 +15,10 @@ import {
   CWD_MARKER,
   DEFAULT_IGNORE_GLOB,
   detectPackageInstall,
+  downloadFile,
   extractSymbols,
   fetchUrl,
+  formatBytes,
   findBestMatch,
   formatSearchResults,
   isWebSearchEnabled,
@@ -152,6 +155,7 @@ export const agentToolDefinitions: ToolDefinition[] = [
       'when you need one thing from it — a symbol name plus its line range turns into a ranged read_file.',
   ),
   T.fetch_url,
+  T.download_file,
   // Always offered, executed only when configured — the same posture as
   // delegate_task. A model that cannot see the tool has no way to know web
   // search is even a concept here, and a live session responded to that by
@@ -243,6 +247,8 @@ export class WorkspaceToolExecutor {
         return `Outline ${a.path}`;
       case 'fetch_url':
         return `Fetch ${a.url}`;
+      case 'download_file':
+        return `Download ${a.url} → ${a.path}`;
       case 'web_search':
         return `Web search: "${a.query}"`;
       case 'multi_edit': {
@@ -453,6 +459,54 @@ export class WorkspaceToolExecutor {
       }
       case 'fetch_url':
         return fetchUrl(a.url ?? '').then(ok, (err: Error) => fail(err.message));
+      case 'download_file': {
+        // Jailed with the same `resolve` every other write tool uses, so a
+        // redirect to a server proposing "../../.ssh/authorized_keys" lands
+        // where every other escape attempt does. The model names the path; the
+        // remote end never gets a say in it.
+        const abs = this.resolve(a.path);
+        const url = String(a.url ?? '');
+        if (!/^https?:\/\//i.test(url)) return fail('Only http and https URLs can be downloaded.');
+        // Opened on the first byte, not before the request.
+        //
+        // Creating the stream up front races its own cleanup: createWriteStream
+        // opens the file asynchronously, so a request that fails fast — a
+        // refused host, a 404 — can have its `rm` run and complete before the
+        // open lands, leaving the empty file behind that the rm was there to
+        // prevent. Observed as a flaky test, which is the lucky version of
+        // finding it. Nothing is created unless bytes actually arrive.
+        let out: ReturnType<typeof createWriteStream> | undefined;
+        try {
+          const { bytes, contentType } = await downloadFile(url, async (chunk) => {
+            if (!out) {
+              await this.checkpoint.recordBeforeChange(abs);
+              await mkdir(path.dirname(abs), { recursive: true });
+              out = createWriteStream(abs);
+            }
+            // Respecting backpressure rather than firing writes at a stream
+            // that has asked us to wait: a large file down a fast link would
+            // otherwise buffer the whole thing in memory, which is the exact
+            // thing streaming was chosen to avoid.
+            if (!out.write(chunk)) await once(out, 'drain');
+          });
+          await new Promise<void>((res, rej) => out!.close((err) => (err ? rej(err) : res())));
+          const type = contentType ? `, ${contentType}` : '';
+          return ok(
+            `Saved ${a.path} (${formatBytes(bytes)}${type}). The contents were not read — ` +
+              'use read_file if it is text you need to see.',
+          );
+        } catch (err) {
+          // A partial file is worse than none: it looks like a successful
+          // download to everything downstream, including the next tool call.
+          // `close` rather than `destroy` — it waits for a pending open, so the
+          // rm below cannot be outrun by the file appearing after it.
+          if (out) {
+            await new Promise<void>((res) => out!.close(() => res()));
+            await rm(abs, { force: true }).catch(() => {});
+          }
+          return fail(err instanceof Error ? err.message : String(err));
+        }
+      }
       case 'web_search': {
         const settings = await this.webSearchSettings?.();
         if (!settings || !isWebSearchEnabled(settings.config, settings.apiKey)) {

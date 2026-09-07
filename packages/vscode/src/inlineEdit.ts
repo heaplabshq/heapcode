@@ -122,9 +122,11 @@ async function inlineEdit(
         RELATED_CODE_MATCHES,
       );
       try {
-        const { provider, profile } = await profiles.resolveRole('editModel');
+        const resolved = await profiles.resolveRole('edit');
+        if (!resolved) throw new Error('No model is set for editing. Pick one in Settings → Model roles.');
+        const { provider, profile } = resolved;
         const result = await provider.chat({
-          model: profile.editModel || profile.model,
+          model: profile.model,
           messages: buildInlineEditMessages({
             instruction,
             selectedCode,
@@ -273,9 +275,12 @@ export async function applyCodeToEditor(
     return;
   }
   const document = editor.document;
-  const profile = profiles.resolveRoleProfile('applyModel');
+  // Apply inherits nothing: unassigned means there is no fast-apply merge
+  // model, and the selection/insert path below is the correct fallback rather
+  // than sending a general chat model a format it does not produce.
+  const profile = profiles.resolveRoleProfile('apply');
 
-  if (profile.applyModel && document.getText().length <= MAX_APPLY_FILE_CHARS) {
+  if (profile?.model && document.getText().length <= MAX_APPLY_FILE_CHARS) {
     const merged = await runApplyModel(document.getText(), code, profiles, log);
     if (merged !== undefined && merged.trim() && merged !== document.getText()) {
       const fullRange = new vscode.Range(
@@ -324,10 +329,11 @@ export async function mergeWithApplyModel(
   signal?: AbortSignal,
 ): Promise<string | undefined> {
   try {
-    const { provider, profile } = await profiles.resolveRole('applyModel');
-    if (!profile.applyModel) return undefined;
+    const resolved = await profiles.resolveRole('apply');
+    if (!resolved) return undefined;
+    const { provider, profile } = resolved;
     const res = await provider.chat({
-      model: profile.applyModel,
+      model: profile.model,
       messages: buildApplyMessages(original, snippet),
       temperature: 0,
       // The model must re-emit the whole file — budget generously.

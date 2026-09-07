@@ -38,6 +38,10 @@ export const UI_METHODS = {
   // browser → host
   hello: 'ui/hello',
   sendMessage: 'ui/sendMessage',
+  /** Edit a sent prompt: truncate from that turn, restore its checkpoint, resend. */
+  editMessage: 'ui/editMessage',
+  /** Restore the workspace to the checkpoint before a turn, conversation untouched. */
+  restoreTurn: 'ui/restoreTurn',
   cancel: 'ui/cancel',
   state: 'ui/state',
   conversations: 'ui/conversations',
@@ -60,6 +64,8 @@ export const UI_METHODS = {
   saveMcpServer: 'ui/saveMcpServer',
   deleteMcpServer: 'ui/deleteMcpServer',
   useProfile: 'ui/useProfile',
+  setRole: 'ui/setRole',
+  listConnectionModels: 'ui/listConnectionModels',
   runCommand: 'ui/runCommand',
 
   // workspace panel (W6)
@@ -188,6 +194,30 @@ export interface UiCancelParams {
 }
 
 /**
+ * `ui/editMessage` — rewrite a sent prompt and resend it.
+ *
+ * The host truncates the conversation at that turn, restores the workspace to
+ * the checkpoint taken just before it (so any code the agent changed after it
+ * is undone), then runs the new text as if typed fresh. Mirrors the VS Code
+ * extension's edit-user-message (chatViewProvider.ts).
+ */
+export interface UiEditMessageParams {
+  /** Which real user turn (0-based), from `UiMessage.ordinal`. */
+  ordinal: number;
+  text: string;
+  runId?: string;
+  images?: string[];
+}
+
+/**
+ * `ui/restoreTurn` — put the workspace files back to the state before a turn
+ * ran, leaving the conversation itself intact (unlike `ui/editMessage`).
+ */
+export interface UiRestoreTurnParams {
+  ordinal: number;
+}
+
+/**
  * A message as the UI renders it. Narrower than core's `StoredMessage`: the
  * browser needs what to draw, not what the model saw. `content` here is the
  * *display* text — the template-expanded version with context blocks stays
@@ -197,6 +227,18 @@ export interface UiCancelParams {
 export interface UiMessage {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Which real user turn this is (0-based), set only on user messages. The
+   * browser hands it back to `ui/editMessage` / `ui/restoreTurn` to name the
+   * turn without the host having to guess from text.
+   */
+  ordinal?: number;
+  /**
+   * The shadow-git commit of the workspace just before this turn ran, when one
+   * was taken. Its presence is what makes the turn's restore/edit buttons
+   * meaningful — a turn with no checkpoint has nothing to rewind to.
+   */
+  checkpoint?: string;
   /** Transcript entries that are neither prose nor sent back as context. */
   ui?: {
     tool?: {
@@ -345,6 +387,14 @@ export interface UiIndexStatus {
     chunks: number;
     /** False when the daemon cannot read this workspace itself; RAG is then off. */
     available: boolean;
+    /**
+     * Why, when `state` is 'error'.
+     *
+     * Without it the card said "error" and stopped: an unreachable Ollama, a
+     * chat model asked to embed, and a 401 are indistinguishable, and the
+     * reason was going nowhere at all.
+     */
+    message?: string;
   };
   repoMap: {
     /** Built at least once — `format()` returns nothing before that. */
@@ -537,27 +587,59 @@ export type UiStateChangedParams = Partial<UiState>;
  * rule the settings form depends on (§6.1).
  */
 /**
- * The non-chat model roles, in the order the editor lists them.
+ * The model roles, in the order the editor lists them.
  *
- * A profile can point each role at its own model, and (via `<role>Profile`) at
- * another profile's provider entirely — embeddings on a local Ollama while the
- * agent stays on a cloud endpoint, say. `label`/`hint` are here rather than in
- * the browser so the three hosts describe the same field the same way.
+ * One global table decides which model on which connection serves each — not a
+ * field on whichever profile happens to be active. `label`/`hint` are here
+ * rather than in the browser so every host describes the same role the same
+ * way.
  */
 export const UI_MODEL_ROLES = [
-  { key: 'agent', group: 'Core', label: 'Agent', hint: 'inherits the chat model' },
-  { key: 'apply', group: 'Core', label: 'Apply', hint: 'fast-apply merge, when an edit’s search text does not match' },
-  { key: 'edit', group: 'Core', label: 'Edit', hint: 'inherits the chat model' },
-  { key: 'completion', group: 'Core', label: 'Autocomplete', hint: 'editor ghost text — used by the extension, not here' },
-  { key: 'embeddings', group: 'Retrieval', label: 'Embeddings', hint: 'semantic search and the repo index' },
-  { key: 'rerank', group: 'Retrieval', label: 'Rerank', hint: 'inherits edit → chat' },
-  { key: 'context', group: 'Retrieval', label: 'Context', hint: 'per-chunk blurbs at index time; inherits rerank → edit → chat' },
+  { note: undefined, key: 'chat', group: 'Core', label: 'Chat', hint: 'conversations — every other role inherits from this one' },
+  { note: undefined, key: 'agent', group: 'Core', label: 'Agent', hint: 'inherits chat' },
+  { note: undefined, key: 'apply', group: 'Core', label: 'Apply', hint: 'fast-apply merge, when an edit’s search text does not match — inherits nothing' },
+  { note: undefined, key: 'edit', group: 'Core', label: 'Edit', hint: 'inherits chat' },
+  { note: undefined, key: 'completion', group: 'Core', label: 'Autocomplete', hint: 'editor ghost text — used by the extension, not here' },
+  {
+    key: 'embeddings',
+    group: 'Retrieval',
+    label: 'Embeddings',
+    hint: 'semantic search and the repo index — inherits nothing, a chat model cannot embed',
+    /**
+     * Shown under the row, because the list above it cannot be trusted to be
+     * complete for this one role.
+     *
+     * A provider's `/v1/models` is a chat catalogue. OpenRouter serves
+     * embeddings on its own endpoint and omits those models from that listing
+     * entirely, so the picker offers chat models and nothing else — and
+     * choosing one of them is exactly how you get "Model … does not exist"
+     * back from an embeddings request.
+     */
+    note: 'Some providers (OpenRouter among them) leave embedding models out of their model list. If you do not see one here, type its id — the list is not the whole catalogue.',
+  },
+  { note: undefined, key: 'rerank', group: 'Retrieval', label: 'Rerank', hint: 'inherits edit → chat' },
+  { note: undefined, key: 'context', group: 'Retrieval', label: 'Context', hint: 'per-chunk blurbs at index time; inherits rerank → edit → chat' },
 ] as const;
 
 export type UiModelRole = (typeof UI_MODEL_ROLES)[number]['key'];
 
-/** `{ agentModel, agentProfile, … }` — the shape both directions carry roles in. */
-export type UiRoleFields = Partial<Record<`${UiModelRole}Model` | `${UiModelRole}Profile`, string>>;
+/** One role's assignment as the browser sees it, plus the resolved sentence to show. */
+export interface UiRoleAssignment {
+  role: UiModelRole;
+  /** The connection its own assignment names, absent when the role inherits. */
+  connection?: string;
+  /** The model its own assignment names, absent when the role inherits. */
+  model?: string;
+  /**
+   * What actually serves it, in a sentence — "inherits chat — gpt-4o on cloud",
+   * "not set — semantic search is off".
+   *
+   * Computed by the host so the CLI, the extension and the browser all say the
+   * same thing about the same state. The old editor showed the raw field and a
+   * "this profile" dropdown, and left the reader to walk the chain.
+   */
+  summary: string;
+}
 
 /**
  * How much of the agent prompt a profile's model gets.
@@ -568,10 +650,11 @@ export type UiRoleFields = Partial<Record<`${UiModelRole}Model` | `${UiModelRole
  */
 export type UiPromptDetail = 'full' | 'lean' | 'auto';
 
-export interface UiProfile extends UiRoleFields {
+export interface UiProfile {
   name: string;
   preset: string;
   baseUrl: string;
+  /** The chat model, when chat runs on this connection; empty otherwise. */
   model: string;
   temperature?: number;
   hasKey: boolean;
@@ -631,6 +714,8 @@ export interface UiSettings {
   subAgents: boolean;
   nativeToolCalls: boolean;
   profiles: UiProfile[];
+  /** The global role table, resolved — one row per role, in display order. */
+  roles: UiRoleAssignment[];
   /**
    * Sent from the host rather than restated in the UI: the browser bundle's own
    * copy of this list silently went stale (it is also what makes "pick a
@@ -669,7 +754,7 @@ export interface UiSaveProfileParams {
    * would silently drop `temperature`, `headers`, `capabilities` and the rest.
    * `null` clears a field back to its inherited default.
    */
-  profile: UiRoleFields & {
+  profile: {
     name: string;
     preset?: string;
     baseUrl?: string;
@@ -686,6 +771,29 @@ export interface UiSaveProfileParams {
 
 export interface UiNameParams {
   name: string;
+}
+
+/**
+ * `ui/setRole` — assign a role, or clear it back to inheriting.
+ *
+ * Not part of `ui/saveProfile`, because a role is not a property of a profile
+ * any more: it names a model, and the model can live on any connection.
+ */
+export interface UiSetRoleParams {
+  role: UiModelRole;
+  /** Absent clears the role, so it inherits again. */
+  assignment?: { connection: string; model: string };
+}
+
+/** `ui/listConnectionModels` — model ids for one connection, for a role row's dropdown. */
+export interface UiConnectionModelsParams {
+  connection: string;
+}
+
+export interface UiConnectionModelsResult {
+  models: string[];
+  /** Set when the endpoint could not be reached or listed — the row degrades, the screen does not. */
+  error?: string;
 }
 
 export interface UiResetPermissionsResult {

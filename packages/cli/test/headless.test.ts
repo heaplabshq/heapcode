@@ -161,13 +161,13 @@ describe('runHeadless — chat-only parity (no tools used)', () => {
     err.mockRestore();
   });
 
-  it('exits non-zero with a structured error when no profile is configured', async () => {
+  it('exits non-zero with a structured error when no connection is configured', async () => {
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     const code = await runHeadless({ prompt: 'hi', json: true, cwd: project, server: serverOpts });
 
     expect(code).toBe(1);
-    expect(JSON.parse(write.mock.calls[0]![0] as string)).toMatchObject({ error: expect.stringContaining('No provider profile') });
+    expect(JSON.parse(write.mock.calls[0]![0] as string)).toMatchObject({ error: expect.stringContaining('No provider connection') });
     write.mockRestore();
   });
 

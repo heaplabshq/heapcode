@@ -131,3 +131,51 @@ describe('Composer — multi-line input', () => {
     expect(onSubmit).toHaveBeenLastCalledWith('earlier message');
   });
 });
+
+/**
+ * Attaching an image, and getting back out of it.
+ *
+ * Ctrl+V is bound as "attach what the OS has on the clipboard" rather than as
+ * paste — the terminal already delivers clipboard TEXT as keystrokes, and an
+ * image has none. Ctrl+X is the way back out: attaching with no way to
+ * unattach left sending the message as the only escape.
+ */
+describe('Composer — image attachments', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  it('Ctrl+V asks the host to attach, without disturbing the typed text', async () => {
+    const onAttachImage = vi.fn();
+    const { stdin, lastFrame } = render(<Composer onSubmit={vi.fn()} onAttachImage={onAttachImage} />);
+    await settle();
+    stdin.write('describe this');
+    stdin.write('\x16'); // Ctrl+V
+    await settle();
+    expect(onAttachImage).toHaveBeenCalledTimes(1);
+    // The key is not a text paste, so it must not also type a character.
+    expect(lastFrame()).toContain('describe this');
+  });
+
+  it('Ctrl+X asks the host to remove the last one', async () => {
+    const onRemoveImage = vi.fn();
+    const { stdin } = render(<Composer onSubmit={vi.fn()} onRemoveImage={onRemoveImage} attachmentCount={2} />);
+    await settle();
+    stdin.write('\x18'); // Ctrl+X
+    await settle();
+    expect(onRemoveImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows what is staged and how to undo it', async () => {
+    // A key nobody is told about is a key nobody presses, so the way out is
+    // written where the thing to undo is shown.
+    const { lastFrame } = render(<Composer onSubmit={vi.fn()} attachmentCount={2} />);
+    await settle();
+    expect(lastFrame()).toContain('2 images attached');
+    expect(lastFrame()).toContain('ctrl+x');
+  });
+
+  it('says nothing at all when nothing is attached', async () => {
+    const { lastFrame } = render(<Composer onSubmit={vi.fn()} />);
+    await settle();
+    expect(lastFrame()).not.toContain('attached');
+  });
+});

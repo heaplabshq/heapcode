@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HeapcodeServer, type ProviderProfileConfig } from '@heapcode/core';
+import { HeapcodeServer, type ModelRoleTable, type ProviderProfileConfig } from '@heapcode/core';
 import { ServerLink } from '../src/serverLink.js';
 import type { ProfileManager } from '../src/profileManager.js';
 import { __resetConfig, __setConfig, __setWorkspaceRoot } from './vscodeStub.js';
@@ -64,10 +64,11 @@ async function startEndpoint(): Promise<Endpoint> {
   };
 }
 
-function stubProfiles(profile: ProviderProfileConfig): ProfileManager {
+function stubProfiles(profile: ProviderProfileConfig, roles: ModelRoleTable): ProfileManager {
   return {
     getProfiles: () => [profile],
     getActiveProfile: () => profile,
+    getRoles: () => roles,
     getApiKey: () => Promise.resolve(undefined),
   } as unknown as ProfileManager;
 }
@@ -102,16 +103,24 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-function makeLink(profile?: Partial<ProviderProfileConfig>): ServerLink {
+/**
+ * Roles are one global table now, so what the extension pushes at hello is the
+ * table — not a profile carrying seven role fields. Everything here runs on
+ * one connection; only the models differ per role.
+ */
+function makeLink(extraRoles: ModelRoleTable = {}): ServerLink {
   const full: ProviderProfileConfig = {
     name: 'test',
     preset: 'custom',
     baseUrl: endpoint.baseUrl,
     model: 'chat',
-    embeddingsModel: 'embed',
-    ...profile,
   };
-  link = new ServerLink(stubProfiles(full), log, {
+  const roles: ModelRoleTable = {
+    chat: { connection: 'test', model: 'chat' },
+    embeddings: { connection: 'test', model: 'embed' },
+    ...extraRoles,
+  };
+  link = new ServerLink(stubProfiles(full, roles), log, {
     address: core.address,
     token: core.token,
     autostart: false,
@@ -123,7 +132,7 @@ describe('ServerLink RAG — the extension\'s toggle defaults', () => {
   it('leaves contextual retrieval off by default, so indexing makes no LLM call', async () => {
     // heapcode.rag.contextualRetrieval ships false: it runs once per *changed
     // chunk*, so it adds real time to indexing (package.json's own wording).
-    const l = makeLink({ contextModel: 'ctx' });
+    const l = makeLink({ context: { connection: 'test', model: 'ctx' } });
 
     const result = await l.ragIndex({ full: true });
 
@@ -134,7 +143,7 @@ describe('ServerLink RAG — the extension\'s toggle defaults', () => {
 
   it('turns it on when the setting is on', async () => {
     __setConfig('heapcode', { 'rag.contextualRetrieval': true });
-    const l = makeLink({ contextModel: 'ctx' });
+    const l = makeLink({ context: { connection: 'test', model: 'ctx' } });
 
     await l.ragIndex({ full: true });
 
@@ -158,7 +167,7 @@ describe('ServerLink RAG — the extension\'s toggle defaults', () => {
     for (let i = 0; i < 8; i++) {
       await writeFile(join(root, `m${i}.ts`), `export function fn${i}() {\n  return ${i};\n}\n`);
     }
-    const l = makeLink({ rerankModel: 'rr' });
+    const l = makeLink({ rerank: { connection: 'test', model: 'rr' } });
     await l.ragIndex({ full: true });
     const before = endpoint.chatCalls.length;
 
@@ -172,7 +181,7 @@ describe('ServerLink RAG — the extension\'s toggle defaults', () => {
       await writeFile(join(root, `m${i}.ts`), `export function fn${i}() {\n  return ${i};\n}\n`);
     }
     __setConfig('heapcode', { 'rag.rerank': false });
-    const l = makeLink({ rerankModel: 'rr' });
+    const l = makeLink({ rerank: { connection: 'test', model: 'rr' } });
     await l.ragIndex({ full: true });
     const before = endpoint.chatCalls.length;
 

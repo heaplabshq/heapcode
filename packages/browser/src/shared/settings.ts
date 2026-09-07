@@ -11,9 +11,15 @@ import type { ProviderProfileConfig } from '@heapcode/core/providers';
  * (PRD §7.2). The key is BYOK and stays on the device that typed it.
  *
  * The profile shape is core's `ProviderProfileConfig` rather than a local
- * invention, so a profile means the same thing here as it does in the CLI and
- * the extension. Only the chat-relevant fields are surfaced in M0's UI; the
- * rest of the shape is carried untouched.
+ * invention, so it means the same thing here as it does in the CLI and the
+ * extension. Since that type became the *resolved* shape — a connection and
+ * one model, flattened (core's config/roles.ts) — a stored profile here is
+ * exactly that: an endpoint plus the model its one role runs on.
+ *
+ * heapbrowse needs no role table. The other hosts have seven roles because
+ * they edit files, index a repo and embed it; this one drives a web page, and
+ * every call it makes is the page agent. A table with a single row would be
+ * ceremony, so the split shows up here only as the fields that are gone.
  */
 
 const PROFILE_KEY = 'heapbrowse.profile';

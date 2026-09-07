@@ -7,6 +7,7 @@ import {
   type UiConversationMeta,
   type UiEventParams,
   type UiHelloResult,
+  type UiConnectionModelsResult,
   type UiListModelsResult,
   type UiProbeProviderParams,
   type UiProbeProviderResult,
@@ -66,8 +67,11 @@ import {
   concat,
   emptyTranscript,
   fromMessages,
+  nextOrdinal,
   reduce,
   settle,
+  stampOrdinal,
+  userTurnItemIndex,
   withAssistantNote,
   withNotice,
   withUserMessage,
@@ -173,6 +177,12 @@ export function App(): JSX.Element {
   /** Text the global `/` shortcut hands to the composer; cleared once used. */
   const [seed, setSeed] = useState<string>();
   /**
+   * The user turn being edited, if any: its ordinal (handed back to
+   * `ui/editMessage`) and the text the composer opened with. Sending while this
+   * is set reverts the conversation and code to that point and resends.
+   */
+  const [editing, setEditing] = useState<{ ordinal: number; text: string }>();
+  /**
    * The workspace panel, closed until asked for.
    *
    * It opened by default, which meant every new session started with half the
@@ -187,6 +197,15 @@ export function App(): JSX.Element {
    */
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem('heapcode.panel') === 'open');
   const [panelTab, setPanelTab] = useState<PanelTab>('changes');
+  /**
+   * The panel's width, dragged to size. Remembered for the same reason the
+   * open/closed choice is — how wide a diff needs to be is a statement about
+   * the work, not something to re-decide on every reload.
+   */
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('heapcode.panelWidth'));
+    return Number.isFinite(saved) && saved > 0 ? saved : undefined;
+  });
 
   // One effect rather than a write at each of the eight places that open the
   // panel — including the ones the app opens for you, like a new artifact or a
@@ -194,6 +213,53 @@ export function App(): JSX.Element {
   useEffect(() => {
     localStorage.setItem('heapcode.panel', panelOpen ? 'open' : 'closed');
   }, [panelOpen]);
+  useEffect(() => {
+    if (panelWidth) localStorage.setItem('heapcode.panelWidth', String(panelWidth));
+  }, [panelWidth]);
+
+  // Shrinking the window must not let a wide panel push the chat below its
+  // floor — re-clamp against the same ceiling the drag uses.
+  useEffect(() => {
+    if (!panelWidth) return;
+    const onResize = (): void => {
+      const max = Math.min(900, window.innerWidth - 480);
+      setPanelWidth((w) => (w && w > max ? Math.max(max, 320) : w));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [panelWidth]);
+
+  /**
+   * Drag the panel's left edge. Pointer capture on the splitter keeps the drag
+   * alive over the preview iframe, which would otherwise swallow the moves.
+   * The width is clamped against the window so the chat never shrinks to
+   * nothing — below that floor the panel belongs overlaid, not squeezed in.
+   */
+  const startPanelDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startWidth = e.currentTarget.parentElement?.querySelector('.panel')?.clientWidth ?? 0;
+    // Kill text selection for the length of the drag — without this, sweeping
+    // left over the transcript selects it.
+    document.body.style.userSelect = 'none';
+    const move = (ev: PointerEvent): void => {
+      const max = Math.min(900, window.innerWidth - 480);
+      setPanelWidth(Math.round(Math.min(Math.max(startWidth + (startX - ev.clientX), 320), max)));
+    };
+    // pointerup and pointercancel both end the gesture; without the cancel
+    // branch a lost pointer (tab switch, gesture stolen by the OS) would leave
+    // the move listener attached for good.
+    const up = (): void => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  }, []);
   const [changes, setChanges] = useState<UiChangedFile[]>([]);
   const [checkpoints, setCheckpoints] = useState<UiCheckpoint[]>([]);
   const [openPath, setOpenPath] = useState<string>();
@@ -679,7 +745,10 @@ export function App(): JSX.Element {
         // Last run's bad ending is history now — otherwise the announcer would
         // read it out again when THIS run finishes cleanly.
         setEnding(undefined);
-        setTranscript((t) => withUserMessage(t, command.name));
+        // The host persists a command run as a real user turn (it increments
+        // the ordinal), so stamp it here too — otherwise every later turn's
+        // client-side ordinal drifts one behind the host's numbering.
+        setTranscript((t) => stampOrdinal(withUserMessage(t, command.name), nextOrdinal(t)));
         void rpc
           .request<UiSendMessageResult>(UI_METHODS.runCommand, { command: command.name, runId: id })
           .then((res) => noteOutcome(res))
@@ -715,7 +784,40 @@ export function App(): JSX.Element {
       setRunId(id);
       setError(undefined);
       setEnding(undefined);
-      setTranscript((t) => withUserMessage(t, text, images));
+      // Editing an earlier turn: the host truncates the stored conversation,
+      // restores the workspace checkpoint, and resends. The visible transcript
+      // is truncated to match here (then the new turn appended); streaming
+      // deltas flow through the reducer as with a fresh send.
+      const edit = editing;
+      setEditing(undefined);
+      if (edit) {
+        // Truncate the visible transcript at the edited turn, then append the
+        // new text — the host does the same to the stored conversation, so what
+        // is on screen is what the next reload will rebuild. The appended turn
+        // keeps the edited ordinal: it IS that turn, re-asked.
+        setTranscript((t) => {
+          const truncated = { ...t, items: t.items.slice(0, userTurnItemIndex(t, edit.ordinal)) };
+          return stampOrdinal(withUserMessage(truncated, text, images), edit.ordinal);
+        });
+        void rpc
+          .request<UiSendMessageResult>(UI_METHODS.editMessage, {
+            ordinal: edit.ordinal,
+            text,
+            runId: id,
+            images,
+          })
+          .then((res) => noteOutcome(res))
+          .catch((err: Error) => {
+            if (!/cancel|abort/i.test(err.message)) setError(err.message);
+          })
+          .finally(() => {
+            setRunId(undefined);
+            setTranscript(settle);
+            refreshConversations();
+          });
+        return;
+      }
+      setTranscript((t) => stampOrdinal(withUserMessage(t, text, images), nextOrdinal(t)));
       void rpc
         .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text, runId: id, images })
         .then((res) => noteOutcome(res))
@@ -729,7 +831,32 @@ export function App(): JSX.Element {
           refreshConversations();
         });
     },
-    [rpc, refreshConversations],
+    [rpc, refreshConversations, editing],
+  );
+
+  /** Load a sent prompt into the composer to edit; sending truncates + resends. */
+  const startEdit = useCallback((ordinal: number, text: string) => {
+    setEditing({ ordinal, text });
+    setSeed(text);
+  }, []);
+
+  /** Restore the workspace to the checkpoint before a turn, conversation intact. */
+  const restoreTurn = useCallback(
+    (ordinal: number) => {
+      setNotice('Restoring the workspace…');
+      void rpc
+        .request<{ files: string[] }>(UI_METHODS.restoreTurn, { ordinal })
+        .then((r) =>
+          setNotice(
+            r.files.length > 0
+              ? `Restored ${r.files.length} file(s) to the state before that message.`
+              : 'Workspace already matches the state before that message — nothing to restore.',
+          ),
+        )
+        .catch((err: Error) => setError(err.message))
+        .finally(refreshWorkspace);
+    },
+    [rpc, refreshWorkspace],
   );
 
   const cancel = useCallback(() => {
@@ -878,6 +1005,8 @@ export function App(): JSX.Element {
             onOpenPath={openInFiles}
             busy={busy}
             runStartedAt={runStartedAt}
+            onEdit={startEdit}
+            onRestore={restoreTurn}
           />
 
           <Announcer busy={busy} activity={activityOf(transcript)} lastReply={lastReplyOf(transcript)} ending={ending} />
@@ -894,6 +1023,8 @@ export function App(): JSX.Element {
             onSeedUsed={clearSeed}
             busy={busy}
             disabled={status !== 'open'}
+            editing={editing !== undefined}
+            onCancelEdit={() => setEditing(undefined)}
             footer={
               <>
                 {/* Which folder, then how much freedom, then which model —
@@ -947,52 +1078,62 @@ export function App(): JSX.Element {
         </main>
 
         {panelOpen && (
-          <Panel
-            tab={panelTab}
-            onTab={setPanelTab}
-            onClose={() => setPanelOpen(false)}
-            changes={changes}
-            checkpoints={checkpoints}
-            terminal={terminalEntries(transcript.items)}
-            busy={busy}
-            openPath={openPath}
-            loadDiff={loadDiff}
-            loadTree={loadTree}
-            loadFile={loadFile}
-            onRevertFile={(path) => workspaceAct(UI_METHODS.revertFile, { path })}
-            onRevertAll={() => workspaceAct(UI_METHODS.revertAll, undefined)}
-            onKeepAll={() => workspaceAct(UI_METHODS.keepAll, undefined)}
-            onRewind={(hash) => workspaceAct(UI_METHODS.rewind, { hash })}
-            indexStatus={indexStatus}
-            loadRepoMap={loadRepoMap}
-            onReindex={() => {
-              setNotice('Rebuilding the index…');
-              void rpc
-                .request(UI_METHODS.reindex)
-                .then(() => setNotice('Index rebuilt.'))
-                .catch((err: Error) => setError(err.message))
-                .finally(refreshIndex);
-            }}
-            onClearIndex={() => {
-              void rpc
-                .request(UI_METHODS.reindex, { clear: true })
-                .then(() => setNotice('Index cleared.'))
-                .catch((err: Error) => setError(err.message))
-                .finally(refreshIndex);
-            }}
-            onOpenPath={openInFiles}
-            artifacts={artifacts}
-            selectedArtifact={selectedArtifact}
-            onSelectArtifact={setSelectedArtifact}
-            loadArtifact={loadArtifact}
-            onSaveArtifact={(id, path, version) => {
-              void rpc
-                .request(UI_METHODS.saveArtifact, { id, path, version })
-                .then(() => setNotice(`Saved to ${path}.`))
-                .catch((err: Error) => setError(err.message))
-                .finally(refreshWorkspace);
-            }}
-          />
+          <>
+            <div
+              className="panel-splitter"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize workspace panel"
+              onPointerDown={startPanelDrag}
+            />
+            <Panel
+              width={panelWidth}
+              tab={panelTab}
+              onTab={setPanelTab}
+              onClose={() => setPanelOpen(false)}
+              changes={changes}
+              checkpoints={checkpoints}
+              terminal={terminalEntries(transcript.items)}
+              busy={busy}
+              openPath={openPath}
+              loadDiff={loadDiff}
+              loadTree={loadTree}
+              loadFile={loadFile}
+              onRevertFile={(path) => workspaceAct(UI_METHODS.revertFile, { path })}
+              onRevertAll={() => workspaceAct(UI_METHODS.revertAll, undefined)}
+              onKeepAll={() => workspaceAct(UI_METHODS.keepAll, undefined)}
+              onRewind={(hash) => workspaceAct(UI_METHODS.rewind, { hash })}
+              indexStatus={indexStatus}
+              loadRepoMap={loadRepoMap}
+              onReindex={() => {
+                setNotice('Rebuilding the index…');
+                void rpc
+                  .request(UI_METHODS.reindex)
+                  .then(() => setNotice('Index rebuilt.'))
+                  .catch((err: Error) => setError(err.message))
+                  .finally(refreshIndex);
+              }}
+              onClearIndex={() => {
+                void rpc
+                  .request(UI_METHODS.reindex, { clear: true })
+                  .then(() => setNotice('Index cleared.'))
+                  .catch((err: Error) => setError(err.message))
+                  .finally(refreshIndex);
+              }}
+              onOpenPath={openInFiles}
+              artifacts={artifacts}
+              selectedArtifact={selectedArtifact}
+              onSelectArtifact={setSelectedArtifact}
+              loadArtifact={loadArtifact}
+              onSaveArtifact={(id, path, version) => {
+                void rpc
+                  .request(UI_METHODS.saveArtifact, { id, path, version })
+                  .then(() => setNotice(`Saved to ${path}.`))
+                  .catch((err: Error) => setError(err.message))
+                  .finally(refreshWorkspace);
+              }}
+            />
+          </>
         )}
       </div>
 
@@ -1010,6 +1151,15 @@ export function App(): JSX.Element {
           onToggleNativeTools={(enabled) => act(UI_METHODS.setNativeTools, { enabled })}
           onSetWebSearch={(patch) => act(UI_METHODS.setWebSearch, patch)}
           onUseProfile={(name) => act(UI_METHODS.useProfile, { name })}
+          onSetRole={(role, assignment) => act(UI_METHODS.setRole, { role, assignment })}
+          listConnectionModels={(connection) =>
+            rpc
+              .request<UiConnectionModelsResult>(UI_METHODS.listConnectionModels, { connection })
+              // An endpoint that is not running degrades the row, not the
+              // screen — the row falls back to typing an id by hand.
+              .then((r) => r.models)
+              .catch(() => [])
+          }
           onDeleteProfile={(name) => act(UI_METHODS.deleteProfile, { name })}
           onSaveProfile={(profile: UiProfileDraft, apiKey?: string) =>
             act(UI_METHODS.saveProfile, { profile, apiKey })

@@ -48,11 +48,33 @@ function railProps(over: Partial<SidebarProps> = {}): SidebarProps {
 }
 
 describe('the left rail', () => {
-  it('carries the brand, connection and profile', () => {
+  it('carries the brand, connection and what is answering', () => {
     const { container } = render(<Sidebar {...railProps()} />);
     expect(screen.getByText('Heap Code')).toBeTruthy();
-    expect(container.querySelector('.dot-open')).not.toBeNull();
+    // Connected is the silent state: a dot that is green all day says nothing
+    // and reads as a presence indicator beside the model.
+    expect(container.querySelector('.dot')).toBeNull();
+    // The model leads and the endpoint is the second line. It used to be an
+    // initial in a circle beside the endpoint's name, which is the signed-in
+    // user control from every other app — so `ollama` read as an account.
+    expect(screen.getByText('llama')).toBeTruthy();
     expect(screen.getByText('ollama')).toBeTruthy();
+    expect(container.querySelector('.rail-avatar')).toBeNull();
+  });
+
+  it('shows the connection dot only when the connection is not fine', () => {
+    for (const status of ['connecting', 'closed'] as const) {
+      const { container } = render(<Sidebar {...railProps({ status })} />);
+      expect(container.querySelector(`.dot-${status}`)).not.toBeNull();
+      cleanup();
+    }
+  });
+
+  it('sends the footer to models and context, not to the front page of settings', () => {
+    const onOpenSettings = vi.fn();
+    render(<Sidebar {...railProps({ onOpenSettings })} />);
+    fireEvent.click(screen.getByText('llama'));
+    expect(onOpenSettings).toHaveBeenCalledWith('context');
   });
 
   it('holds nothing that is really a workspace-panel tab', () => {
@@ -61,7 +83,6 @@ describe('the left rail', () => {
     // while looking like it owned the whole panel. ChatTools opens the panel;
     // the tabs take it from there.
     render(<Sidebar {...railProps()} />);
-    fireEvent.click(screen.getByText('More'));
     for (const gone of ['Changes', 'Files', 'Terminal']) {
       expect(screen.queryByText(gone)).toBeNull();
     }
@@ -86,17 +107,52 @@ describe('the left rail', () => {
 
   it('collapses to icons, keeping each one reachable by name', () => {
     const { container } = render(<Sidebar {...railProps({ collapsed: true })} />);
-    expect(screen.queryByText('Heap Code')).toBeNull();
-    expect(container.querySelector('.rail-recents')).toBeNull();
+    // Everything stays mounted and is faded and clipped by the rail's own
+    // width, which is what lets the two states animate into each other rather
+    // than swapping. Nothing here may be unmounted on collapse.
+    expect(container.querySelector('.rail-collapsed .rail-brand')).not.toBeNull();
+    expect(container.querySelector('.rail-collapsed .rail-recents')).not.toBeNull();
     // Labels are gone from sight, not from the accessibility tree.
     expect(screen.getByLabelText('Artifacts')).toBeTruthy();
   });
 
-  it('hides the More group until it is asked for', () => {
-    render(<Sidebar {...railProps()} />);
-    expect(screen.queryByText('Commands')).toBeNull();
-    fireEvent.click(screen.getByText('More'));
-    expect(screen.getByText('Commands')).toBeTruthy();
+  it('keeps the way into settings at the foot of the rail when collapsed', () => {
+    const onOpenSettings = vi.fn();
+    const { container } = render(<Sidebar {...railProps({ collapsed: true, onOpenSettings })} />);
+    // `margin-top: auto` is what pins it, and it only pins if the footer is
+    // still the last flex child — the recents list is not there to push it.
+    const rail = container.querySelector('.rail')!;
+    expect(rail.lastElementChild?.className).toBe('rail-foot');
+    fireEvent.click(screen.getByLabelText('Models and context'));
+    expect(onOpenSettings).toHaveBeenCalledWith('context');
+  });
+
+  it('puts the command palette in the nav rather than behind a disclosure', () => {
+    // It used to sit under a "More" chevron with one other item. Two entries
+    // is not a submenu; it is two entries.
+    const onOpenPalette = vi.fn();
+    render(<Sidebar {...railProps({ onOpenPalette })} />);
+    expect(screen.queryByText('More')).toBeNull();
+    fireEvent.click(screen.getByText('Commands'));
+    expect(onOpenPalette).toHaveBeenCalled();
+  });
+
+  it('files recents under when they were last touched', () => {
+    const day = 86_400_000;
+    render(
+      <Sidebar
+        {...railProps({
+          conversations: [
+            { id: 'a', title: 'This morning', updatedAt: Date.now(), active: true },
+            { id: 'b', title: 'Last week', updatedAt: Date.now() - 5 * day, active: false },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText('Today')).toBeTruthy();
+    expect(screen.getByText('Previous 7 days')).toBeTruthy();
+    // A bucket with nothing in it is not a heading.
+    expect(screen.queryByText('Yesterday')).toBeNull();
   });
 });
 

@@ -7,6 +7,7 @@ export * from './providers/presets.js';
 export * from './providers/modelFilter.js';
 export * from './providers/sse.js';
 export * from './config/profiles.js';
+export * from './config/roles.js';
 export * from './config/ignore.js';
 export * from './rag/chunker.js';
 export * from './rag/astChunker.js';

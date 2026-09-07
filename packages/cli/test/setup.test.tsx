@@ -174,4 +174,39 @@ describe('Setup', () => {
     await vi.waitFor(() => expect(onComplete).toHaveBeenCalled(), { timeout: 2_000 });
     expect(onComplete.mock.calls[0]![0]).toMatchObject({ model: 'a-model-not-in-the-list' });
   });
+
+  it('points chat at the model it just picked, even when a chat assignment already exists', async () => {
+    // `heapcode connection add` for a second endpoint promises "chat now runs
+    // on it". saveProfile alone will not move chat off the first connection,
+    // so the picked model would be saved nowhere.
+    const seed = {
+      connections: [{ name: 'cloud', preset: 'openai', baseUrl: 'https://api.openai.com/v1' }],
+      roles: { chat: { connection: 'cloud', model: 'gpt-4o' } },
+      activeProfile: 'cloud',
+    };
+    await import('node:fs/promises').then((fs) => fs.writeFile(join(home, 'config.json'), JSON.stringify(seed)));
+
+    const onComplete = vi.fn();
+    const { stdin, lastFrame } = render(<Setup onComplete={onComplete} />);
+    await new Promise((r) => setTimeout(r, 20));
+
+    stdin.write('\r'); // provider: Ollama (default)
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r'); // name: default ("ollama")
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('http://localhost:1/v1'); // unreachable — manual model entry
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(lastFrame()).toContain('Model id'), { timeout: 2_000 });
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('llama3.1:8b');
+    await new Promise((r) => setTimeout(r, 20));
+    stdin.write('\r');
+
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalled(), { timeout: 2_000 });
+    const config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8'));
+    expect(config.roles.chat).toMatchObject({ connection: 'ollama', model: 'llama3.1:8b' });
+    expect(config.activeProfile).toBe('ollama');
+  });
 });

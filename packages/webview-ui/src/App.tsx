@@ -653,6 +653,8 @@ export function App() {
             active: msg.active,
             presets: msg.presets,
             keySaved: msg.keySaved,
+            roles: msg.roles,
+            roleSummary: msg.roleSummary,
             subAgentsEnabled: msg.subAgentsEnabled,
           });
           break;

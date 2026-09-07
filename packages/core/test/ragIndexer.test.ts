@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -105,10 +105,24 @@ function profile(extra: Partial<ProviderProfileConfig> = {}): ProviderProfileCon
   return { name: 'test', preset: 'custom', baseUrl: endpoint.baseUrl, model: 'chat', ...extra };
 }
 
-/** Resolves every role to one profile, recording which roles were asked for. */
-function rolesFor(p: ProviderProfileConfig, asked: ModelRole[] = []): RagRoleResolver {
+/**
+ * Resolves each role to the model named for it, recording which were asked.
+ *
+ * A resolver hands back an already-flattened profile whose `model` IS the
+ * role's model — the inheritance chain lives in `resolveRole` (config/roles.ts)
+ * now, not in the indexer and not in each host's copy of it. A role with no
+ * entry here resolves to nothing, which is what an unassigned role means.
+ */
+function rolesFor(
+  models: Partial<Record<ModelRole, string>>,
+  asked: ModelRole[] = [],
+  base: ProviderProfileConfig = profile(),
+): RagRoleResolver {
   return async (role) => {
     asked.push(role);
+    const model = models[role];
+    if (!model) return undefined;
+    const p = { ...base, model };
     return { provider: createProvider(p, undefined), profile: p };
   };
 }
@@ -143,7 +157,7 @@ const embeddingCalls = (): number => endpoint.paths.filter((p) => p.includes('/e
 describe('RagIndexer — contextual retrieval (host policy, per request)', () => {
   it('makes no LLM call when off — the extension\'s shipped default', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
 
     await index.buildIndex({ contextualRetrieval: false });
@@ -155,7 +169,7 @@ describe('RagIndexer — contextual retrieval (host policy, per request)', () =>
   it('calls the context model when on — the CLI\'s behaviour, which has no setting for it', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
     endpoint.chatReplies.push('1: adds two numbers');
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed', contextModel: 'ctx' })));
+    const index = indexer(rolesFor({ embeddings: 'embed', context: 'ctx' }));
     await index.init();
 
     await index.buildIndex({ contextualRetrieval: true });
@@ -165,7 +179,7 @@ describe('RagIndexer — contextual retrieval (host policy, per request)', () =>
 
   it('defaults to off when unspecified', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed', contextModel: 'ctx' })));
+    const index = indexer(rolesFor({ embeddings: 'embed', context: 'ctx' }));
     await index.init();
 
     await index.buildIndex();
@@ -176,8 +190,9 @@ describe('RagIndexer — contextual retrieval (host policy, per request)', () =>
   it('never fails indexing when the context model errors', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) {\n  return a + b;\n}\n');
     const roles: RagRoleResolver = async (role) => {
-      if (role === 'contextModel') throw new Error('context profile is broken');
-      return { provider: createProvider(profile({ embeddingsModel: 'embed' }), undefined), profile: profile({ embeddingsModel: 'embed' }) };
+      if (role === 'context') throw new Error('the context connection is broken');
+      const p = { ...profile(), model: 'embed' };
+      return { provider: createProvider(p, undefined), profile: p };
     };
     const index = indexer(roles);
     await index.init();
@@ -191,7 +206,7 @@ describe('RagIndexer — contextual retrieval (host policy, per request)', () =>
 describe('RagIndexer — hybrid search and rerank (host policy, per request)', () => {
   it('fuses BM25 when hybrid is on, which is the only thing that can rank identical vectors', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
     await index.buildIndex();
 
@@ -202,7 +217,7 @@ describe('RagIndexer — hybrid search and rerank (host policy, per request)', (
 
   it('cannot rank identical vectors when hybrid is off', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
     await index.buildIndex();
 
@@ -215,7 +230,7 @@ describe('RagIndexer — hybrid search and rerank (host policy, per request)', (
 
   it('makes no LLM call when rerank is off', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed', rerankModel: 'rr' })));
+    const index = indexer(rolesFor({ embeddings: 'embed', rerank: 'rr' }));
     await index.init();
     await index.buildIndex();
     const before = chatCalls();
@@ -227,7 +242,7 @@ describe('RagIndexer — hybrid search and rerank (host policy, per request)', (
 
   it('reranks into the model\'s order when on', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed', rerankModel: 'rr' })));
+    const index = indexer(rolesFor({ embeddings: 'embed', rerank: 'rr' }));
     await index.init();
     await index.buildIndex();
     // rerankHits shows numbered candidates and keeps the ones the model picks,
@@ -241,12 +256,13 @@ describe('RagIndexer — hybrid search and rerank (host policy, per request)', (
     expect(hits[0]!.record.path).not.toBe(unranked[0]!.record.path);
   });
 
-  it('falls back rerankModel → editModel → model, so an unset rerank model still reranks', async () => {
-    // Worth pinning because it is easy to read `rerankModel` being unset as
-    // "no rerank": the profile's chat model backstops it (profiles.ts:31), and
-    // that is what both hosts did before this moved.
+  it('reranks on whatever the rerank role inherited, without knowing it inherited', async () => {
+    // The chain (rerank → edit → chat) is the resolver's job now, so from here
+    // an inherited model is indistinguishable from an assigned one. That is
+    // the point: the indexer used to walk `rerankModel || editModel || model`
+    // itself, and so did each host, three copies of one rule.
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed', rerank: 'chat' }));
     await index.init();
     await index.buildIndex();
     const before = chatCalls();
@@ -256,9 +272,9 @@ describe('RagIndexer — hybrid search and rerank (host policy, per request)', (
     expect(chatCalls()).toBe(before + 1);
   });
 
-  it('falls back to hybrid order when the profile has no usable model for it', async () => {
+  it('falls back to hybrid order when nothing serves the rerank role', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed', model: '' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
     await index.buildIndex();
     const before = chatCalls();
@@ -271,13 +287,13 @@ describe('RagIndexer — hybrid search and rerank (host policy, per request)', (
 
   it('falls back to hybrid order when the rerank profile is unreachable', async () => {
     // Only the rerank role points at a dead endpoint — the realistic shape,
-    // since rerankProfile can name an entirely different provider than
-    // embeddings do.
+    // since its assignment can name an entirely different connection than the
+    // embeddings one does.
     await writeCorpus();
-    const embeddings = profile({ embeddingsModel: 'embed' });
-    const broken = profile({ name: 'down', baseUrl: 'http://127.0.0.1:1/v1', rerankModel: 'rr' });
+    const embeddings = { ...profile(), model: 'embed' };
+    const broken = profile({ name: 'down', baseUrl: 'http://127.0.0.1:1/v1', model: 'rr' });
     const index = indexer(async (role) => {
-      const p = role === 'rerankModel' ? broken : embeddings;
+      const p = role === 'rerank' ? broken : embeddings;
       return { provider: createProvider(p, undefined), profile: p };
     });
     await index.init();
@@ -290,7 +306,7 @@ describe('RagIndexer — hybrid search and rerank (host policy, per request)', (
 
   it('both default to on', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
     await index.buildIndex();
 
@@ -303,17 +319,17 @@ describe('RagIndexer — the role seam', () => {
   it('asks for embeddings, context and rerank as separate roles', async () => {
     await writeCorpus();
     const asked: ModelRole[] = [];
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed', contextModel: 'ctx', rerankModel: 'rr' }), asked));
+    const index = indexer(rolesFor({ embeddings: 'embed', context: 'ctx', rerank: 'rr' }, asked));
     await index.init();
     endpoint.chatReplies.push('1: a blurb');
     await index.buildIndex({ contextualRetrieval: true });
     await index.query('authenticate');
 
-    expect(new Set(asked)).toEqual(new Set(['embeddingsModel', 'contextModel', 'rerankModel']));
+    expect(new Set(asked)).toEqual(new Set(['embeddings', 'context', 'rerank']));
   });
 
-  it('reports no-embedder when the role resolves to a profile with no embeddings model', async () => {
-    const index = indexer(rolesFor(profile()));
+  it('reports no-embedder when nothing is assigned to the embeddings role', async () => {
+    const index = indexer(rolesFor({}));
     await index.init();
 
     expect((await index.status()).state).toBe('no-embedder');
@@ -334,31 +350,32 @@ describe('RagIndexer — the role seam', () => {
 describe('RagIndexer — ready', () => {
   it('needs only content by default, which is what the CLI relies on', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-    const withEmbedder = profile({ embeddingsModel: 'embed' });
-    let current = withEmbedder;
-    const index = indexer(async () => ({ provider: createProvider(current, undefined), profile: current }));
+    let current: ProviderProfileConfig | undefined = { ...profile(), model: 'embed' };
+    const index = indexer(async () =>
+      current ? { provider: createProvider(current, undefined), profile: current } : undefined,
+    );
     await index.init();
     await index.buildIndex();
 
-    // Embeddings model goes away; the index still has content.
-    current = profile();
+    // The embeddings assignment goes away; the index still has content.
+    current = undefined;
     await index.status(); // refreshes the cached embedder
     expect(index.ready).toBe(true);
   });
 
   it('additionally needs an embeddings model when the host asks for that, which is the extension\'s rule', async () => {
     await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
-    const withEmbedder = profile({ embeddingsModel: 'embed' });
-    let current = withEmbedder;
+    let current: ProviderProfileConfig | undefined = { ...profile(), model: 'embed' };
     const index = indexer(
-      async () => ({ provider: createProvider(current, undefined), profile: current }),
+      async () =>
+        current ? { provider: createProvider(current, undefined), profile: current } : undefined,
       { requireEmbedderForReady: true },
     );
     await index.init();
     await index.buildIndex();
     expect(index.ready).toBe(true);
 
-    current = profile();
+    current = undefined;
     await index.status();
     expect(index.ready).toBe(false);
   });
@@ -374,7 +391,7 @@ describe('RagIndexer — overlapping builds', () => {
    */
   it('waits for the build in flight and rebuilds, rather than returning undefined', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
     endpoint.delayMs = 40;
 
@@ -391,7 +408,7 @@ describe('RagIndexer — overlapping builds', () => {
 
   it('runs one shared follow-up however many requests pile up behind a build', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
     endpoint.delayMs = 40;
 
@@ -413,7 +430,7 @@ describe('RagIndexer — overlapping builds', () => {
 describe('RagIndexer — buildIndex result', () => {
   it('reports files, chunks and how many files actually re-embedded', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
 
     const first = await index.buildIndex();
@@ -427,7 +444,7 @@ describe('RagIndexer — buildIndex result', () => {
 
   it('drops files that disappeared between runs', async () => {
     await writeCorpus();
-    const index = indexer(rolesFor(profile({ embeddingsModel: 'embed' })));
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
     await index.init();
     await index.buildIndex();
 
@@ -435,5 +452,100 @@ describe('RagIndexer — buildIndex result', () => {
     const after = await index.buildIndex();
 
     expect(after?.files).toBe(7);
+  });
+});
+
+/**
+ * Which model wrote the index.
+ *
+ * Vectors from two embedding models are not comparable — cosine distance
+ * between them is noise, not a weak signal — so an index holding a mixture
+ * answers confidently and wrongly, with no error anywhere to notice.
+ *
+ * Nothing recorded the model before, and the embeddings role was a field on
+ * whichever profile happened to be active. Switching profile was therefore
+ * enough to start interleaving two models' vectors in one file. Making roles
+ * global removes that trigger; this is the guard for every other way it could
+ * happen — editing config by hand, sharing a workspace, changing the model on
+ * purpose.
+ */
+describe('RagIndexer — the embedder stamp', () => {
+  const statePath = (): string => join(root, '.state', RAG_INDEX_FILE);
+
+  it('records the model that produced the vectors', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
+    await index.init();
+    await index.buildIndex();
+
+    expect(JSON.parse(index.serialize()) as { embedder?: string }).toMatchObject({ embedder: 'embed' });
+  });
+
+  it('reads an index back when the same model is still in use', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    const built = await first.buildIndex();
+    expect(built?.chunks).toBeGreaterThan(0);
+
+    const second = indexer(rolesFor({ embeddings: 'embed' }));
+    await second.init();
+
+    expect(second.chunkCount).toBe(built!.chunks);
+  });
+
+  it('discards an index built by a different model rather than searching across both', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    await first.buildIndex();
+
+    const second = indexer(rolesFor({ embeddings: 'other-embed' }));
+    await second.init();
+
+    // Empty, which every caller already treats as "no index" and rebuilds
+    // from. One cold rebuild beats silently bad search.
+    expect(second.chunkCount).toBe(0);
+  });
+
+  it('rebuilds cleanly after the model changes, and restamps', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    await first.buildIndex();
+
+    const second = indexer(rolesFor({ embeddings: 'other-embed' }));
+    await second.init();
+    const rebuilt = await second.buildIndex();
+
+    expect(rebuilt?.chunks).toBeGreaterThan(0);
+    expect(JSON.parse(second.serialize()) as { embedder?: string }).toMatchObject({ embedder: 'other-embed' });
+  });
+
+  it('discards an index that predates stamping, since it cannot prove it is not already a mixture', async () => {
+    await mkdir(join(root, '.state'), { recursive: true });
+    await writeFile(
+      statePath(),
+      JSON.stringify({ version: 1, fileHashes: { 'a.ts': 'h' }, records: [] }),
+      'utf8',
+    );
+    const index = indexer(rolesFor({ embeddings: 'embed' }));
+    await index.init();
+
+    expect(index.fileCount).toBe(0);
+  });
+
+  it('says which models disagreed, rather than rebuilding in silence', async () => {
+    await writeFile(join(root, 'a.ts'), 'export function add(a: number, b: number) { return a + b; }\n');
+    const first = indexer(rolesFor({ embeddings: 'embed' }));
+    await first.init();
+    await first.buildIndex();
+
+    const lines: string[] = [];
+    const second = indexer(rolesFor({ embeddings: 'other-embed' }), { onLog: (l) => lines.push(l) });
+    await second.init();
+
+    expect(lines.join('\n')).toContain('embed');
+    expect(lines.join('\n')).toContain('other-embed');
   });
 });

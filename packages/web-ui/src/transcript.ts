@@ -18,6 +18,14 @@ export interface TextItem {
   /** Still arriving — this one gets the "still writing" marker. */
   streaming?: boolean;
   /**
+   * Which real user turn this is (0-based), from the host — only on user
+   * messages. Drives the edit/restore buttons, which hand it back to
+   * `ui/editMessage` / `ui/restoreTurn`.
+   */
+  ordinal?: number;
+  /** Set when the turn has a workspace checkpoint to rewind to. */
+  checkpoint?: string;
+  /**
    * Attached images, as data URLs, on a user turn.
    *
    * Live-only: the host records that images were attached but not the bytes
@@ -135,7 +143,16 @@ export function fromMessages(messages: UiMessage[], prefix = 'h'): Transcript {
       if (m.ui?.todos) return { kind: 'tasks', id: `${prefix}d${i}`, todos: m.ui.todos };
       if (m.ui?.reasoning)
         return { kind: 'reasoning', id: `${prefix}r${i}`, text: m.content, streaming: m.ui.streaming };
-      return { kind: 'text', id: `${prefix}${i}`, role: m.role, text: m.content, streaming: m.ui?.streaming };
+      return {
+        kind: 'text',
+        id: `${prefix}${i}`,
+        role: m.role,
+        text: m.content,
+        streaming: m.ui?.streaming,
+        ...(m.role === 'user' && m.ordinal !== undefined
+          ? { ordinal: m.ordinal, ...(m.checkpoint ? { checkpoint: m.checkpoint } : {}) }
+          : {}),
+      };
     }),
   };
 }
@@ -174,6 +191,52 @@ export function withUserMessage(t: Transcript, text: string, images?: string[]):
     ...t,
     items: [...t.items, { kind: 'text', id: `u${t.items.length}`, role: 'user', text, images }],
   };
+}
+
+/**
+ * The next user-turn ordinal: one past the highest one on screen, or 0 when no
+ * turn has one yet. A freshly sent message has no ordinal of its own until the
+ * host persists it — this is what lets its edit/restore buttons work in the
+ * meantime, matching the numbering the host will assign on reload.
+ */
+export function nextOrdinal(t: Transcript): number {
+  let max = -1;
+  for (const item of t.items) {
+    if (item.kind === 'text' && item.role === 'user' && item.ordinal !== undefined) {
+      max = Math.max(max, item.ordinal);
+    }
+  }
+  return max + 1;
+}
+
+/** Index in the transcript's items of the user turn with this ordinal. */
+export function userTurnItemIndex(t: Transcript, ordinal: number): number {
+  let seen = -1;
+  for (let i = 0; i < t.items.length; i++) {
+    const item = t.items[i]!;
+    if (item.kind === 'text' && item.role === 'user' && item.ordinal !== undefined) {
+      seen++;
+      if (seen === ordinal) return i;
+    }
+  }
+  return t.items.length;
+}
+
+/**
+ * Stamp an ordinal onto the last user turn, so its edit/restore buttons work
+ * before the host has persisted it (a freshly sent message has none until
+ * then). The number matches what the host will assign on reload.
+ */
+export function stampOrdinal(t: Transcript, ordinal: number): Transcript {
+  const items = [...t.items];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]!;
+    if (item.kind === 'text' && item.role === 'user') {
+      items[i] = { ...item, ordinal };
+      break;
+    }
+  }
+  return { ...t, items };
 }
 
 /**

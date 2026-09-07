@@ -182,6 +182,7 @@ export class HeapcodeServer {
       rag ??= new SessionRag(active, {
         emit: (event, runId) => void peer.notifyWithBackpressure(METHODS.ragEvent, { runId, event } satisfies RagEventParams),
         requestKey,
+        log: (line) => this.onLog(`[session ${active.id.slice(0, 8)}] ${line}`),
       });
       return rag;
     };
@@ -199,7 +200,7 @@ export class HeapcodeServer {
       if (params.protocolVersion !== PROTOCOL_VERSION) {
         throw new Error(`Protocol version mismatch: server ${PROTOCOL_VERSION}, client ${params.protocolVersion}`);
       }
-      session = new Session(randomUUID(), params);
+      session = new Session(randomUUID(), params, (line) => this.onLog(`[session ${session!.id.slice(0, 8)}] ${line}`));
       this.sessions.add(session);
       this.armIdleTimer();
       this.onLog(`[session ${session.id.slice(0, 8)}] hello from ${params.client.name} root=${params.root}`);
@@ -342,10 +343,10 @@ export class HeapcodeServer {
       if (!session) throw new Error('session/hello must be sent first');
       const { diff, profileName } = (raw ?? {}) as CommitMessageParams;
       if (!diff?.trim()) return { message: '' } satisfies CommitMessageResult;
-      const resolved = await session.providerForRole('editModel', requestKey, profileName);
-      if (!resolved) throw new Error(`Unknown profile "${profileName ?? session.activeProfile}" for this session.`);
+      const resolved = await session.providerForRole('edit', requestKey, profileName);
+      if (!resolved) throw new Error(`Unknown connection "${profileName ?? session.activeProfile}" for this session.`);
       const res = await resolved.provider.chat({
-        model: resolved.profile.editModel || resolved.profile.model,
+        model: resolved.profile.model,
         messages: buildCommitMessages(diff),
         temperature: 0.2,
         maxTokens: 500,
@@ -360,11 +361,11 @@ export class HeapcodeServer {
      * let it place the edit.
      *
      * Server-side for the same reason `git/commitMessage` is — a single call
-     * on a role that can point at a different profile entirely, which the host
-     * has no provider to make for itself.
+     * on a role that can point at a different connection entirely, which the
+     * host has no provider to make for itself.
      *
-     * An unconfigured `applyModel` returns `{}`, not an error. Nothing is
-     * broken when a profile has no merge model; the caller simply reports the
+     * An unassigned apply role returns `{}`, not an error. Nothing is broken
+     * when there is no merge model; the caller simply reports the
      * edit that did not apply, exactly as it did before this existed. Same for
      * a model that answers with something other than a merged file: a bad
      * rescue attempt must never be louder than the original failure.
@@ -374,12 +375,12 @@ export class HeapcodeServer {
       const { original, snippet, profileName } = (raw ?? {}) as ApplyMergeParams;
       if (!original || !snippet?.trim()) return {} satisfies ApplyMergeResult;
 
-      const resolved = await session.providerForRole('applyModel', requestKey, profileName);
-      if (!resolved?.profile.applyModel) return {} satisfies ApplyMergeResult;
+      const resolved = await session.providerForRole('apply', requestKey, profileName);
+      if (!resolved?.profile.model) return {} satisfies ApplyMergeResult;
 
       try {
         const res = await resolved.provider.chat({
-          model: resolved.profile.applyModel,
+          model: resolved.profile.model,
           messages: buildApplyMessages(original, snippet),
           temperature: 0,
           // The model re-emits the whole file, so the cap has to scale with

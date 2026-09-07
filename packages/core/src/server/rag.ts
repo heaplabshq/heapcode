@@ -21,6 +21,14 @@ export interface RagHost {
   emit(event: RagEvent, runId?: string): void;
   /** Resolve a profile the session doesn't already hold a key for (`key/request`). */
   requestKey(profileName: string): Promise<void>;
+  /**
+   * The daemon log.
+   *
+   * Indexing runs in the background and its failures never reach a reply, so
+   * without this they went nowhere at all: the indexer wrote them to an
+   * `onLog` this service did not pass, and the UI got the bare state 'error'.
+   */
+  log(line: string): void;
 }
 
 /**
@@ -86,6 +94,7 @@ export class SessionRag {
       // are not migrated — a clean rebuild is simpler and `fresh` says so.
       store: nodeTextStore(join(projectStateDir(root), RAG_INDEX_FILE)),
       roles: (role) => this.session.providerForRole(role, (name) => this.host.requestKey(name)),
+      onLog: (line) => this.host.log(`[rag] ${line}`),
     });
     await indexer.init();
     this.indexer = indexer;

@@ -7,6 +7,7 @@ import type { PermissionClass, ToolCall, ToolDefinition, ToolResult } from '../a
 import type { AgentPersona } from '../agent/personas.js';
 import type { AgentEnvironment } from '../agent/promptSections.js';
 import type { ProviderProfileConfig } from '../config/profiles.js';
+import type { ModelRoleTable } from '../config/roles.js';
 import type { PrReviewConfirmation, PrReviewResult } from '../review/prReview.js';
 import type { ReviewClient } from '../review/prReviewFormat.js';
 
@@ -21,7 +22,7 @@ import type { ReviewClient } from '../review/prReviewFormat.js';
  */
 
 /** Bumped on any breaking change; it appears in the socket address, so mismatched peers never meet. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC envelopes
@@ -106,10 +107,30 @@ export interface HelloParams {
   client: { name: string; version?: string };
   /** Workspace root this session operates on. */
   root: string;
-  /** Profile configuration, pushed rather than read — the server has no business reading either host's config (§2). */
+  /**
+   * Connection configuration, pushed rather than read — the server has no
+   * business reading either host's config (§2).
+   *
+   * Carried as the flattened `ProviderProfileConfig` rather than as bare
+   * connections because that is the shape `createProvider` consumes; a
+   * connection's `model` here is only the chat model that travelled with it,
+   * and `roles` below is what actually decides which model serves what.
+   */
   profiles: ProviderProfileConfig[];
-  /** Which profile this session's runs use unless a call names another. */
+  /** Which connection this session's runs use unless a call names another. */
   activeProfile: string;
+  /**
+   * Which model on which connection serves each role — one global table, not
+   * one per connection (config/roles.ts).
+   *
+   * Required, and deliberately so. It was optional at first, on the theory
+   * that a host which had not been converted should still connect — and the
+   * cost of that was three hello sites forgetting it in silence, each turning
+   * into a session that ran the wrong model with nothing anywhere saying so.
+   * An empty table is still legal and means "nothing assigned"; omitting the
+   * field is now a compile error at every call site.
+   */
+  roles: ModelRoleTable;
   /**
    * Key material for profiles this session expects to use, `profileName` →
    * API key. Held in memory for the session's lifetime and never persisted.
@@ -457,6 +478,14 @@ export interface RagStatusResult {
   files: number;
   chunks: number;
   /**
+   * Why, when `state` is 'error'.
+   *
+   * A bare "error" is a dead end for whoever is reading it: an unreachable
+   * Ollama, a model that is not an embedding model, and a 401 all look
+   * identical, and the reason only reached a log the server did not wire up.
+   */
+  message?: string;
+  /**
    * False when the server cannot read this workspace for itself — a VS Code
    * virtual or remote-scheme root, where only the host can resolve paths.
    * RAG is then unavailable rather than silently indexing whatever `fsPath`
@@ -538,7 +567,7 @@ export interface PermissionRequestResult {
  */
 export type RagEvent =
   | { kind: 'progress'; embedded: number; total: number }
-  | { kind: 'state'; state: IndexState; files: number; chunks: number };
+  | { kind: 'state'; state: IndexState; files: number; chunks: number; message?: string };
 
 export interface RagEventParams {
   runId?: string;

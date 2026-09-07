@@ -4,7 +4,8 @@ import {
   MAX_INDEXED_FILES,
   type FileSource,
 } from '@heapcode/repomap';
-import type { ModelRole, ProviderProfileConfig } from '../config/profiles.js';
+import type { ProviderProfileConfig } from '../config/profiles.js';
+import type { ModelRole } from '../config/roles.js';
 import type { Provider } from '../providers/types.js';
 import { chunkFile, fnv1a, type Chunk } from './chunker.js';
 import { contextualizeChunks } from './contextualize.js';
@@ -30,22 +31,27 @@ export interface RagStore {
   write(text: string): Promise<void>;
 }
 
-export interface ResolvedRole {
+export interface RagResolvedRole {
   provider: Provider;
+  /**
+   * The flattened connection + assignment for the role (see config/roles.ts).
+   * `profile.model` IS the model serving the role — there is no second lookup
+   * for a `<role>Model` field any more, which is what made an unassigned role
+   * silently fall through to a chat model before.
+   */
   profile: ProviderProfileConfig;
 }
 
 /**
- * Which provider/profile serves a role, following any `<role>Profile`
- * redirect. Injected because the three implementations differ in where they
- * read configuration from, not in what they answer: RoleResolver for the CLI,
- * ProfileManager for the extension, Session.providerForRole in the server.
+ * Which provider/model serves a role. Injected because the implementations
+ * differ in where they read configuration from, not in what they answer:
+ * Session.providerForRole in the server, ProfileManager in the extension.
  *
  * Returning undefined means "nothing configured for this role" — the indexer
  * degrades rather than throwing, since a missing rerank or context model is
  * an ordinary state, not a failure.
  */
-export type RagRoleResolver = (role: ModelRole) => Promise<ResolvedRole | undefined>;
+export type RagRoleResolver = (role: ModelRole) => Promise<RagResolvedRole | undefined>;
 
 export interface RagIndexerOptions {
   files: FileSource;
@@ -125,20 +131,33 @@ export class RagIndexer {
    * resolution is async in all three implementations.
    */
   private embedder: string | undefined;
+  /**
+   * Why the last build failed, kept alongside the `error` state.
+   *
+   * The state alone said "error" and the reason went to `onLog`, which the
+   * server did not pass — so nothing anywhere could say what went wrong. A
+   * status with no reason is a dead end for whoever is looking at it.
+   */
+  private lastError: string | undefined;
 
   constructor(private readonly opts: RagIndexerOptions) {}
 
   /** Loads any persisted index and the current embeddings model. Safe to call once at startup. */
   async init(): Promise<void> {
-    await this.load();
+    // Embedder first: `load` needs it to decide whether the index on disk was
+    // written by the same model, and an index written by a different one is
+    // discarded rather than merged into.
     await this.refreshEmbedder();
+    await this.load();
   }
 
-  async status(): Promise<{ state: IndexState; files: number; chunks: number }> {
+  async status(): Promise<{ state: IndexState; files: number; chunks: number; message?: string }> {
+    const state = (await this.refreshEmbedder()) ? this.state : 'no-embedder';
     return {
-      state: (await this.refreshEmbedder()) ? this.state : 'no-embedder',
+      state,
       files: this.store.fileCount,
       chunks: this.store.chunkCount,
+      message: state === 'error' ? this.lastError : undefined,
     };
   }
 
@@ -157,20 +176,41 @@ export class RagIndexer {
 
   /** Serialized index, for a caller that wants to hand it somewhere else. */
   serialize(): string {
-    return this.store.serialize();
+    return this.store.serialize(this.embedder);
   }
 
   private async refreshEmbedder(): Promise<string | undefined> {
-    const resolved = await this.opts.roles('embeddingsModel');
-    this.embedder = resolved?.profile.embeddingsModel || undefined;
+    const resolved = await this.opts.roles('embeddings');
+    this.embedder = resolved?.profile.model || undefined;
     return this.embedder;
   }
 
+  /**
+   * Reads the index back, unless a different model wrote it.
+   *
+   * Vectors from two embedding models are not comparable, so an index holding
+   * a mixture answers confidently and wrongly with no error anywhere. Nothing
+   * recorded which model wrote an index before, and the embeddings role was a
+   * field on whichever profile happened to be active — so switching profile
+   * was enough to start interleaving two models' vectors in one file.
+   *
+   * A mismatch leaves the store empty, which every caller already treats as
+   * "no index" and rebuilds from. One cold rebuild beats silently bad search.
+   */
   private async load(): Promise<void> {
     try {
       const text = await this.opts.store.read();
       if (text === undefined) return;
-      this.store = VectorStore.deserialize(text);
+      const written = VectorStore.embedderOf(text);
+      if (this.embedder && written !== this.embedder) {
+        this.opts.onLog?.(
+          written
+            ? `index was built with ${written}, now embedding with ${this.embedder} — rebuilding`
+            : `index predates embedder stamping — rebuilding with ${this.embedder}`,
+        );
+        return;
+      }
+      this.store = VectorStore.deserialize(text, this.embedder);
     } catch {
       // no index yet, or an unreadable one — a cold rebuild is the recovery
     }
@@ -183,7 +223,9 @@ export class RagIndexer {
 
   private async persist(): Promise<void> {
     clearTimeout(this.saveTimer);
-    await this.opts.store.write(this.store.serialize());
+    // Stamped with the model that produced the vectors, so the next load can
+    // tell whether it is safe to read them back.
+    await this.opts.store.write(this.store.serialize(this.embedder));
   }
 
   async clear(): Promise<void> {
@@ -245,6 +287,7 @@ export class RagIndexer {
     if (!(await this.refreshEmbedder())) return undefined;
 
     this.state = 'indexing';
+    this.lastError = undefined;
     const started = Date.now();
     // Outside the try so a cancelled or failed run still reports what it did.
     let embedded = 0;
@@ -278,7 +321,8 @@ export class RagIndexer {
         this.opts.onLog?.(`indexing cancelled after ${embedded} file(s)`);
       } else {
         this.state = 'error';
-        this.opts.onLog?.(`index failed: ${err instanceof Error ? err.message : String(err)}`);
+        this.lastError = err instanceof Error ? err.message : String(err);
+        this.opts.onLog?.(`index failed: ${this.lastError}`);
       }
     }
     return { files: this.store.fileCount, chunks: this.store.chunkCount, embedded };
@@ -302,8 +346,8 @@ export class RagIndexer {
     const fileHash = fnv1a(content);
     if (this.store.fileHash(rel) === fileHash) return false;
 
-    const embeddings = await this.opts.roles('embeddingsModel');
-    this.embedder = embeddings?.profile.embeddingsModel || undefined;
+    const embeddings = await this.opts.roles('embeddings');
+    this.embedder = embeddings?.profile.model || undefined;
     const model = this.embedder;
     if (!embeddings || !model) return false;
 
@@ -357,11 +401,12 @@ export class RagIndexer {
   private async contextsFor(rel: string, content: string, toEmbed: Chunk[], signal?: AbortSignal): Promise<string[]> {
     if (toEmbed.length === 0) return [];
     try {
-      const ctx = await this.opts.roles('contextModel');
-      if (!ctx) return [];
-      const model = ctx.profile.contextModel || ctx.profile.rerankModel || ctx.profile.editModel || ctx.profile.model;
-      if (!model) return [];
-      return await contextualizeChunks(ctx.provider, model, rel, content, toEmbed, signal);
+      // The chain (context → rerank → edit → chat) lives in resolveRole now,
+      // so what comes back is already the model to use. This used to walk it
+      // here, and the extension and server each walked their own copy.
+      const ctx = await this.opts.roles('context');
+      if (!ctx?.profile.model) return [];
+      return await contextualizeChunks(ctx.provider, ctx.profile.model, rel, content, toEmbed, signal);
     } catch {
       return [];
     }
@@ -380,8 +425,8 @@ export class RagIndexer {
   /** Semantic retrieval; empty when there's no embedder or no index. */
   async query(text: string, k = 6, opts: QueryOptions = {}): Promise<SearchHit[]> {
     if (this.store.chunkCount === 0) return [];
-    const embeddings = await this.opts.roles('embeddingsModel');
-    this.embedder = embeddings?.profile.embeddingsModel || undefined;
+    const embeddings = await this.opts.roles('embeddings');
+    this.embedder = embeddings?.profile.model || undefined;
     const model = this.embedder;
     if (!embeddings || !model) return [];
 
@@ -397,12 +442,11 @@ export class RagIndexer {
       hybrid ? this.store.hybridSearch(vector, text, n) : this.store.search(vector, n);
 
     // Rerank: over-fetch, let an LLM pick the hits that actually answer the
-    // query. Its own role, so it can run on a different profile than the
+    // query. Its own role, so it can run on a different connection than the
     // embeddings did. Falls back to vector/hybrid order on any failure.
     if (opts.rerank === false) return doSearch(k);
-    const rerankRole = await this.opts.roles('rerankModel');
-    const rerankModel =
-      rerankRole && (rerankRole.profile.rerankModel || rerankRole.profile.editModel || rerankRole.profile.model);
+    const rerankRole = await this.opts.roles('rerank');
+    const rerankModel = rerankRole?.profile.model;
     if (!rerankRole || !rerankModel) return doSearch(k);
 
     const candidates = doSearch(Math.max(RERANK_CANDIDATES, k));

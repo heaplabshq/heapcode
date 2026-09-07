@@ -117,12 +117,14 @@ import {
   type UiCheckpointsResult,
   type UiDiffParams,
   type UiDiffResult,
+  type UiEditMessageParams,
   type UiFileTreeParams,
   type UiFileTreeResult,
   type UiMemoryResult,
   type UiReadFileParams,
   type UiReadFileResult,
   type UiRestoreResult,
+  type UiRestoreTurnParams,
   type UiReviewConfirmParams,
   type UiReviewConfirmResult,
   type UiReviewEventParams,
@@ -358,6 +360,13 @@ export class WebSession {
    * the answer to — see `UiHelloResult.pending`.
    */
   private pendingDisplay?: string;
+  /**
+   * The shadow-git commit of the workspace just before the in-flight turn ran,
+   * written onto the user message by `persistTurn`. Held alongside
+   * `pendingDisplay` for the same reason: the turn is only persisted once it
+   * finishes, so the snapshot has to be kept until then.
+   */
+  private pendingCheckpoint?: string;
   /** Overrides the profile's model for this session only, set by `ui/setModel`. */
   private modelOverride?: string;
   /** Live embed progress while a rebuild runs; cleared when the state settles. */
@@ -574,6 +583,16 @@ export class WebSession {
     ui.onRequest(UI_METHODS.sendMessage, async (raw): Promise<UiSendMessageResult> => {
       const { text, runId, images } = raw as UiSendMessageParams;
       return this.run(text, runId ?? randomUUID(), acceptImages(images));
+    });
+
+    ui.onRequest(UI_METHODS.editMessage, async (raw): Promise<UiSendMessageResult> => {
+      const { ordinal, text, runId, images } = raw as UiEditMessageParams;
+      return this.editMessage(ordinal, text, runId ?? randomUUID(), acceptImages(images));
+    });
+
+    ui.onRequest(UI_METHODS.restoreTurn, async (raw): Promise<UiRestoreResult> => {
+      const { ordinal } = raw as UiRestoreTurnParams;
+      return this.restoreTurn(ordinal);
     });
 
     ui.onRequest(UI_METHODS.cancel, async (raw) => {
@@ -843,7 +862,16 @@ export class WebSession {
 
     ui.onRequest(UI_METHODS.checkpoints, async (): Promise<UiCheckpointsResult> => {
       await this.start();
-      return { checkpoints: await this.session!.shadowGit.history() };
+      // The panel's list is the per-tool timeline. The per-turn `before:`
+      // snapshots and the restore bookkeeping are reachable from the chat's
+      // own Edit/Restore buttons instead — listing them here too would bury
+      // the tool steps under a row for every message.
+      const history = await this.session!.shadowGit.history();
+      return {
+        checkpoints: history.filter(
+          (c) => !/^(before: |pre-restore state$|restored to )/.test(c.label),
+        ),
+      };
     });
 
     ui.onRequest(UI_METHODS.rewind, async (raw): Promise<UiRestoreResult> => {
@@ -1530,6 +1558,74 @@ export class WebSession {
   // running
   // -------------------------------------------------------------------------
 
+  /** Index in `conversation.messages` of the Nth real (non-UI) user turn, or -1. */
+  private userMessageIndex(ordinal: number): number {
+    const messages = this.conversation?.messages ?? [];
+    let seen = -1;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i]!.role === 'user' && !messages[i]!.ui) {
+        seen++;
+        if (seen === ordinal) return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * The checkpoint to rewind to for a turn: the one on the turn itself, or the
+   * next turn after it — the workspace state before any agent work from that
+   * point on. Undefined when no turn from here ever took a snapshot.
+   */
+  private checkpointFrom(index: number): string | undefined {
+    const messages = this.conversation?.messages ?? [];
+    return messages.slice(index).find((m) => m.checkpoint)?.checkpoint;
+  }
+
+  /**
+   * Timeline restore: put the workspace files back to the state before this
+   * turn ran. The conversation itself is untouched — unlike editing a prompt.
+   */
+  private async restoreTurn(ordinal: number): Promise<UiRestoreResult> {
+    await this.start();
+    if (this.activeRunId) throw new Error('A run is in progress; cancel it before restoring.');
+    const index = this.userMessageIndex(ordinal);
+    if (index === -1) throw new Error('Could not locate that message.');
+    const checkpoint = this.checkpointFrom(index);
+    if (!checkpoint) {
+      throw new Error('No workspace checkpoint for this turn — checkpoints are taken when a prompt runs.');
+    }
+    const files = await this.session!.shadowGit.restore(checkpoint);
+    if (!files) throw new Error('Could not restore that checkpoint.');
+    void this.pushWorkspace();
+    return { files };
+  }
+
+  /**
+   * Edit a previous prompt: truncate the conversation at that user turn,
+   * restore the workspace to the checkpoint taken before the first agent turn
+   * from that point on, and resend the new text. Mirrors the VS Code
+   * extension's edit-user-message (chatViewProvider.ts).
+   */
+  private async editMessage(
+    ordinal: number,
+    text: string,
+    runId: string,
+    images?: string[],
+  ): Promise<UiSendMessageResult> {
+    await this.start();
+    if (this.activeRunId) throw new Error('A run is in progress; cancel it before editing.');
+    const index = this.userMessageIndex(ordinal);
+    if (index === -1) throw new Error('Could not locate that message to edit.');
+
+    const checkpoint = this.checkpointFrom(index);
+    if (checkpoint) await this.session!.shadowGit.restore(checkpoint);
+
+    this.conversation!.messages = this.conversation!.messages.slice(0, index);
+    await this.history!.save(this.conversation!);
+    void this.pushWorkspace();
+    return this.run(text, runId, images);
+  }
+
   async run(task: string, runId: string, images?: string[]): Promise<UiSendMessageResult> {
     await this.start();
     const { peer } = this.connection!;
@@ -1575,6 +1671,11 @@ export class WebSession {
     this.reasoningAcc = '';
     this.turnEntries = [];
     this.pendingDisplay = task;
+    // The workspace as it was before this turn ran — the checkpoint a later
+    // edit or restore of THIS prompt rewinds to. Taken here, before the agent
+    // touches anything, rather than reconstructed from the per-tool snapshots
+    // (which only exist once the run has started changing files).
+    this.pendingCheckpoint = await session.shadowGit.snapshot(`before: ${task.slice(0, 80)}`);
     // Announce the run at its START, not only when it ends. `state.runId` is
     // how a reattached tab knows a run is still going and — more importantly —
     // how it learns the run finished: a browser that reloaded mid-run has no
@@ -1624,6 +1725,7 @@ export class WebSession {
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
+      this.pendingCheckpoint = undefined;
       this.flushProfileRefresh();
       void this.pushState();
     }
@@ -1727,7 +1829,19 @@ export class WebSession {
    */
   private pendingTurn(): UiMessage[] {
     const out: UiMessage[] = [];
-    if (this.pendingDisplay) out.push({ role: 'user', content: this.pendingDisplay });
+    if (this.pendingDisplay) {
+      // The in-flight prompt is the next real user turn after the stored
+      // conversation — stamp it so its edit/restore buttons and the client's
+      // ordinal numbering survive a mid-run reload exactly as they were.
+      const stored = this.conversation?.messages ?? [];
+      const ordinal = stored.filter((m) => m.role === 'user' && !m.ui).length;
+      out.push({
+        role: 'user',
+        content: this.pendingDisplay,
+        ordinal,
+        ...(this.pendingCheckpoint ? { checkpoint: this.pendingCheckpoint } : {}),
+      });
+    }
     out.push(...toUiMessages(this.turnEntries, { live: true }));
     // The tail: text or reasoning mid-stream. Marked `streaming` so the
     // browser's reducer appends the next delta to it instead of opening a
@@ -1773,7 +1887,11 @@ export class WebSession {
     const entries = answered
       ? this.turnEntries
       : [...this.turnEntries, { role: 'assistant', content: this.lastText } as StoredMessage];
-    convo.messages.push({ role: 'user', content: display, display: line } as StoredMessage, ...entries);
+    convo.messages.push(
+      { role: 'user', content: display, display: line, checkpoint: this.pendingCheckpoint } as StoredMessage,
+      ...entries,
+    );
+    this.pendingCheckpoint = undefined;
     if (convo.title === 'New chat') convo.title = display.slice(0, 60);
     convo.updatedAt = Date.now();
     await this.history!.save(convo);
@@ -2220,9 +2338,13 @@ export function mergeProfile(
  */
 export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean }): UiMessage[] {
   const out: UiMessage[] = [];
+  // The ordinal counts real user turns only — the same numbering the browser's
+  // edit/restore buttons hand back to `ui/editMessage` / `ui/restoreTurn`.
+  let ordinal = -1;
   for (const m of messages) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     if (m.ui?.status) continue;
+    if (m.role === 'user' && !m.ui) ordinal++;
 
     const tool = m.ui?.tool;
     if (tool) {
@@ -2259,7 +2381,14 @@ export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean 
       out.push({ role: 'assistant', content, ui: { reasoning: true } });
       continue;
     }
-    out.push({ role: m.role, content, ...(m.ui?.plan ? { ui: { plan: true } } : {}) });
+    out.push({
+      role: m.role,
+      content,
+      // Only a real user turn gets an ordinal/checkpoint — assistant prose and
+      // plans have nothing to rewind to.
+      ...(m.role === 'user' && !m.ui ? { ordinal, ...(m.checkpoint ? { checkpoint: m.checkpoint } : {}) } : {}),
+      ...(m.ui?.plan ? { ui: { plan: true } } : {}),
+    });
   }
   return out;
 }

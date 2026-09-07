@@ -29,6 +29,8 @@ export interface PanelProps {
   tab: PanelTab;
   onTab(tab: PanelTab): void;
   onClose(): void;
+  /** Dragged width in px; undefined falls back to the stylesheet default. */
+  width?: number;
 
   changes: UiChangedFile[];
   checkpoints: UiCheckpoint[];
@@ -124,7 +126,11 @@ const TABS: { id: PanelTab; label: string; icon: JSX.Element }[] = [
 
 export function Panel(props: PanelProps): JSX.Element {
   return (
-    <section className="panel" aria-label="Workspace">
+    <section
+      className="panel"
+      aria-label="Workspace"
+      style={props.width ? { width: props.width } : undefined}
+    >
       <div className="panel-tabs" role="tablist">
         {TABS.map(({ id, label, icon }) => {
           // The count is a badge rather than "(4)" in the label, so the tab

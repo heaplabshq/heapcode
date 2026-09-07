@@ -957,6 +957,101 @@ describe('web host — workspace panel', () => {
     await expect(browser.peer.request(UI_METHODS.rewind, { hash: 'deadbeef' })).rejects.toThrow();
     browser.close();
   });
+
+  it('keeps the per-turn `before:` snapshot out of the checkpoints list', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'rewrite it' });
+
+    const { checkpoints } = await browser.peer.request<UiCheckpointsResult>(UI_METHODS.checkpoints);
+    // The tool step is listed; the turn snapshot that sits under it is not.
+    expect(checkpoints.some((c) => c.label.includes('write_file'))).toBe(true);
+    expect(checkpoints.every((c) => !c.label.startsWith('before: '))).toBe(true);
+
+    browser.close();
+  });
+});
+
+describe('web host — editing and restoring a turn', () => {
+  const TWICE = [
+    {
+      kind: 'sse' as const,
+      chunks: ['<tool name="write_file">\n{"path":"greeting.txt","content":"goodbye world\\n"}\n</tool>'],
+    },
+    { kind: 'sse' as const, chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+    {
+      kind: 'sse' as const,
+      chunks: ['<tool name="write_file">\n{"path":"greeting.txt","content":"bonjour monde\\n"}\n</tool>'],
+    },
+    { kind: 'sse' as const, chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+  ];
+
+  it('editMessage rewinds the workspace, truncates the conversation, and resends', async () => {
+    const { root, host } = await boot(TWICE);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'say goodbye' });
+    expect(await readFile(join(root, 'greeting.txt'), 'utf8')).toBe('goodbye world\n');
+
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.editMessage, {
+      ordinal: 0,
+      text: 'say it in french',
+    });
+    // The first run's write is undone before the resend; then the resend writes its own.
+    expect(await readFile(join(root, 'greeting.txt'), 'utf8')).toBe('bonjour monde\n');
+    browser.close();
+
+    // A fresh tab sees one user turn, carrying the edited text at ordinal 0.
+    const reload = await openBrowser(host);
+    const hello = await reload.peer.request<UiHelloResult>(UI_METHODS.hello, {
+      protocolVersion: UI_PROTOCOL_VERSION,
+    });
+    const users = hello.messages.filter((m) => m.role === 'user' && m.ordinal !== undefined);
+    expect(users.map((m) => m.content)).toEqual(['say it in french']);
+    expect(users[0]!.ordinal).toBe(0);
+    reload.close();
+  });
+
+  it('restoreTurn puts files back but leaves the conversation intact', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'rewrite it' });
+    expect(await readFile(join(root, 'greeting.txt'), 'utf8')).toBe('goodbye world\n');
+
+    const { files } = await browser.peer.request<{ files: string[] }>(UI_METHODS.restoreTurn, { ordinal: 0 });
+    expect(files).toContain('greeting.txt');
+    expect(await readFile(join(root, 'greeting.txt'), 'utf8')).toBe('hello world\n');
+    browser.close();
+
+    // The conversation is untouched — user turn and the assistant's work both stay.
+    const reload = await openBrowser(host);
+    const hello = await reload.peer.request<UiHelloResult>(UI_METHODS.hello, {
+      protocolVersion: UI_PROTOCOL_VERSION,
+    });
+    expect(hello.messages[0]).toMatchObject({ role: 'user', content: 'rewrite it' });
+    expect(hello.messages.some((m) => m.ui?.tool)).toBe(true);
+    reload.close();
+  });
+
+  it('rejects an ordinal that names no turn', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'rewrite it' });
+
+    await expect(browser.peer.request(UI_METHODS.restoreTurn, { ordinal: 5 })).rejects.toThrow(/locate/);
+    browser.close();
+  });
 });
 
 describe('web host — artifacts', () => {

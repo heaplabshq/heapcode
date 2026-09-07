@@ -38,6 +38,10 @@ export const UI_METHODS = {
   // browser → host
   hello: 'ui/hello',
   sendMessage: 'ui/sendMessage',
+  /** Edit a sent prompt: truncate from that turn, restore its checkpoint, resend. */
+  editMessage: 'ui/editMessage',
+  /** Restore the workspace to the checkpoint before a turn, conversation untouched. */
+  restoreTurn: 'ui/restoreTurn',
   cancel: 'ui/cancel',
   state: 'ui/state',
   conversations: 'ui/conversations',
@@ -190,6 +194,30 @@ export interface UiCancelParams {
 }
 
 /**
+ * `ui/editMessage` — rewrite a sent prompt and resend it.
+ *
+ * The host truncates the conversation at that turn, restores the workspace to
+ * the checkpoint taken just before it (so any code the agent changed after it
+ * is undone), then runs the new text as if typed fresh. Mirrors the VS Code
+ * extension's edit-user-message (chatViewProvider.ts).
+ */
+export interface UiEditMessageParams {
+  /** Which real user turn (0-based), from `UiMessage.ordinal`. */
+  ordinal: number;
+  text: string;
+  runId?: string;
+  images?: string[];
+}
+
+/**
+ * `ui/restoreTurn` — put the workspace files back to the state before a turn
+ * ran, leaving the conversation itself intact (unlike `ui/editMessage`).
+ */
+export interface UiRestoreTurnParams {
+  ordinal: number;
+}
+
+/**
  * A message as the UI renders it. Narrower than core's `StoredMessage`: the
  * browser needs what to draw, not what the model saw. `content` here is the
  * *display* text — the template-expanded version with context blocks stays
@@ -199,6 +227,18 @@ export interface UiCancelParams {
 export interface UiMessage {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Which real user turn this is (0-based), set only on user messages. The
+   * browser hands it back to `ui/editMessage` / `ui/restoreTurn` to name the
+   * turn without the host having to guess from text.
+   */
+  ordinal?: number;
+  /**
+   * The shadow-git commit of the workspace just before this turn ran, when one
+   * was taken. Its presence is what makes the turn's restore/edit buttons
+   * meaningful — a turn with no checkpoint has nothing to rewind to.
+   */
+  checkpoint?: string;
   /** Transcript entries that are neither prose nor sent back as context. */
   ui?: {
     tool?: {

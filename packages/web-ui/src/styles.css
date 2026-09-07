@@ -417,6 +417,32 @@ body {
 .msg-body table { border-collapse: collapse; display: block; overflow-x: auto; }
 .msg-body th, .msg-body td { border: 1px solid var(--border); padding: 4px 8px; }
 
+/* Edit/restore a sent prompt. Quiet until hovered, like the checkpoint Rewind:
+   a button on every user message would be a wall of chrome, so they only
+   assert themselves when the pointer is over the message they act on. */
+.msg-actions { display: flex; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity 0.12s; }
+.msg-user:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+.edit-msg {
+  background: none; border: 0; cursor: pointer; padding: 0;
+  color: var(--text-dim); font: inherit; font-size: 12px;
+}
+.edit-msg:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
+.restore-msg:hover:not(:disabled) { color: var(--danger); }
+
+/* The bar over the composer while an earlier message is being edited — the
+   same shape the VS Code webview draws, so the two surfaces read as one app. */
+.editing-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; margin-bottom: 6px;
+  background: var(--chip-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text-dim); font-size: 12px;
+}
+.editing-bar button {
+  background: none; border: 0; cursor: pointer; padding: 0; margin-left: auto;
+  color: var(--text-dim); font: inherit; font-size: 12px;
+}
+.editing-bar button:hover { color: var(--accent); text-decoration: underline; }
+
 /* The "more is coming" marker on an in-flight message. See MessageList.tsx:
    this replaced a blinking accent-blue block, which was an editor caret in a
    place you cannot type. */
@@ -975,6 +1001,19 @@ body {
   background: var(--bg-sunken);
   display: flex; flex-direction: column; min-height: 0;
 }
+/* The drag handle between chat and panel. Six pixels of hit area over the
+   border, so the seam is grabbable without a visible bar; a centered accent
+   bar on hover/active marks it as draggable. */
+.panel-splitter {
+  flex: 0 0 6px; margin: 0 -3px; z-index: 1;
+  cursor: col-resize; touch-action: none; position: relative;
+}
+.panel-splitter::before {
+  content: ""; position: absolute; inset: 4px 0; left: 50%;
+  width: 2px; transform: translateX(-50%); border-radius: 1px;
+  background: var(--accent); opacity: 0; transition: opacity 0.15s ease;
+}
+.panel-splitter:hover::before, .panel-splitter:active::before { opacity: 0.5; }
 /* The tab strip is the panel's header — one row, the way the settings dialog
    gives its pane one. The active tab is marked by an accent rule along the
    bottom border rather than by a filled chip: five filled chips in a row read
@@ -1258,13 +1297,16 @@ body {
   font-family: var(--mono); font-size: 12px; color: var(--text-dim);
 }
 
-/* Below this the panel would squeeze the chat to nothing — overlay it. */
+/* Below this the panel would squeeze the chat to nothing — overlay it. The
+   dragged width is an inline style, so the overlay width has to win over it. */
 @media (max-width: 1100px) {
   .panel {
     position: absolute; top: 0; right: 0; bottom: 0; z-index: 9;
-    width: min(460px, 92vw);
+    width: min(460px, 92vw) !important;
     box-shadow: -8px 0 24px rgb(0 0 0 / 0.18);
   }
+  /* Nothing to drag against — the panel floats over the chat. */
+  .panel-splitter { display: none; }
 }
 
 /* ---------- modals: settings + palette ---------- */

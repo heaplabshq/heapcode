@@ -762,14 +762,15 @@ export class WebSession {
 
     const instructions = (await this.deps.loadInstructions?.(this.root).catch(() => '')) ?? '';
     const preamble = [persona.taskAddendum, instructions].filter(Boolean).join('\n\n---\n\n');
-    const history = trimHistoryForAgent(this.conversation?.messages ?? []);
-
     // The one place that waits: the breakdown is opened on purpose to ask
     // "is this number right", and answering it with the guess we happen to
     // have cached would be answering a different question.
     const resolved = await this.contextWindowFor.resolve(profile, this.model);
     const window = resolved.window;
     const windowSource = resolved.source;
+    // Resolved first because the history window is sized off it now: how much
+    // of the conversation survives depends on how much room there is for it.
+    const history = trimHistoryForAgent(this.conversation?.messages ?? [], { contextWindow: window });
     const slices: UiContextSlice[] = [
       {
         key: 'system',
@@ -793,7 +794,7 @@ export class WebSession {
         key: 'conversation',
         label: 'Conversation',
         tokens: estimateMessagesTokens(history),
-        note: `The last ${history.length} message(s) that fit the window — older turns are already dropped here.`,
+        note: `The last ${history.length} message(s) that fit the window, tool results included until they crowd it.`,
       },
     ];
 
@@ -1657,10 +1658,6 @@ export class WebSession {
     // for core to default, because the browser is told which number applied.
     const maxIterations = (await this.deps.config.load()).maxIterations ?? DEFAULT_MAX_ITERATIONS;
 
-    // The conversation as it stood BEFORE this turn — the agent gets prior
-    // context, not the message it is currently answering.
-    const history = trimHistoryForAgent(this.conversation!.messages);
-
     // Same preamble shape as headless and the Ink UI: persona constraints and
     // project instructions, then the task.
     const instructions = await this.deps.loadInstructions?.(this.root).catch(() => '') ?? '';
@@ -1689,6 +1686,13 @@ export class WebSession {
     void this.pushState();
 
     try {
+      const contextWindow = this.contextWindowFor.known(profile, this.model).window;
+      // The conversation as it stood BEFORE this turn — the agent gets prior
+      // context, not the message it is currently answering, which `persistTurn`
+      // appends once the run is done. Sized against the same window the run
+      // itself is given, so the last turn's tool results survive whenever
+      // there is room for them.
+      const history = trimHistoryForAgent(this.conversation!.messages, { contextWindow });
       const { outcome } = await peer.request<AgentRunResult>(
         METHODS.agentRun,
         {
@@ -1708,7 +1712,7 @@ export class WebSession {
           // The endpoint's own number where it has one. A preset default that
           // overstates the real window means the loop never compacts and the
           // endpoint truncates the prompt instead, silently.
-          contextWindow: this.contextWindowFor.known(profile, this.model).window,
+          contextWindow,
           // Was missing entirely, so a profile's maxTokens was honoured by the
           // CLI (App.tsx) and ignored here — replies got truncated at the
           // provider default with no way to raise it from the browser.

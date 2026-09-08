@@ -1870,12 +1870,33 @@ export function App({
     const images = pendingImagesRef.current;
     pendingImagesRef.current = [];
     setPendingImages([]);
-    // Snapshot prior turns BEFORE pushing the new task message.
-    const history = trimHistoryForAgent(
-      itemsRef.current
-        .filter((i): i is Extract<TranscriptItem, { kind: 'message' }> => i.kind === 'message')
-        .map((i) => i.message),
-    );
+    // Snapshot prior turns BEFORE pushing the new task message. Tool chips
+    // come along in the stored-transcript shape: what the last turn read is
+    // context for this one, not just something that was drawn on screen. The
+    // window it has to fit is only known after the connection exists, so the
+    // trim itself happens below.
+    const priorTurns: StoredMessage[] = itemsRef.current.flatMap((item) => {
+      if (item.kind === 'message') return [item.message as StoredMessage];
+      // A chip still marked `running` never got its result — the run was
+      // stopped mid-call. Recording the call without an answer would only
+      // tell the next turn that something happened, not what.
+      if (item.kind !== 'tool' || item.status === 'running') return [];
+      return [
+        {
+          role: 'assistant',
+          content: '',
+          ui: {
+            tool: {
+              id: item.id,
+              name: item.name,
+              description: item.description,
+              ok: item.status === 'ok',
+              summary: item.summary,
+            },
+          },
+        } as StoredMessage,
+      ];
+    });
     pushItem({ kind: 'message', message: { role: 'user', content: display } });
     setLiveText('');
     let acc = '';
@@ -1923,6 +1944,7 @@ export function App({
       // Read after the connection exists, so the first turn of a session can
       // already have the endpoint's real answer rather than the preset's.
       const runWindow = contextWindowFor.known(active.profile, model).window;
+      const history = trimHistoryForAgent(priorTurns, { contextWindow: runWindow });
       const runId = randomUUID();
       // Cancellation stays on the existing Esc / Ctrl+C wiring above: the
       // controller is still what the UI aborts, but aborting now sends one

@@ -40,6 +40,8 @@ import {
   type ToolExecuteParams,
   type ToolResult,
   buildAgentTask,
+  buildAgentHistory,
+  type StoredMessage,
 } from '@heapcode/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
@@ -433,7 +435,7 @@ export class AgentController {
   async start(
     task: string,
     images?: string[],
-    opts?: { personaId?: string; resumePlanText?: string },
+    opts?: { personaId?: string; resumePlanText?: string; priorTurns?: StoredMessage[] },
   ): Promise<void> {
     if (this.running) {
       this.post({ type: 'error', message: 'An agent session is already running. Stop it first.' });
@@ -653,6 +655,14 @@ export class AgentController {
         profileName: profile.name,
         model: profile.model,
         task: fullTask,
+        // Prior turns as real history, tool results included, instead of the
+        // 2,400-character prose digest this path used to paste into the task
+        // string. That digest carried no tool results at all, so every agent
+        // turn in the extension started blind and re-read what the turn
+        // before it had already opened.
+        history: buildAgentHistory(opts?.priorTurns ?? [], {
+          contextWindow: contextWindow.window,
+        }),
         images,
         workspaceName: path.basename(root.fsPath),
         tools: offered,

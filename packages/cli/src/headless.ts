@@ -4,6 +4,7 @@ import {
   ASK_USER_NO_ANSWER,
   DEFAULT_MAX_ITERATIONS,
   DEFAULT_PERMISSION_MODE,
+  HISTORY_TOOL_RESULT_CHARS,
   METHODS,
   applyModeToPersona,
   buildAgentTask,
@@ -268,7 +269,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
       conversation = await historyStore.mostRecent();
     }
     conversation ??= { id: randomUUID(), title: opts.prompt.slice(0, 60), updatedAt: Date.now(), messages: [] };
-    const history = trimHistoryForAgent(conversation.messages);
+    const history = trimHistoryForAgent(conversation.messages, { contextWindow });
 
     const { executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(
       root,
@@ -325,6 +326,18 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
 
     /** Shadow-git commit of the workspace before the run changed anything; see the snapshot/before handler below. */
     let baseline: string | undefined;
+
+    /**
+     * This turn's tool calls and their results, in the stored-transcript shape
+     * the other hosts use, so they reach the next turn's history instead of
+     * being thrown away with the run.
+     */
+    let turnTools: StoredMessage[] = [];
+    const takeTurnTools = (): StoredMessage[] => {
+      const taken = turnTools;
+      turnTools = [];
+      return taken;
+    };
 
     /**
      * Files the run actually opened, in the order it first opened them.
@@ -482,10 +495,38 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
           deltaAcc = '';
           return; // never emitted — headless's NDJSON has no text_end line
         case 'plan':
-        case 'tool_call':
-        case 'tool_result':
           emit(event);
           return;
+        case 'tool_call':
+          // Recorded, not just emitted. Headless used to persist prose only,
+          // so a `--resume` (and every `--verify` fix cycle) started blind and
+          // re-read the same files the previous turn had already opened.
+          turnTools.push({
+            role: 'assistant',
+            content: '',
+            ui: {
+              tool: {
+                id: event.id,
+                name: event.name,
+                description: executor.describe({ id: event.id, name: event.name, args: event.args }),
+                ok: true,
+              },
+            },
+          } as StoredMessage);
+          emit(event);
+          return;
+        case 'tool_result': {
+          for (let i = turnTools.length - 1; i >= 0; i--) {
+            const tool = turnTools[i]!.ui?.tool;
+            if (tool && tool.id === event.id) {
+              tool.ok = !event.isError;
+              tool.summary = event.content.slice(0, HISTORY_TOOL_RESULT_CHARS);
+              break;
+            }
+          }
+          emit(event);
+          return;
+        }
         case 'todo_update':
           // The task list a supervising agent would otherwise have to infer
           // from tool calls — same reasoning that added filesRead and
@@ -553,6 +594,7 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
     // are saved.
     const turns: StoredMessage[] = [
       { role: 'user', content: opts.prompt } as StoredMessage,
+      ...takeTurnTools(),
       { role: 'assistant', content: lastText } as StoredMessage,
     ];
 
@@ -577,9 +619,13 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
           // readable prompt, not the preamble-wrapped one.
           outcome = await runAgentTurn(
             buildAgentTask({ personaAddendum: persona.taskAddendum, instructions, task: fixPrompt }),
-            trimHistoryForAgent([...conversation.messages, ...turns]),
+            trimHistoryForAgent([...conversation.messages, ...turns], { contextWindow }),
           );
-          turns.push({ role: 'user', content: fixPrompt } as StoredMessage, { role: 'assistant', content: lastText } as StoredMessage);
+          turns.push(
+            { role: 'user', content: fixPrompt } as StoredMessage,
+            ...takeTurnTools(),
+            { role: 'assistant', content: lastText } as StoredMessage,
+          );
         }
       }
       const passed = last?.exitCode === 0;

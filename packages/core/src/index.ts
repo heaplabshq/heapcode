@@ -41,6 +41,7 @@ export * from './agent/todo.js';
 export * from './agent/task.js';
 export * from './agent/loop.js';
 export * from './chat/chatTurn.js';
+export * from './context/agentHistory.js';
 export * from './context/contextManager.js';
 export * from './context/tokens.js';
 export * from './net/safeFetch.js';

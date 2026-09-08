@@ -487,15 +487,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postActiveFile();
   }
 
-  /** Last few conversational turns (no tool chips/status), for agent follow-ups. */
-  private recentConversationContext(): string {
-    const turns = this.conversation.messages
-      .filter((m) => !m.ui?.tool && !m.ui?.status && (m.display ?? m.content).trim())
-      .slice(-6)
-      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${(m.display ?? m.content).slice(0, 400)}`);
-    return turns.join('\n').slice(0, 2400);
-  }
-
   /**
    * Open a code reference mentioned in chat: a workspace file path directly,
    * else the first content match (e.g. a CSS selector or symbol name).
@@ -952,12 +943,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           'Read whichever of these files the task requires.';
       }
     }
-    // Follow-ups ("done?", "now also…") need the conversation so far —
-    // agent sessions are otherwise blank-slate.
-    const prior = this.recentConversationContext();
-    if (prior) {
-      task = `Conversation so far (for context):\n${prior}\n\n---\n\nNew task: ${task}`;
-    }
+    // Follow-ups ("done?", "now also…") need the conversation so far. It goes
+    // through the run's `history` now rather than being pasted into the task
+    // string: the digest that used to live here was six turns clipped to 400
+    // characters each with every tool result stripped, so the model could not
+    // see what it had already read and read it again. Snapshotted before the
+    // new user message is pushed, so this turn is not its own context.
+    const priorTurns = [...this.conversation.messages];
     const checkpoint = await this.shadowGit?.snapshot(`before: ${rawTask.slice(0, 80)}`);
     this.conversation.messages.push({
       role: 'user',
@@ -969,7 +961,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     if (this.conversation.messages.length === 1) {
       this.conversation.title = (rawTask || 'Image').slice(0, 60);
     }
-    await this.agent?.start(task, images?.slice(0, MAX_IMAGES), { personaId: persona });
+    await this.agent?.start(task, images?.slice(0, MAX_IMAGES), { personaId: persona, priorTurns });
   }
 
   /** Index in conversation.messages of the Nth real (non-UI) user turn, or -1. */

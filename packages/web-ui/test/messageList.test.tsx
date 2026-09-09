@@ -147,3 +147,23 @@ describe('a host notice about how the run ended', () => {
     expect(container.querySelector('.msg-assistant')?.textContent).not.toContain('100-step limit');
   });
 });
+
+describe('task lists in the transcript', () => {
+  it('leaves the running turn\'s list to the pinned bar, and keeps earlier ones', () => {
+    // Drawing it in both places is the bug this dedup exists to prevent: the
+    // same list twice, one of them scrolling away. Earlier runs keep their
+    // card, because that is the record of what each turn set out to do.
+    const first = fold([
+      { type: 'todo_update', todos: [{ content: 'old plan', status: 'completed' }] },
+    ]);
+    const t = fold(
+      [{ type: 'todo_update', todos: [{ content: 'live plan', status: 'in_progress' }] }],
+      { ...first, items: [...first.items, { kind: 'text', id: 'u1', role: 'user', text: 'again' }] },
+    );
+
+    const { container } = render(<MessageList transcript={t} />);
+    expect(container.querySelectorAll('.tasks')).toHaveLength(1);
+    expect(container.textContent).toContain('old plan');
+    expect(container.textContent).not.toContain('live plan');
+  });
+});

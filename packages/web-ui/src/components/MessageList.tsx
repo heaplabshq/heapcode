@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { renderMarkdown } from '../markdown.js';
-import { activityOf, type Item, type Transcript } from '../transcript.js';
+import { activityOf, currentTasks, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
 import { WorkingIndicator } from './WorkingIndicator.js';
 
@@ -47,7 +47,13 @@ export function MessageList({
 
   const total = transcript.items.length;
   const hidden = Math.max(0, total - visible);
-  const shown = hidden > 0 ? transcript.items.slice(hidden) : transcript.items;
+  const windowed = hidden > 0 ? transcript.items.slice(hidden) : transcript.items;
+  // The live run's task list is drawn by `TaskBar`, pinned above this
+  // scroller. Skipping it here is what keeps it from being drawn twice —
+  // every EARLIER run's list stays in place, so the transcript still records
+  // what each turn set out to do.
+  const pinnedTasksId = currentTasks(transcript)?.id;
+  const shown = pinnedTasksId ? windowed.filter((item) => item.id !== pinnedTasksId) : windowed;
 
   // Follow the stream, but stop fighting the user the moment they scroll up to
   // read something — and resume when they come back to the bottom.
@@ -241,7 +247,10 @@ const Row = memo(function Row({
                 <span className="task-mark" aria-hidden>
                   {t.status === 'completed' ? '✔' : t.status === 'in_progress' ? '▸' : '·'}
                 </span>
-                {t.content}
+                {/* The span is load-bearing: `.task-completed .task-text` is
+                    what strikes a finished item through, and without it the
+                    rule had no element to match. */}
+                <span className="task-text">{t.content}</span>
               </li>
             ))}
           </ul>

@@ -534,6 +534,32 @@ body {
 .task-in_progress .task-mark { color: var(--accent); }
 .task-completed .task-text { text-decoration: line-through; }
 
+/* The live run's task list, pinned above the transcript.
+
+   Sits with the banners rather than inside `.messages`: a flex row in normal
+   flow cannot overlap the transcript, the composer or the workspace panel,
+   which a floating overlay would, and it does not have to fight the scroller's
+   own auto-follow. Collapsed it is one line — a pinned region earns its space
+   by being small. */
+.taskbar { flex: none; background: var(--bg-sunken); border-bottom: 1px solid var(--border); }
+.taskbar-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px var(--gutter);
+  background: none; border: 0; cursor: pointer;
+  font: inherit; font-size: 12.5px; color: var(--text-dim); text-align: left;
+}
+.taskbar-head:hover { color: var(--text); }
+.taskbar-caret { flex: none; width: 1em; }
+.taskbar-label { flex: none; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.taskbar-count { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
+/* The label and the count are short and fixed, so the current task is the part
+   that gives way when the window narrows. */
+.taskbar-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.taskbar-current::before { content: '·'; margin-right: 8px; color: var(--text-dim); }
+/* Capped and scrollable: twenty tasks (MAX_TODOS) must not push the
+   conversation off the screen. */
+.taskbar-list { margin: 0; padding: 0 var(--gutter) 10px; max-height: 40vh; overflow-y: auto; }
+
 .reasoning { margin: 0 0 8px; }
 .reasoning-toggle {
   background: none; border: 0; cursor: pointer;

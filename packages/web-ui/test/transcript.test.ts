@@ -3,6 +3,7 @@ import type { AgentEvent } from '@heapcode/core';
 import {
   activityOf,
   concat,
+  currentTasks,
   emptyTranscript,
   fromMessages,
   reduce,
@@ -104,6 +105,29 @@ describe('transcript reducer', () => {
       { content: 'a', status: 'completed' },
       { content: 'b', status: 'in_progress' },
     ]);
+  });
+
+  it('pins the running turn\'s task list, and nothing once a new turn has started', () => {
+    // The pinned bar is about the run in flight. A list left over from the
+    // previous run, held above a new one, is worse than no list at all —
+    // it looks live.
+    const running = fold([
+      { type: 'todo_update', todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] },
+      { type: 'text', text: 'working on it' },
+    ]);
+    expect(currentTasks(running)?.todos).toEqual([
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'in_progress' },
+    ]);
+
+    const asked = {
+      ...running,
+      items: [...running.items, { kind: 'text' as const, id: 'u1', role: 'user' as const, text: 'again' }],
+    };
+    expect(currentTasks(asked)).toBeUndefined();
+
+    // And a run that never wrote a list pins nothing.
+    expect(currentTasks(fold([{ type: 'text', text: 'no list here' }]))).toBeUndefined();
   });
 
   it('keeps sub-agent calls linked to their parent, for nesting', () => {

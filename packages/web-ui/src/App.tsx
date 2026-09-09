@@ -56,6 +56,7 @@ import {
 import { Composer } from './components/Composer.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { MessageList } from './components/MessageList.js';
+import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
@@ -66,6 +67,7 @@ import {
   activityOf,
   concat,
   emptyTranscript,
+  currentTasks,
   fromMessages,
   nextOrdinal,
   reduce,
@@ -999,6 +1001,10 @@ export function App(): JSX.Element {
               {notice}
             </div>
           )}
+
+          {/* Above the scroller, not inside it: the list is about the run in
+              flight, so it has to stay put while the transcript moves. */}
+          <TaskBar todos={currentTasks(transcript)?.todos ?? []} />
 
           <MessageList
             transcript={transcript}

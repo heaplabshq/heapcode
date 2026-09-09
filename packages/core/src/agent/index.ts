@@ -37,6 +37,7 @@ export * from './commandRisk.js';
 export * from './permissionModes.js';
 export * from './permissions.js';
 export * from './personas.js';
+export * from './recap.js';
 export * from './prompts.js';
 export * from './subAgent.js';
 export * from './askUser.js';

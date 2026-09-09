@@ -6,6 +6,13 @@ import {
   estimateMessagesTokens,
 } from '../context/tokens.js';
 import { buildFallbackAgentSystemPrompt, buildNativeAgentSystemPrompt, resolvePromptTier } from './prompts.js';
+import { RECAP_BUDGET_MULTIPLIER, wantsConversationRecap } from './recap.js';
+
+/**
+ * Marks a compacted block, so a later compaction can recognise its own notes
+ * and extend them rather than compressing a summary a second time.
+ */
+const COMPACTED_PREFIX = '[Earlier work compacted to save context]';
 import type { AgentEnvironment, PromptTierSetting } from './promptSections.js';
 import { formatToolResult, parseToolBlocks, REPAIR_PROMPT } from './textProtocol.js';
 import { TODO_TOOL, parseTodos, renderTodos, type TodoItem } from './todo.js';
@@ -793,7 +800,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   // reservation at a quarter of the window so small windows still get most
   // of their space for the transcript.
   const reservedOutput = Math.min(opts.maxTokens ?? 4_096, contextWindow / 4);
-  const compactionBudget = Math.max(2_000, contextWindow * COMPACTION_THRESHOLD - reservedOutput);
+  // Raised when the task is *about* the conversation, so a recap is not
+  // answered from notes that already dropped what was being asked about.
+  // See agent/recap.ts for why this raises the budget rather than skipping.
+  const recapRequested = wantsConversationRecap(opts.task);
+  const compactionBudget =
+    Math.max(2_000, contextWindow * COMPACTION_THRESHOLD - reservedOutput) *
+    (recapRequested ? RECAP_BUDGET_MULTIPLIER : 1);
 
   /**
    * Context compaction: when the transcript outgrows the window, summarize
@@ -815,12 +828,21 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     const middle = messages.slice(2, tailStart);
     if (middle.length < 4) return;
 
-    const transcript = middle
+    // A second compaction folds the first one's summary back in. Labelling it
+    // as existing notes rather than letting it arrive as another `user:` line
+    // is what makes the model extend them instead of compressing a summary
+    // again — the difference between notes that accumulate and notes that
+    // erode. heapchat framed it this way explicitly (server.js:1958).
+    const priorSummary = middle[0]?.content.startsWith(COMPACTED_PREFIX) ? middle[0].content : undefined;
+    const fresh = (priorSummary ? middle.slice(1) : middle)
       .map((m) => {
         const calls = m.toolCalls ? ` [called: ${m.toolCalls.map((c) => c.name).join(', ')}]` : '';
         return `${m.role}: ${m.content.slice(0, 1_500)}${calls}`;
       })
       .join('\n');
+    const transcript = priorSummary
+      ? `NOTES SO FAR:\n${priorSummary}\n\nNEWER MESSAGES TO FOLD INTO THE NOTES:\n${fresh}`
+      : fresh;
     try {
       const res = await provider.chat({
         model,
@@ -845,7 +867,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       if (!summary) return;
       messages.splice(2, tailStart - 2, {
         role: 'user',
-        content: `[Earlier work compacted to save context]\n${summary}\n[Continue the task from here.]`,
+        content: `${COMPACTED_PREFIX}\n${summary}\n[Continue the task from here.]`,
       });
       const after = estimateMessagesTokens(messages);
       events.onCompaction?.(before, after);

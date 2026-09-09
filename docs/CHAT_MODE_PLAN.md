@@ -369,7 +369,7 @@ written by this host.
 
 ## Independent track — not gated on any milestone
 
-- [ ] **Merge the two compactors.** The one genuine duplicate pair between
+- [x] **Merge the two compactors.** The one genuine duplicate pair between
       the repos: `core/src/agent/loop.ts` (`compactIfNeeded`) vs
       `heapchat/server.js:1923-1971` (`compactHistory`), ~50 lines each.
       Take heapchat's sticky per-session summary cache (it extends
@@ -377,6 +377,22 @@ written by this host.
       compaction when the user literally asked for a summary; keep heapcode's
       rule that a tool call is never split from its results. Improves Heap
       Code on its own.
+
+      **Done, with one part deliberately not ported.** The recap guard is in
+      (`core/src/agent/recap.ts`), as a budget multiplier rather than a skip —
+      a question about a long conversation is exactly when the transcript is
+      long, so disabling compaction would overflow the window instead. The
+      incremental framing is in too: a second compaction now labels the first
+      one's output as `NOTES SO FAR` so the model extends the notes instead of
+      compressing a summary again.
+
+      The **sticky per-session cache was not ported**, and the plan was wrong
+      to assume it would be. It caches across turns of one conversation, but
+      `runAgent` rebuilds `messages` per run from persisted history, so there
+      is no long-lived in-memory transcript for it to attach to. Porting it
+      would mean inventing a cross-run cache that nothing else in this
+      architecture has, to solve a problem `trimHistoryForAgent` already
+      handles on the way in.
 
 ---
 
@@ -425,6 +441,8 @@ Do not resolve these by picking a default — ask.
 | 2026-09-09 | Provider connections and the model role table are shared between products; conversation history and memory are not | One keychain entry and one Ollama config is the biggest ergonomic win available. But code sessions in a documents chat list, or project memory mixed with personal memory, would be actively wrong in both directions |
 | 2026-09-09 | Document extensions are a separate set from `CODE_EXTENSIONS`, behind an extractor seam | Heap Code's index policy is deliberate; widening it in place would change Heap Code's behavior as a side effect of chat work |
 | 2026-09-09 | `heapcode web` continues to land directly in code mode; the product switcher lives inside the app | The primary product's primary path must not gain a click |
+| 2026-09-09 | The recap guard raises the compaction budget rather than skipping compaction | A request about a conversation is exactly the case where the transcript is long; skipping outright would overflow the window instead of protecting the answer. ×4, so an ordinary conversation is never compacted before being recapped |
+| 2026-09-09 | heapchat's sticky per-session summary cache was NOT ported | It caches across turns of one conversation; `runAgent` rebuilds `messages` per run from persisted history, so there is nothing for it to attach to. The plan assumed it would port and it does not — recorded rather than forced |
 | 2026-09-09 | Personal memory is its own JSON store at `~/.heapcode/chat-memory.json`, global rather than per folder | Project memory is about a repo and is committed beside it; this is about the person and should follow them between folders. Mixing them puts dietary preferences into a repo's shared notes, or build quirks into a conversation about a tenancy agreement. JSON rather than markdown because entries are deleted individually |
 | 2026-09-09 | `remember` runs without a permission prompt, and the control is a reviewable list instead | It is the one `write`-class tool on the roster, and what it writes is the assistant's own memory, never the folder. "Shall I remember the thing you just told me to remember" is noise; being able to see everything it holds and delete any of it is the control that helps |
 | 2026-09-09 | Learned-procedure memory is out of scope, moved to Backlog | Open Decision 4, resolved by default rather than by asking, because the session could not. It was heapchat's least-validated idea, C5's exit criteria do not need it, and `extraction-audit.md` warns it shares a name with an unrelated concept already in this repo |

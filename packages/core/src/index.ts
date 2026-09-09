@@ -24,6 +24,7 @@ export * from './agent/tools.js';
 export * from './agent/askUser.js';
 export * from './agent/personas.js';
 export * from './agent/commandRisk.js';
+export * from './agent/recap.js';
 export * from './agent/permissionModes.js';
 export * from './agent/webSearch.js';
 export * from './agent/mcp.js';

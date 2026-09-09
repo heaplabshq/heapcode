@@ -12,6 +12,10 @@
       "types": "./src/rpc.ts",
       "default": "./src/rpc.ts"
     },
+    "./panelWidth": {
+      "types": "./src/panelWidth.ts",
+      "default": "./src/panelWidth.ts"
+    },
     "./transcript": {
       "types": "./src/transcript.ts",
       "default": "./src/transcript.ts"

@@ -45,6 +45,7 @@ import { findCommand, type Command } from './commands.js';
 import { Palette } from './components/Palette.js';
 import { Shortcuts } from './components/Shortcuts.js';
 import { Settings, type UiProfileDraft } from './components/Settings.js';
+import { usePanelWidth } from './panelWidth.js';
 import { RpcClient } from './rpc.js';
 import {
   abandonCards,
@@ -218,10 +219,7 @@ export function App(): JSX.Element {
    * open/closed choice is — how wide a diff needs to be is a statement about
    * the work, not something to re-decide on every reload.
    */
-  const [panelWidth, setPanelWidth] = useState(() => {
-    const saved = Number(localStorage.getItem('heapcode.panelWidth'));
-    return Number.isFinite(saved) && saved > 0 ? saved : undefined;
-  });
+  const { width: panelWidth, startDrag: startPanelDrag } = usePanelWidth('heapcode.panelWidth');
 
   // One effect rather than a write at each of the eight places that open the
   // panel — including the ones the app opens for you, like a new artifact or a
@@ -229,53 +227,6 @@ export function App(): JSX.Element {
   useEffect(() => {
     localStorage.setItem('heapcode.panel', panelOpen ? 'open' : 'closed');
   }, [panelOpen]);
-  useEffect(() => {
-    if (panelWidth) localStorage.setItem('heapcode.panelWidth', String(panelWidth));
-  }, [panelWidth]);
-
-  // Shrinking the window must not let a wide panel push the chat below its
-  // floor — re-clamp against the same ceiling the drag uses.
-  useEffect(() => {
-    if (!panelWidth) return;
-    const onResize = (): void => {
-      const max = Math.min(900, window.innerWidth - 480);
-      setPanelWidth((w) => (w && w > max ? Math.max(max, 320) : w));
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [panelWidth]);
-
-  /**
-   * Drag the panel's left edge. Pointer capture on the splitter keeps the drag
-   * alive over the preview iframe, which would otherwise swallow the moves.
-   * The width is clamped against the window so the chat never shrinks to
-   * nothing — below that floor the panel belongs overlaid, not squeezed in.
-   */
-  const startPanelDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    const startWidth = e.currentTarget.parentElement?.querySelector('.panel')?.clientWidth ?? 0;
-    // Kill text selection for the length of the drag — without this, sweeping
-    // left over the transcript selects it.
-    document.body.style.userSelect = 'none';
-    const move = (ev: PointerEvent): void => {
-      const max = Math.min(900, window.innerWidth - 480);
-      setPanelWidth(Math.round(Math.min(Math.max(startWidth + (startX - ev.clientX), 320), max)));
-    };
-    // pointerup and pointercancel both end the gesture; without the cancel
-    // branch a lost pointer (tab switch, gesture stolen by the OS) would leave
-    // the move listener attached for good.
-    const up = (): void => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', up);
-      document.body.style.userSelect = '';
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', up);
-  }, []);
   const [changes, setChanges] = useState<UiChangedFile[]>([]);
   const [checkpoints, setCheckpoints] = useState<UiCheckpoint[]>([]);
   const [openPath, setOpenPath] = useState<string>();

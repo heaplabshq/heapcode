@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RpcClient } from '@heapcode/web-ui/rpc';
+import { usePanelWidth } from '@heapcode/web-ui/panelWidth';
 import {
   concat,
   emptyTranscript,
@@ -97,8 +98,21 @@ export function App(): JSX.Element {
     () => localStorage.getItem('heapchat.rail') === 'collapsed',
   );
   const [runStartedAt, setRunStartedAt] = useState<number>();
-  const [panelOpen, setPanelOpen] = useState(false);
+  /**
+   * Remembered, like the rail and like Heap Code's own panel: whether you
+   * work with the documents in view is a standing preference, not something
+   * to re-state on every reload.
+   */
+  const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem('heapchat.panel') === 'open');
   const [panelTab, setPanelTab] = useState<ChatPanelTab>('files');
+  const { width: panelWidth, startDrag: startPanelDrag } = usePanelWidth('heapchat.panelWidth');
+
+  // One effect rather than a write at each place that opens the panel —
+  // including the ones this app opens for you, like a new artifact or a
+  // clicked path. Whatever state you were left in is the one to come back to.
+  useEffect(() => {
+    localStorage.setItem('heapchat.panel', panelOpen ? 'open' : 'closed');
+  }, [panelOpen]);
   const [artifacts, setArtifacts] = useState<ChatArtifactMeta[]>([]);
   const [selectedArtifact, setSelectedArtifact] = useState<string>();
   const [openPath, setOpenPath] = useState<string>();
@@ -466,32 +480,42 @@ export function App(): JSX.Element {
         </main>
 
         {panelOpen && (
-          <ChatPanel
-            tab={panelTab}
-            onTab={setPanelTab}
-            onClose={() => setPanelOpen(false)}
-            loadTree={(path) => client.request<ChatFileTreeResult>(CHAT_METHODS.fileTree, { path })}
-            loadFile={(path) => client.request<ChatReadFileResult>(CHAT_METHODS.readFile, { path })}
-            openPath={openPath}
-            artifacts={artifacts}
-            selectedArtifact={selectedArtifact}
-            onSelectArtifact={setSelectedArtifact}
-            loadArtifact={(id, version) =>
-              client.request<ChatArtifactResult>(CHAT_METHODS.artifact, { id, version })
-            }
-            onSaveArtifact={(id, path, version) => {
-              client
-                .request(CHAT_METHODS.saveArtifact, { id, path, version })
-                .then(() => setNotice(`Saved to ${path}`))
-                .catch((e: Error) => setError(e.message));
-            }}
-            grounding={grounding}
-            indexStatus={index}
-            onReindex={() => {
-              void client.request(CHAT_METHODS.reindex).catch(() => undefined);
-              refreshIndex();
-            }}
-          />
+          <>
+            <div
+              className="panel-splitter"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize panel"
+              onPointerDown={startPanelDrag}
+            />
+            <ChatPanel
+              width={panelWidth}
+              tab={panelTab}
+              onTab={setPanelTab}
+              onClose={() => setPanelOpen(false)}
+              loadTree={(path) => client.request<ChatFileTreeResult>(CHAT_METHODS.fileTree, { path })}
+              loadFile={(path) => client.request<ChatReadFileResult>(CHAT_METHODS.readFile, { path })}
+              openPath={openPath}
+              artifacts={artifacts}
+              selectedArtifact={selectedArtifact}
+              onSelectArtifact={setSelectedArtifact}
+              loadArtifact={(id, version) =>
+                client.request<ChatArtifactResult>(CHAT_METHODS.artifact, { id, version })
+              }
+              onSaveArtifact={(id, path, version) => {
+                client
+                  .request(CHAT_METHODS.saveArtifact, { id, path, version })
+                  .then(() => setNotice(`Saved to ${path}`))
+                  .catch((e: Error) => setError(e.message));
+              }}
+              grounding={grounding}
+              indexStatus={index}
+              onReindex={() => {
+                void client.request(CHAT_METHODS.reindex).catch(() => undefined);
+                refreshIndex();
+              }}
+            />
+          </>
         )}
       </div>
 

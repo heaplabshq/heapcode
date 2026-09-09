@@ -17,6 +17,8 @@ export interface ChatPanelProps {
   tab: ChatPanelTab;
   onTab(tab: ChatPanelTab): void;
   onClose(): void;
+  /** Dragged width in px; undefined falls back to the stylesheet default. */
+  width?: number;
   loadTree(path: string): Promise<ChatFileTreeResult>;
   loadFile(path: string): Promise<ChatReadFileResult>;
   /** A path clicked in a tool chip or a source row opens here. */
@@ -51,7 +53,7 @@ export function ChatPanel(props: ChatPanelProps): JSX.Element {
   ];
 
   return (
-    <aside className="panel" aria-label="Folder">
+    <aside className="panel" aria-label="Folder" style={props.width ? { width: props.width } : undefined}>
       <div className="panel-tabs" role="tablist">
         {tabs.map((t) => (
           <button

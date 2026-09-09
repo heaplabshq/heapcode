@@ -198,6 +198,16 @@ export interface AgentRunParams {
    * block as everyone else.
    */
   environment?: AgentEnvironment;
+  /**
+   * Replaces the coding-agent identity in the system prompt, for a host whose
+   * agent is not a coding agent. Forwarded to `runAgent`'s `systemPrompt`,
+   * which is the seam `AgentPromptOptions.base` already documents (and which
+   * heapbrowse already uses in-process) — this only makes it reachable through
+   * the daemon, for hosts that run their agent over the wire.
+   *
+   * Absent, the prompt is composed exactly as before.
+   */
+  systemPrompt?: string;
   /** Correlates `agent/event` notifications and `agent/cancel` to this run. */
   runId: string;
 }

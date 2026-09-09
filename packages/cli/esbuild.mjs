@@ -46,6 +46,17 @@ function copyWebUi() {
 }
 copyWebUi();
 
+/** The same arrangement for Heap Chat's bundle — see copyWebUi. */
+function copyChatUi() {
+  const from = fileURLToPath(new URL('../chat-ui/dist', import.meta.url));
+  if (!existsSync(from)) {
+    console.warn('[build] packages/chat-ui/dist not found — `heapcode chat` will serve the API only.');
+    return;
+  }
+  cpSync(from, 'dist/chat', { recursive: true });
+}
+copyChatUi();
+
 const ctx = await esbuild.context({
   // dist/daemon.js is the core server's entry point — the CLI autostarts it
   // detached when nothing is listening (docs/phase3-protocol-design.md §6).

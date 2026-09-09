@@ -11,6 +11,24 @@ import { webSocketDuplex } from './wsDuplex.js';
 
 export const DEFAULT_PORT = 7411;
 
+/**
+ * What this server needs a session to be: something a browser can be pointed
+ * at, and that outlives the browser.
+ *
+ * Exists so the HTTP/WS/auth shell can serve a session that is not
+ * `WebSession`. Heap Chat is a different product with a different tool roster,
+ * a different system prompt and no workspace panel (docs/CHAT_MODE_PLAN.md) —
+ * and the one thing that must not happen is that it becomes a mode flag
+ * threaded through the session Heap Code runs on. Injecting the session here
+ * is what keeps the two apart while they share this shell, the token
+ * exchange, and the origin allowlist below, none of which is product-specific.
+ */
+export interface HostSession {
+  attach(peer: RpcPeer): void;
+  detach(peer: RpcPeer): void;
+  close(): Promise<void>;
+}
+
 export interface WebHostOptions extends Omit<WebSessionDeps, 'root'> {
   root: string;
   /** Bind address. Anything but a loopback address is an explicit LAN opt-in. */
@@ -22,6 +40,11 @@ export interface WebHostOptions extends Omit<WebSessionDeps, 'root'> {
   staticDir?: string;
   /** Overridden only by tests, which cannot wait out a fifteen-minute block. */
   limiter?: AuthLimiter;
+  /**
+   * Builds the session this host serves. Defaults to `WebSession` — Heap Code
+   * — so every existing caller is unaffected.
+   */
+  createSession?: (deps: WebSessionDeps & { lan: boolean }) => HostSession;
 }
 
 export interface RunningWebHost {
@@ -29,7 +52,7 @@ export interface RunningWebHost {
   token: string;
   port: number;
   host: string;
-  session: WebSession;
+  session: HostSession;
   close(): Promise<void>;
 }
 
@@ -51,7 +74,8 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
   // The browser is told which side of the trust boundary it is on, so it can
   // say so — the terminal warning is only seen by whoever ran the command, and
   // LAN mode's whole point is that other people open the page (§6.1, W3.4).
-  const session = new WebSession({ ...opts, lan: !isLoopback(host) });
+  const deps = { ...opts, lan: !isLoopback(host) };
+  const session = opts.createSession ? opts.createSession(deps) : new WebSession(deps);
 
   const http = createServer((req, res) => {
     void handleHttp(req, res).catch(() => {

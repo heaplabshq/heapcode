@@ -198,27 +198,36 @@ inside the app, not a gate in front of it.
 Goal: prove the whole pipe — separate host, separate session, shared engine,
 neutral UI — with the smallest possible feature set.
 
-- [ ] `packages/chat-host` scaffolded; imports auth/WS/static/artifacts from
+- [x] `packages/chat-host` scaffolded; imports auth/WS/static/artifacts from
       `@heapcode/web-host` (widen its exports; do not move code)
-- [ ] `packages/chat-ui` scaffolded; renders `web-ui`'s neutral components,
+- [x] `packages/chat-ui` scaffolded; renders `web-ui`'s neutral components,
       no workspace panel, no diff/index views
-- [ ] Chat session with a five-tool roster: `read_file`, `search`,
-      `semantic_search`, `web_search`, `fetch_url`
-- [ ] Knowledge-assistant system prompt (own file, not a branch in the
+- [x] Chat session with a five-tool roster: `read_file`, `search`,
+      `semantic_search`, `web_search`, `fetch_url` — plus `ask_user`, which is
+      how a run talks back rather than a sixth capability, and without which
+      `askToContinueAtLimit` and `chat/askUser` are both unreachable
+- [x] Knowledge-assistant system prompt (own file, not a branch in the
       coding prompt)
-- [ ] Entry point (`heapcode chat` or equivalent route) that opens on a
+- [x] Entry point (`heapcode chat` or equivalent route) that opens on a
       chosen folder rather than a project workspace
-- [ ] Shared provider connections and model role table — one keychain entry,
+- [x] Shared provider connections and model role table — one keychain entry,
       one Ollama config, one settings screen (this is the single biggest
       ergonomic win of the plan; heapchat maintaining its own was pure
       friction)
-- [ ] Separate conversation history store
+- [x] Separate conversation history store
 - [ ] Tests: session lifecycle, tool-roster scoping, that the code roster is
-      not reachable from a chat session
+      not reachable from a chat session — **deferred to the end of the plan**
+      at the user's instruction (2026-09-09), not skipped
 
 **Exit criteria:** point it at `~/Documents`, ask a question about a `.md`
 file in it, get a streamed answer citing that file — and
-`git diff origin/main -- packages/web-host/src/session.ts` is empty.
+`git diff <branch point> -- packages/web-host/src/session.ts` is empty.
+
+The baseline is the **branch point**, not `origin/main`: this branch was cut
+from `feat/history-tool-result-retention`, which changes `session.ts` for
+reasons that have nothing to do with Heap Chat. Diffing against `origin/main`
+reports that inherited work and makes the guardrail look violated when it is
+not.
 
 ### C1 — Document ingestion
 

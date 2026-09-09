@@ -76,8 +76,64 @@ importers:
         specifier: ^5.4.2
         version: 5.4.21(@types/node@20.19.43)
 
+  packages/chat-host:
+    dependencies:
+      '@heapcode/core':
+        specifier: workspace:*
+        version: link:../core
+      '@heapcode/host':
+        specifier: workspace:*
+        version: link:../host
+      '@heapcode/web-host':
+        specifier: workspace:*
+        version: link:../web-host
+    devDependencies:
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.5
+        version: 2.1.9(@types/node@20.19.43)(jsdom@30.0.1)
+
+  packages/chat-ui:
+    dependencies:
+      '@heapcode/chat-host':
+        specifier: workspace:*
+        version: link:../chat-host
+      '@heapcode/web-ui':
+        specifier: workspace:*
+        version: link:../web-ui
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@heapcode/core':
+        specifier: workspace:*
+        version: link:../core
+      '@types/react':
+        specifier: ^18.3.4
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ^18.3.0
+        version: 18.3.7(@types/react@18.3.31)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.1
+        version: 4.7.0(vite@5.4.21(@types/node@20.19.43))
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+      vite:
+        specifier: ^5.4.2
+        version: 5.4.21(@types/node@20.19.43)
+
   packages/cli:
     devDependencies:
+      '@heapcode/chat-host':
+        specifier: workspace:*
+        version: link:../chat-host
       '@heapcode/core':
         specifier: workspace:*
         version: link:../core

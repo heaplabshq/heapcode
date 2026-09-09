@@ -40,6 +40,7 @@
     "prepublishOnly": "node prepublish-check.mjs"
   },
   "devDependencies": {
+    "@heapcode/chat-host": "workspace:*",
     "@heapcode/core": "workspace:*",
     "@heapcode/host": "workspace:*",
     "@heapcode/repomap": "workspace:*",

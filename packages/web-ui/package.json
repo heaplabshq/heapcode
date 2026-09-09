@@ -7,6 +7,14 @@
     "./markdown": {
       "types": "./src/markdown.ts",
       "default": "./src/markdown.ts"
+    },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "default": "./src/rpc.ts"
+    },
+    "./transcript": {
+      "types": "./src/transcript.ts",
+      "default": "./src/transcript.ts"
     }
   },
   "scripts": {

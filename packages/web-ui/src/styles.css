@@ -613,6 +613,12 @@ body {
 }
 .card-body { font-family: var(--mono); font-size: 12.5px; margin-bottom: 10px; word-break: break-word; }
 .card-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+/* An ask_user option is a sentence — often a long one — so these stack in a
+   column and wrap inside their own width. `.card-actions` cannot do this job:
+   it lays controls out in a row, and a flex item wider than its container
+   overflows rather than wrapping, which is how a long option ended up running
+   out through the side of the card. */
+.card-options { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
 .card-input {
   flex: 1 1 220px; min-width: 0;
   background: var(--bg); color: var(--text);
@@ -838,6 +844,11 @@ body {
    the blue behind it — Send went white-on-white under the pointer. */
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
 .btn-danger { color: var(--danger); border-color: var(--danger); }
+/* Below `.btn`, not up with the card it is used in: `.btn` sets
+   `white-space: nowrap`, and at equal specificity the later rule wins. The
+   first draft of this lived in the cards section 200 lines above and was
+   silently overwritten — the same trap `.btn-quiet` fell into below. */
+.btn-option { max-width: 100%; white-space: normal; text-align: left; overflow-wrap: anywhere; }
 .btn-danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
 /* Borderless until you point at it. It used to be declared 400 lines above
    `.btn` at the same specificity, so `.btn` simply overwrote its background

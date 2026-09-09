@@ -18,6 +18,32 @@ export interface PendingReview extends UiReviewConfirmParams {
   resolve(ok: boolean): void;
 }
 
+/** The cards that can still be open when a conversation is swapped out. */
+export interface OpenCards {
+  ask?: PendingAsk;
+  permission?: PendingPermission;
+  review?: PendingReview;
+}
+
+/**
+ * Settle the cards belonging to a conversation that is no longer on screen.
+ *
+ * Every card is the browser half of an open RPC request, so hiding one is not
+ * enough: a handler nobody ever answers is a run left waiting for a person who
+ * has walked away. They settle the way an absent user does — no answer for the
+ * question, so the host tells the model to use its own judgment, and a refusal
+ * for the permission and the review.
+ *
+ * The refusals are the part that matters. Abandoning a conversation must never
+ * be a way to grant something, and "deny" is the only safe reading of a prompt
+ * that was never seen.
+ */
+export function abandonCards(cards: OpenCards): void {
+  cards.ask?.resolve('');
+  cards.permission?.resolve('deny');
+  cards.review?.resolve(false);
+}
+
 /**
  * The permission prompt.
  *
@@ -121,9 +147,13 @@ export function AskUserCard({ pending }: { pending: PendingAsk }): JSX.Element {
       </div>
       <div className="card-body">{pending.question}</div>
       {pending.options?.length ? (
-        <div className="card-actions">
+        // Not `.card-actions`: an ask_user option is a sentence, not a verb.
+        // `.btn`'s `white-space: nowrap` is right for Allow/Deny and wrong
+        // here — a long option refused to wrap and ran straight out through
+        // the side of the card. These stack and wrap instead.
+        <div className="card-options">
           {pending.options.map((opt) => (
-            <button key={opt} className="btn" onClick={() => submit(opt)}>
+            <button key={opt} className="btn btn-option" onClick={() => submit(opt)}>
               {opt}
             </button>
           ))}

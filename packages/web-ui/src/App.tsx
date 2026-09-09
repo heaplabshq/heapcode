@@ -46,6 +46,7 @@ import { Shortcuts } from './components/Shortcuts.js';
 import { Settings, type UiProfileDraft } from './components/Settings.js';
 import { RpcClient } from './rpc.js';
 import {
+  abandonCards,
   AskUserCard,
   PermissionCard,
   ReviewCard,
@@ -874,17 +875,49 @@ export function App(): JSX.Element {
       .catch((err: Error) => setError(`Could not stop the run: ${err.message}`));
   }, [rpc, runId, hostRunId]);
 
+  /**
+   * Drop the question, permission prompt or review confirmation belonging to a
+   * conversation that is no longer on screen.
+   *
+   * These are the only pieces of the view that outlive their transcript: they
+   * are held in their own state so they can sit above the composer, and
+   * nothing but answering them used to clear them. Switching folder left a
+   * question about a repo you were no longer in floating over an empty
+   * workspace, still clickable.
+   *
+   * Each one is SETTLED, not merely hidden. Every card is the browser half of
+   * an open RPC request, and a handler nobody ever answers is a run that waits
+   * for a person who has walked away. They settle the way an absent user does:
+   * no answer for the question (the host reads an empty answer as "the user did
+   * not answer" and tells the model to use its own judgment), and a refusal for
+   * the permission and the review — abandoning a conversation must never be a
+   * way to grant something, and "deny" is the only safe reading of a prompt
+   * that was never seen.
+   */
+  const dismissPending = useCallback(() => {
+    // Settled through `abandonCards`, which owns what an abandoned prompt
+    // means (see there). Called as a plain event handler rather than from
+    // inside a state updater, which StrictMode double-invokes. Each `resolve`
+    // already clears its own card — the explicit clears keep this true
+    // whoever rewires that later.
+    abandonCards({ ask, permission, review });
+    setAsk(undefined);
+    setPermission(undefined);
+    setReview(undefined);
+  }, [ask, permission, review]);
+
   const openConversation = useCallback(
     (id: string) => {
       void rpc
         .request<UiOpenConversationResult>(UI_METHODS.openConversation, { id })
         .then((res) => {
           setTranscript(fromMessages(res.messages));
+          dismissPending();
           refreshConversations();
         })
         .catch((err: Error) => setError(err.message));
     },
-    [rpc, refreshConversations],
+    [rpc, refreshConversations, dismissPending],
   );
 
   /**
@@ -910,12 +943,13 @@ export function App(): JSX.Element {
         setArtifacts([]);
         setSelectedArtifact(undefined);
         setOpenPath(undefined);
+        dismissPending();
         setNotice(`Now working in ${res.state.workspaceName}.`);
         refreshConversations();
         refreshWorkspace();
         refreshArtifacts();
       }),
-    [rpc, refreshConversations, refreshWorkspace, refreshArtifacts],
+    [rpc, refreshConversations, refreshWorkspace, refreshArtifacts, dismissPending],
   );
 
   const newConversation = useCallback(() => {
@@ -923,10 +957,11 @@ export function App(): JSX.Element {
       .request<UiOpenConversationResult>(UI_METHODS.newConversation)
       .then(() => {
         setTranscript(emptyTranscript);
+        dismissPending();
         refreshConversations();
       })
       .catch((err: Error) => setError(err.message));
-  }, [rpc, refreshConversations]);
+  }, [rpc, refreshConversations, dismissPending]);
 
   newConversationRef.current = newConversation;
 

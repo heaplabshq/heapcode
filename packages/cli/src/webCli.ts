@@ -59,6 +59,10 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
   let running;
   try {
     running = await startWebHost({
+      // Straight to the terminal the person launched this from: a sign-in
+      // ends in a browser tab they then close, so the reason has to survive
+      // somewhere they can still read it.
+      onLog: (line) => process.stdout.write(`  ${line}\n`),
       root,
       host,
       port,

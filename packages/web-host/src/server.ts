@@ -5,7 +5,7 @@ import { hostname, networkInterfaces } from 'node:os';
 import { RpcPeer } from '@heapcode/core';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { AuthLimiter } from './authLimit.js';
-import { CALLBACK_PATH, callbackPage, createMcpLoginRegistry } from './mcpLogin.js';
+import { CALLBACK_PATH, callbackPage, createMcpLoginRegistry, describeCallbackError } from './mcpLogin.js';
 import { WebSession, type WebSessionDeps } from './session.js';
 import { serveStatic } from './static.js';
 import { webSocketDuplex } from './wsDuplex.js';
@@ -31,6 +31,12 @@ export interface HostSession {
 }
 
 export interface WebHostOptions extends Omit<WebSessionDeps, 'root'> {
+  /**
+   * Where this host says things the person needs to see — today, only how a
+   * sign-in ended. Optional: a test host has no terminal, and the callback
+   * page still carries the reason either way.
+   */
+  onLog?: (line: string) => void;
   root: string;
   /** Bind address. Anything but a loopback address is an explicit LAN opt-in. */
   host?: string;
@@ -149,16 +155,34 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
         res.writeHead(ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(callbackPage({ ok, detail }));
       };
-      const error = url.searchParams.get('error_description') ?? url.searchParams.get('error');
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
-      if (error) return send(false, error);
-      if (!code || !state) return send(false, 'The authorization server returned no code.');
+      const failed = url.searchParams.get('error') ?? url.searchParams.get('error_description');
+      // Printed where the person can see it: a refusal from a third party is
+      // the one failure here nobody can debug from inside the browser tab,
+      // and the tab is closed by the time they think to ask. The code is
+      // withheld — it is a credential, and it is not what went wrong.
+      const report = (outcome: string): void => {
+        const shown = [...url.searchParams].filter(([k]) => k !== 'code').map(([k, v]) => `${k}=${v}`);
+        opts.onLog?.(`[mcp] sign-in ${outcome}${shown.length ? ` — ${shown.join(' ')}` : ''}`);
+      };
+
+      if (failed) {
+        report('refused');
+        return send(false, describeCallbackError(url.searchParams.get('error'), url.searchParams.get('error_description')));
+      }
+      if (!code || !state) {
+        report('returned no code');
+        return send(false, 'The authorization server returned no code.');
+      }
       try {
         const matched = await mcpLogins.complete(state, code);
+        report(matched ? 'completed' : 'had no login in progress');
         return send(matched, matched ? undefined : 'No sign-in is in progress. Start again from Settings.');
       } catch (err) {
-        return send(false, err instanceof Error ? err.message : String(err));
+        const detail = err instanceof Error ? err.message : String(err);
+        report(`failed to exchange the code — ${detail}`);
+        return send(false, detail);
       }
     }
 

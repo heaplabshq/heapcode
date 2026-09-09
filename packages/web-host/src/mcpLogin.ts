@@ -58,6 +58,21 @@ export function createMcpLoginRegistry(origin: () => string): McpLoginRegistry {
 /** Single source of truth for the redirect URI's path. */
 export const CALLBACK_PATH = '/oauth/callback';
 
+/**
+ * How an authorization server's refusal reads.
+ *
+ * Both halves, always. OAuth splits a failure into a machine-readable `error`
+ * and a human `error_description`, and servers are inconsistent about which
+ * carries the meaning: Notion answers `invalid_request` + "Auth code must be
+ * a valid UUID" in one case and a bare "Unknown error" in another. Showing
+ * only the description threw away the half that says what kind of failure it
+ * was — which is the half worth having when the other says nothing.
+ */
+export function describeCallbackError(error?: string | null, description?: string | null): string {
+  const parts = [description?.trim(), error?.trim() && `(${error.trim()})`].filter(Boolean);
+  return parts.join(' ') || 'The authorization server did not complete the sign-in.';
+}
+
 /** The page the browser lands on when a sign-in ends. */
 export function callbackPage(outcome: { ok: boolean; detail?: string }): string {
   const heading = outcome.ok ? 'Signed in' : 'Sign-in failed';

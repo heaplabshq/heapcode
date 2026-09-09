@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { callbackPage, CALLBACK_PATH, createMcpLoginRegistry } from '../src/mcpLogin.js';
+import { callbackPage, CALLBACK_PATH, createMcpLoginRegistry, describeCallbackError } from '../src/mcpLogin.js';
 
 describe('createMcpLoginRegistry', () => {
   it('points the callback at this server, not at the page that asked', () => {
@@ -45,5 +45,19 @@ describe('callbackPage', () => {
   it('says which way it went', () => {
     expect(callbackPage({ ok: true })).toContain('Signed in');
     expect(callbackPage({ ok: false })).toContain('Sign-in failed');
+  });
+});
+
+describe('describeCallbackError', () => {
+  it('keeps both halves, because either one alone can be the empty one', () => {
+    // Notion, on a bad code — the description carries it.
+    expect(describeCallbackError('invalid_request', 'Auth code must be a valid UUID')).toBe(
+      'Auth code must be a valid UUID (invalid_request)',
+    );
+    // Notion, on its own internal failure — the description says nothing, and
+    // the code is the only thing that distinguishes this from any other stop.
+    expect(describeCallbackError('server_error', 'Unknown error')).toBe('Unknown error (server_error)');
+    expect(describeCallbackError('access_denied', null)).toBe('(access_denied)');
+    expect(describeCallbackError(null, null)).toMatch(/did not complete/);
   });
 });

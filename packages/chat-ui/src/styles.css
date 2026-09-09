@@ -41,4 +41,9 @@
 .prov-snippet { color: var(--text-dim); font-size: 12px; }
 .prov-issues { margin: 0; padding: 0 12px 8px 30px; color: var(--warn, #a3411f); font-size: 13px; }
 .index-view { display: grid; gap: 10px; padding: 12px; justify-items: start; }
-.chat-tools { display: flex; gap: 6px; padding: 8px 20px 0; }
+
+/* An icon-only `chat-tool`. web-ui's has a label beside the glyph, so its
+   horizontal padding is sized for text; without one the button reads as
+   lopsided and too wide. Squared off here rather than changed there, because
+   Heap Code's button still has its label. */
+.chat-tool-icon { padding: 5px; gap: 5px; }

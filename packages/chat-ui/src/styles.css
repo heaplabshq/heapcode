@@ -62,23 +62,3 @@
 .memory-list li:hover { background: var(--panel); }
 .memory-date { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .memory-forget { padding: 3px 9px; font-size: 12px; }
-
-/* ---- folder picker ----
-   The dialog shell (`modal-scrim`, `modal`, `modal-head`) is web-ui's. Only
-   the list inside it is this product's. */
-.picker-recent h3 { font-size: 11px; color: var(--text-dim); margin: 0 0 4px; font-weight: 560; }
-.picker-path { font-family: var(--mono); font-size: 11px; color: var(--text-dim); overflow-wrap: anywhere; padding: 0 16px; }
-.picker-list { overflow-y: auto; display: flex; flex-direction: column; gap: 1px; min-height: 140px; padding: 4px 12px; }
-.picker-recent { padding: 0 16px; }
-.picker-row {
-  text-align: left;
-  border: 0;
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-  padding: 6px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.picker-row:hover { background: var(--hover); }

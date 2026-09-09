@@ -1,9 +1,15 @@
 import type {
+  UiBrowseFoldersResult,
+  UiConnectionModelsResult,
   UiConversationMeta,
   UiEventParams,
-  UiFolderEntry,
   UiMessage,
-  UiRecentWorkspace,
+  UiProbeProviderParams,
+  UiProbeProviderResult,
+  UiSaveProfileParams,
+  UiSetRoleParams,
+  UiSettings,
+  UiWorkspacesResult,
 } from '@heapcode/web-host/protocol';
 
 /**
@@ -46,6 +52,18 @@ export const CHAT_METHODS = {
   /** What the assistant has been told to remember about this person. */
   memory: 'chat/memory',
   forget: 'chat/forget',
+
+  // settings — the same surface Heap Code's dialog drives, because the things
+  // it edits (connections, the model role table, web search) are global
+  // config shared by both products. A second, smaller settings screen would
+  // have meant two places to add a provider.
+  saveProfile: 'chat/saveProfile',
+  deleteProfile: 'chat/deleteProfile',
+  useProfile: 'chat/useProfile',
+  setRole: 'chat/setRole',
+  listConnectionModels: 'chat/listConnectionModels',
+  probeProvider: 'chat/probeProvider',
+  setWebSearch: 'chat/setWebSearch',
 
   // host → browser (requests)
   askUser: 'chat/askUser',
@@ -151,17 +169,9 @@ export interface ChatBrowseFoldersParams {
   path?: string;
 }
 
-export interface ChatBrowseFoldersResult {
-  path: string;
-  parent?: string;
-  entries: UiFolderEntry[];
-}
-
-export interface ChatRecentFoldersResult {
-  current: string;
-  recent: UiRecentWorkspace[];
-  home: string;
-}
+/** Identical to Heap Code's, so `WorkspacePicker` drives both unchanged. */
+export type ChatBrowseFoldersResult = UiBrowseFoldersResult;
+export type ChatRecentFoldersResult = UiWorkspacesResult;
 
 export interface ChatSetFolderParams {
   path: string;
@@ -192,12 +202,16 @@ export interface ChatIndexStatus {
   missingParsers?: string[];
 }
 
-export interface ChatSettings {
-  profiles: Array<{ name: string; model: string; hasKey: boolean; baseUrl?: string; preset?: string }>;
-  activeProfile: string;
-  webSearch: boolean;
-  embeddingsConfigured: boolean;
-}
+/**
+ * The same settings payload Heap Code sends.
+ *
+ * Not a narrower shape of its own: the dialog that renders it is
+ * `@heapcode/web-ui`'s, and a second shape would have meant a second dialog.
+ * The fields this product has no concept of — personas, permission mode,
+ * sub-agents, MCP servers, permission grants — are sent empty, and the pages
+ * that would show them are not offered.
+ */
+export type ChatSettings = UiSettings;
 
 export interface ChatMemoryResult {
   entries: Array<{ id: string; text: string; at: string }>;
@@ -219,4 +233,13 @@ export interface ChatAskUserResult {
   answer: string;
 }
 
-export type { UiConversationMeta as ChatConversationMeta, UiEventParams as ChatEventParams, UiMessage as ChatMessageEntry };
+export type {
+  UiConversationMeta as ChatConversationMeta,
+  UiEventParams as ChatEventParams,
+  UiMessage as ChatMessageEntry,
+  UiConnectionModelsResult as ChatConnectionModelsResult,
+  UiProbeProviderParams as ChatProbeProviderParams,
+  UiProbeProviderResult as ChatProbeProviderResult,
+  UiSaveProfileParams as ChatSaveProfileParams,
+  UiSetRoleParams as ChatSetRoleParams,
+};

@@ -6,8 +6,11 @@ import {
   ASK_USER_NO_ANSWER,
   DEFAULT_MAX_ITERATIONS,
   METHODS,
+  SEARCH_PRESETS,
   WEB_SEARCH_SECRET_NAME,
   askUserAnswerMessage,
+  describeRole,
+  providerPresets,
   resolveCapabilities,
   type AgentEvent,
   type AgentEventParams,
@@ -36,6 +39,7 @@ import {
   canonicalize,
   chatMemoryFile,
   createContextWindowResolver,
+  profileContextWindow,
   projectStateDir,
   trimHistoryForAgent,
   type ConfigStore,
@@ -43,6 +47,7 @@ import {
 } from '@heapcode/host';
 import {
   acceptImages,
+  mergeProfile,
   clipArgs,
   describeCall,
   listFolders,
@@ -51,6 +56,7 @@ import {
   type HostSession,
   type WorkspaceStore,
 } from '@heapcode/web-host';
+import { UI_MODEL_ROLES } from '@heapcode/web-host/protocol';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
 import {
   IMAGE_MAX_BYTES,
@@ -74,9 +80,14 @@ import { ChatMemory, memorySection } from './memory.js';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from './protocol.js';
 import type {
   ChatAskUserParams,
+  ChatConnectionModelsResult,
   ChatForgetParams,
   ChatGroundingParams,
   ChatMemoryResult,
+  ChatProbeProviderParams,
+  ChatProbeProviderResult,
+  ChatSaveProfileParams,
+  ChatSetRoleParams,
   ChatAskUserResult,
   ChatBrowseFoldersParams,
   ChatBrowseFoldersResult,
@@ -361,6 +372,19 @@ export class ChatSession implements HostSession {
       .catch(() => {});
   }
 
+  /**
+   * Tear the daemon link down and build it again.
+   *
+   * The profile and the role table cross once, at hello, and the daemon reads
+   * its own copy from then on — so a settings change that does not reconnect
+   * leaves the run using the values from before the edit.
+   */
+  private async reconnect(): Promise<void> {
+    this.connection?.close();
+    this.connection = undefined;
+    await this.start();
+  }
+
   private async warmContextWindow(): Promise<void> {
     if (!this.profile) return;
     await this.contextWindowFor.resolve(this.profile, this.model).catch(() => undefined);
@@ -469,6 +493,91 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.indexStatus, async (): Promise<ChatIndexStatus> => this.indexStatus());
 
+    // ---- settings ----
+    //
+    // The same edits Heap Code's dialog makes, against the same global store.
+    // Deliberately not a reduced set: a connection added here has to be the
+    // connection the other product sees, because there is one config file and
+    // one role table.
+
+    ui.onRequest(CHAT_METHODS.saveProfile, async (raw) => {
+      const { profile, apiKey } = raw as ChatSaveProfileParams;
+      const next = mergeProfile(await this.deps.config.getProfile(profile.name), profile);
+      await this.deps.config.saveProfile(next);
+      if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
+      if (profile.name === this.profile?.name) {
+        this.profile = (await this.deps.config.getProfile(profile.name)) ?? next;
+        // The daemon was handed the profile once, at hello, and reads its own
+        // copy for the rest of the session — so an edit that is not followed
+        // by a reconnect runs the profile as it was before the edit, with
+        // nothing anywhere saying so.
+        await this.reconnect();
+      }
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(CHAT_METHODS.deleteProfile, async (raw) => {
+      const { name } = raw as { name: string };
+      await this.deps.config.deleteProfile(name);
+      await this.deps.secrets.deleteApiKey(name).catch(() => undefined);
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(CHAT_METHODS.useProfile, async (raw) => {
+      const { name } = raw as { name: string };
+      await this.deps.config.setActiveProfile(name);
+      this.profile = (await this.deps.config.getActiveProfile()) ?? this.profile;
+      this.modelOverride = undefined;
+      await this.reconnect();
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(CHAT_METHODS.setRole, async (raw) => {
+      const { role, assignment } = raw as ChatSetRoleParams;
+      if (role === 'chat') {
+        if (!assignment) throw new Error('Chat is what the other roles inherit from, so it cannot be cleared.');
+        await this.deps.config.setChatModel(assignment.connection, assignment.model);
+        this.profile = (await this.deps.config.getActiveProfile()) ?? this.profile;
+        this.modelOverride = undefined;
+      } else {
+        await this.deps.config.setRole(role, assignment);
+      }
+      this.chatModel = (await this.deps.config.resolve('chat'))?.model ?? this.profile?.model ?? '';
+      // The table crossed once, at hello; reconnecting is the only way to
+      // replace it. An embeddings reassignment also has to reach the index.
+      await this.reconnect();
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(CHAT_METHODS.listConnectionModels, async (raw): Promise<ChatConnectionModelsResult> => {
+      const { connection } = raw as { connection: string };
+      const res = await this.connection!.peer
+        .request<{ models: ModelInfo[] }>(METHODS.listModels, { profileName: connection })
+        .catch(() => ({ models: [] as ModelInfo[] }));
+      return { models: res.models.map((m) => m.id) };
+    });
+
+    ui.onRequest(CHAT_METHODS.probeProvider, async (raw): Promise<ChatProbeProviderResult> => {
+      const params = raw as ChatProbeProviderParams;
+      return this.connection!.peer.request<ChatProbeProviderResult>(METHODS.listModels, {
+        probe: { baseUrl: params.baseUrl, apiKey: params.apiKey, preset: params.preset },
+      });
+    });
+
+    ui.onRequest(CHAT_METHODS.setWebSearch, async (raw) => {
+      const { provider, enabled, apiKey } = raw as { provider?: string; enabled?: boolean; apiKey?: string };
+      if (apiKey !== undefined) await this.deps.secrets.setApiKey(WEB_SEARCH_SECRET_NAME, apiKey);
+      const patch: Record<string, unknown> = {};
+      if (provider !== undefined) patch.provider = provider;
+      if (enabled !== undefined) patch.enabled = enabled;
+      if (Object.keys(patch).length) await this.deps.config.saveWebSearch(patch);
+      return null;
+    });
+
     ui.onRequest(CHAT_METHODS.memory, async (): Promise<ChatMemoryResult> => ({
       entries: await this.memory.list(),
     }));
@@ -521,23 +630,64 @@ export class ChatSession implements HostSession {
       .catch(() => {});
   }
 
+  /**
+   * The same payload Heap Code's settings dialog reads, built from the same
+   * global config — because connections, the model role table and web search
+   * ARE the same config. Adding a provider in one product must show up in the
+   * other, and it does, because there is only one store.
+   *
+   * The fields this product has no concept of are sent empty rather than
+   * faked: no personas, no permission mode, no sub-agents, no MCP servers, no
+   * permission grants. The dialog is told not to offer those pages.
+   */
   private async settings(): Promise<ChatSettings> {
     const cfg = await this.deps.config.load();
-    const profiles = await this.deps.config.listProfiles().catch(() => []);
-    const embeddings = await this.deps.config.resolve('embeddings').catch(() => undefined);
+    const modelConfig = await this.deps.config.modelConfig();
+    const profiles = await Promise.all(
+      (await this.deps.config.listProfiles()).map(async (p) => ({
+        name: p.name,
+        preset: p.preset,
+        baseUrl: p.baseUrl,
+        model: p.model,
+        temperature: p.temperature,
+        hasKey: Boolean(await this.deps.secrets.getApiKey(p.name).catch(() => undefined)),
+        active: p.name === this.profile?.name,
+        nativeToolCalls: resolveCapabilities(p).nativeToolCalls,
+        contextWindow: p.contextWindow,
+        effectiveContextWindow: profileContextWindow(p),
+        maxTokens: p.maxTokens,
+        promptTier: p.promptTier,
+      })),
+    );
     return {
-      profiles: await Promise.all(
-        profiles.map(async (p) => ({
-          name: p.name,
-          model: p.model,
-          baseUrl: p.baseUrl,
-          preset: p.preset,
-          hasKey: Boolean(await this.deps.secrets.getApiKey(p.name).catch(() => undefined)),
-        })),
-      ),
-      activeProfile: this.profile?.name ?? '',
-      webSearch: Boolean(cfg.webSearch?.enabled),
-      embeddingsConfigured: Boolean(embeddings?.model),
+      personas: [],
+      persona: '',
+      permissionMode: '',
+      subAgents: false,
+      nativeToolCalls: this.profile ? resolveCapabilities(this.profile).nativeToolCalls : true,
+      profiles,
+      roles: UI_MODEL_ROLES.map((role) => ({
+        role: role.key,
+        connection: modelConfig.roles[role.key]?.connection,
+        model: modelConfig.roles[role.key]?.model,
+        summary: describeRole(modelConfig, role.key),
+      })),
+      presets: providerPresets.map((p) => ({
+        id: p.id,
+        label: p.label,
+        defaultBaseUrl: p.defaultBaseUrl,
+        requiresApiKey: p.requiresApiKey,
+        local: p.local,
+        apiKeyUrl: p.apiKeyUrl,
+      })),
+      webSearch: {
+        providers: [...SEARCH_PRESETS],
+        provider: cfg.webSearch?.provider,
+        enabled: cfg.webSearch?.enabled ?? Boolean(cfg.webSearch?.provider),
+        hasKey: Boolean(await this.deps.secrets.getApiKey(WEB_SEARCH_SECRET_NAME).catch(() => undefined)),
+      },
+      mcpServers: [],
+      permissionGrants: [],
     };
   }
 

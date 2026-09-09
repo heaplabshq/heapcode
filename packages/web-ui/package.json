@@ -40,6 +40,18 @@
     "./components/ProductToggle": {
       "types": "./src/components/ProductToggle.tsx",
       "default": "./src/components/ProductToggle.tsx"
+    },
+    "./components/Settings": {
+      "types": "./src/components/Settings.tsx",
+      "default": "./src/components/Settings.tsx"
+    },
+    "./components/WorkspacePicker": {
+      "types": "./src/components/WorkspacePicker.tsx",
+      "default": "./src/components/WorkspacePicker.tsx"
+    },
+    "./components/ModelPicker": {
+      "types": "./src/components/ModelPicker.tsx",
+      "default": "./src/components/ModelPicker.tsx"
     }
   },
   "scripts": {

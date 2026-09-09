@@ -49,6 +49,15 @@ export interface SettingsProps {
   /** Lazy, because both read files: only fetched when their page is opened. */
   loadSkills?(): Promise<string>;
   loadMemory?(): Promise<string>;
+  /**
+   * Which pages this product offers. Omitted, all of them — Heap Code.
+   *
+   * Heap Chat shares this dialog because what it edits (connections, the
+   * model role table, web search) is the same global config; it has no
+   * personas, permission grants, MCP servers or project instructions, and a
+   * page that renders an empty section is worse than one that is not there.
+   */
+  pages?: readonly string[];
 }
 
 export interface UiProfileDraft {
@@ -143,13 +152,16 @@ export function Settings(props: SettingsProps): JSX.Element {
   const s = props.settings;
   // `/context` and the context meter both land on the profile editor, which is
   // where the window size actually lives.
-  const [page, setPage] = useState<PageId>(props.focus === 'context' ? 'providers' : 'general');
+  const available = props.pages ? PAGES.filter((p) => props.pages!.includes(p.id)) : PAGES;
+  const [page, setPage] = useState<PageId>(
+    props.focus === 'context' ? 'providers' : (available[0]?.id ?? 'general'),
+  );
   const [query, setQuery] = useState('');
 
   const q = query.trim().toLowerCase();
   const shown = q
-    ? PAGES.filter((p) => `${p.label} ${p.keywords}`.toLowerCase().includes(q))
-    : PAGES;
+    ? available.filter((p) => `${p.label} ${p.keywords}`.toLowerCase().includes(q))
+    : available;
   const groups = ['General', 'Workspace'] as const;
   const dialog = useRef<HTMLDivElement>(null);
   useModal(dialog, props.onClose);
@@ -198,7 +210,7 @@ export function Settings(props: SettingsProps): JSX.Element {
 
         <div className="settings-pane">
           <div className="settings-pane-head">
-            <h2>{PAGES.find((p) => p.id === page)?.label}</h2>
+            <h2>{available.find((p) => p.id === page)?.label}</h2>
             <button className="icon-btn" onClick={props.onClose} aria-label="Close settings">
               ✕
             </button>

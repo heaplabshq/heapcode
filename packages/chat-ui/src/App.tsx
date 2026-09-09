@@ -13,6 +13,9 @@ import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
 import { ProductToggle } from '@heapcode/web-ui/components/ProductToggle';
+import { Settings } from '@heapcode/web-ui/components/Settings';
+import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
+import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from '@heapcode/chat-host/protocol';
 import type {
   ChatAskUserParams,
@@ -25,9 +28,9 @@ import type {
   ChatMemoryResult,
   ChatRecentFoldersResult,
   ChatSendMessageResult,
+  ChatSettings,
   ChatState,
 } from '@heapcode/chat-host/protocol';
-import { FolderPicker } from './components/FolderPicker.js';
 import { GroundingBadge } from './components/GroundingBadge.js';
 import { MemoryPanel } from './components/MemoryPanel.js';
 
@@ -78,7 +81,8 @@ export function App(): JSX.Element {
   const [index, setIndex] = useState<ChatIndexStatus>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const [picking, setPicking] = useState(false);
+  const [settings, setSettings] = useState<ChatSettings>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [ask, setAsk] = useState<Pending>();
   const [grounding, setGrounding] = useState<ChatGroundingParams['grounding']>();
@@ -157,6 +161,24 @@ export function App(): JSX.Element {
 
   const busy = Boolean(state?.runId);
 
+  /** Re-read after every edit, so the dialog shows what was actually saved. */
+  const refreshSettings = useCallback(() => {
+    client.request<ChatSettings>(CHAT_METHODS.settings).then(setSettings).catch(() => undefined);
+  }, [client]);
+
+  const openSettings = (): void => {
+    refreshSettings();
+    setSettingsOpen(true);
+  };
+
+  /** Every settings mutation: send it, then re-read. */
+  const edit = (method: string, params?: unknown): void => {
+    client
+      .request(method, params)
+      .then(refreshSettings)
+      .catch((e: Error) => setError(e.message));
+  };
+
   const send = (text: string): void => {
     const id = crypto.randomUUID();
     runId.current = id;
@@ -201,18 +223,13 @@ export function App(): JSX.Element {
       .catch((e: Error) => setError(e.message));
   };
 
-  const chooseFolder = (path: string): void => {
-    setPicking(false);
-    client
-      .request<{ state: ChatState }>(CHAT_METHODS.setFolder, { path })
-      .then((r) => {
-        setState(r.state);
-        setTranscript(emptyTranscript);
-        setGrounding(undefined);
-        refreshConversations();
-        refreshIndex();
-      })
-      .catch((e: Error) => setError(e.message));
+  const chooseFolder = async (path: string): Promise<void> => {
+    const r = await client.request<{ state: ChatState }>(CHAT_METHODS.setFolder, { path });
+    setState(r.state);
+    setTranscript(emptyTranscript);
+    setGrounding(undefined);
+    refreshConversations();
+    refreshIndex();
   };
 
   return (
@@ -239,7 +256,8 @@ export function App(): JSX.Element {
           // No artifacts and no command palette here: neither exists in this
           // product, and a rail row that opens nothing is worse than its
           // absence.
-          onOpenSettings={() => setShowMemory(true)}
+          onOpenSettings={openSettings}
+          extraNav={<MemoryRailItem collapsed={railCollapsed} onClick={() => setShowMemory(true)} />}
         />
 
         <main className="chat">
@@ -314,25 +332,41 @@ export function App(): JSX.Element {
             disabled={status !== 'open'}
             footer={
               <>
-                {/* Same classes as Heap Code's workspace picker, so the two
-                    composer bars sit at the same height with the same weight. */}
-                <button
-                  className="btn picker-btn"
-                  onClick={() => setPicking(true)}
-                  disabled={busy}
-                  title={state?.folder ?? 'Choose a folder'}
-                >
-                  <IconFolder />
-                  <span className="picker-value">{state?.folderName ?? 'no folder'}</span>
-                </button>
+                {/* Heap Code's own picker and model switcher, not lookalikes:
+                    the folder chip on the left and the model on the right sit
+                    exactly where they do in the other product. What is between
+                    them differs — Heap Code has a permission mode there, and
+                    this roster has nothing to gate — so the slot carries the
+                    index state instead, which is the thing worth knowing here. */}
+                <WorkspacePicker
+                  current={state?.folder ?? ''}
+                  busy={busy}
+                  loadWorkspaces={() => client.request<ChatRecentFoldersResult>(CHAT_METHODS.recentFolders)}
+                  browse={(path) => client.request<ChatBrowseFoldersResult>(CHAT_METHODS.browseFolders, { path })}
+                  onPick={chooseFolder}
+                />
+
+                <span className="bar-select" aria-live="polite">
+                  {index?.state === 'indexing' && index.progress
+                    ? `indexing ${index.progress.embedded}/${index.progress.total}`
+                    : index?.files
+                      ? `${index.files} files searchable`
+                      : ''}
+                </span>
+
                 <span className="composer-bar-right">
-                  <span className="bar-select" aria-live="polite">
-                    {index?.state === 'indexing' && index.progress
-                      ? `indexing ${index.progress.embedded}/${index.progress.total}`
-                      : index?.files
-                        ? `${index.files} files searchable`
-                        : ''}
-                  </span>
+                  <ModelPicker
+                    current={state?.model ?? ''}
+                    placement="up"
+                    listModels={() =>
+                      client
+                        .request<{ models: Array<{ id: string }> }>(CHAT_METHODS.listModels)
+                        .then((r) => r.models)
+                    }
+                    onPick={(model) => {
+                      void client.request(CHAT_METHODS.setModel, { model }).catch(() => undefined);
+                    }}
+                  />
                 </span>
               </>
             }
@@ -348,22 +382,64 @@ export function App(): JSX.Element {
         />
       ) : null}
 
-      {picking ? (
-        <FolderPicker
-          browse={(path) => client.request<ChatBrowseFoldersResult>(CHAT_METHODS.browseFolders, { path })}
-          recent={() => client.request<ChatRecentFoldersResult>(CHAT_METHODS.recentFolders)}
-          onChoose={chooseFolder}
-          onClose={() => setPicking(false)}
+      {settingsOpen ? (
+        <Settings
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          // Only the pages whose subject is genuinely shared config. The rest
+          // are Heap Code's: personas, permissions, MCP, skills — and Memory,
+          // which there means the project instructions in HEAPCODE.md. This
+          // product's memory is about the person, not the folder, so it gets
+          // its own rail row rather than a page whose description would be
+          // false here.
+          pages={['providers', 'search']}
+          onSaveProfile={(profile, apiKey) => edit(CHAT_METHODS.saveProfile, { profile, apiKey })}
+          onDeleteProfile={(name) => edit(CHAT_METHODS.deleteProfile, { name })}
+          onUseProfile={(name) => edit(CHAT_METHODS.useProfile, { name })}
+          onSetRole={(role, assignment) => edit(CHAT_METHODS.setRole, { role, assignment })}
+          onSetWebSearch={(patch) => edit(CHAT_METHODS.setWebSearch, patch)}
+          listConnectionModels={(connection) =>
+            client
+              .request<{ models: string[] }>(CHAT_METHODS.listConnectionModels, { connection })
+              .then((r) => r.models)
+          }
+          listModels={(profileName) =>
+            client
+              .request<{ models: Array<{ id: string }> }>(CHAT_METHODS.listModels, { profileName })
+              .then((r) => r.models.map((m) => m.id))
+          }
+          probeProvider={(params) => client.request(CHAT_METHODS.probeProvider, params)}
+          // Not offered on these pages, but required by the props: no persona,
+          // no sub-agents, no permission grants, no MCP servers here.
+          onSetPersona={() => {}}
+          onToggleSubAgents={() => {}}
+          onToggleNativeTools={() => {}}
+          onResetPermissions={() => {}}
+          onSaveMcpServer={() => {}}
+          onDeleteMcpServer={() => {}}
         />
       ) : null}
     </div>
   );
 }
 
-function IconFolder(): JSX.Element {
+/** A rail row for memory, drawn like the rest of them. */
+function MemoryRailItem({ collapsed, onClick }: { collapsed: boolean; onClick: () => void }): JSX.Element {
   return (
-    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
-      <path d="M2 4.2A1.2 1.2 0 0 1 3.2 3h2.5l1.2 1.5h5.9A1.2 1.2 0 0 1 14 5.7v6.1A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8z" strokeLinejoin="round" />
+    <button className="rail-item" onClick={onClick} title="What I remember about you">
+      <span className="rail-icon" aria-hidden="true">
+        <IconBook />
+      </span>
+      {!collapsed && <span className="rail-label">Memory</span>}
+    </button>
+  );
+}
+
+function IconBook(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
+      <path d="M3 3.5h4.2c.7 0 1.3.6 1.3 1.3V13a1 1 0 0 0-1-1H3z" strokeLinejoin="round" />
+      <path d="M13 3.5H8.8c-.7 0-1.3.6-1.3 1.3V13a1 1 0 0 1 1-1H13z" strokeLinejoin="round" />
     </svg>
   );
 }

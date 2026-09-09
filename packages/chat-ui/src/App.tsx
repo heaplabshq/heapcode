@@ -227,7 +227,11 @@ export function App(): JSX.Element {
   };
 
   const cancel = (): void => {
-    client.notify(CHAT_METHODS.cancel, { runId: runId.current ?? '' });
+    // A request, not a notification. The host registers `chat/cancel` as a
+    // request handler, and RpcPeer routes notifications only to notification
+    // handlers (rpc.ts:155) — so a notify here reached nothing at all, and
+    // Stop did not stop anything.
+    void client.request(CHAT_METHODS.cancel, {}).catch(() => undefined);
   };
 
   const newConversation = (): void => {

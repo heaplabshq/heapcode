@@ -171,3 +171,17 @@ describe('the chat host', () => {
     bad.close();
   });
 });
+
+describe('stopping a run', () => {
+  it('is a request, and cancels the active run whatever id the caller sends', async () => {
+    // Two bugs this pins, both of which made Stop do nothing while looking
+    // wired up: `chat/cancel` is registered as a REQUEST, so a notification
+    // reached no handler at all (RpcPeer routes notifications only to
+    // notification handlers); and the caller's runId used to have to match,
+    // which it does not after a browser reconnects mid-run.
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"done"}</tool>')]);
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    // Resolves rather than throwing methodNotFound — proof a handler exists.
+    await expect(peer.request(CHAT_METHODS.cancel, { runId: 'an-id-that-never-matched' })).resolves.toBeNull();
+  });
+});

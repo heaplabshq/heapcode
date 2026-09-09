@@ -110,7 +110,6 @@ import type {
   ChatAskUserResult,
   ChatBrowseFoldersParams,
   ChatBrowseFoldersResult,
-  ChatCancelParams,
   ChatConversationMeta,
   ChatHelloParams,
   ChatHelloResult,
@@ -470,11 +469,8 @@ export class ChatSession implements HostSession {
       return this.send(text, runId, acceptImages(images));
     });
 
-    ui.onRequest(CHAT_METHODS.cancel, async (raw) => {
-      const { runId } = raw as ChatCancelParams;
-      if (runId && runId !== this.activeRunId) return null;
-      this.abort?.abort();
-      await this.connection?.peer.request(METHODS.agentCancel, { runId: this.activeRunId }).catch(() => undefined);
+    ui.onRequest(CHAT_METHODS.cancel, async () => {
+      await this.cancel();
       return null;
     });
 
@@ -934,6 +930,29 @@ export class ChatSession implements HostSession {
       this.buffers.delete(runId);
       void this.pushState();
     }
+  }
+
+  /**
+   * Stop whatever is running.
+   *
+   * Three things here are deliberate, and all three were wrong first time —
+   * `WebSession.cancel` documents the same lessons, having hit them already:
+   *
+   * - The caller's runId is **ignored**. A browser that reconnected mid-run
+   *   sends an id that no longer matches, and the click silently did nothing.
+   *   There is one run per session, so "the active one" is unambiguous.
+   * - `agent/cancel` is a **notification**, not a request: the daemon
+   *   registers it on the notification channel (server.ts:466). Sent as a
+   *   request it comes back `methodNotFound`, and a `.catch()` swallows that
+   *   — so Stop looks wired up and does nothing.
+   * - The local abort happens too, so `agent/run` settles even if the daemon
+   *   is wedged and never answers.
+   */
+  async cancel(): Promise<void> {
+    const target = this.activeRunId;
+    if (!target) return;
+    this.connection?.peer.notify(METHODS.agentCancel, { runId: target });
+    this.abort?.abort();
   }
 
   /** The prose of the answer just produced — what grounding is computed against. */

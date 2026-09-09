@@ -692,12 +692,13 @@ export class ChatSession implements HostSession {
     /**
      * Granted for anything on the roster, denied for anything else.
      *
-     * Every tool here reads, with one exception — `remember`, which is `write`
-     * class and writes to the assistant's own memory, never to the folder.
-     * That is not a prompt-worthy action: the person asked it to remember
-     * something, and a confirmation dialog for "shall I do the thing you just
-     * told me to do" is noise. Memory is reviewable and deletable in the
-     * sidebar instead, which is the control that actually helps.
+     * Nothing on this roster can destroy anything. `remember` is the only
+     * `write`, and what it writes is the assistant's own memory, never the
+     * folder — not a prompt-worthy action, since the person just asked for it,
+     * and the control that helps is the reviewable, deletable list in the
+     * sidebar. `web_search` and `fetch_url` are `execute` because reaching the
+     * network is its own risk; both are opt-in by configuration, and neither
+     * can change anything locally.
      *
      * The check is on the *name*, not on the class the daemon reports, so a
      * tool that reached this host without being on the roster is refused here

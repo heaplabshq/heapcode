@@ -215,9 +215,8 @@ neutral UI — with the smallest possible feature set.
       ergonomic win of the plan; heapchat maintaining its own was pure
       friction)
 - [x] Separate conversation history store
-- [ ] Tests: session lifecycle, tool-roster scoping, that the code roster is
-      not reachable from a chat session — **deferred to the end of the plan**
-      at the user's instruction (2026-09-09), not skipped
+- [x] Tests: session lifecycle, tool-roster scoping, that the code roster is
+      not reachable from a chat session
 
 **Exit criteria:** point it at `~/Documents`, ask a question about a `.md`
 file in it, get a streamed answer citing that file — and
@@ -244,8 +243,7 @@ currently cannot index the docs already sitting in repos.
 - [x] Chunking strategy for prose. The AST chunker is code-shaped; decide
       whether prose gets the line-window fallback or its own chunker, and
       record the choice
-- [ ] Tests per extractor, incl. a malformed/encrypted file per type —
-      **deferred with the rest of the testing to the end of the plan**
+- [x] Tests per extractor, incl. a malformed/encrypted file per type
 
 **Exit criteria:** ask a question whose answer is only in a PDF, get a cited
 answer. `heapcode web` indexing behavior on a code repo is byte-identical to
@@ -441,6 +439,7 @@ Do not resolve these by picking a default — ask.
 | 2026-09-09 | Provider connections and the model role table are shared between products; conversation history and memory are not | One keychain entry and one Ollama config is the biggest ergonomic win available. But code sessions in a documents chat list, or project memory mixed with personal memory, would be actively wrong in both directions |
 | 2026-09-09 | Document extensions are a separate set from `CODE_EXTENSIONS`, behind an extractor seam | Heap Code's index policy is deliberate; widening it in place would change Heap Code's behavior as a side effect of chat work |
 | 2026-09-09 | `heapcode web` continues to land directly in code mode; the product switcher lives inside the app | The primary product's primary path must not gain a click |
+| 2026-09-09 | Heap Chat writes its own tool *descriptions*, reusing only core's schema and permission class | Core's prose is written for a coding agent and names tools this roster does not have — `read_file` explains what to do after `edit_file`, `list_dir` recommends `repo_map`, `fetch_url` mentions `run_command`. The integration test found five of them in the system prompt of a product whose own prompt says it has nothing that changes anything. Schemas stay shared, because those must not drift from the executor |
 | 2026-09-09 | The recap guard raises the compaction budget rather than skipping compaction | A request about a conversation is exactly the case where the transcript is long; skipping outright would overflow the window instead of protecting the answer. ×4, so an ordinary conversation is never compacted before being recapped |
 | 2026-09-09 | heapchat's sticky per-session summary cache was NOT ported | It caches across turns of one conversation; `runAgent` rebuilds `messages` per run from persisted history, so there is nothing for it to attach to. The plan assumed it would port and it does not — recorded rather than forced |
 | 2026-09-09 | Personal memory is its own JSON store at `~/.heapcode/chat-memory.json`, global rather than per folder | Project memory is about a repo and is committed beside it; this is about the person and should follow them between folders. Mixing them puts dietary preferences into a repo's shared notes, or build quirks into a conversation about a tenancy agreement. JSON rather than markdown because entries are deleted individually |

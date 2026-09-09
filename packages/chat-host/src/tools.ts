@@ -10,9 +10,15 @@ import { sharedAgentTools, type ToolDefinition } from '@heapcode/core';
  * is silent in the direction that matters — a knowledge assistant quietly
  * gaining `run_command`.
  *
- * Reusing the *definitions* from core is fine and deliberate; a second
- * description of `read_file` would drift from the executor that runs it.
- * What must not be shared is the decision about which ones are on the list.
+ * The **schema and permission class** come from core, because those must not
+ * drift from the executor that runs the call. The **description does not**,
+ * and an earlier version of this file was wrong to reuse it. Core's prose is
+ * written for a coding agent and names tools this roster does not have:
+ * `read_file` explains what to do after `edit_file`, `list_dir` recommends
+ * `repo_map`, `search` recommends `multi_edit`, `fetch_url` mentions
+ * `run_command`. An integration test caught it in the system prompt — the
+ * model was being told about five tools it could not call, in a product whose
+ * own prompt says it has nothing that changes anything.
  *
  * Deliberately absent, and not oversights: every write, edit, delete and
  * rename tool, `run_command`, `run_tests`, `repo_map`, `get_symbols`,
@@ -51,22 +57,57 @@ export const REMEMBER_TOOL: ToolDefinition = {
   permission: 'write',
 };
 
+/** Core's definition with prose written for this product instead of for a codebase. */
+function described(tool: ToolDefinition, description: string): ToolDefinition {
+  return { ...tool, description };
+}
+
 export const chatToolDefinitions: ToolDefinition[] = [
-  sharedAgentTools.read_file,
+  described(
+    sharedAgentTools.read_file,
+    'Read a file, or a line range of it. Returns its content with line numbers. PDFs, Word documents ' +
+      'and photos are converted to text first, so this is how you read those too — a photo comes back ' +
+      'as a description of what it shows. Read the part you need: when you know roughly where ' +
+      'something is, a range beats the whole file.',
+  ),
   // Added after C4: "is there a receipt photo in this folder?" is not
   // answerable without being able to look. The roster's five had no way to
   // enumerate anything, so the model fell back to `search` with a pattern of
   // "." and reasoned about whatever that happened to match — which for a PNG
   // is nothing, so it concluded the photo did not exist.
-  sharedAgentTools.list_dir,
-  sharedAgentTools.search,
-  sharedAgentTools.semantic_search,
+  described(
+    sharedAgentTools.list_dir,
+    'List the files and folders at a path inside this folder (not recursive). Use it to see what is ' +
+      'actually here — especially before saying something is not, since a search cannot see inside ' +
+      'PDFs, documents or photos.',
+  ),
+  described(
+    sharedAgentTools.search,
+    'Search file contents with a regular expression. Returns file:line matches with a little context ' +
+      'around each. Good for an exact string — an invoice number, a surname, a date. It reads raw ' +
+      'bytes, so it cannot see inside a PDF, a Word document or a photo; use semantic_search for those.',
+  ),
+  described(
+    sharedAgentTools.semantic_search,
+    'Search this folder by meaning rather than by exact wording — "what did I agree about the ' +
+      'deposit". Reaches the contents of PDFs, Word documents and photos as well as plain text, which ' +
+      'a regex search cannot. Use it whenever the question is about what something says rather than ' +
+      'what it is called.',
+  ),
   // Always offered, executed only when configured — the same posture Heap Code
   // takes. A model that cannot see the tool has no way to know web search is a
   // concept here, and one that cannot see it will claim it searched anyway.
-  sharedAgentTools.web_search,
-  sharedAgentTools.fetch_url,
-  // Not a sixth capability over the folder — it is how the run talks back.
+  described(
+    sharedAgentTools.web_search,
+    'Search the web. Only for questions the files cannot answer — check this folder first, and say ' +
+      'plainly when an answer came from the web rather than from the person\'s own documents.',
+  ),
+  described(
+    sharedAgentTools.fetch_url,
+    'Fetch a web page and read it as text. Use it when the person gives you a link, or to read a page ' +
+      'a web search turned up. One good page beats another five searches.',
+  ),
+  // Not a further capability over the folder — it is how the run talks back.
   // The plan's C0 named five tools; this one earns its place because the
   // loop gates `askToContinueAtLimit` on the roster containing `ask_user`
   // (agent/loop.ts:951), so without it both that and `chat/askUser` are

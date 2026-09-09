@@ -18,8 +18,13 @@
  * verbatim first.
  */
 
+/**
+ * heapchat's pattern, widened in one place: it required "did" or "have"
+ * before "we", so the very ordinary "remind me what we said" did not match.
+ * Both are optional now, and "said" joined the verbs.
+ */
 const RECAP_INTENT =
-  /\b(summari[sz]e|summary|recap|tl;?dr|(?:take|taking|make|making|jot|write)\s+(?:down\s+|a\s+|some\s+)*notes?|minutes?|action items?|key points?|takeaways?|what (?:did|have) we (?:discuss|cover|talk|decide|say)|so far|this (?:chat|conversation|thread|discussion))\b/i;
+  /\b(summari[sz]e|summary|recap|tl;?dr|(?:take|taking|make|making|jot|write)\s+(?:down\s+|a\s+|some\s+)*notes?|minutes?|action items?|key points?|takeaways?|what (?:did |have )?we (?:discuss|cover|talk|decide|say|said)|so far|this (?:chat|conversation|thread|discussion))\b/i;
 
 /** Whether this task is asking about the conversation itself. */
 export function wantsConversationRecap(text: string | undefined): boolean {

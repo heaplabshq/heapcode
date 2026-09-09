@@ -429,6 +429,11 @@ body {
   display: block;
 }
 
+/* A long unbroken run — a URL, a hash, a chain of figures — is one word, and
+   one word wider than the pane used to scroll the whole page sideways. Code
+   blocks and tables are unaffected: both set their own `overflow-x: auto`, and
+   `white-space: pre` offers no wrap for this to act on. */
+.msg-body, .bubble { overflow-wrap: anywhere; }
 .msg-body > *:first-child { margin-top: 0; }
 .msg-body > *:last-child { margin-bottom: 0; }
 .msg-body pre {
@@ -607,6 +612,15 @@ body {
   white-space: pre-wrap; color: var(--text-dim);
   border-left: 2px solid var(--border); padding-left: 10px;
   margin: 4px 0 0; font-size: 12.5px;
+  /* `pre-wrap` breaks at whitespace, and a model working through arithmetic
+     writes lines that have none — "13,051+62,093+43,687+…" is one word to a
+     text layout engine. Without this it ran off the right of the viewport and
+     took the page's horizontal scroll with it. */
+  overflow-wrap: anywhere;
+  /* Stated rather than inherited from the element: Heap Code renders this in
+     a <pre> and Heap Chat in a <div>, so the same block came out monospace on
+     one side of the switcher and sans on the other. */
+  font-family: var(--mono);
 }
 
 /* ---------- working indicator ----------

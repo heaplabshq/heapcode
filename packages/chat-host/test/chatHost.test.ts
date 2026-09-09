@@ -185,3 +185,23 @@ describe('stopping a run', () => {
     await expect(peer.request(CHAT_METHODS.cancel, { runId: 'an-id-that-never-matched' })).resolves.toBeNull();
   });
 });
+
+describe('artifacts are scoped to the folder', () => {
+  it('a folder switch changes which artifacts exist', async () => {
+    // The host keys its store by root, so switching folders must change the
+    // answer. The page bug this pairs with was on the other side — it held
+    // the previous folder's list and showed those documents as if they
+    // belonged to the folder just opened.
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"ok"}</tool>')]);
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    const before = await peer.request<{ artifacts: unknown[] }>(CHAT_METHODS.artifacts);
+    expect(before.artifacts).toEqual([]);
+
+    const elsewhere = realpathSync(await mkdtemp(join(tmpdir(), 'chat-other-')));
+    await peer.request(CHAT_METHODS.setFolder, { path: elsewhere });
+
+    const after = await peer.request<{ artifacts: unknown[] }>(CHAT_METHODS.artifacts);
+    expect(after.artifacts).toEqual([]);
+  });
+});

@@ -263,6 +263,16 @@ export function App(): JSX.Element {
     setGrounding(undefined);
     refreshConversations();
     refreshIndex();
+    // Artifacts are per folder — the host rebuilds its store on a switch, but
+    // the page holds the previous folder's list until it asks again. Without
+    // this the panel showed another folder's documents, which is a worse lie
+    // than showing none: they look like they belong to the folder you just
+    // opened. The selection goes too, or it names an id the new store has
+    // never heard of.
+    setSelectedArtifact(undefined);
+    refreshArtifacts();
+    // Same reason: the last folder's file listing must not linger.
+    setOpenPath(undefined);
   };
 
   return (

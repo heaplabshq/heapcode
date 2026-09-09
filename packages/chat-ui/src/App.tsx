@@ -15,6 +15,7 @@ import type {
   ChatBrowseFoldersResult,
   ChatConversationMeta,
   ChatEventParams,
+  ChatGroundingParams,
   ChatHelloResult,
   ChatIndexStatus,
   ChatRecentFoldersResult,
@@ -22,6 +23,7 @@ import type {
   ChatState,
 } from '@heapcode/chat-host/protocol';
 import { Composer } from './components/Composer.js';
+import { GroundingBadge } from './components/GroundingBadge.js';
 import { FolderPicker } from './components/FolderPicker.js';
 import { MessageList } from './components/MessageList.js';
 
@@ -41,6 +43,7 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string>();
   const [picking, setPicking] = useState(false);
   const [ask, setAsk] = useState<Pending>();
+  const [grounding, setGrounding] = useState<ChatGroundingParams['grounding']>();
 
   const seq = useRef(0);
   const runId = useRef<string>();
@@ -64,6 +67,10 @@ export function App(): JSX.Element {
     client.onNotification(CHAT_METHODS.stateChanged, (raw) => setState(raw as ChatState));
 
     client.onNotification(CHAT_METHODS.indexChanged, (raw) => setIndex(raw as ChatIndexStatus));
+
+    client.onNotification(CHAT_METHODS.grounding, (raw) =>
+      setGrounding((raw as ChatGroundingParams).grounding),
+    );
 
     client.onNotification(CHAT_METHODS.event, (raw) => {
       const { event } = raw as ChatEventParams;
@@ -119,6 +126,9 @@ export function App(): JSX.Element {
     runId.current = id;
     setTranscript((t) => withUserMessage(t, text));
     setError(undefined);
+    // The previous answer's badge must not hang over the new question while
+    // it is still being answered.
+    setGrounding(undefined);
     client
       .request<ChatSendMessageResult>(CHAT_METHODS.sendMessage, { text, runId: id })
       .catch((e: Error) => setError(e.message))
@@ -148,6 +158,7 @@ export function App(): JSX.Element {
       .request<{ messages: Parameters<typeof fromMessages>[0] }>(CHAT_METHODS.openConversation, { id })
       .then((r) => {
         setTranscript(fromMessages(r.messages));
+        setGrounding(undefined);
         refreshConversations();
       })
       .catch((e: Error) => setError(e.message));
@@ -232,6 +243,8 @@ export function App(): JSX.Element {
               : 'Choose a folder to get started.'
           }
         />
+
+        {grounding && !running ? <GroundingBadge grounding={grounding} /> : null}
 
         {error ? <div className="notice notice-warn">{error}</div> : null}
 

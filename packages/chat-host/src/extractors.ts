@@ -14,6 +14,71 @@ import type { DocumentExtractor } from '@heapcode/core';
  * appearing to contain nothing.
  */
 
+/**
+ * Images the vision model can be asked to describe.
+ *
+ * Not a `DocumentExtractor` like the rest: describing an image needs a model
+ * call, and the extractor contract is deliberately pure. The session handles
+ * these itself (see `describeImage`), which is also where the provider is.
+ */
+export const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+
+export function isImage(rel: string): boolean {
+  return IMAGE_EXTENSIONS.has(ext(rel));
+}
+
+/** Images are sent to a model, so the ceiling is about the request, not the disk. */
+export const IMAGE_MAX_BYTES = 6 * 1024 * 1024;
+
+/** The media type for a data URL, or undefined when this is not an image we send. */
+export function imageMediaType(rel: string): string | undefined {
+  switch (ext(rel)) {
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.webp':
+      return 'image/webp';
+    case '.gif':
+      return 'image/gif';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Date, camera and place, when the file carries them.
+ *
+ * Worth having next to the description because it is the part a model cannot
+ * infer and a person actually searches on — "the photos from the Lisbon trip"
+ * is a date range far more often than it is a description of a street.
+ *
+ * `exifr` is optional, like the document parsers: absent, images are still
+ * described, just without their metadata.
+ */
+export async function exifSummary(bytes: Uint8Array): Promise<string | undefined> {
+  const mod = await loadExifr();
+  if (!mod) return undefined;
+  try {
+    const data = (await mod.parse(Buffer.from(bytes), ['DateTimeOriginal', 'Make', 'Model', 'GPSLatitude', 'GPSLongitude'])) as
+      | Record<string, unknown>
+      | undefined;
+    if (!data) return undefined;
+    const parts: string[] = [];
+    const taken = data.DateTimeOriginal;
+    if (taken instanceof Date) parts.push(`Taken ${taken.toISOString().slice(0, 10)}`);
+    const camera = [data.Make, data.Model].filter((v) => typeof v === 'string').join(' ').trim();
+    if (camera) parts.push(`Camera ${camera}`);
+    if (typeof data.GPSLatitude === 'number' && typeof data.GPSLongitude === 'number') {
+      parts.push(`Location ${data.GPSLatitude.toFixed(4)}, ${data.GPSLongitude.toFixed(4)}`);
+    }
+    return parts.length > 0 ? parts.join(' · ') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Extensions that are already plain text but that `CODE_EXTENSIONS` does not claim. */
 const TEXT_EXTENSIONS = new Set(['.txt', '.text', '.csv', '.tsv', '.log', '.vtt', '.srt', '.tex']);
 
@@ -96,9 +161,25 @@ interface MammothModule {
   extractRawText(input: { buffer: Buffer }): Promise<{ value: string }>;
 }
 
+interface ExifrModule {
+  parse(input: Buffer, pick: string[]): Promise<Record<string, unknown> | undefined>;
+}
+
 /** Resolved once and cached, including the failure — probing per file is pointless. */
 let pdfModule: PdfParseModule | null | undefined;
 let mammothModule: MammothModule | null | undefined;
+let exifrModule: ExifrModule | null | undefined;
+
+async function loadExifr(): Promise<ExifrModule | null> {
+  if (exifrModule !== undefined) return exifrModule;
+  try {
+    const mod = (await import('exifr')) as unknown as { default?: ExifrModule } & ExifrModule;
+    exifrModule = mod.default ?? mod;
+  } catch {
+    exifrModule = null;
+  }
+  return exifrModule;
+}
 
 async function loadPdfParse(): Promise<PdfParseModule | null> {
   if (pdfModule !== undefined) return pdfModule;
@@ -136,5 +217,8 @@ export async function describeMissingParsers(): Promise<string[]> {
   const missing: string[] = [];
   if (!(await loadPdfParse())) missing.push('pdf-parse (PDFs)');
   if (!(await loadMammoth())) missing.push('mammoth (Word .docx)');
+  // exifr is deliberately absent from this list: without it images are still
+  // described, only without their date and camera. That is a smaller thing
+  // than a file type going unread, and saying so would cry wolf.
   return missing;
 }

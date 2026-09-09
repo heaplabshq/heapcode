@@ -286,17 +286,32 @@ ten once C3 lands.
 Goal: the trust layer. Benefits Heap Code's `@workspace` answers and PR
 review too, so it is worth doing even if this plan stops here.
 
-- [ ] Value-level provenance — heapchat's `src/util/text.js:28-40`, ~13 pure
+- [x] Value-level provenance — heapchat's `src/util/text.js:28-40`, ~13 pure
       lines: extract distinctive numbers from an answer, map each back to the
       evidence row containing it, tolerating thousands separators
-- [ ] Self-verification pass over specific claims against retrieved evidence
+- [x] Self-verification pass over specific claims against retrieved evidence
       (heapchat's `VERIFY_SYS`, a 6-line prompt)
-- [ ] Grounded badge with clickable sources; general-knowledge answers show
+- [x] Grounded badge with clickable sources; general-knowledge answers show
       no badge and are **never refused** — this was deliberate in heapchat
-- [ ] Measured against C2's baseline; record before/after
+- [x] Measured against C2's baseline; record before/after
 
 **Exit criteria:** grounded answers carry sources, a fabricated number is
 caught by the verification pass, and the C2 corpus improves or holds.
+
+**Result, 2026-09-09** — same model and fixtures as the C2 baseline, with the
+ten `expect_grounded` assertions now enabled rather than skipped:
+
+```
+12/12 passed  ·  10 answers badged as grounded
+```
+
+The ten badged are exactly the ten that assert grounding; the two
+general-knowledge cases are answered and carry no badge, which is the
+behaviour the badge depends on to mean anything.
+
+**Known limitation:** the badge is live-only. `UiMessage` has nowhere to put
+it, so a reloaded conversation shows the answer without its grounding.
+Widening `UiMessage` is the honest fix and is not done.
 
 ### C4 — Image understanding
 

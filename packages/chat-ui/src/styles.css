@@ -248,3 +248,45 @@ body {
   cursor: pointer;
 }
 .picker-row:hover { background: var(--panel); }
+
+/* ---- grounding ---- */
+.grounding { margin: 0 20px; }
+.grounding-line {
+  display: inline-flex;
+  gap: 7px;
+  align-items: baseline;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.grounding-good .grounding-mark { color: #2e7d4f; }
+.grounding-mixed .grounding-line { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.grounding-bad .grounding-line { border-color: var(--warn); color: var(--warn); }
+.grounding-body {
+  margin-top: 8px;
+  padding: 12px;
+  background: var(--panel);
+  border-radius: var(--radius);
+  font-size: 13px;
+  display: grid;
+  gap: 10px;
+  max-width: 74ch;
+}
+.grounding-sources { margin: 0; padding-left: 18px; font-family: var(--mono); font-size: 12px; }
+.grounding-values { border-collapse: collapse; width: 100%; }
+.grounding-values th {
+  text-align: left;
+  vertical-align: top;
+  font-family: var(--mono);
+  padding: 3px 12px 3px 0;
+  white-space: nowrap;
+}
+.grounding-values td { padding: 3px 0; }
+.grounding-source { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.grounding-snippet { color: var(--muted); }
+.grounding-issues { margin: 0; padding-left: 18px; color: var(--warn); }

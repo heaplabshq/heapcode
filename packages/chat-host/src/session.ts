@@ -23,6 +23,7 @@ import {
   type ServerConnection,
   type StoredMessage,
   type ToolCall,
+  type ChatSendParams,
   type DocumentExtractParams,
   type DocumentExtractResult,
   type ToolExecuteParams,
@@ -50,10 +51,28 @@ import {
   type WorkspaceStore,
 } from '@heapcode/web-host';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
-import { chatExtractors, describeMissingParsers } from './extractors.js';
+import {
+  IMAGE_MAX_BYTES,
+  chatExtractors,
+  describeMissingParsers,
+  exifSummary,
+  imageMediaType,
+  isImage,
+} from './extractors.js';
+import {
+  VERIFY_SYSTEM_PROMPT,
+  buildProvenance,
+  formatEvidence,
+  isGroundedAnswer,
+  parseVerification,
+  splitHits,
+  type Evidence,
+  type Grounding,
+} from './grounding.js';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from './protocol.js';
 import type {
   ChatAskUserParams,
+  ChatGroundingParams,
   ChatAskUserResult,
   ChatBrowseFoldersParams,
   ChatBrowseFoldersResult,
@@ -90,8 +109,32 @@ type DocumentRead =
   | { kind: 'unreadable'; format?: string }
   | { kind: 'not-a-document' };
 
-/** Extensions this host declares to the daemon — derived from the extractors themselves. */
-const DOCUMENT_EXTENSIONS = ['.txt', '.text', '.csv', '.tsv', '.log', '.vtt', '.srt', '.tex', '.pdf', '.docx'];
+/** Extensions this host declares to the daemon — the parsers' plus the images. */
+const DOCUMENT_EXTENSIONS = [
+  '.txt', '.text', '.csv', '.tsv', '.log', '.vtt', '.srt', '.tex', '.pdf', '.docx',
+  '.png', '.jpg', '.jpeg', '.webp', '.gif',
+];
+
+/**
+ * What the vision model is asked for.
+ *
+ * Specific and literal on purpose: this text is what the photo will be
+ * *found* by, so "a receipt from a hardware shop for 34.90 dated 3 March"
+ * earns its place in an index and "a photograph of a piece of paper" does not.
+ */
+const DESCRIBE_IMAGE_PROMPT =
+  'Describe this image so it can be found by search later. Be concrete and literal: name what is in it, ' +
+  'and transcribe any text, numbers, dates, totals or names you can read, exactly as they appear. If it is ' +
+  'a document, receipt or screenshot, the text on it matters more than the scene. Two or three sentences. ' +
+  'No preamble, no hedging, and do not say what you cannot tell.';
+
+/**
+ * Evidence rows carried into a verification prompt — most recent wins.
+ *
+ * Rows are per hit rather than per result block, so this is a budget of
+ * snippets, not of tool calls: one `semantic_search` can contribute six.
+ */
+const MAX_EVIDENCE = 24;
 
 /** Per-run event retention for replay after a browser refresh. */
 const REPLAY_BUFFER = 2_000;
@@ -144,6 +187,20 @@ export class ChatSession implements HostSession {
   private deltaAcc = '';
   private reasoningAcc = '';
   private pendingDisplay?: string;
+  /**
+   * What the run actually read, in the order it read it — the raw material
+   * the grounding layer works from. Cleared per turn: evidence from the last
+   * question is not evidence for this one.
+   */
+  private evidence: Evidence[] = [];
+  /**
+   * The out-of-band model call in flight, if any — verification or an image
+   * description. Its events stream over the same channel as the run's and must
+   * not reach the transcript.
+   */
+  private verifying?: { runId: string; text: string };
+  /** The text that call produced, readable after `verifying` is cleared. */
+  private lastDescription = '';
   private modelOverride?: string;
   private chatModel = '';
   private indexProgress?: { embedded: number; total: number };
@@ -539,6 +596,13 @@ export class ChatSession implements HostSession {
         } satisfies AgentRunParams,
         this.abort.signal,
       );
+      // Live only, and knowingly so: `UiMessage` has nowhere to put a badge,
+      // so a reloaded conversation shows the answer without it. Storing it in
+      // an entry the transcript cannot render would be dead weight in
+      // chats.json pretending to be persistence. Widening UiMessage is the
+      // honest fix when a reload needs it.
+      const grounding = await this.groundingFor(this.lastAnswerText()).catch(() => undefined);
+      if (grounding) this.ui?.notify(CHAT_METHODS.grounding, { runId, grounding } satisfies ChatGroundingParams);
       await this.persistTurn(task, images?.length);
       persisted = true;
       return { runId, outcome, maxIterations };
@@ -547,9 +611,18 @@ export class ChatSession implements HostSession {
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
+      this.evidence = [];
       this.buffers.delete(runId);
       void this.pushState();
     }
+  }
+
+  /** The prose of the answer just produced — what grounding is computed against. */
+  private lastAnswerText(): string {
+    return this.turnEntries
+      .filter((m) => m.role === 'assistant' && !m.ui && (m.content ?? '').trim())
+      .map((m) => m.content)
+      .join('\n');
   }
 
   /** The in-flight turn as the page should draw it — prompt plus what has arrived. */
@@ -638,6 +711,15 @@ export class ChatSession implements HostSession {
 
     peer.onNotification(METHODS.agentEvent, (raw) => {
       const params = raw as AgentEventParams;
+      // The verification pass streams over the same channel. Its text is a
+      // JSON verdict about the answer, not part of it, so it is collected
+      // here and never reaches the transcript or the browser.
+      if (this.verifying && params.runId === this.verifying.runId) {
+        const { event } = params;
+        if (event.type === 'text' || event.type === 'text_delta') this.verifying.text += event.text;
+        this.lastDescription = this.verifying.text;
+        return;
+      }
       this.recordForHistory(params.event);
       const buffer = this.buffers.get(params.runId);
       if (buffer) {
@@ -708,6 +790,7 @@ export class ChatSession implements HostSession {
    * place for it to be wrong.
    */
   private async readDocument(path: string): Promise<DocumentRead> {
+    if (isImage(path)) return this.describeImage(path);
     const extractor = chatExtractors.find((e) => e.handles(path));
     if (!extractor) return { kind: 'not-a-document' };
     try {
@@ -722,6 +805,67 @@ export class ChatSession implements HostSession {
         : { kind: 'text', text };
     } catch {
       return { kind: 'unreadable', format: extractor.name };
+    }
+  }
+
+  /**
+   * An image, as text: what the vision model sees, plus what the file says
+   * about itself.
+   *
+   * Not a `DocumentExtractor` like the others, because describing an image
+   * costs a model call and the extractor contract is deliberately pure — this
+   * is the one place in the host that has both the bytes and a provider.
+   *
+   * The description is what makes a photo findable at all: without it a
+   * receipt is a filename. EXIF is added because it is the part a model cannot
+   * infer and a person actually searches on — "the photos from March" is a
+   * date, not a description.
+   *
+   * Costs one call per image per *change*: the indexer caches by file hash, so
+   * a re-index does not re-describe anything that has not been edited.
+   */
+  private async describeImage(path: string): Promise<DocumentRead> {
+    const mediaType = imageMediaType(path);
+    if (!mediaType || !this.connection || !this.profile) return { kind: 'unreadable', format: 'image' };
+    try {
+      const full = canonicalize(resolve(this.root, path));
+      const rel = relative(this.root, full);
+      if (rel === '' || isAbsolute(rel) || rel.split(sep)[0] === '..') return { kind: 'unreadable', format: 'image' };
+      const bytes = await readFile(full);
+      if (bytes.byteLength > IMAGE_MAX_BYTES) return { kind: 'unreadable', format: 'image' };
+
+      const runId = `describe_${randomUUID()}`;
+      this.verifying = { runId, text: '' };
+      try {
+        await this.connection.peer.request(METHODS.chatSend, {
+          runId,
+          profileName: this.profile.name,
+          model: this.model,
+          maxTokens: 300,
+          temperature: 0,
+          messages: [
+            { role: 'system', content: DESCRIBE_IMAGE_PROMPT },
+            {
+              role: 'user',
+              content: `Describe this image (${path}).`,
+              images: [`data:${mediaType};base64,${bytes.toString('base64')}`],
+            },
+          ],
+        } satisfies ChatSendParams);
+      } finally {
+        this.verifying = undefined;
+      }
+
+      const described = this.lastDescription.trim();
+      // A model with no vision returns nothing useful here. Indexing an empty
+      // or apologetic string would make the photo searchable for the wrong
+      // words, which is worse than leaving it unindexed.
+      if (described.length < 12) return { kind: 'unreadable', format: 'image' };
+
+      const exif = await exifSummary(bytes);
+      return { kind: 'text', text: exif ? `${described}\n\n${exif}` : described };
+    } catch {
+      return { kind: 'unreadable', format: 'image' };
     }
   }
 
@@ -742,6 +886,118 @@ export class ChatSession implements HostSession {
       )
       .catch(() => undefined);
     return answer?.answer ? askUserAnswerMessage(answer.answer) : ASK_USER_NO_ANSWER;
+  }
+
+  /**
+   * Record what a tool returned as evidence, tagged with where it came from.
+   *
+   * `search` counts, and an earlier version of this was wrong to exclude it on
+   * the theory that it returns paths rather than text. It returns the matching
+   * line with two lines of context either side — often the most precise
+   * evidence in the whole run, because it is the exact line holding the number
+   * that was asked about. The eval caught this: a correct invoice answer came
+   * back with no badge at all.
+   *
+   * Both search tools put the filename in the block itself, so the source is
+   * read out of the result rather than guessed from the call arguments.
+   */
+  private collectEvidence(name: string, args: Record<string, unknown> | undefined, content: string): void {
+    if (!content.trim()) return;
+    let source: string | undefined;
+    switch (name) {
+      case 'read_file':
+        source = typeof args?.path === 'string' ? args.path : undefined;
+        break;
+      case 'fetch_url':
+        source = typeof args?.url === 'string' ? args.url : undefined;
+        break;
+      case 'search':
+      case 'semantic_search': {
+        // One row per hit, not per block. A block spanning four files carried
+        // as a single row makes every number in it look like it came from all
+        // four, which is exactly the claim this feature exists to make
+        // precisely.
+        for (const hit of splitHits(content)) this.pushEvidence(hit);
+        return;
+      }
+      default:
+        return;
+    }
+    if (!source) return;
+    this.pushEvidence({ source, text: content });
+  }
+
+  /**
+   * Bounded: a run that reads forty files must not carry forty file bodies
+   * into a verification prompt, and the most recent reads are the ones the
+   * answer is most likely built on.
+   */
+  private pushEvidence(item: Evidence): void {
+    this.evidence.push(item);
+    if (this.evidence.length > MAX_EVIDENCE) this.evidence.shift();
+  }
+
+  /**
+   * What the finished answer is standing on.
+   *
+   * Provenance first, because it is mechanical and free: every distinctive
+   * number in the answer either appears in something the run read or it does
+   * not, and no model call can be wrong about that. Verification second,
+   * because it costs a model call and can be wrong in both directions — so it
+   * annotates the answer and never suppresses it.
+   */
+  private async groundingFor(answer: string): Promise<Grounding | undefined> {
+    if (!answer.trim() || this.evidence.length === 0) return undefined;
+    const provenance = buildProvenance(answer, this.evidence);
+    if (!isGroundedAnswer(this.evidence, provenance)) return undefined;
+
+    const sources = [...new Set(this.evidence.map((e) => e.source))].filter(Boolean);
+    const grounding: Grounding = { sources, provenance };
+
+    const checked = await this.verify(answer).catch(() => undefined);
+    if (checked?.verdict) {
+      grounding.verdict = checked.verdict;
+      grounding.issues = checked.issues;
+      // The verifier's own list of what the answer leans on is better than
+      // "everything the run happened to open", which is what the sources
+      // above are. Only trusted when it names files we actually read.
+      const used = (checked.used ?? []).filter((u) => this.evidence.some((e) => e.text.includes(u) || e.source === u));
+      if (used.length > 0) grounding.sources = used;
+    }
+    return grounding;
+  }
+
+  /**
+   * A second model pass over the answer against the evidence.
+   *
+   * Uses `chat/send` rather than `agent/run`: this is one question with no
+   * tools, and running it through the agent loop would cost several model
+   * calls to ask something that fits in one.
+   */
+  private async verify(answer: string): Promise<ReturnType<typeof parseVerification> | undefined> {
+    if (!this.connection || !this.profile) return undefined;
+    const runId = `verify_${randomUUID()}`;
+    // Routed by runId through the one agent-event handler rather than by
+    // registering a second one: `onNotification` replaces by method name, so
+    // a temporary handler silently displaces the transcript's until it is put
+    // back — a restore that a thrown error skips.
+    this.verifying = { runId, text: '' };
+    try {
+      await this.connection.peer.request(METHODS.chatSend, {
+        runId,
+        profileName: this.profile.name,
+        model: this.model,
+        maxTokens: 400,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: VERIFY_SYSTEM_PROMPT },
+          { role: 'user', content: `EVIDENCE:\n${formatEvidence(this.evidence)}\n\nANSWER:\n${answer}` },
+        ],
+      } satisfies ChatSendParams);
+      return parseVerification(this.verifying.text);
+    } finally {
+      this.verifying = undefined;
+    }
   }
 
   /** Folds one live event into the turn that will be written to history. */
@@ -791,6 +1047,7 @@ export class ChatSession implements HostSession {
           if (tool && tool.id === event.id) {
             tool.ok = !event.isError;
             tool.summary = event.content.slice(0, TOOL_SUMMARY_CHARS);
+            if (!event.isError) this.collectEvidence(tool.name, tool.args, event.content);
             return;
           }
         }

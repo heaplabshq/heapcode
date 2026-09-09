@@ -54,8 +54,8 @@ interface CaseResult {
   id: string;
   passed: boolean;
   failures: string[];
-  /** Recorded, not asserted, until C3 gives the host a grounding signal. */
-  groundedPending?: boolean;
+  grounded: boolean;
+  verdict?: string;
   answer: string;
   toolCalls: string[];
   ms: number;
@@ -98,6 +98,17 @@ async function main(): Promise<void> {
 
   /** Tool calls for the case in flight — `expect_source` asks what was consulted. */
   let toolCalls: string[] = [];
+  /**
+   * The grounding the host computed for the case in flight, if any.
+   *
+   * A holder rather than a bare `let`: assigned only from a notification
+   * callback, so control-flow analysis narrows the variable to `never` at
+   * every read and the type errors are noise about nothing.
+   */
+  const live: { grounding?: { sources: string[]; verdict?: string } } = {};
+  peer.onNotification(CHAT_METHODS.grounding, (raw) => {
+    live.grounding = (raw as { grounding: { sources: string[]; verdict?: string } }).grounding;
+  });
   peer.onNotification(CHAT_METHODS.event, (raw) => {
     const { event } = raw as { event: AgentEvent };
     if (event.type === 'tool_call') toolCalls.push(`${event.name}(${JSON.stringify(event.args)})`);
@@ -117,6 +128,7 @@ async function main(): Promise<void> {
   const results: CaseResult[] = [];
   for (const c of cases) {
     toolCalls = [];
+    live.grounding = undefined;
     const started = Date.now();
     // A fresh conversation per case: one case's answer must never be context
     // for the next, or the corpus stops measuring retrieval and starts
@@ -142,14 +154,31 @@ async function main(): Promise<void> {
       const consulted = toolCalls.some((t) => t.includes(c.expect_source!)) || answer.includes(c.expect_source);
       if (!consulted) failures.push(`never consulted ${c.expect_source}`);
     }
+    if (c.expect_grounded !== undefined) {
+      // Re-widened deliberately: the only writer is the notification callback
+      // above, which control-flow analysis cannot see, so every read here
+      // would otherwise narrow to `never`.
+      const found = live.grounding as { sources: string[]; verdict?: string } | undefined;
+      // Both directions matter. A badge that never appears is useless; one
+      // that appears on "what is the capital of France" is worse, because it
+      // makes every other badge meaningless.
+      const badged = found !== undefined;
+      if (badged !== c.expect_grounded) {
+        failures.push(
+          c.expect_grounded ? 'no grounding badge' : `badged a general answer (${found?.sources.join(', ')})`,
+        );
+      }
+      if (c.expect_grounded && found?.verdict === 'unsupported') {
+        failures.push('verifier called its own answer unsupported');
+      }
+    }
 
     const result: CaseResult = {
       id: c.id,
       passed: failures.length === 0,
       failures,
-      // Recorded, not asserted: the host has no grounding signal to check
-      // until C3, and a check that always passes is worse than an absent one.
-      groundedPending: c.expect_grounded !== undefined,
+      grounded: (live.grounding as unknown) !== undefined,
+      verdict: (live.grounding as { verdict?: string } | undefined)?.verdict,
       answer,
       toolCalls,
       ms: Date.now() - started,
@@ -162,9 +191,8 @@ async function main(): Promise<void> {
   }
 
   const passed = results.filter((r) => r.passed).length;
-  const pending = results.filter((r) => r.groundedPending).length;
-  process.stdout.write(`\n  ${passed}/${results.length} passed`);
-  process.stdout.write(pending ? `  (${pending} also assert grounding, not checked until C3)\n\n` : '\n\n');
+  const badged = results.filter((r) => r.grounded).length;
+  process.stdout.write(`\n  ${passed}/${results.length} passed  ·  ${badged} answers badged as grounded\n\n`);
 
   const jsonFlag = process.argv.indexOf('--json');
   if (jsonFlag >= 0 && process.argv[jsonFlag + 1]) {

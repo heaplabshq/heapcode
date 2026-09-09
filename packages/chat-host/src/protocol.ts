@@ -49,6 +49,8 @@ export const CHAT_METHODS = {
 
   // host → browser (notifications)
   event: 'chat/event',
+  /** What the finished answer stands on: sources, traced numbers, a verdict. */
+  grounding: 'chat/grounding',
   stateChanged: 'chat/stateChanged',
   indexChanged: 'chat/indexChanged',
 } as const;
@@ -109,6 +111,12 @@ export interface ChatSendMessageResult {
   runId: string;
   outcome: unknown;
   maxIterations: number;
+}
+
+/** Host → browser once a turn's grounding has been computed. */
+export interface ChatGroundingParams {
+  runId: string;
+  grounding: import('./grounding.js').Grounding;
 }
 
 export interface ChatCancelParams {

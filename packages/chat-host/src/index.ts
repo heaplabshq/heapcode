@@ -9,6 +9,7 @@
  * See docs/CHAT_MODE_PLAN.md.
  */
 export * from './extractors.js';
+export * from './grounding.js';
 export * from './protocol.js';
 export * from './prompt.js';
 export * from './server.js';

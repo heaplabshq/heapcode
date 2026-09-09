@@ -111,6 +111,24 @@ export interface Transcript {
 export const emptyTranscript: Transcript = { items: [] };
 
 /**
+ * The task list belonging to the turn in progress, for the pinned bar above
+ * the transcript.
+ *
+ * Scoped to the current turn — the scan stops at the last user message — for
+ * the same reason the reducer's `todo_update` is: a list from the previous run
+ * pinned over a new one is worse than no list, because it looks live. A run
+ * that has not written a list yet pins nothing.
+ */
+export function currentTasks(t: Transcript): TaskListItem | undefined {
+  for (let i = t.items.length - 1; i >= 0; i--) {
+    const item = t.items[i]!;
+    if (item.kind === 'text' && item.role === 'user') return undefined;
+    if (item.kind === 'tasks') return item;
+  }
+  return undefined;
+}
+
+/**
  * History → transcript, rebuilding the same items the live reducer produces.
  *
  * A reloaded conversation has to look like the one you left: tool chips, plans

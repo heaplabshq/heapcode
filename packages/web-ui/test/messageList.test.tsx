@@ -147,3 +147,66 @@ describe('a host notice about how the run ended', () => {
     expect(container.querySelector('.msg-assistant')?.textContent).not.toContain('100-step limit');
   });
 });
+
+describe('task lists in the transcript', () => {
+  const twoRuns = (): Transcript => {
+    const first = fold([
+      { type: 'todo_update', todos: [{ content: 'old plan', status: 'completed' }] },
+    ]);
+    return fold(
+      [{ type: 'todo_update', todos: [{ content: 'live plan', status: 'in_progress' }] }],
+      { ...first, items: [...first.items, { kind: 'text', id: 'u1', role: 'user', text: 'again' }] },
+    );
+  };
+
+  it('leaves the pinned list to the bar, and keeps every other one', () => {
+    // Drawing it in both places is the bug this dedup exists to prevent: the
+    // same list twice, one of them scrolling away. Earlier runs keep their
+    // card, because that is the record of what each turn set out to do.
+    const t = twoRuns();
+    const live = t.items.find((i) => i.kind === 'tasks' && i.id !== t.items[0]!.id)!;
+
+    const { container } = render(<MessageList transcript={t} hideTaskId={live.id} />);
+    expect(container.querySelectorAll('.tasks')).toHaveLength(1);
+    expect(container.textContent).toContain('old plan');
+    expect(container.textContent).not.toContain('live plan');
+  });
+
+  it('draws every list once the run ends and nothing is pinned any more', () => {
+    // The bar only exists while a run is in flight. When it goes, the card it
+    // was standing in for has to come back — otherwise the finished turn has
+    // no record of what it set out to do.
+    const { container } = render(<MessageList transcript={twoRuns()} />);
+    expect(container.querySelectorAll('.tasks')).toHaveLength(2);
+    expect(container.textContent).toContain('live plan');
+  });
+});
+
+describe('the empty state', () => {
+  it('centres itself instead of hanging from the top of the pane', () => {
+    // `margin: auto` needs a flex parent to centre against, and the populated
+    // scroller stays a plain block — so the modifier is the whole mechanism.
+    const { container } = render(<MessageList transcript={emptyTranscript} />);
+    expect(container.querySelector('.messages-empty')).toBeTruthy();
+    expect(container.querySelector('.empty')).toBeTruthy();
+  });
+
+  it('breaks the hint at its clauses rather than wherever the measure runs out', () => {
+    const { container } = render(<MessageList transcript={emptyTranscript} />);
+    const hint = container.querySelector('.empty-hint')!;
+
+    // Three clauses, two separators — and the separators are decoration a
+    // reader already hears in the phrasing, so they stay out of the a11y tree.
+    expect(hint.querySelectorAll('span:not(.empty-sep)')).toHaveLength(3);
+    hint.querySelectorAll('.empty-sep').forEach((sep) => {
+      expect(sep.getAttribute('aria-hidden')).toBe('true');
+    });
+    expect(hint.textContent).toContain('Paste a screenshot straight into the box');
+  });
+
+  it('goes away as soon as there is a conversation', () => {
+    const { container } = render(<MessageList transcript={fold([{ type: 'text', text: 'hello' }])} />);
+    expect(container.querySelector('.empty')).toBeNull();
+    expect(container.querySelector('.messages-empty')).toBeNull();
+  });
+});

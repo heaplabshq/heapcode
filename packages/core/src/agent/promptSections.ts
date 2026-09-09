@@ -308,6 +308,10 @@ export const CODING_PROMPT_SECTIONS: readonly PromptSection[] = [
       'Keep your turns usable by that summary: quote exact paths, identifiers, and error text rather ' +
         'than paraphrasing them. "I fixed the bug in the config file" survives a summary; the file\'s ' +
         'name is what survives it usefully.',
+      'The same applies across turns. Earlier turns reach you as a record of what you did, with recent ' +
+        'tool results attached and older ones cleared to a placeholder. A result still shown is yours ' +
+        'to use — do not call the tool again for it. A result marked cleared is gone: read it again if ' +
+        'you need it, and do not guess at what it said.',
     ],
     'full',
   ),
@@ -324,6 +328,9 @@ export const CODING_PROMPT_SECTIONS: readonly PromptSection[] = [
         'ask ONE clear question through ask_user, then STOP and wait. Never answer your own question or ' +
         'choose on the user\'s behalf. If you are asking permission to act rather than which option to ' +
         'take, pass blocksAction: true so it is never auto-resolved while the user is away.',
+      'Ask it through ask_user, not by ending your turn with a question in your reply. Inside this run ' +
+        'you keep everything you have read; a question that ends the turn is answered by a NEW run, ' +
+        'which gets your findings summarized rather than whole — so you pay to read it all again.',
     ],
     'lean',
   ),

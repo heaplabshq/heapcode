@@ -23,6 +23,21 @@ describe('agent system prompts', () => {
     expect(buildFallbackAgentSystemPrompt('my-workspace', [])).toContain('get_symbols, search and semantic_search');
   });
 
+  it('sends a blocking question through ask_user rather than ending the turn with it', () => {
+    // A question that ends the turn is answered by a NEW run, and a new run
+    // gets prior tool results summarized or cleared — so the model pays to
+    // re-read everything it had already read before it asked.
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toContain('not by ending your turn with a question');
+    expect(prompt).toContain('answered by a NEW run');
+  });
+
+  it('says what a cleared tool result in the history means', () => {
+    const prompt = buildNativeAgentSystemPrompt('my-workspace');
+    expect(prompt).toContain('older ones cleared to a placeholder');
+    expect(prompt).toContain('do not call the tool again for it');
+  });
+
   it('nudges toward checking Skills early', () => {
     expect(buildNativeAgentSystemPrompt('my-workspace')).toContain('list_skills');
     expect(buildFallbackAgentSystemPrompt('my-workspace', [])).toContain('load_skill');

@@ -46,6 +46,7 @@ import { Shortcuts } from './components/Shortcuts.js';
 import { Settings, type UiProfileDraft } from './components/Settings.js';
 import { RpcClient } from './rpc.js';
 import {
+  abandonCards,
   AskUserCard,
   PermissionCard,
   ReviewCard,
@@ -56,6 +57,8 @@ import {
 import { Composer } from './components/Composer.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { MessageList } from './components/MessageList.js';
+import { useTransientNotice } from './notice.js';
+import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
@@ -66,6 +69,7 @@ import {
   activityOf,
   concat,
   emptyTranscript,
+  currentTasks,
   fromMessages,
   nextOrdinal,
   reduce,
@@ -162,7 +166,7 @@ export function App(): JSX.Element {
   /** When the visible run started, for the working indicator's clock. */
   const [runStartedAt, setRunStartedAt] = useState<number>();
   const [error, setError] = useState<string>();
-  const [notice, setNotice] = useState<string>();
+  const [notice, setNotice] = useTransientNotice();
   /**
    * How the last run ended, when it ended badly — announced instead of the
    * usual "Finished", then cleared when the next run starts.
@@ -872,17 +876,49 @@ export function App(): JSX.Element {
       .catch((err: Error) => setError(`Could not stop the run: ${err.message}`));
   }, [rpc, runId, hostRunId]);
 
+  /**
+   * Drop the question, permission prompt or review confirmation belonging to a
+   * conversation that is no longer on screen.
+   *
+   * These are the only pieces of the view that outlive their transcript: they
+   * are held in their own state so they can sit above the composer, and
+   * nothing but answering them used to clear them. Switching folder left a
+   * question about a repo you were no longer in floating over an empty
+   * workspace, still clickable.
+   *
+   * Each one is SETTLED, not merely hidden. Every card is the browser half of
+   * an open RPC request, and a handler nobody ever answers is a run that waits
+   * for a person who has walked away. They settle the way an absent user does:
+   * no answer for the question (the host reads an empty answer as "the user did
+   * not answer" and tells the model to use its own judgment), and a refusal for
+   * the permission and the review — abandoning a conversation must never be a
+   * way to grant something, and "deny" is the only safe reading of a prompt
+   * that was never seen.
+   */
+  const dismissPending = useCallback(() => {
+    // Settled through `abandonCards`, which owns what an abandoned prompt
+    // means (see there). Called as a plain event handler rather than from
+    // inside a state updater, which StrictMode double-invokes. Each `resolve`
+    // already clears its own card — the explicit clears keep this true
+    // whoever rewires that later.
+    abandonCards({ ask, permission, review });
+    setAsk(undefined);
+    setPermission(undefined);
+    setReview(undefined);
+  }, [ask, permission, review]);
+
   const openConversation = useCallback(
     (id: string) => {
       void rpc
         .request<UiOpenConversationResult>(UI_METHODS.openConversation, { id })
         .then((res) => {
           setTranscript(fromMessages(res.messages));
+          dismissPending();
           refreshConversations();
         })
         .catch((err: Error) => setError(err.message));
     },
-    [rpc, refreshConversations],
+    [rpc, refreshConversations, dismissPending],
   );
 
   /**
@@ -908,12 +944,13 @@ export function App(): JSX.Element {
         setArtifacts([]);
         setSelectedArtifact(undefined);
         setOpenPath(undefined);
+        dismissPending();
         setNotice(`Now working in ${res.state.workspaceName}.`);
         refreshConversations();
         refreshWorkspace();
         refreshArtifacts();
       }),
-    [rpc, refreshConversations, refreshWorkspace, refreshArtifacts],
+    [rpc, refreshConversations, refreshWorkspace, refreshArtifacts, dismissPending],
   );
 
   const newConversation = useCallback(() => {
@@ -921,16 +958,25 @@ export function App(): JSX.Element {
       .request<UiOpenConversationResult>(UI_METHODS.newConversation)
       .then(() => {
         setTranscript(emptyTranscript);
+        dismissPending();
         refreshConversations();
       })
       .catch((err: Error) => setError(err.message));
-  }, [rpc, refreshConversations]);
+  }, [rpc, refreshConversations, dismissPending]);
 
   newConversationRef.current = newConversation;
 
   // Either source counts: this tab's own in-flight request, or a run the host
   // reports (one started before a reload, or from another tab).
   const busy = Boolean(runId ?? hostRunId);
+
+  /**
+   * The task list lifted out of the transcript into the pinned bar, if any.
+   *
+   * Derived once, here, so the bar and the list cannot disagree about which
+   * card is pinned — the transcript hides exactly the one the bar draws.
+   */
+  const pinnedTasks = busy ? currentTasks(transcript) : undefined;
 
 
   // The indicator's clock starts when the run becomes visible here and stops
@@ -1000,8 +1046,18 @@ export function App(): JSX.Element {
             </div>
           )}
 
+          {/* Above the scroller, not inside it: the list is about the run in
+              flight, so it has to stay put while the transcript moves. And
+              only while it IS in flight — "what is left" stops being a
+              question the moment the run ends, and a finished 4/4 list held
+              above an idle window is chrome that has nothing left to say. When
+              the run ends the card drops back into the transcript, which is
+              where the record of that turn belongs. */}
+          <TaskBar todos={pinnedTasks?.todos ?? []} />
+
           <MessageList
             transcript={transcript}
+            hideTaskId={pinnedTasks?.id}
             onOpenPath={openInFiles}
             busy={busy}
             runStartedAt={runStartedAt}

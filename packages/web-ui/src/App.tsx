@@ -123,6 +123,14 @@ function outcomeNotice(res: UiSendMessageResult): { text: string; warn: boolean 
   }
 }
 
+/**
+ * How long a notice stays before it clears itself.
+ *
+ * Long enough to read a sentence twice, short enough that it is gone by the
+ * time you have finished reading the reply underneath it.
+ */
+const NOTICE_MS = 6_000;
+
 /** Permission modes, least to most autonomous — same order the CLI lists them. */
 const MODES = ['plan', 'default', 'auto-edit', 'full-auto'];
 
@@ -969,6 +977,29 @@ export function App(): JSX.Element {
   // reports (one started before a reload, or from another tab).
   const busy = Boolean(runId ?? hostRunId);
 
+  /**
+   * The task list lifted out of the transcript into the pinned bar, if any.
+   *
+   * Derived once, here, so the bar and the list cannot disagree about which
+   * card is pinned — the transcript hides exactly the one the bar draws.
+   */
+  const pinnedTasks = busy ? currentTasks(transcript) : undefined;
+
+  /**
+   * A notice says something just happened — "Stopped.", "Index rebuilt.",
+   * "Now working in pin-folder." — and every one of them used to sit there
+   * until it was clicked. A confirmation of a finished action is not a
+   * standing condition, and a strip of stale chrome above the conversation is
+   * what it turned into. It clears itself now; clicking still dismisses it
+   * early. (The LAN warning is a different element and deliberately stays: it
+   * describes what this page IS, not something that happened.)
+   */
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(undefined), NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
 
   // The indicator's clock starts when the run becomes visible here and stops
   // with it. Timed from this tab rather than from the host, which does not
@@ -1038,11 +1069,17 @@ export function App(): JSX.Element {
           )}
 
           {/* Above the scroller, not inside it: the list is about the run in
-              flight, so it has to stay put while the transcript moves. */}
-          <TaskBar todos={currentTasks(transcript)?.todos ?? []} />
+              flight, so it has to stay put while the transcript moves. And
+              only while it IS in flight — "what is left" stops being a
+              question the moment the run ends, and a finished 4/4 list held
+              above an idle window is chrome that has nothing left to say. When
+              the run ends the card drops back into the transcript, which is
+              where the record of that turn belongs. */}
+          <TaskBar todos={pinnedTasks?.todos ?? []} />
 
           <MessageList
             transcript={transcript}
+            hideTaskId={pinnedTasks?.id}
             onOpenPath={openInFiles}
             busy={busy}
             runStartedAt={runStartedAt}

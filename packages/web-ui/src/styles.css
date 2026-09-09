@@ -540,8 +540,13 @@ body {
    flow cannot overlap the transcript, the composer or the workspace panel,
    which a floating overlay would, and it does not have to fight the scroller's
    own auto-follow. Collapsed it is one line — a pinned region earns its space
-   by being small. */
-.taskbar { flex: none; background: var(--bg-sunken); border-bottom: 1px solid var(--border); }
+   by being small.
+
+   No fill and no rule of its own. It had both, which stacked it under the
+   notice banner into a two-tier bordered header heavy enough to read as
+   window chrome. It is transient run status, the same thing `.working` is, so
+   it is drawn with the same quietness. */
+.taskbar { flex: none; }
 .taskbar-head {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 7px var(--gutter);

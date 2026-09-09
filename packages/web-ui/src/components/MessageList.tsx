@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { renderMarkdown } from '../markdown.js';
-import { activityOf, currentTasks, type Item, type Transcript } from '../transcript.js';
+import { activityOf, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
 import { WorkingIndicator } from './WorkingIndicator.js';
 
@@ -29,6 +29,12 @@ export interface MessageListProps {
   onEdit?(ordinal: number, text: string): void;
   /** Restore the workspace to the checkpoint before this turn (conversation stays). */
   onRestore?(ordinal: number): void;
+  /**
+   * The task card `TaskBar` is currently drawing above this list, so it is not
+   * drawn twice. Decided by App, which owns the rule for when a list is
+   * pinned; unset means nothing is pinned and every card renders here.
+   */
+  hideTaskId?: string;
 }
 
 export function MessageList({
@@ -38,6 +44,7 @@ export function MessageList({
   runStartedAt,
   onEdit,
   onRestore,
+  hideTaskId,
 }: MessageListProps): JSX.Element {
   const end = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -48,12 +55,11 @@ export function MessageList({
   const total = transcript.items.length;
   const hidden = Math.max(0, total - visible);
   const windowed = hidden > 0 ? transcript.items.slice(hidden) : transcript.items;
-  // The live run's task list is drawn by `TaskBar`, pinned above this
-  // scroller. Skipping it here is what keeps it from being drawn twice —
-  // every EARLIER run's list stays in place, so the transcript still records
-  // what each turn set out to do.
-  const pinnedTasksId = currentTasks(transcript)?.id;
-  const shown = pinnedTasksId ? windowed.filter((item) => item.id !== pinnedTasksId) : windowed;
+  // While a run is live its task list is drawn by `TaskBar` above this
+  // scroller, so it is skipped here rather than drawn twice. Every other
+  // card stays — including this one once the run ends and the bar goes away,
+  // because the transcript is the record of what each turn set out to do.
+  const shown = hideTaskId ? windowed.filter((item) => item.id !== hideTaskId) : windowed;
 
   // Follow the stream, but stop fighting the user the moment they scroll up to
   // read something — and resume when they come back to the bottom.

@@ -149,21 +149,35 @@ describe('a host notice about how the run ended', () => {
 });
 
 describe('task lists in the transcript', () => {
-  it('leaves the running turn\'s list to the pinned bar, and keeps earlier ones', () => {
-    // Drawing it in both places is the bug this dedup exists to prevent: the
-    // same list twice, one of them scrolling away. Earlier runs keep their
-    // card, because that is the record of what each turn set out to do.
+  const twoRuns = (): Transcript => {
     const first = fold([
       { type: 'todo_update', todos: [{ content: 'old plan', status: 'completed' }] },
     ]);
-    const t = fold(
+    return fold(
       [{ type: 'todo_update', todos: [{ content: 'live plan', status: 'in_progress' }] }],
       { ...first, items: [...first.items, { kind: 'text', id: 'u1', role: 'user', text: 'again' }] },
     );
+  };
 
-    const { container } = render(<MessageList transcript={t} />);
+  it('leaves the pinned list to the bar, and keeps every other one', () => {
+    // Drawing it in both places is the bug this dedup exists to prevent: the
+    // same list twice, one of them scrolling away. Earlier runs keep their
+    // card, because that is the record of what each turn set out to do.
+    const t = twoRuns();
+    const live = t.items.find((i) => i.kind === 'tasks' && i.id !== t.items[0]!.id)!;
+
+    const { container } = render(<MessageList transcript={t} hideTaskId={live.id} />);
     expect(container.querySelectorAll('.tasks')).toHaveLength(1);
     expect(container.textContent).toContain('old plan');
     expect(container.textContent).not.toContain('live plan');
+  });
+
+  it('draws every list once the run ends and nothing is pinned any more', () => {
+    // The bar only exists while a run is in flight. When it goes, the card it
+    // was standing in for has to come back — otherwise the finished turn has
+    // no record of what it set out to do.
+    const { container } = render(<MessageList transcript={twoRuns()} />);
+    expect(container.querySelectorAll('.tasks')).toHaveLength(2);
+    expect(container.textContent).toContain('live plan');
   });
 });

@@ -112,8 +112,9 @@ export const chatToolDefinitions: ToolDefinition[] = [
   // concept here, and one that cannot see it will claim it searched anyway.
   described(
     sharedAgentTools.web_search,
-    'Search the web. Only for questions the files cannot answer — check this folder first, and say ' +
-      'plainly when an answer came from the web rather than from the person\'s own documents.',
+    'Search the web. Check this folder first when the question could be about their own files — but a ' +
+      'question that plainly is not about them does not need a search of them first. Say when an ' +
+      'answer came from the web rather than from the person\'s own documents.',
   ),
   described(
     sharedAgentTools.fetch_url,

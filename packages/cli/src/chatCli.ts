@@ -37,6 +37,9 @@ export interface ChatCliOptions {
  * Heap Code is a tool you run inside a project; Heap Chat is one you point at
  * your documents, and defaulting to whatever directory the terminal happened
  * to be in would index a repo by accident on first run.
+ *
+ * (Mounted inside `heapcode web` it does open on that folder — there the
+ * folder was chosen deliberately. See webCli.ts.)
  */
 export async function runChat(opts: ChatCliOptions = {}): Promise<number> {
   const root = canonicalize(opts.folder ? resolve(opts.folder) : homedir());
@@ -79,7 +82,7 @@ export async function runChat(opts: ChatCliOptions = {}): Promise<number> {
     return 1;
   }
 
-  process.stdout.write(`\n  Heap Chat\n\n  ${running.url}\n\n`);
+  process.stdout.write(`\n  Heap Chat — read, search, ask and draft\n\n  ${running.url}\n\n`);
   process.stdout.write(`  Folder: ${root}\n`);
   process.stdout.write(`  Connection: ${profile.name} (${profile.model})\n\n`);
 

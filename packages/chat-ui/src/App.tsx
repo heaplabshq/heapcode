@@ -357,10 +357,19 @@ export function App(): JSX.Element {
               setPanelTab('files');
               setPanelOpen(true);
             }}
+            // What it can actually do, rather than the narrowest thing it
+            // does. "Ask about the files in X" described a file Q&A tool; the
+            // roster is read + web search + memory + producing documents, and
+            // two cases in the eval exist to prove general questions are
+            // answered rather than refused.
+            //
+            // The read-only constraint is stated as a reason to use it, not
+            // as an apology. It is why you would point this at six years of
+            // records.
             empty={{
               title: 'Heap Chat',
               body: state?.folder
-                ? `Ask about the files in ${state.folderName}. Every answer says which file it came from.`
+                ? `Work with what is in ${state.folderName} — read it, search it, ask about it, and draft from it. Anything grounded in your files says which one it came from.`
                 : 'Choose a folder to get started.',
               hint: (
                 <>
@@ -369,7 +378,13 @@ export function App(): JSX.Element {
                     <span className="empty-sep" aria-hidden>
                       ·
                     </span>
-                    Nothing here changes your files
+                    The web when your files fall short
+                  </span>
+                  <span>
+                    <span className="empty-sep" aria-hidden>
+                      ·
+                    </span>
+                    It writes new documents, never over yours
                   </span>
                 </>
               ),

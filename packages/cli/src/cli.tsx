@@ -465,7 +465,7 @@ Usage:
   heapcode model <list|set ROLE CONNECTION MODEL|clear ROLE>   Which model serves each role (also /roles)
   heapcode audit                            Local usage/audit dashboard — event names + coarse metadata only, never code/prompts/paths; nothing leaves this machine
   heapcode web [--port N] [--host H]        Serve the browser UI for this workspace on 127.0.0.1 (--host exposes it to your network — see the warning it prints)
-  heapcode chat [folder] [--port N]        Serve Heap Chat over a folder (defaults to your home directory) — reads and answers questions, changes nothing
+  heapcode chat [folder] [--port N]        Serve Heap Chat over a folder (defaults to your home directory) — read, search, ask and draft; it writes new documents, never over yours
 
 Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text

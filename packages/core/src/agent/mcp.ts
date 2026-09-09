@@ -86,8 +86,10 @@ export class McpManager {
   private failures = new Map<string, string>();
   /** Servers that answered 401 and have a sign-in waiting to be started. */
   private needsAuth = new Set<string>();
-  /** One per server, so a login and a reconnect share stored registration. */
+  /** One per server, for sign-ins someone is driving. */
   private providers = new Map<string, McpOAuthProvider>();
+  /** The same, for connection attempts — see `connectProvider`. */
+  private connectProviders = new Map<string, McpOAuthProvider>();
   private connecting?: Promise<void>;
 
   constructor(
@@ -144,7 +146,7 @@ export class McpManager {
         // Attached only when the host can complete a login. Given one, the
         // SDK sends a stored token, refreshes it when stale, and re-registers
         // if the callback moved — all before `connect` returns.
-        const authProvider = server.url ? this.providerFor(name) : undefined;
+        const authProvider = server.url ? this.connectProvider(name) : undefined;
         const transport = server.url
           ? server.transport === 'sse'
             ? new SSEClientTransport(new URL(server.url), { authProvider })
@@ -217,8 +219,7 @@ export class McpManager {
   }
 
   /**
-   * The provider for one server, shared between connecting and signing in so
-   * both halves of a login see the same stored client registration.
+   * The provider for a sign-in the person is driving.
    *
    * `redirectOverride` is for a host that cannot know its callback until the
    * login starts: a terminal opens an ephemeral loopback port per sign-in, so
@@ -227,13 +228,33 @@ export class McpManager {
    * by both, because a registration is only valid for the URI it was made for.
    */
   providerFor(name: string, redirectOverride?: string): McpOAuthProvider | undefined {
-    const redirect = redirectOverride ?? this.redirectUri;
+    return this.cachedProvider(this.providers, name, redirectOverride ?? this.redirectUri, true);
+  }
+
+  /**
+   * The provider a connection attempt uses.
+   *
+   * Separate from the one above, and non-owning, so that reconnecting while
+   * someone is on a consent screen cannot overwrite the `state` and verifier
+   * their login depends on. It shares the same store, so a token it refreshes
+   * and a client it registers are the real ones.
+   */
+  private connectProvider(name: string): McpOAuthProvider | undefined {
+    return this.cachedProvider(this.connectProviders, name, this.redirectUri, false);
+  }
+
+  private cachedProvider(
+    cache: Map<string, McpOAuthProvider>,
+    name: string,
+    redirect: string | undefined,
+    owned: boolean,
+  ): McpOAuthProvider | undefined {
     if (!this.authStore || !redirect) return undefined;
     const key = `${name}\u0000${redirect}`;
-    let provider = this.providers.get(key);
+    let provider = cache.get(key);
     if (!provider) {
-      provider = new McpOAuthProvider(name, this.authStore, redirect);
-      this.providers.set(key, provider);
+      provider = new McpOAuthProvider(name, this.authStore, redirect, owned);
+      cache.set(key, provider);
     }
     return provider;
   }
@@ -246,8 +267,10 @@ export class McpManager {
   /** Forget one server's tokens and registration, and drop its connection. */
   async signOut(name: string): Promise<void> {
     await this.authStore?.clear(name);
-    for (const key of [...this.providers.keys()]) {
-      if (key.startsWith(`${name}\u0000`)) this.providers.delete(key);
+    for (const cache of [this.providers, this.connectProviders]) {
+      for (const key of [...cache.keys()]) {
+        if (key.startsWith(`${name}\u0000`)) cache.delete(key);
+      }
     }
     const server = this.servers.get(name);
     if (server) {

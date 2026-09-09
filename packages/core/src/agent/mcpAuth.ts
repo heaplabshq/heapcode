@@ -91,10 +91,35 @@ export class McpOAuthProvider implements OAuthClientProvider {
    */
   private pendingUrl?: URL;
 
+  /**
+   * A `state` and verifier for a provider that must not persist them.
+   *
+   * See `owned` below: a connect attempt still walks the SDK's authorization
+   * code path far enough to mint these, and they have to go somewhere.
+   */
+  private ephemeral: { state?: string; codeVerifier?: string } = {};
+
   constructor(
     private readonly server: string,
     private readonly store: McpAuthStore,
     readonly redirectUrl: string,
+    /**
+     * Whether this provider owns a sign-in someone is in the middle of.
+     *
+     * A 401 makes the SDK start a *fresh* authorization, so an ordinary
+     * reconnect — opening settings, saving another server, restarting the
+     * session — mints a new `state` and a new PKCE verifier. If those are
+     * written to the store while the person is still on the consent screen,
+     * the login they are completing is destroyed: the state no longer
+     * matches, and the verifier no longer answers the challenge the server
+     * is holding. That was a real bug, not a hypothetical one.
+     *
+     * So only an explicit sign-in persists them. A connection attempt keeps
+     * them in memory and throws them away, which costs nothing — it was
+     * never going to open a browser — while tokens and client registration
+     * still persist, so refresh and re-registration work as they should.
+     */
+    private readonly owned = true,
   ) {}
 
   get clientMetadata(): OAuthClientMetadata {
@@ -142,17 +167,25 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async saveCodeVerifier(codeVerifier: string): Promise<void> {
+    if (!this.owned) {
+      this.ephemeral.codeVerifier = codeVerifier;
+      return;
+    }
     await this.patch({ codeVerifier });
   }
 
   async codeVerifier(): Promise<string> {
-    const verifier = (await this.record()).codeVerifier;
+    const verifier = this.owned ? (await this.record()).codeVerifier : this.ephemeral.codeVerifier;
     if (!verifier) throw new Error(`No sign-in is in progress for "${this.server}".`);
     return verifier;
   }
 
   async state(): Promise<string> {
     const state = randomToken();
+    if (!this.owned) {
+      this.ephemeral.state = state;
+      return state;
+    }
     await this.patch({ state });
     return state;
   }
@@ -173,13 +206,16 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const record = await this.record();
     if (scope === 'client') delete record.client;
     if (scope === 'tokens') delete record.tokens;
-    if (scope === 'verifier') delete record.codeVerifier;
+    if (scope === 'verifier') {
+      delete record.codeVerifier;
+      this.ephemeral.codeVerifier = undefined;
+    }
     await this.store.write(this.server, record);
   }
 
   /** The `state` this provider is expecting a callback to carry. */
   async expectedState(): Promise<string | undefined> {
-    return (await this.record()).state;
+    return this.owned ? (await this.record()).state : this.ephemeral.state;
   }
 }
 

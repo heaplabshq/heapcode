@@ -52,6 +52,41 @@ describe('McpOAuthProvider', () => {
     await expect(p.codeVerifier()).rejects.toThrow(/No sign-in is in progress/);
   });
 
+  it('does not let a reconnect overwrite a login someone is in the middle of', async () => {
+    const store = new MemoryAuthStore();
+
+    // The sign-in the person is driving: state and verifier go to the store,
+    // because the callback arrives on a different request.
+    const login = provider(store);
+    await login.saveCodeVerifier('verifier-from-the-real-login');
+    const state = await login.state();
+
+    // What a connection attempt uses. A 401 makes the SDK start a fresh
+    // authorization, so this path mints its own state and verifier — and if
+    // those reached the store, the consent screen still open in the browser
+    // would come back to a login that no longer exists.
+    const reconnect = new McpOAuthProvider('notion', store, REDIRECT, false);
+    await reconnect.saveCodeVerifier('verifier-from-a-reconnect');
+    await reconnect.state();
+
+    const record = store.read('notion') as McpAuthRecord;
+    expect(record.state).toBe(state);
+    expect(record.codeVerifier).toBe('verifier-from-the-real-login');
+    expect(await login.expectedState()).toBe(state);
+  });
+
+  it('a non-owning provider still shares tokens and registration', async () => {
+    const store = new MemoryAuthStore();
+    const reconnect = new McpOAuthProvider('notion', store, REDIRECT, false);
+    // Refreshing a token and registering a client are exactly what the connect
+    // path is for; only the login half is withheld from it.
+    await reconnect.saveTokens({ access_token: 'refreshed', token_type: 'Bearer' });
+    await reconnect.saveClientInformation({ client_id: 'abc', redirect_uris: [REDIRECT] } as never);
+
+    expect((await provider(store).tokens())?.access_token).toBe('refreshed');
+    expect((await provider(store).clientInformation())?.client_id).toBe('abc');
+  });
+
   it('mints a fresh state each time, so an abandoned login cannot be resumed', async () => {
     const p = provider();
     expect(await p.state()).not.toBe(await p.state());

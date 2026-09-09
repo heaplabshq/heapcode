@@ -147,6 +147,20 @@ export interface HelloParams {
    * (packages/vscode/src/extension.ts:85). Defaults to true.
    */
   localRoot?: boolean;
+  /**
+   * File extensions (lowercase, with the dot) this host can turn into text
+   * that source-code extensions do not already cover — `['.pdf', '.docx',
+   * '.csv']` for Heap Chat, absent for Heap Code.
+   *
+   * The server widens its index selection by these and calls back to
+   * `document/extract` for each one, by PATH: the parsers are the host's
+   * (`pdf-parse`, `mammoth` — tens of megabytes that must not enter core or
+   * the CLI's bundle), while the indexer is the server's. Sending the path
+   * rather than the bytes keeps a 12 MB PDF from becoming 16 MB of base64 on
+   * the wire; §6 already colocates the two on one machine, and `localRoot`
+   * is the guard for when that does not hold.
+   */
+  documentExtensions?: string[];
 }
 
 export interface HelloResult {
@@ -224,6 +238,23 @@ export interface AgentRunResult {
 
 export interface AgentCancelParams {
   runId: string;
+}
+
+/**
+ * `document/extract` — server → host.
+ *
+ * `path` is workspace-relative and the host MUST resolve it under its own
+ * root and refuse anything that escapes: this is a filesystem read driven by
+ * a path the host did not choose, which is exactly the shape a traversal bug
+ * takes.
+ */
+export interface DocumentExtractParams {
+  path: string;
+}
+
+export interface DocumentExtractResult {
+  /** Absent when the file could not be read — encrypted, malformed, or an image-only scan. */
+  text?: string;
 }
 
 /**
@@ -622,6 +653,8 @@ export const METHODS = {
   ragStatus: 'rag/status',
   ragEvent: 'rag/event',
   toolExecute: 'tool/execute',
+  /** server → host: read a non-code file the host has a parser for. */
+  documentExtract: 'document/extract',
   permissionRequest: 'permission/request',
   snapshotBefore: 'snapshot/before',
   keyRequest: 'key/request',

@@ -81,7 +81,13 @@ const ctx = await esbuild.context({
   // for these two native accelerators inside a try/catch and falls back to its
   // pure-JS paths when they're absent. Same reasoning as fsevents — bundling
   // them would make the CLI depend on a native build it does not need.
-  external: ['fsevents', 'bufferutil', 'utf-8-validate'],
+  //
+  // pdf-parse / mammoth: Heap Chat's optional document parsers. Tens of
+  // megabytes of parser between them, needed by one of the two products this
+  // bundle carries and by neither of Heap Code's surfaces. Loaded with a
+  // guarded dynamic import (chat-host/src/extractors.ts), so absent they turn
+  // into "not reading PDFs" in the UI rather than a crash.
+  external: ['fsevents', 'bufferutil', 'utf-8-validate', 'pdf-parse', 'mammoth'],
   // react-devtools-core: Ink's optional DEV-mode devtools hook statically
   // imports it; esbuild's ESM output hoists that import to top-level
   // regardless of the runtime DEV-env-var guard around it, so `external`

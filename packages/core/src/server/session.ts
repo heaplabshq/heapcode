@@ -36,6 +36,8 @@ export class Session {
   private roles: ModelRoleTable;
   /** False when `root` is not a real local directory — see HelloParams.localRoot. */
   readonly localRoot: boolean;
+  /** Non-code extensions this host can extract — see HelloParams.documentExtensions. */
+  readonly documentExtensions: readonly string[];
 
   private readonly keys = new Map<string, string>();
   private readonly profiles = new Map<string, ProviderProfileConfig>();
@@ -61,6 +63,7 @@ export class Session {
     this.root = hello.root;
     this.activeProfile = hello.activeProfile;
     this.localRoot = hello.localRoot ?? true;
+    this.documentExtensions = (hello.documentExtensions ?? []).map((e) => e.toLowerCase());
     this.roles = hello.roles ?? {};
     for (const profile of hello.profiles) this.profiles.set(profile.name, profile);
     for (const [name, key] of Object.entries(hello.keys ?? {})) this.keys.set(name, key);

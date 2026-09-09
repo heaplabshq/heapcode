@@ -234,17 +234,18 @@ not.
 Goal: the index stops being code-only. Also improves Heap Code, which
 currently cannot index the docs already sitting in repos.
 
-- [ ] Extractor seam in the indexer. `packages/core/src/rag/indexer.ts`
+- [x] Extractor seam in the indexer. `packages/core/src/rag/indexer.ts`
       (~:333-339 as of 2026-09-09) already tests the extension, decodes bytes
       as UTF-8 and bails on a `\0` — the hook goes exactly there
-- [ ] Document extension set, separate from `CODE_EXTENSIONS`
+- [x] Document extension set, separate from `CODE_EXTENSIONS`
       (`packages/repomap/src/indexer.ts:16`). Do not widen `CODE_EXTENSIONS`
       itself — Heap Code's index policy is deliberate
-- [ ] PDF, Word, CSV, plain text extractors, in `chat-host`, behind the seam
-- [ ] Chunking strategy for prose. The AST chunker is code-shaped; decide
+- [x] PDF, Word, CSV, plain text extractors, in `chat-host`, behind the seam
+- [x] Chunking strategy for prose. The AST chunker is code-shaped; decide
       whether prose gets the line-window fallback or its own chunker, and
       record the choice
-- [ ] Tests per extractor, incl. a malformed/encrypted file per type
+- [ ] Tests per extractor, incl. a malformed/encrypted file per type —
+      **deferred with the rest of the testing to the end of the plan**
 
 **Exit criteria:** ask a question whose answer is only in a PDF, get a cited
 answer. `heapcode web` indexing behavior on a code repo is byte-identical to
@@ -367,4 +368,9 @@ Do not resolve these by picking a default — ask.
 | 2026-09-09 | Provider connections and the model role table are shared between products; conversation history and memory are not | One keychain entry and one Ollama config is the biggest ergonomic win available. But code sessions in a documents chat list, or project memory mixed with personal memory, would be actively wrong in both directions |
 | 2026-09-09 | Document extensions are a separate set from `CODE_EXTENSIONS`, behind an extractor seam | Heap Code's index policy is deliberate; widening it in place would change Heap Code's behavior as a side effect of chat work |
 | 2026-09-09 | `heapcode web` continues to land directly in code mode; the product switcher lives inside the app | The primary product's primary path must not gain a click |
+| 2026-09-09 | Prose is chunked by the existing line-window fallback, not a new prose-aware chunker | `chunkFile` already routes anything `isAstSupported` rejects to `chunkFileByLines`, and extracted text is normalized first (form feeds to breaks, runs of blank lines collapsed) so the windows are not spent on layout. A prose chunker is real work and there is no measurement to justify it until C2 exists |
+| 2026-09-09 | Extraction is a host callback (`document/extract`), by PATH, not a parser inside core | `pdf-parse` and `mammoth` are tens of megabytes and must not enter core or the CLI bundle, but the indexer is the daemon's. Sending the path rather than the bytes keeps a 12 MB PDF from becoming 16 MB of base64 per file; §6 already colocates the two. The host resolves it through realpath under its own root, because a symlink inside the folder defeats every prefix check |
+| 2026-09-09 | `pdf-parse`/`mammoth` are optionalDependencies of **the CLI**, external to its bundle | The bundle that runs is `packages/cli/dist/cli.js`, so that is where node resolves an external import from. Declared on chat-host they installed into the wrong node_modules and every PDF silently failed — which first read as a passing test, because `search` had matched an uncompressed PDF's raw bytes |
+| 2026-09-09 | Heap Chat indexes the folder on open; Heap Code does not | Not an oversight there: a repo opened in an editor has reason to index on demand, but the point of pointing this at a folder is that its contents become answerable. An unbuilt index answers the first question with "there is nothing about that here", which is the worst wrong answer this product can give |
+| 2026-09-09 | `read_file` on a document returns extracted text, and says so plainly when it cannot | Retrieval already returns extracted text; a direct read that returned FlateDecode bytes would make the two disagree about what the file says. Failure is reported rather than returned empty — "could not read" and "is empty" lead the model to opposite conclusions |
 | 2026-09-09 | `extraction-audit.md`'s structural findings stand; its line numbers and sizes do not | It measured `core` at 5,528 lines; `core` is 15,182 as of today. Re-verify any specific reference before acting on it. Its conclusions have only strengthened — heapcode roughly tripled while heapchat has had no commit since 2026-07-26 |

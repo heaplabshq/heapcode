@@ -89,6 +89,7 @@ body {
 .folder:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .folder-name { font-weight: 560; }
 .folder-hint, .index-status { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.index-warn { color: var(--warn); }
 
 /* ---- main ---- */
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }

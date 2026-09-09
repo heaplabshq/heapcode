@@ -200,7 +200,14 @@ export function App(): JSX.Element {
                   ? `${index.files} files searchable`
                   : index.state === 'unconfigured'
                     ? 'No embeddings model — text search only'
-                    : index.message ?? index.state}
+                    : (index.message ?? index.state)}
+            </div>
+          ) : null}
+          {index?.missingParsers?.length ? (
+            // Said out loud, because a skipped file type is indistinguishable
+            // from an empty folder to whoever is asking the question.
+            <div className="index-status index-warn">
+              Not reading {index.missingParsers.join(', ')} — parser not installed
             </div>
           ) : null}
         </footer>

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ASK_USER_NO_ANSWER,
   DEFAULT_MAX_ITERATIONS,
@@ -23,6 +23,8 @@ import {
   type ServerConnection,
   type StoredMessage,
   type ToolCall,
+  type DocumentExtractParams,
+  type DocumentExtractResult,
   type ToolExecuteParams,
   type ToolResult,
 } from '@heapcode/core';
@@ -48,6 +50,7 @@ import {
   type WorkspaceStore,
 } from '@heapcode/web-host';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
+import { chatExtractors, describeMissingParsers } from './extractors.js';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from './protocol.js';
 import type {
   ChatAskUserParams,
@@ -74,6 +77,21 @@ import type {
 } from './protocol.js';
 import { CHAT_SYSTEM_PROMPT } from './prompt.js';
 import { CHAT_TOOL_NAMES, chatToolDefinitions } from './tools.js';
+
+/**
+ * The three outcomes of trying to read a path as a document.
+ *
+ * Distinguished because the two callers want different things from a failure:
+ * the index must store nothing, while the model must be told, or it treats an
+ * unreadable scan as an empty file and answers from the silence.
+ */
+type DocumentRead =
+  | { kind: 'text'; text: string }
+  | { kind: 'unreadable'; format?: string }
+  | { kind: 'not-a-document' };
+
+/** Extensions this host declares to the daemon — derived from the extractors themselves. */
+const DOCUMENT_EXTENSIONS = ['.txt', '.text', '.csv', '.tsv', '.log', '.vtt', '.srt', '.tex', '.pdf', '.docx'];
 
 /** Per-run event retention for replay after a browser refresh. */
 const REPLAY_BUFFER = 2_000;
@@ -200,9 +218,14 @@ export class ChatSession implements HostSession {
       activeProfile: profile.name,
       roles: await config.getRoles(),
       keys: apiKey ? { [profile.name]: apiKey } : {},
+      // What this host can turn into text. The daemon widens its index
+      // selection by these and calls `document/extract` back for each one —
+      // the parsers live here, the indexer lives there.
+      documentExtensions: DOCUMENT_EXTENSIONS,
     });
     this.registerDaemonHandlers(this.connection.peer);
     void this.warmContextWindow();
+    void this.startIndexing();
     await this.deps.workspaces?.record(this.root);
   }
 
@@ -240,6 +263,28 @@ export class ChatSession implements HostSession {
 
     await this.start();
     void this.pushState();
+  }
+
+  /**
+   * Make the folder searchable without being asked.
+   *
+   * The difference from Heap Code is the product, not an oversight there: a
+   * repo you opened in an editor has a reason to be indexed on demand, but the
+   * entire point of pointing this at a folder is that its contents become
+   * answerable. Waiting for a `semantic_search` to build the index means the
+   * first question is answered from an empty one — which reads as "there is
+   * nothing about that in this folder", the single worst wrong answer this
+   * product can give.
+   *
+   * Incremental, not `clear`: unchanged files keep their vectors. Fired and
+   * forgotten, because a first build is minutes of embedding and `start()`
+   * has a page waiting on it.
+   */
+  private async startIndexing(): Promise<void> {
+    await this.connection?.peer.request(METHODS.ragIndex, { full: true }).catch(() => undefined);
+    void this.indexStatus()
+      .then((s) => this.ui?.notify(CHAT_METHODS.indexChanged, s))
+      .catch(() => {});
   }
 
   private async warmContextWindow(): Promise<void> {
@@ -418,12 +463,17 @@ export class ChatSession implements HostSession {
       .request<{ state: string; files?: number; chunks?: number; message?: string }>(METHODS.ragStatus, {})
       .catch(() => undefined);
     if (!res) return { state: 'unconfigured', files: 0, chunks: 0 };
+    // "Nothing in this folder about the deposit" and "the PDF holding it was
+    // never indexed" look identical to whoever asked. Only one is true, so
+    // the missing parser is surfaced rather than swallowed.
+    const missing = await describeMissingParsers();
     return {
       state: (res.state as ChatIndexStatus['state']) ?? 'idle',
       files: res.files ?? 0,
       chunks: res.chunks ?? 0,
       message: res.message,
       progress: this.indexProgress,
+      missingParsers: missing.length > 0 ? missing : undefined,
     };
   }
 
@@ -552,6 +602,24 @@ export class ChatSession implements HostSession {
     // Nothing to snapshot: no tool on this roster changes a file.
     peer.onRequest(METHODS.snapshotBefore, async () => null);
 
+    /**
+     * Read one non-code file for the index.
+     *
+     * The path arrives from the daemon, so it is resolved under this
+     * session's folder and anything that escapes is refused. The daemon only
+     * ever sends paths it walked inside that folder, but "the caller is
+     * well-behaved" is not a boundary — this is a filesystem read driven by a
+     * path this process did not choose.
+     */
+    peer.onRequest(METHODS.documentExtract, async (raw): Promise<DocumentExtractResult> => {
+      const { path } = raw as DocumentExtractParams;
+      const read = await this.readDocument(path);
+      // Only real text reaches the index. An explanation of why a file could
+      // not be read is not that file's content, and indexing it would make
+      // the folder searchable for words nobody wrote.
+      return read.kind === 'text' ? { text: read.text } : {};
+    });
+
     peer.onRequest(METHODS.keyRequest, async (raw): Promise<KeyRequestResult> => {
       const { profileName } = raw as KeyRequestParams;
       const target = await this.deps.config.getProfile(profileName);
@@ -603,7 +671,58 @@ export class ChatSession implements HostSession {
     if (call.name === 'ask_user') {
       return { id: call.id, name: call.name, content: await this.askUser(call, signal) };
     }
+
+    // `read_file` on a PDF or a .docx would hand the model the container's
+    // bytes — a wall of FlateDecode noise it will either quote as if it were
+    // content or give up on. Retrieval already returns extracted text, so a
+    // direct read must too, or the two disagree about what the file says.
+    if (call.name === 'read_file') {
+      const path = String(call.args.path ?? '');
+      const read = await this.readDocument(path);
+      if (read.kind === 'text') return { id: call.id, name: call.name, content: read.text };
+      if (read.kind === 'unreadable') {
+        // Told plainly rather than returned as empty: "I could not read this"
+        // and "this file is empty" lead the model to opposite conclusions,
+        // and only one of them is honest about a scanned or encrypted PDF.
+        return {
+          id: call.id,
+          name: call.name,
+          content:
+            `Could not read ${path}. It is a ${read.format ?? 'document'} file with no extractable ` +
+            'text — it may be encrypted, malformed, or a scan with no text layer. Say so rather than ' +
+            'guessing at its contents.',
+          isError: true,
+        };
+      }
+    }
+
     return this.executor!.execute(call, signal);
+  }
+
+  /**
+   * A document as text, or undefined when this path is not one.
+   *
+   * Shares the traversal guard with `document/extract` rather than repeating
+   * it: both take a path this process did not choose — one from the daemon,
+   * one from the model — and a second copy of a security check is a second
+   * place for it to be wrong.
+   */
+  private async readDocument(path: string): Promise<DocumentRead> {
+    const extractor = chatExtractors.find((e) => e.handles(path));
+    if (!extractor) return { kind: 'not-a-document' };
+    try {
+      const full = canonicalize(resolve(this.root, path));
+      const rel = relative(this.root, full);
+      if (rel === '' || isAbsolute(rel) || rel.split(sep)[0] === '..') return { kind: 'unreadable' };
+      const bytes = await readFile(full);
+      if (extractor.maxBytes && bytes.byteLength > extractor.maxBytes) return { kind: 'unreadable' };
+      const text = await extractor.extract(path, bytes);
+      return text === undefined
+        ? { kind: 'unreadable', format: extractor.name }
+        : { kind: 'text', text };
+    } catch {
+      return { kind: 'unreadable', format: extractor.name };
+    }
   }
 
   /** Ask the person a question, through the page. Fails closed with no page attached. */

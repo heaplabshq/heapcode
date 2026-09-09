@@ -173,6 +173,12 @@ export interface ChatIndexStatus {
   chunks: number;
   message?: string;
   progress?: { embedded: number; total: number };
+  /**
+   * Optional parsers that are not installed, so the page can say which file
+   * types are being skipped. Absent when everything Heap Chat claims to read
+   * is actually readable.
+   */
+  missingParsers?: string[];
 }
 
 export interface ChatSettings {

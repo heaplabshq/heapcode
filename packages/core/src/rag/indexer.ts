@@ -9,6 +9,7 @@ import type { ModelRole } from '../config/roles.js';
 import type { Provider } from '../providers/types.js';
 import { chunkFile, fnv1a, type Chunk } from './chunker.js';
 import { contextualizeChunks } from './contextualize.js';
+import { extractorFor, normalizeExtractedText, type DocumentExtractor } from './extractors.js';
 import { toHitMeta, type HitMeta } from './keywordIndex.js';
 import { RERANK_CANDIDATES, rerankHits } from './rerank.js';
 import { VectorStore, type SearchHit, type VectorRecord } from './store.js';
@@ -63,6 +64,14 @@ export interface RagIndexerOptions {
    * the extension gated on it, the CLI did not.
    */
   requireEmbedderForReady?: boolean;
+  /**
+   * Parsers for files that are not source code (see extractors.ts).
+   *
+   * Omitted — which is every host today except Heap Chat — the index selects
+   * files by `CODE_EXTENSIONS` exactly as it always has. This widens what can
+   * be indexed; it changes nothing about what is.
+   */
+  extractors?: readonly DocumentExtractor[];
   onLog?: (line: string) => void;
 }
 
@@ -293,7 +302,9 @@ export class RagIndexer {
     let embedded = 0;
     try {
       const found = await this.opts.files.list();
-      const files = found.filter((f) => CODE_EXTENSIONS.test(f)).slice(0, MAX_INDEXED_FILES);
+      const files = found
+        .filter((f) => CODE_EXTENSIONS.test(f) || extractorFor(this.opts.extractors, f))
+        .slice(0, MAX_INDEXED_FILES);
 
       const existing = new Set<string>();
       for (const rel of files) {
@@ -330,13 +341,27 @@ export class RagIndexer {
 
   /** Index (or re-index) one file by workspace-relative path; true when it needed re-embedding. */
   async indexOne(rel: string, opts: IndexOptions = {}): Promise<boolean> {
-    if (!CODE_EXTENSIONS.test(rel)) return false;
+    const extractor = extractorFor(this.opts.extractors, rel);
+    if (!extractor && !CODE_EXTENSIONS.test(rel)) return false;
     let content: string;
     try {
       const bytes = await this.opts.files.read(rel);
-      if (bytes.byteLength > MAX_FILE_BYTES) return false;
-      content = new TextDecoder().decode(bytes);
-      if (content.includes('\0')) return false; // binary
+      if (bytes.byteLength > (extractor?.maxBytes ?? MAX_FILE_BYTES)) return false;
+      if (extractor) {
+        // An extractor that cannot read this particular file answers
+        // undefined; that is a skip, not a failure, and the file is dropped
+        // from the index rather than stored as empty.
+        const text = await extractor.extract(rel, bytes);
+        if (!text?.trim()) {
+          this.store.removeFile(rel);
+          this.persistSoon();
+          return false;
+        }
+        content = normalizeExtractedText(text);
+      } else {
+        content = new TextDecoder().decode(bytes);
+        if (content.includes('\0')) return false; // binary
+      }
     } catch {
       this.store.removeFile(rel);
       this.persistSoon();

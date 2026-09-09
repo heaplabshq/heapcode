@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { nodeFileSource, nodeTextStore } from '@heapcode/repomap/node';
 import { DEFAULT_IGNORE_DIRS } from '../config/ignore.js';
 import { formatHits, RagIndexer, RAG_INDEX_FILE, type IndexState } from '../rag/indexer.js';
+import type { DocumentExtractor } from '../rag/extractors.js';
 import { toHitMeta } from '../rag/keywordIndex.js';
 import { loadIgnoreMatcher } from '../rag/ignoreFiles.js';
 import { projectStateDir } from './address.js';
@@ -19,6 +20,12 @@ import type {
 /** What the RAG methods need from the host connection. */
 export interface RagHost {
   emit(event: RagEvent, runId?: string): void;
+  /**
+   * Turn a non-code file into text, using a parser only the host has
+   * (`document/extract`). Undefined means the file could not be read, which
+   * is an ordinary answer about that file — never a reason to fail a build.
+   */
+  extractDocument(path: string): Promise<string | undefined>;
   /** Resolve a profile the session doesn't already hold a key for (`key/request`). */
   requestKey(profileName: string): Promise<void>;
   /**
@@ -94,11 +101,34 @@ export class SessionRag {
       // are not migrated — a clean rebuild is simpler and `fresh` says so.
       store: nodeTextStore(join(projectStateDir(root), RAG_INDEX_FILE)),
       roles: (role) => this.session.providerForRole(role, (name) => this.host.requestKey(name)),
+      extractors: this.documentExtractors(),
       onLog: (line) => this.host.log(`[rag] ${line}`),
     });
     await indexer.init();
     this.indexer = indexer;
     return indexer;
+  }
+
+  /**
+   * One extractor standing in for every type the host declared.
+   *
+   * A single delegating extractor rather than one per extension: the server
+   * has no idea what a `.pdf` is and should not pretend to — all it knows is
+   * that the host claimed the extension and will answer for it.
+   */
+  private documentExtractors(): DocumentExtractor[] {
+    const extensions = this.session.documentExtensions;
+    if (extensions.length === 0) return [];
+    return [
+      {
+        name: 'host',
+        // Generous, because the server cannot know which type this is and the
+        // host applies its own per-format ceiling before it reads anything.
+        maxBytes: 16 * 1024 * 1024,
+        handles: (rel) => extensions.some((ext) => rel.toLowerCase().endsWith(ext)),
+        extract: (rel) => this.host.extractDocument(rel),
+      },
+    ];
   }
 
   async status(): Promise<RagStatusResult> {

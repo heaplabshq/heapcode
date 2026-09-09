@@ -25,5 +25,9 @@
   "devDependencies": {
     "typescript": "^5.5.4",
     "vitest": "^2.0.5"
+  },
+  "optionalDependencies": {
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5"
   }
 }

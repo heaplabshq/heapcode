@@ -236,6 +236,12 @@ export interface DaemonHello {
    */
   roles: ModelRoleTable;
   keys: Record<string, string>;
+  /**
+   * Non-code file extensions this host can turn into text, if any (see
+   * HelloParams.documentExtensions). Absent for Heap Code, which indexes
+   * source files and needs no parser to do it.
+   */
+  documentExtensions?: string[];
 }
 
 export interface WebSessionDeps {

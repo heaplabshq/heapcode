@@ -1,3 +1,4 @@
+import { extractorFor, normalizeExtractedText, type DocumentExtractor } from './extractors.js';
 import {
   CODE_EXTENSIONS,
   MAX_FILE_BYTES,
@@ -56,6 +57,15 @@ interface SerializedKeywordIndex {
 export interface KeywordIndexOptions {
   files: FileSource;
   store: RagStore;
+  /**
+   * The same parsers the semantic index was given (see extractors.ts).
+   *
+   * Both halves of hybrid search have to see the same corpus. Widening only
+   * the vector side would make `search` — the exact-match tool, the one you
+   * reach for with an invoice number or a surname — silently blind to every
+   * document, in a way that reads as "not in the folder" rather than as a bug.
+   */
+  extractors?: readonly DocumentExtractor[];
   onLog?: (line: string) => void;
 }
 
@@ -138,7 +148,9 @@ export class KeywordIndex {
     const started = Date.now();
     try {
       const found = await this.opts.files.list();
-      const files = found.filter((f) => CODE_EXTENSIONS.test(f)).slice(0, MAX_INDEXED_FILES);
+      const files = found
+        .filter((f) => CODE_EXTENSIONS.test(f) || extractorFor(this.opts.extractors, f))
+        .slice(0, MAX_INDEXED_FILES);
 
       const existing = new Set<string>();
       for (const rel of files) {
@@ -165,13 +177,20 @@ export class KeywordIndex {
 
   /** Index (or re-index) one file by workspace-relative path. */
   async indexOne(rel: string): Promise<void> {
-    if (!CODE_EXTENSIONS.test(rel)) return;
+    const extractor = extractorFor(this.opts.extractors, rel);
+    if (!extractor && !CODE_EXTENSIONS.test(rel)) return;
     let content: string;
     try {
       const bytes = await this.opts.files.read(rel);
-      if (bytes.byteLength > MAX_FILE_BYTES) return;
-      content = new TextDecoder().decode(bytes);
-      if (content.includes('\0')) return; // binary
+      if (bytes.byteLength > (extractor?.maxBytes ?? MAX_FILE_BYTES)) return;
+      if (extractor) {
+        const text = await extractor.extract(rel, bytes);
+        if (!text?.trim()) return;
+        content = normalizeExtractedText(text);
+      } else {
+        content = new TextDecoder().decode(bytes);
+        if (content.includes('\0')) return; // binary
+      }
     } catch {
       this.removeFile(rel);
       return;

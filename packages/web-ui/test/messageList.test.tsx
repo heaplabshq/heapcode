@@ -181,3 +181,32 @@ describe('task lists in the transcript', () => {
     expect(container.textContent).toContain('live plan');
   });
 });
+
+describe('the empty state', () => {
+  it('centres itself instead of hanging from the top of the pane', () => {
+    // `margin: auto` needs a flex parent to centre against, and the populated
+    // scroller stays a plain block — so the modifier is the whole mechanism.
+    const { container } = render(<MessageList transcript={emptyTranscript} />);
+    expect(container.querySelector('.messages-empty')).toBeTruthy();
+    expect(container.querySelector('.empty')).toBeTruthy();
+  });
+
+  it('breaks the hint at its clauses rather than wherever the measure runs out', () => {
+    const { container } = render(<MessageList transcript={emptyTranscript} />);
+    const hint = container.querySelector('.empty-hint')!;
+
+    // Three clauses, two separators — and the separators are decoration a
+    // reader already hears in the phrasing, so they stay out of the a11y tree.
+    expect(hint.querySelectorAll('span:not(.empty-sep)')).toHaveLength(3);
+    hint.querySelectorAll('.empty-sep').forEach((sep) => {
+      expect(sep.getAttribute('aria-hidden')).toBe('true');
+    });
+    expect(hint.textContent).toContain('Paste a screenshot straight into the box');
+  });
+
+  it('goes away as soon as there is a conversation', () => {
+    const { container } = render(<MessageList transcript={fold([{ type: 'text', text: 'hello' }])} />);
+    expect(container.querySelector('.empty')).toBeNull();
+    expect(container.querySelector('.messages-empty')).toBeNull();
+  });
+});

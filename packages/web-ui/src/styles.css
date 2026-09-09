@@ -366,9 +366,42 @@ body {
 /* ---------- messages ---------- */
 .messages { flex: 1 1 auto; overflow-y: auto; padding: 24px var(--gutter) 8px; }
 
-.empty { color: var(--text-dim); max-width: 46ch; margin: 12vh auto 0; text-align: center; }
-.empty h1 { color: var(--text); font-size: 22px; margin: 0 0 6px; }
-.empty-hint { font-size: 12.5px; margin-top: 14px; }
+/* Settled in the middle of the space it actually has, rather than measured
+   down from the top. `12vh auto 0` put the text in the upper third of a very
+   tall empty pane and left the rest of the window as a dead drop to the
+   composer; on a laptop that is most of the screen. The scroller turns into a
+   flex column while it is empty (`.messages-empty`) purely so `margin: auto`
+   has something to centre against.
+
+   The measure widened with it. At 46ch both lines broke mid-phrase — "the
+   agent works in / this workspace" — because the wrap landed wherever the
+   column ran out rather than where the sentence has a joint. 66ch is enough
+   for each to sit on one line in a normal window, and `text-wrap: balance`
+   picks an even break rather than an orphan when it cannot. */
+.messages-empty { display: flex; flex-direction: column; }
+.empty {
+  color: var(--text-dim);
+  max-width: 66ch;
+  margin: auto;
+  text-align: center;
+  /* One rhythm for all three blocks, instead of a 6px gap under the heading
+     and a 14px gap above the hint. */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.empty p { margin: 0; text-wrap: balance; }
+.empty h1 { color: var(--text); font-size: 26px; letter-spacing: -0.015em; margin: 0; }
+.empty-hint {
+  font-size: 12.5px;
+  display: flex; flex-wrap: wrap; gap: 6px;
+  align-items: center; justify-content: center;
+}
+/* The separator belongs to the clause that follows it, not to the row. As its
+   own flex item it could be the last thing on a wrapped line, leaving the hint
+   ending in a dangling "·"; carried by the next clause it wraps with it. */
+.empty-sep { opacity: 0.4; }
+.empty-hint > span { display: inline-flex; align-items: center; gap: 6px; }
 .empty-hint kbd {
   font-family: var(--mono); font-size: 11px;
   background: var(--chip-bg); border: 1px solid var(--border);

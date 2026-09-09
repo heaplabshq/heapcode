@@ -107,7 +107,11 @@ export function MessageList({
 
   return (
     <div
-      className="messages"
+      // Flex only while it is empty, so `.empty` can centre itself with
+      // `margin: auto`. The populated scroller stays a plain block — turning
+      // every message into a flex item to solve a layout problem the empty
+      // state has would be a wide change for a narrow reason.
+      className={total === 0 ? 'messages messages-empty' : 'messages'}
       ref={scroller}
       // A log, not a live region: the reader is told about run transitions by
       // `Announcer` and can then walk this at their own pace. Marking it live
@@ -125,8 +129,30 @@ export function MessageList({
         <div className="empty">
           <h1>Heap Code</h1>
           <p>Ask for a change, a fix, or an explanation. The agent works in this workspace.</p>
+          {/* One clause per span, separated rather than run together. As a
+              single sentence it wrapped mid-phrase — "Paste a screenshot /
+              straight into the box" — because the break landed wherever the
+              measure ran out. Each separator sits INSIDE the clause it
+              precedes so it wraps with it: as a sibling it could end a wrapped
+              line, leaving the hint trailing off in a dangling "·". The dots
+              are decoration between clauses a reader already hears as
+              separate, so they stay out of the accessibility tree. */}
           <p className="empty-hint">
-            Press <kbd>⌘K</kbd> for commands, <kbd>?</kbd> for shortcuts. Paste a screenshot straight into the box.
+            <span>
+              Press <kbd>⌘K</kbd> for commands
+            </span>
+            <span>
+              <span className="empty-sep" aria-hidden>
+                ·
+              </span>
+              <kbd>?</kbd> for shortcuts
+            </span>
+            <span>
+              <span className="empty-sep" aria-hidden>
+                ·
+              </span>
+              Paste a screenshot straight into the box
+            </span>
           </p>
         </div>
       )}

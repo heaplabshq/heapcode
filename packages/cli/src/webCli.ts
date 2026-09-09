@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -9,6 +10,7 @@ import {
   SecretsStore,
 } from '@heapcode/host';
 import { DEFAULT_PORT, WorkspaceStore, isLoopback, startWebHost } from '@heapcode/web-host';
+import { ChatSession } from '@heapcode/chat-host';
 import { loadProjectInstructions } from './memory.js';
 import { connectToServer } from './server/client.js';
 import { cliVersion } from './version.js';
@@ -21,6 +23,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * that actually gets installed knows where its own assets landed.
  */
 const staticDir = join(__dirname, 'web');
+/** Heap Chat's bundle, mounted under /chat so the two share an origin and a token. */
+const chatStaticDir = join(__dirname, 'chat');
 
 export interface WebCliOptions {
   port?: number;
@@ -69,6 +73,26 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
       clientVersion: cliVersion(),
       loadInstructions: loadProjectInstructions,
       connect: (hello) => connectToServer({ client: { name: 'heapcode-web', version: cliVersion() }, ...hello }),
+      // Heap Chat, alongside — the switcher in the rail is a link, and a link
+      // only works if both products answer on this origin under this token.
+      // The session is built on the first browser that opens /chat, so a
+      // `heapcode web` nobody switches in pays nothing for it.
+      mount: {
+        path: '/chat',
+        staticDir: chatStaticDir,
+        createSession: (deps) =>
+          new ChatSession({
+            // Heap Chat opens on your documents, not on the repo this command
+            // was run in — the same reason `heapcode chat` defaults to home.
+            root: canonicalize(homedir()),
+            config: deps.config,
+            secrets: deps.secrets,
+            connect: deps.connect,
+            clientVersion: deps.clientVersion,
+            workspaces: deps.workspaces,
+            lan: deps.lan,
+          }),
+      },
     });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;

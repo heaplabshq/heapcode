@@ -39,11 +39,11 @@ export function FolderPicker({
   }, []);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Choose a folder">
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal modal-sm" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Choose a folder">
         <header className="modal-head">
           <h2>Choose a folder</h2>
-          <button className="ghost" onClick={onClose} aria-label="Close">
+          <button className="btn" onClick={onClose} aria-label="Close">
             ×
           </button>
         </header>
@@ -75,8 +75,8 @@ export function FolderPicker({
           ))}
         </div>
 
-        <footer className="modal-foot">
-          <button className="primary" onClick={() => view && onChoose(view.path)} disabled={!view}>
+        <footer className="card-actions">
+          <button className="btn btn-primary" onClick={() => view && onChoose(view.path)} disabled={!view}>
             Read this folder
           </button>
         </footer>

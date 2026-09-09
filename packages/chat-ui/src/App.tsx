@@ -9,6 +9,10 @@ import {
   withUserMessage,
   type Transcript,
 } from '@heapcode/web-ui/transcript';
+import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
+import { Composer } from '@heapcode/web-ui/components/Composer';
+import { MessageList } from '@heapcode/web-ui/components/MessageList';
+import { ProductToggle } from '@heapcode/web-ui/components/ProductToggle';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from '@heapcode/chat-host/protocol';
 import type {
   ChatAskUserParams,
@@ -23,13 +27,43 @@ import type {
   ChatSendMessageResult,
   ChatState,
 } from '@heapcode/chat-host/protocol';
-import { Composer } from './components/Composer.js';
-import { GroundingBadge } from './components/GroundingBadge.js';
 import { FolderPicker } from './components/FolderPicker.js';
+import { GroundingBadge } from './components/GroundingBadge.js';
 import { MemoryPanel } from './components/MemoryPanel.js';
-import { MessageList } from './components/MessageList.js';
 
-const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/rpc`;
+/**
+ * Heap Chat's shell.
+ *
+ * Deliberately the same shell as Heap Code's: the rail, the composer, the
+ * transcript and the stylesheet are `@heapcode/web-ui`'s, used rather than
+ * imitated. An earlier version of this file had its own stylesheet and its own
+ * components, on the reasoning that heapbrowse does the same — but heapbrowse
+ * is a browser side panel with a different shape, and these two sit behind one
+ * switcher on one origin. Two look-alike shells behind a tab is exactly where
+ * a design system gets noticed for being absent.
+ *
+ * What stays this product's own: which tools the agent has, what it is told it
+ * is, the folder picker, the grounding badge and memory. The shell is shared;
+ * the product is not.
+ */
+
+/**
+ * Where this page's socket is, and whether Heap Code is served beside it.
+ *
+ * Both are stamped on `<html>` by the host, because the page genuinely cannot
+ * work them out: served by `heapcode chat` it sits at the root with its socket
+ * at `/rpc`, and mounted inside `heapcode web` it sits under `/chat` with its
+ * socket at `/chat/rpc`. Assuming either one breaks the other.
+ *
+ * The defaults are the standalone case, so a page served without the stamp
+ * still connects.
+ */
+const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
+const HAS_CODE = document.documentElement.dataset.sibling === 'code';
+/** The mount prefix, derived from the socket path — `/chat/rpc` → `/chat`. */
+const BASE = RPC_PATH.replace(/\/rpc$/, '');
+
+const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${RPC_PATH}`;
 
 interface Pending {
   params: ChatAskUserParams;
@@ -43,10 +77,15 @@ export function App(): JSX.Element {
   const [conversations, setConversations] = useState<ChatConversationMeta[]>([]);
   const [index, setIndex] = useState<ChatIndexStatus>();
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const [picking, setPicking] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [ask, setAsk] = useState<Pending>();
   const [grounding, setGrounding] = useState<ChatGroundingParams['grounding']>();
+  const [railCollapsed, setRailCollapsed] = useState(
+    () => localStorage.getItem('heapchat.rail') === 'collapsed',
+  );
+  const [runStartedAt, setRunStartedAt] = useState<number>();
 
   const seq = useRef(0);
   const runId = useRef<string>();
@@ -65,12 +104,10 @@ export function App(): JSX.Element {
   }, [client]);
 
   useEffect(() => {
-    // Replace, never merge: the host sends the whole state (see
-    // ChatStateChangedParams), and merging would make `runId` unclearable.
+    // Replace, never merge: the host sends the whole state, and merging would
+    // make `runId` unclearable.
     client.onNotification(CHAT_METHODS.stateChanged, (raw) => setState(raw as ChatState));
-
     client.onNotification(CHAT_METHODS.indexChanged, (raw) => setIndex(raw as ChatIndexStatus));
-
     client.onNotification(CHAT_METHODS.grounding, (raw) =>
       setGrounding((raw as ChatGroundingParams).grounding),
     );
@@ -80,9 +117,6 @@ export function App(): JSX.Element {
       setTranscript((t) => reduce(t, event, seq.current++));
     });
 
-    // The host asks; the person answers. A run waiting on this is blocked, so
-    // the card takes over the composer rather than sitting somewhere in the
-    // scrollback where it can be missed.
     client.onRequest(CHAT_METHODS.askUser, async (raw) => {
       const params = raw as ChatAskUserParams;
       return new Promise<{ answer: string }>((resolve) => {
@@ -106,9 +140,6 @@ export function App(): JSX.Element {
         .then((hello) => {
           setState(hello.state);
           setError(undefined);
-          // History, then the turn still in flight, then whatever events the
-          // host buffered while no tab was attached — in that order, because
-          // that is the order they happened.
           let next = fromMessages(hello.messages);
           if (hello.pending?.length) next = concat(next, fromMessages(hello.pending, 'p'));
           for (const buffered of hello.replay ?? []) next = reduce(next, buffered.event, seq.current++);
@@ -124,39 +155,42 @@ export function App(): JSX.Element {
     return () => client.close();
   }, [client, refreshConversations, refreshIndex]);
 
+  const busy = Boolean(state?.runId);
+
   const send = (text: string): void => {
     const id = crypto.randomUUID();
     runId.current = id;
+    setRunStartedAt(Date.now());
     setTranscript((t) => withUserMessage(t, text));
     setError(undefined);
-    // The previous answer's badge must not hang over the new question while
-    // it is still being answered.
     setGrounding(undefined);
     client
       .request<ChatSendMessageResult>(CHAT_METHODS.sendMessage, { text, runId: id })
       .catch((e: Error) => setError(e.message))
       .finally(() => {
         runId.current = undefined;
+        setRunStartedAt(undefined);
         setTranscript(settle);
         refreshConversations();
       });
   };
 
-  const stop = (): void => {
+  const cancel = (): void => {
     client.notify(CHAT_METHODS.cancel, { runId: runId.current ?? '' });
   };
 
-  const newChat = (): void => {
+  const newConversation = (): void => {
     client
       .request<{ id: string }>(CHAT_METHODS.newConversation)
       .then(() => {
         setTranscript(emptyTranscript);
+        setGrounding(undefined);
         refreshConversations();
       })
       .catch((e: Error) => setError(e.message));
   };
 
-  const open = (id: string): void => {
+  const openConversation = (id: string): void => {
     client
       .request<{ messages: Parameters<typeof fromMessages>[0] }>(CHAT_METHODS.openConversation, { id })
       .then((r) => {
@@ -174,104 +208,137 @@ export function App(): JSX.Element {
       .then((r) => {
         setState(r.state);
         setTranscript(emptyTranscript);
+        setGrounding(undefined);
         refreshConversations();
         refreshIndex();
       })
       .catch((e: Error) => setError(e.message));
   };
 
-  const running = Boolean(state?.runId);
-
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">Heap Chat</div>
-        <button className="primary block" onClick={newChat} disabled={running}>
-          New chat
-        </button>
-        <nav className="conversations">
-          {conversations.map((c) => (
-            <button
-              key={c.id}
-              className={`conversation${c.active ? ' active' : ''}`}
-              onClick={() => open(c.id)}
-              disabled={running}
-            >
-              {c.title}
-            </button>
-          ))}
-        </nav>
-        <footer className="sidebar-foot">
-          <button className="folder" onClick={() => setPicking(true)} disabled={running}>
-            <span className="folder-name">{state?.folderName ?? '…'}</span>
-            <span className="folder-hint">Change folder</span>
-          </button>
-          {index ? (
-            <div className="index-status">
-              {index.state === 'indexing' && index.progress
-                ? `Indexing ${index.progress.embedded}/${index.progress.total}`
-                : index.state === 'ready'
-                  ? `${index.files} files searchable`
-                  : index.state === 'unconfigured'
-                    ? 'No embeddings model — text search only'
-                    : (index.message ?? index.state)}
-            </div>
-          ) : null}
-          <button className="folder" onClick={() => setShowMemory(true)}>
-            <span className="folder-hint">What I remember about you</span>
-          </button>
-          {index?.missingParsers?.length ? (
-            // Said out loud, because a skipped file type is indistinguishable
-            // from an empty folder to whoever is asking the question.
-            <div className="index-status index-warn">
-              Not reading {index.missingParsers.join(', ')} — parser not installed
-            </div>
-          ) : null}
-        </footer>
-      </aside>
-
-      <main className="main">
-        <header className="topbar">
-          <span className="model">{state?.model ?? ''}</span>
-          {state?.lan ? (
-            <span className="lan-warning">
-              Reachable from your network — anyone with the link can read this folder
-            </span>
-          ) : null}
-          {status !== 'open' ? <span className="link-status">{status}</span> : null}
-        </header>
-
-        <MessageList
-          transcript={transcript}
-          empty={
-            state?.folder
-              ? `Reading ${state.folder}. Ask what is in it, and every answer will say which file it came from.`
-              : 'Choose a folder to get started.'
+      <div className="body">
+        <Sidebar
+          brand="Heap Chat"
+          // Absent when Heap Code is not served here: a switcher with one
+          // working half teaches people the control is broken.
+          toggle={HAS_CODE ? <ProductToggle current="chat" chatPath={`${BASE}/`} /> : undefined}
+          collapsed={railCollapsed}
+          onToggleCollapsed={() =>
+            setRailCollapsed((v) => {
+              localStorage.setItem('heapchat.rail', v ? 'expanded' : 'collapsed');
+              return !v;
+            })
           }
+          conversations={conversations}
+          onOpen={openConversation}
+          onNew={newConversation}
+          busy={busy}
+          state={state}
+          status={status}
+          // No artifacts and no command palette here: neither exists in this
+          // product, and a rail row that opens nothing is worse than its
+          // absence.
+          onOpenSettings={() => setShowMemory(true)}
         />
 
-        {grounding && !running ? <GroundingBadge grounding={grounding} /> : null}
-
-        {error ? <div className="notice notice-warn">{error}</div> : null}
-
-        {ask ? (
-          <div className="ask">
-            <p className="ask-question">{ask.params.question}</p>
-            <div className="ask-options">
-              {(ask.params.options ?? []).map((o) => (
-                <button key={o} className="primary" onClick={() => ask.answer(o)}>
-                  {o}
-                </button>
-              ))}
-              {!ask.params.options?.length ? (
-                <AskFreeform onAnswer={ask.answer} />
-              ) : null}
+        <main className="chat">
+          {state?.lan && (
+            <div className="banner banner-warn" role="alert">
+              <strong>Exposed to your network.</strong>
+              <span>
+                Anyone who can reach this address and holds the launch token can read every file in{' '}
+                {state.folderName || 'this folder'}.
+              </span>
             </div>
-          </div>
-        ) : (
-          <Composer disabled={status !== 'open'} running={running} onSend={send} onStop={stop} />
-        )}
-      </main>
+          )}
+          {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
+          {error && <div className="banner banner-error">{error}</div>}
+          {index?.missingParsers?.length ? (
+            // Load-bearing: a skipped file type and an empty folder look
+            // identical to whoever asked the question.
+            <div className="banner banner-warn">
+              Not reading {index.missingParsers.join(', ')} — parser not installed.
+            </div>
+          ) : null}
+          {notice && (
+            <div className="banner" onClick={() => setNotice(undefined)} role="status">
+              {notice}
+            </div>
+          )}
+
+          <MessageList
+            transcript={transcript}
+            busy={busy}
+            runStartedAt={runStartedAt}
+            empty={{
+              title: 'Heap Chat',
+              body: state?.folder
+                ? `Ask about the files in ${state.folderName}. Every answer says which file it came from.`
+                : 'Choose a folder to get started.',
+              hint: (
+                <>
+                  <span>Documents, spreadsheets, PDFs and photos</span>
+                  <span>
+                    <span className="empty-sep" aria-hidden>
+                      ·
+                    </span>
+                    Nothing here changes your files
+                  </span>
+                </>
+              ),
+            }}
+          />
+
+          {ask && (
+            <div className="card" role="alertdialog" aria-label="Question">
+              <div className="card-body">{ask.params.question}</div>
+              <div className="card-actions">
+                {(ask.params.options ?? []).map((o) => (
+                  <button key={o} className="btn btn-primary" onClick={() => ask.answer(o)}>
+                    {o}
+                  </button>
+                ))}
+                {!ask.params.options?.length && <AskFreeform onAnswer={ask.answer} />}
+              </div>
+            </div>
+          )}
+
+          {grounding && !busy ? <GroundingBadge grounding={grounding} /> : null}
+
+          <Composer
+            onSend={send}
+            onCancel={cancel}
+            onReject={setNotice}
+            busy={busy}
+            disabled={status !== 'open'}
+            footer={
+              <>
+                {/* Same classes as Heap Code's workspace picker, so the two
+                    composer bars sit at the same height with the same weight. */}
+                <button
+                  className="btn picker-btn"
+                  onClick={() => setPicking(true)}
+                  disabled={busy}
+                  title={state?.folder ?? 'Choose a folder'}
+                >
+                  <IconFolder />
+                  <span className="picker-value">{state?.folderName ?? 'no folder'}</span>
+                </button>
+                <span className="composer-bar-right">
+                  <span className="bar-select" aria-live="polite">
+                    {index?.state === 'indexing' && index.progress
+                      ? `indexing ${index.progress.embedded}/${index.progress.total}`
+                      : index?.files
+                        ? `${index.files} files searchable`
+                        : ''}
+                  </span>
+                </span>
+              </>
+            }
+          />
+        </main>
+      </div>
 
       {showMemory ? (
         <MemoryPanel
@@ -293,27 +360,31 @@ export function App(): JSX.Element {
   );
 }
 
+function IconFolder(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
+      <path d="M2 4.2A1.2 1.2 0 0 1 3.2 3h2.5l1.2 1.5h5.9A1.2 1.2 0 0 1 14 5.7v6.1A1.2 1.2 0 0 1 12.8 13H3.2A1.2 1.2 0 0 1 2 11.8z" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function AskFreeform({ onAnswer }: { onAnswer: (text: string) => void }): JSX.Element {
   const [text, setText] = useState('');
   return (
-    <div className="composer">
-      <textarea
-        className="composer-input"
-        rows={1}
+    <>
+      <input
+        className="card-input"
         value={text}
         autoFocus
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            if (text.trim()) onAnswer(text.trim());
-          }
+          if (e.key === 'Enter' && text.trim()) onAnswer(text.trim());
         }}
         aria-label="Your answer"
       />
-      <button className="composer-button" onClick={() => text.trim() && onAnswer(text.trim())}>
+      <button className="btn btn-primary" onClick={() => text.trim() && onAnswer(text.trim())}>
         Answer
       </button>
-    </div>
+    </>
   );
 }

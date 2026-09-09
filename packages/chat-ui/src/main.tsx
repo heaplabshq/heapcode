@@ -1,6 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
+// Heap Code's stylesheet, not a copy of it — the two products share a shell
+// and must not drift. `styles.css` here holds only what is genuinely this
+// product's: the grounding badge, the memory list, the folder picker.
+import '@heapcode/web-ui/styles.css';
 import './styles.css';
 
 /**

@@ -1947,3 +1947,43 @@ body {
   max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .idx-link:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ---- product switcher ----
+   Sits in the rail's top row beside the brand. Deliberately quiet: it is a
+   switch between two products, not a primary action, and it is next to the
+   product's own name so the current half is already implied. */
+.product-toggle {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: auto;
+  padding: 1px;
+  border-radius: 7px;
+  background: var(--surface-2, rgb(0 0 0 / 0.05));
+}
+.rail-collapsed .product-toggle { display: none; }
+.product-tab {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--text-dim, #6b655c);
+  text-decoration: none;
+}
+.product-tab:hover { color: var(--text, inherit); }
+.product-tab-on {
+  background: var(--surface, #fff);
+  color: var(--text, inherit);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

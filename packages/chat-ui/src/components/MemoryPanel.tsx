@@ -29,19 +29,19 @@ export function MemoryPanel({
   useEffect(refresh, []);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Memory">
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal modal-sm" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Memory">
         <header className="modal-head">
           <h2>What I remember about you</h2>
-          <button className="ghost" onClick={onClose} aria-label="Close">
+          <button className="btn" onClick={onClose} aria-label="Close">
             ×
           </button>
         </header>
 
         {entries === undefined ? (
-          <p className="folder-hint">Loading…</p>
+          <p className="empty-state">Loading…</p>
         ) : entries.length === 0 ? (
-          <p className="folder-hint">
+          <p className="empty-state">
             Nothing yet. Say “remember that…” in a chat and it will be kept across every folder.
           </p>
         ) : (
@@ -51,7 +51,7 @@ export function MemoryPanel({
                 <span className="memory-text">{e.text}</span>
                 <span className="memory-date">{e.at.slice(0, 10)}</span>
                 <button
-                  className="ghost memory-forget"
+                  className="btn memory-forget"
                   onClick={() => {
                     void forget(e.id).then(refresh);
                   }}

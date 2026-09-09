@@ -60,6 +60,7 @@ import { MessageList } from './components/MessageList.js';
 import { useTransientNotice } from './notice.js';
 import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
+import { ProductToggle } from './components/ProductToggle.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { ChatTools } from './components/ChatTools.js';
@@ -137,6 +138,16 @@ const MUTATING_TOOLS = new Set([
   'create_directory',
   'run_command',
 ]);
+
+/**
+ * Whether Heap Chat is served alongside this page.
+ *
+ * The host injects nothing; this is read from the document, because the page
+ * is static and the answer is a launch-time property of the host. `heapcode
+ * web` mounts chat and stamps the flag; a host that does not, does not, and
+ * the switcher is simply absent rather than offering a link to a 404.
+ */
+const CHAT_MOUNTED = document.documentElement.dataset.chatMounted === 'true';
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
@@ -996,6 +1007,7 @@ export function App(): JSX.Element {
     <div className="app">
       <div className="body">
         <Sidebar
+          toggle={CHAT_MOUNTED ? <ProductToggle current="code" chatPath="/chat/" /> : undefined}
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {

@@ -178,6 +178,7 @@ Sizing as of 2026-09-09.
 | System prompt | coding | knowledge assistant |
 | Workspace panel | Changes / Files / Index / Terminal / Preview | none |
 | Code-specific UI | `DiffView`, `IndexView`, `WorkspacePicker`, `TaskBar` | not rendered |
+| Shell (rail, composer, transcript, stylesheet) | `@heapcode/web-ui` | **the same `@heapcode/web-ui`** |
 | Index file policy | `CODE_EXTENSIONS` | document extensions |
 | History store | per-workspace | separate store |
 | Memory | project memory (`.heapcode/memory.md`) | personal memory (separate store) |
@@ -192,8 +193,15 @@ packages/chat-ui      Heap Chat screens (new)
 ```
 
 **Entry points.** `heapcode web` continues to land *directly* in code mode —
-the primary use must not gain a click. The two-option screen is a switcher
-inside the app, not a gate in front of it.
+the primary use must not gain a click. The switcher lives in the rail's top
+row, beside the brand, the way the Claude app switches between chat and code.
+
+**One origin, one token.** Heap Chat is mounted at `/chat` inside the same
+host (`WebHostOptions.mount`), so the switcher is a link. Two servers on two
+ports could not do this: the cookie is scoped per origin, so a link to the
+other port would arrive unauthenticated and bounce to 401. The two sessions
+stay entirely separate — different classes, rosters and prompts; what they
+share is the front door. `heapcode chat` still runs the product standalone.
 
 ---
 
@@ -454,6 +462,9 @@ Do not resolve these by picking a default — ask.
 | 2026-09-09 | Provider connections and the model role table are shared between products; conversation history and memory are not | One keychain entry and one Ollama config is the biggest ergonomic win available. But code sessions in a documents chat list, or project memory mixed with personal memory, would be actively wrong in both directions |
 | 2026-09-09 | Document extensions are a separate set from `CODE_EXTENSIONS`, behind an extractor seam | Heap Code's index policy is deliberate; widening it in place would change Heap Code's behavior as a side effect of chat work |
 | 2026-09-09 | `heapcode web` continues to land directly in code mode; the product switcher lives inside the app | The primary product's primary path must not gain a click |
+| 2026-09-09 | Heap Chat uses `@heapcode/web-ui`'s shell — rail, composer, transcript, stylesheet — rather than its own | Reverses an earlier decision on this plan. The heapbrowse precedent said "each product builds its own UI", but heapbrowse is a browser side panel with a different shape; these two sit behind one switcher on one origin, where two look-alike shells is exactly where a design system gets noticed for being absent. `Composer` and `MessageList` were already product-neutral; `Sidebar` needed its `UiState` prop widened to the two fields it reads, and its empty state parameterized |
+| 2026-09-09 | Both products are served from one origin under one token, via `WebHostOptions.mount` | The switcher has to be a link, and a link to another port arrives without the HttpOnly cookie and bounces to 401. The mounted session is built on the first browser that asks for it, so a `heapcode web` nobody switches in pays nothing |
+| 2026-09-09 | The page is told its socket path and its sibling via `data-*` on `<html>`, not by assuming | The chat UI is served at the root by `heapcode chat` and under `/chat` when mounted; its socket moves with it. A first attempt hardcoded `/chat/rpc` and silently broke the standalone command — the page cannot infer this, so the host stamps it |
 | 2026-09-09 | Heap Chat writes its own tool *descriptions*, reusing only core's schema and permission class | Core's prose is written for a coding agent and names tools this roster does not have — `read_file` explains what to do after `edit_file`, `list_dir` recommends `repo_map`, `fetch_url` mentions `run_command`. The integration test found five of them in the system prompt of a product whose own prompt says it has nothing that changes anything. Schemas stay shared, because those must not drift from the executor |
 | 2026-09-09 | The recap guard raises the compaction budget rather than skipping compaction | A request about a conversation is exactly the case where the transcript is long; skipping outright would overflow the window instead of protecting the answer. ×4, so an ordinary conversation is never compacted before being recapped |
 | 2026-09-09 | heapchat's sticky per-session summary cache was NOT ported | It caches across turns of one conversation; `runAgent` rebuilds `messages` per run from persisted history, so there is nothing for it to attach to. The plan assumed it would port and it does not — recorded rather than forced |

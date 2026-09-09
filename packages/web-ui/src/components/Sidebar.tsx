@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { UiConversationMeta, UiState } from '@heapcode/web-host/protocol';
+import type { UiConversationMeta } from '@heapcode/web-host/protocol';
 import { markHue } from '../mark.js';
 
 export interface SidebarProps {
@@ -11,11 +11,29 @@ export interface SidebarProps {
   onOpen(id: string): void;
   onNew(): void;
   busy: boolean;
-  state?: UiState;
+  /**
+   * What is answering. Widened from `UiState` to the two fields the footer
+   * actually reads, so Heap Chat's `ChatState` satisfies it too — the rail is
+   * the same rail in both products, and a second copy of it would drift in
+   * exactly the ways a shared design system exists to prevent.
+   */
+  state?: { model?: string; profile?: string };
   status: 'connecting' | 'open' | 'closed';
-  onOpenArtifacts(): void;
+  /** The product name in the rail's top row. */
+  brand?: string;
+  /**
+   * The product switcher, rendered beside the brand. A slot rather than a
+   * built-in control because only the host page knows where the other product
+   * lives and whether it is reachable.
+   */
+  toggle?: ReactNode;
+  /** Omitted by a product with no artifacts of its own — the row is then absent. */
+  onOpenArtifacts?(): void;
   onOpenSettings(focus?: 'context'): void;
-  onOpenPalette(): void;
+  /** Omitted by a product with no command palette — the row is then absent. */
+  onOpenPalette?(): void;
+  /** Extra rail rows, above the model footer. */
+  extraNav?: ReactNode;
 }
 
 /**
@@ -41,7 +59,8 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <span className="rail-logo" aria-hidden="true">
           <Logo />
         </span>
-        <span className="rail-brand">Heap Code</span>
+        <span className="rail-brand">{props.brand ?? 'Heap Code'}</span>
+        {props.toggle}
         <button
           className="icon-btn rail-collapse"
           onClick={props.onToggleCollapsed}
@@ -61,17 +80,22 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           disabled={props.busy}
           hint={props.busy ? 'Stop the current run first' : undefined}
         />
-        <RailItem icon={<IconArtifact />} label="Artifacts" collapsed={collapsed} onClick={props.onOpenArtifacts} />
+        {props.onOpenArtifacts && (
+          <RailItem icon={<IconArtifact />} label="Artifacts" collapsed={collapsed} onClick={props.onOpenArtifacts} />
+        )}
         <RailItem icon={<IconSliders />} label="Customize" collapsed={collapsed} onClick={() => props.onOpenSettings()} />
+        {props.extraNav}
         {/* Was behind a "More" chevron with one other item. Two entries is not
             a submenu; it is two entries. */}
-        <RailItem
-          icon={<IconCommand />}
-          label="Commands"
-          kbd="⌘K"
-          collapsed={collapsed}
-          onClick={props.onOpenPalette}
-        />
+        {props.onOpenPalette && (
+          <RailItem
+            icon={<IconCommand />}
+            label="Commands"
+            kbd="⌘K"
+            collapsed={collapsed}
+            onClick={props.onOpenPalette}
+          />
+        )}
       </nav>
 
       {/* Kept mounted through a collapse so it fades and clips with the rail.

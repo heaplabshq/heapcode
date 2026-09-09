@@ -8,7 +8,8 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval:chat": "pnpm --filter @heapcode/chat-host eval"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",

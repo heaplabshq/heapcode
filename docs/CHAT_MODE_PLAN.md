@@ -258,15 +258,28 @@ calls heapchat's corpus "the one genuine benchmark-corpus seed in either
 repo", already standalone and touching none of its untested code —
 `docs/heaplabs-roadmap.md` already blessed picking it up independently.
 
-- [ ] Port `heapchat/eval/golden.json` (12 cases) and
+- [x] Port `heapchat/eval/golden.json` (12 cases) and
       `heapchat/eval/fixtures/` (7 documents) into this repo
-- [ ] Runner over the chat host, asserting the corpus's existing
+- [x] Runner over the chat host, asserting the corpus's existing
       `expect_contains` / `expect_not_contains` / `expect_grounded` /
       `expect_source` shapes
-- [ ] Baseline numbers recorded in this file before C3 starts
+- [x] Baseline numbers recorded in this file before C3 starts
 
 **Exit criteria:** `pnpm eval:chat` runs the corpus against a local model and
 reports pass/fail per case.
+
+**Baseline, 2026-09-09** — `kimi-k2.7-code:cloud` for chat, `nomic-embed-text`
+for embeddings, 7 fixtures indexed:
+
+```
+12/12 passed   (10 cases also assert grounding, not checked until C3)
+```
+
+Two things this baseline is and is not. It **is** the number C3 must not
+regress. It is **not** a claim that grounding works: `expect_grounded` is
+recorded and skipped, because the host has no grounding signal yet and a
+check that always passes is worse than an absent one. Re-run and enable those
+ten once C3 lands.
 
 ### C3 — Grounding and citations
 

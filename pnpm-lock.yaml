@@ -95,12 +95,21 @@ importers:
         specifier: ^2.4.5
         version: 2.4.5
     devDependencies:
+      '@types/ws':
+        specifier: ^8.5.12
+        version: 8.18.1
+      esbuild:
+        specifier: ^0.23.1
+        version: 0.23.1
       typescript:
         specifier: ^5.5.4
         version: 5.9.3
       vitest:
         specifier: ^2.0.5
         version: 2.1.9(@types/node@20.19.43)(jsdom@30.0.1)
+      ws:
+        specifier: ^8.21.1
+        version: 8.21.1
 
   packages/chat-ui:
     dependencies:

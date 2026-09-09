@@ -1,9 +1,15 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "module": "ESNext",
     "moduleResolution": "bundler"
   },
-  "include": ["src", "test"]
+  "include": [
+    "src",
+    "test",
+    "eval"
+  ]
 }

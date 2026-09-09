@@ -27,11 +27,17 @@ import type {
   ChatIndexStatus,
   ChatMemoryResult,
   ChatRecentFoldersResult,
+  ChatArtifactMeta,
+  ChatArtifactResult,
+  ChatArtifactsResult,
+  ChatFileTreeResult,
+  ChatReadFileResult,
   ChatSendMessageResult,
   ChatSettings,
   ChatState,
 } from '@heapcode/chat-host/protocol';
 import { GroundingBadge } from './components/GroundingBadge.js';
+import { ChatPanel, type ChatPanelTab } from './components/Panel.js';
 import { MemoryPanel } from './components/MemoryPanel.js';
 
 /**
@@ -90,6 +96,11 @@ export function App(): JSX.Element {
     () => localStorage.getItem('heapchat.rail') === 'collapsed',
   );
   const [runStartedAt, setRunStartedAt] = useState<number>();
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelTab, setPanelTab] = useState<ChatPanelTab>('files');
+  const [artifacts, setArtifacts] = useState<ChatArtifactMeta[]>([]);
+  const [selectedArtifact, setSelectedArtifact] = useState<string>();
+  const [openPath, setOpenPath] = useState<string>();
 
   const seq = useRef(0);
   const runId = useRef<string>();
@@ -100,6 +111,13 @@ export function App(): JSX.Element {
     client
       .request<ChatConversationMeta[]>(CHAT_METHODS.conversations)
       .then(setConversations)
+      .catch(() => undefined);
+  }, [client]);
+
+  const refreshArtifacts = useCallback(() => {
+    client
+      .request<ChatArtifactsResult>(CHAT_METHODS.artifacts)
+      .then((r) => setArtifacts(r.artifacts))
       .catch(() => undefined);
   }, [client]);
 
@@ -115,6 +133,16 @@ export function App(): JSX.Element {
     client.onNotification(CHAT_METHODS.grounding, (raw) =>
       setGrounding((raw as ChatGroundingParams).grounding),
     );
+
+    // Something was made — show it, and open the panel on it. An artifact the
+    // person has to go looking for may as well have been pasted into the chat.
+    client.onNotification(CHAT_METHODS.artifactChanged, (raw) => {
+      const meta = raw as ChatArtifactMeta;
+      refreshArtifacts();
+      setSelectedArtifact(meta.id);
+      setPanelTab('made');
+      setPanelOpen(true);
+    });
 
     client.onNotification(CHAT_METHODS.event, (raw) => {
       const { event } = raw as ChatEventParams;
@@ -151,13 +179,14 @@ export function App(): JSX.Element {
           runId.current = hello.activeRunId;
           refreshConversations();
           refreshIndex();
+          refreshArtifacts();
         })
         .catch((e: Error) => setError(e.message));
     };
 
     client.connect();
     return () => client.close();
-  }, [client, refreshConversations, refreshIndex]);
+  }, [client, refreshConversations, refreshIndex, refreshArtifacts]);
 
   const busy = Boolean(state?.runId);
 
@@ -261,6 +290,16 @@ export function App(): JSX.Element {
         />
 
         <main className="chat">
+          <div className="chat-tools">
+            <button
+              className={panelOpen ? 'chip chip-on' : 'chip'}
+              onClick={() => setPanelOpen((v) => !v)}
+              title="The folder, what has been made, and where answers came from"
+            >
+              Folder
+            </button>
+          </div>
+
           {state?.lan && (
             <div className="banner banner-warn" role="alert">
               <strong>Exposed to your network.</strong>
@@ -289,6 +328,13 @@ export function App(): JSX.Element {
             transcript={transcript}
             busy={busy}
             runStartedAt={runStartedAt}
+            // A path in a tool chip opens in the panel, the same gesture Heap
+            // Code has — here it reads a document rather than showing a diff.
+            onOpenPath={(path) => {
+              setOpenPath(path);
+              setPanelTab('files');
+              setPanelOpen(true);
+            }}
             empty={{
               title: 'Heap Chat',
               body: state?.folder
@@ -322,7 +368,15 @@ export function App(): JSX.Element {
             </div>
           )}
 
-          {grounding && !busy ? <GroundingBadge grounding={grounding} /> : null}
+          {grounding && !busy ? (
+            <GroundingBadge
+              grounding={grounding}
+              onOpen={() => {
+                setPanelTab('sources');
+                setPanelOpen(true);
+              }}
+            />
+          ) : null}
 
           <Composer
             onSend={send}
@@ -372,6 +426,35 @@ export function App(): JSX.Element {
             }
           />
         </main>
+
+        {panelOpen && (
+          <ChatPanel
+            tab={panelTab}
+            onTab={setPanelTab}
+            onClose={() => setPanelOpen(false)}
+            loadTree={(path) => client.request<ChatFileTreeResult>(CHAT_METHODS.fileTree, { path })}
+            loadFile={(path) => client.request<ChatReadFileResult>(CHAT_METHODS.readFile, { path })}
+            openPath={openPath}
+            artifacts={artifacts}
+            selectedArtifact={selectedArtifact}
+            onSelectArtifact={setSelectedArtifact}
+            loadArtifact={(id, version) =>
+              client.request<ChatArtifactResult>(CHAT_METHODS.artifact, { id, version })
+            }
+            onSaveArtifact={(id, path, version) => {
+              client
+                .request(CHAT_METHODS.saveArtifact, { id, path, version })
+                .then(() => setNotice(`Saved to ${path}`))
+                .catch((e: Error) => setError(e.message));
+            }}
+            grounding={grounding}
+            indexStatus={index}
+            onReindex={() => {
+              void client.request(CHAT_METHODS.reindex).catch(() => undefined);
+              refreshIndex();
+            }}
+          />
+        )}
       </div>
 
       {showMemory ? (
@@ -392,7 +475,7 @@ export function App(): JSX.Element {
           // product's memory is about the person, not the folder, so it gets
           // its own rail row rather than a page whose description would be
           // false here.
-          pages={['providers', 'search']}
+          pages={['providers', 'search', 'connectors']}
           onSaveProfile={(profile, apiKey) => edit(CHAT_METHODS.saveProfile, { profile, apiKey })}
           onDeleteProfile={(name) => edit(CHAT_METHODS.deleteProfile, { name })}
           onUseProfile={(name) => edit(CHAT_METHODS.useProfile, { name })}
@@ -410,13 +493,13 @@ export function App(): JSX.Element {
           }
           probeProvider={(params) => client.request(CHAT_METHODS.probeProvider, params)}
           // Not offered on these pages, but required by the props: no persona,
-          // no sub-agents, no permission grants, no MCP servers here.
+          // no sub-agents, no permission grants here.
           onSetPersona={() => {}}
           onToggleSubAgents={() => {}}
           onToggleNativeTools={() => {}}
           onResetPermissions={() => {}}
-          onSaveMcpServer={() => {}}
-          onDeleteMcpServer={() => {}}
+          onSaveMcpServer={(name, spec) => edit(CHAT_METHODS.saveMcpServer, { name, spec })}
+          onDeleteMcpServer={(name) => edit(CHAT_METHODS.deleteMcpServer, { name })}
         />
       ) : null}
     </div>

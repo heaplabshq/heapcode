@@ -52,6 +52,10 @@
     "./components/ModelPicker": {
       "types": "./src/components/ModelPicker.tsx",
       "default": "./src/components/ModelPicker.tsx"
+    },
+    "./components/Preview": {
+      "types": "./src/components/Preview.tsx",
+      "default": "./src/components/Preview.tsx"
     }
   },
   "scripts": {

@@ -1,5 +1,12 @@
 import type {
+  UiArtifactMeta,
+  UiArtifactResult,
+  UiArtifactsResult,
   UiBrowseFoldersResult,
+  UiFileTreeResult,
+  UiReadFileResult,
+  UiSaveArtifactResult,
+  UiTreeEntry,
   UiConnectionModelsResult,
   UiConversationMeta,
   UiEventParams,
@@ -53,6 +60,16 @@ export const CHAT_METHODS = {
   memory: 'chat/memory',
   forget: 'chat/forget',
 
+  // The folder, and what the assistant has produced from it.
+  fileTree: 'chat/fileTree',
+  readFile: 'chat/readFile',
+  artifacts: 'chat/artifacts',
+  artifact: 'chat/artifact',
+  saveArtifact: 'chat/saveArtifact',
+  // MCP servers — the same connectors Heap Code registers, from the same config.
+  saveMcpServer: 'chat/saveMcpServer',
+  deleteMcpServer: 'chat/deleteMcpServer',
+
   // settings — the same surface Heap Code's dialog drives, because the things
   // it edits (connections, the model role table, web search) are global
   // config shared by both products. A second, smaller settings screen would
@@ -73,6 +90,8 @@ export const CHAT_METHODS = {
   /** What the finished answer stands on: sources, traced numbers, a verdict. */
   grounding: 'chat/grounding',
   stateChanged: 'chat/stateChanged',
+  /** An artifact was created or got a new version. */
+  artifactChanged: 'chat/artifactChanged',
   indexChanged: 'chat/indexChanged',
 } as const;
 
@@ -234,6 +253,13 @@ export interface ChatAskUserResult {
 }
 
 export type {
+  UiArtifactMeta as ChatArtifactMeta,
+  UiArtifactResult as ChatArtifactResult,
+  UiArtifactsResult as ChatArtifactsResult,
+  UiFileTreeResult as ChatFileTreeResult,
+  UiReadFileResult as ChatReadFileResult,
+  UiSaveArtifactResult as ChatSaveArtifactResult,
+  UiTreeEntry as ChatTreeEntry,
   UiConversationMeta as ChatConversationMeta,
   UiEventParams as ChatEventParams,
   UiMessage as ChatMessageEntry,

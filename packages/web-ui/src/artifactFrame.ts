@@ -86,11 +86,21 @@ function bodyFor(input: FrameInput): string {
       return input.mermaidSvg ?? `<pre><code>${escapeHtml(input.content)}</code></pre>`;
     case 'json':
       return `<pre><code>${escapeHtml(format(input.content))}</code></pre>`;
-    case 'code':
     case 'markdown':
+      // Pre-rendered AND sanitized by the parent (Preview passes
+      // `renderMarkdown(content)`, which runs DOMPurify), so it goes in
+      // verbatim — strictly safer than the `html` case above, which inserts
+      // model output with no sanitizer at all.
+      //
+      // This used to share a body with `code` and `default`, which escape.
+      // The comment there said markdown arrived pre-rendered, and it does —
+      // so every markdown artifact rendered as a wall of escaped HTML source
+      // instead of as a document. Its own case now, beside the other two
+      // kinds that are inserted rather than quoted.
+      return input.content;
+    case 'code':
     default:
-      // Markdown arrives pre-rendered by the parent (already sanitized there);
-      // anything else is shown as source rather than guessed at.
+      // Source, shown as source rather than guessed at.
       return `<pre><code>${escapeHtml(input.content)}</code></pre>`;
   }
 }

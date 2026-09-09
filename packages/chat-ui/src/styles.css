@@ -25,40 +25,20 @@
 .grounding-good .grounding-mark { color: #2e7d4f; }
 .grounding-mixed .grounding-line { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 .grounding-bad .grounding-line { border-color: var(--warn); color: var(--warn); }
-.grounding-body {
-  margin-top: 8px;
-  padding: 12px;
-  background: var(--panel);
-  border-radius: var(--radius);
-  font-size: 13px;
-  display: grid;
-  gap: 10px;
-  max-width: 74ch;
-}
-.grounding-sources { margin: 0; padding-left: 18px; font-family: var(--mono); font-size: 12px; }
-.grounding-values { border-collapse: collapse; width: 100%; }
-.grounding-values th {
-  text-align: left;
-  vertical-align: top;
-  font-family: var(--mono);
-  padding: 3px 12px 3px 0;
-  white-space: nowrap;
-}
-.grounding-values td { padding: 3px 0; }
-.grounding-source { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.grounding-snippet { color: var(--muted); }
-.grounding-issues { margin: 0; padding-left: 18px; color: var(--warn); }
 
-/* ---- memory ---- */
-.memory-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; display: grid; gap: 2px; }
-.memory-list li {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 10px;
-  align-items: baseline;
-  padding: 7px 8px;
-  border-radius: 8px;
+/* ---- sources, in the panel ---- */
+.sources { display: grid; gap: 4px; }
+.panel-section {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 12px 12px 4px;
 }
-.memory-list li:hover { background: var(--panel); }
-.memory-date { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.memory-forget { padding: 3px 9px; font-size: 12px; }
+.prov-row { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 6px 12px; align-items: baseline; }
+.prov-value { font-variant-numeric: tabular-nums; }
+.prov-where { display: grid; gap: 2px; min-width: 0; }
+.prov-snippet { color: var(--text-dim); font-size: 12px; }
+.prov-issues { margin: 0; padding: 0 12px 8px 30px; color: var(--warn, #a3411f); font-size: 13px; }
+.index-view { display: grid; gap: 10px; padding: 12px; justify-items: start; }
+.chat-tools { display: flex; gap: 6px; padding: 8px 20px 0; }

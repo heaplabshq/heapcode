@@ -1,4 +1,5 @@
 import { sharedAgentTools, type ToolDefinition } from '@heapcode/core';
+import { CREATE_ARTIFACT_TOOL } from '@heapcode/web-host';
 
 /**
  * Heap Chat's tool roster.
@@ -23,7 +24,19 @@ import { sharedAgentTools, type ToolDefinition } from '@heapcode/core';
  * Deliberately absent, and not oversights: every write, edit, delete and
  * rename tool, `run_command`, `run_tests`, `repo_map`, `get_symbols`,
  * `download_file`, `multi_edit`, `create_directory` and `delegate_task`.
- * Heap Chat reads; it does not change the folder it is pointed at.
+ *
+ * **Heap Chat never changes the folder it is pointed at.** That is a product
+ * decision, not a missing feature. These are someone's documents — a tenancy
+ * agreement, a scan of a certificate, six years of bank exports — and an
+ * assistant that edits them in place is one bad edit away from destroying
+ * something with no other copy. Heap Code writes to a repo because a repo has
+ * git; a documents folder has nothing.
+ *
+ * What it CAN produce goes to `create_artifact`: a summary, an extracted
+ * table, a written note. Artifacts live under the state directory, beside the
+ * conversation and outside the folder, and the person saves one into their own
+ * files when they want it — an explicit act, on their terms. Nothing is
+ * overwritten, so there is nothing to diff and nothing to revert.
  */
 /**
  * Heap Chat's own tool — no shared definition to reuse, because Heap Code has
@@ -36,6 +49,11 @@ import { sharedAgentTools, type ToolDefinition } from '@heapcode/core';
  * changes state — not in the folder, which stays untouched, but in what the
  * assistant will know tomorrow.
  */
+/** Core's definition with prose written for this product instead of for a codebase. */
+function described(tool: ToolDefinition, description: string): ToolDefinition {
+  return { ...tool, description };
+}
+
 export const REMEMBER_TOOL: ToolDefinition = {
   name: 'remember',
   description:
@@ -56,11 +74,6 @@ export const REMEMBER_TOOL: ToolDefinition = {
   },
   permission: 'write',
 };
-
-/** Core's definition with prose written for this product instead of for a codebase. */
-function described(tool: ToolDefinition, description: string): ToolDefinition {
-  return { ...tool, description };
-}
 
 export const chatToolDefinitions: ToolDefinition[] = [
   described(
@@ -113,6 +126,17 @@ export const chatToolDefinitions: ToolDefinition[] = [
   // (agent/loop.ts:951), so without it both that and `chat/askUser` are
   // protocol that can never fire. Executed by the session, not the executor.
   sharedAgentTools.ask_user,
+  // Producing something to look at — and, if the person wants it, to save.
+  // This is the whole of "writing" in this product.
+  described(
+    CREATE_ARTIFACT_TOOL,
+    'Produce a document beside the conversation — a written summary, an extracted table, a report, a ' +
+      'chart. Use it whenever the person asks you to write, draft, extract or compile something, rather ' +
+      'than pasting a long answer into the chat. They can read it beside the conversation and save it ' +
+      'into their own files if they want it. Pass the same id again to revise one you already made. ' +
+      'You cannot change the files in this folder, and should not offer to — this is how you give them ' +
+      'something new instead.',
+  ),
   REMEMBER_TOOL,
 ];
 

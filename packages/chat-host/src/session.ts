@@ -5,6 +5,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ASK_USER_NO_ANSWER,
   DEFAULT_MAX_ITERATIONS,
+  McpManager,
   METHODS,
   SEARCH_PRESETS,
   WEB_SEARCH_SECRET_NAME,
@@ -34,6 +35,11 @@ import {
 } from '@heapcode/core';
 import {
   JsonConversationStore,
+  describeMcpServer,
+  loadMcpServerSources,
+  loadMcpServers,
+  mcpNameProblem,
+  parseMcpServerSpec,
   SessionCheckpoint,
   WorkspaceToolExecutor,
   canonicalize,
@@ -46,8 +52,14 @@ import {
   type SecretsStore,
 } from '@heapcode/host';
 import {
+  ARTIFACT_KINDS,
+  ArtifactStore,
+  CREATE_ARTIFACT_TOOL,
   acceptImages,
+  isArtifactKind,
+  listDirectory,
   mergeProfile,
+  readWorkspaceFile,
   clipArgs,
   describeCall,
   listFolders,
@@ -57,6 +69,7 @@ import {
   type WorkspaceStore,
 } from '@heapcode/web-host';
 import { UI_MODEL_ROLES } from '@heapcode/web-host/protocol';
+import type { Artifact } from '@heapcode/web-host';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
 import {
   IMAGE_MAX_BYTES,
@@ -79,7 +92,13 @@ import {
 import { ChatMemory, memorySection } from './memory.js';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from './protocol.js';
 import type {
+  ChatArtifactMeta,
+  ChatArtifactResult,
+  ChatArtifactsResult,
   ChatAskUserParams,
+  ChatFileTreeResult,
+  ChatReadFileResult,
+  ChatSaveArtifactResult,
   ChatConnectionModelsResult,
   ChatForgetParams,
   ChatGroundingParams,
@@ -123,6 +142,18 @@ type DocumentRead =
   | { kind: 'text'; text: string }
   | { kind: 'unreadable'; format?: string }
   | { kind: 'not-a-document' };
+
+/** Metadata only — content is fetched per version, so a list stays cheap. */
+function toArtifactMeta(a: Artifact): ChatArtifactMeta {
+  return {
+    id: a.id,
+    title: a.title,
+    kind: a.kind,
+    language: a.language,
+    versions: a.versions.length,
+    updatedAt: a.versions.at(-1)?.createdAt ?? 0,
+  };
+}
 
 /** Extensions this host declares to the daemon — the parsers' plus the images. */
 const DOCUMENT_EXTENSIONS = [
@@ -199,6 +230,13 @@ export class ChatSession implements HostSession {
   private root: string;
   private connection?: ServerConnection;
   private executor?: WorkspaceToolExecutor;
+  private mcp?: McpManager;
+  /**
+   * What the assistant has produced, under the state dir — never in the
+   * folder. Rebuilt on a folder switch, like everything else derived from the
+   * root.
+   */
+  private artifacts: ArtifactStore;
   private profile?: ProviderProfileConfig;
   private ui?: RpcPeer;
 
@@ -243,6 +281,7 @@ export class ChatSession implements HostSession {
   constructor(private readonly deps: ChatSessionDeps) {
     this.root = deps.root;
     this.memory = new ChatMemory(deps.memoryFile ?? chatMemoryFile());
+    this.artifacts = new ArtifactStore(join(projectStateDir(deps.root), 'artifacts'));
   }
 
   /** The model this session's runs use — the chat role, then the profile's own. */
@@ -283,6 +322,12 @@ export class ChatSession implements HostSession {
     // this roster writes. It is not a latent write path — `CHAT_TOOL_NAMES`
     // is checked before dispatch, so a tool that is not on the list is
     // refused rather than executed.
+    // MCP servers — global (~/.heapcode/config.json) merged with the folder's
+    // own .heapcode/mcp.json, exactly as Heap Code loads them, because they
+    // are the same config. Reconnect is idempotent.
+    this.mcp ??= new McpManager(() => loadMcpServers(this.root, config), undefined, this.deps.clientVersion);
+    void this.mcp.ensureConnected().catch(() => undefined);
+
     this.executor = new WorkspaceToolExecutor(
       this.root,
       new SessionCheckpoint(this.root),
@@ -318,6 +363,7 @@ export class ChatSession implements HostSession {
     this.abort?.abort();
     this.connection?.close();
     this.connection = undefined;
+    this.mcp?.dispose();
   }
 
   /**
@@ -338,7 +384,10 @@ export class ChatSession implements HostSession {
     this.connection?.close();
     this.connection = undefined;
     this.executor = undefined;
+    this.mcp?.dispose();
+    this.mcp = undefined;
     this.root = target;
+    this.artifacts = new ArtifactStore(join(projectStateDir(target), 'artifacts'));
     this.conversation = undefined;
     this.history = undefined;
     this.turnEntries = [];
@@ -578,6 +627,82 @@ export class ChatSession implements HostSession {
       return null;
     });
 
+    // ---- the folder, and what has been made from it ----
+
+    ui.onRequest(CHAT_METHODS.fileTree, async (raw): Promise<ChatFileTreeResult> => {
+      const { path } = (raw ?? {}) as { path?: string };
+      return { path: path ?? '', entries: await listDirectory(this.root, path ?? '') };
+    });
+
+    ui.onRequest(CHAT_METHODS.readFile, async (raw): Promise<ChatReadFileResult> => {
+      const { path } = raw as { path: string };
+      // Shown as the text the agent sees, not as bytes: clicking a PDF here
+      // must not produce FlateDecode noise, and the panel must not disagree
+      // with the transcript about what a file says.
+      const read = await this.readDocument(path);
+      if (read.kind === 'text') return { path, content: read.text };
+      if (read.kind === 'unreadable') {
+        return { path, content: '', note: `No preview — this ${read.format ?? 'file'} has no readable text.` };
+      }
+      return { path, ...(await readWorkspaceFile(this.root, path)) };
+    });
+
+    ui.onRequest(CHAT_METHODS.artifacts, async (): Promise<ChatArtifactsResult> => ({
+      artifacts: (await this.artifacts.list()).map(toArtifactMeta),
+    }));
+
+    ui.onRequest(CHAT_METHODS.artifact, async (raw): Promise<ChatArtifactResult> => {
+      const { id, version } = raw as { id: string; version?: number };
+      const artifact = await this.artifacts.get(id);
+      if (!artifact) throw new Error(`No artifact ${id}`);
+      const index = version ? version - 1 : artifact.versions.length - 1;
+      const chosen = artifact.versions[index];
+      if (!chosen) throw new Error(`No version ${version} of ${id}`);
+      return { ...toArtifactMeta(artifact), version: index + 1, content: chosen.content };
+    });
+
+    /**
+     * Save an artifact into the person's own files.
+     *
+     * The one path by which anything this product produces reaches the folder,
+     * and it is theirs to take: they pick the name, they pick the moment. The
+     * agent cannot do it, which is the whole point of artifacts here.
+     */
+    ui.onRequest(CHAT_METHODS.saveArtifact, async (raw): Promise<ChatSaveArtifactResult> => {
+      const { id, path, version } = raw as { id: string; path: string; version?: number };
+      const artifact = await this.artifacts.get(id);
+      if (!artifact) throw new Error(`No artifact ${id}`);
+      const chosen = artifact.versions[version ? version - 1 : artifact.versions.length - 1];
+      if (!chosen) throw new Error('No such version');
+      // Root-jailed by the executor, like every other path this host touches.
+      const result = await this.executor!.execute({
+        id: `save-artifact-${id}`,
+        name: 'write_file',
+        args: { path, content: chosen.content },
+      });
+      if (result.isError) throw new Error(result.content);
+      return { path };
+    });
+
+    ui.onRequest(CHAT_METHODS.saveMcpServer, async (raw) => {
+      const { name, spec } = raw as { name: string; spec: string };
+      const nameProblem = mcpNameProblem(name);
+      if (nameProblem) throw new Error(nameProblem);
+      const parsed = parseMcpServerSpec(spec);
+      if ('error' in parsed) throw new Error(parsed.error);
+      await this.deps.config.saveMcpServer(name.trim(), parsed);
+      await this.mcp?.ensureConnected().catch(() => undefined);
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(CHAT_METHODS.deleteMcpServer, async (raw) => {
+      const { name } = raw as { name: string };
+      await this.deps.config.deleteMcpServer(name);
+      await this.mcp?.ensureConnected().catch(() => undefined);
+      return null;
+    });
+
     ui.onRequest(CHAT_METHODS.memory, async (): Promise<ChatMemoryResult> => ({
       entries: await this.memory.list(),
     }));
@@ -686,9 +811,23 @@ export class ChatSession implements HostSession {
         enabled: cfg.webSearch?.enabled ?? Boolean(cfg.webSearch?.provider),
         hasKey: Boolean(await this.deps.secrets.getApiKey(WEB_SEARCH_SECRET_NAME).catch(() => undefined)),
       },
-      mcpServers: [],
+      mcpServers: await this.listMcpServers(),
       permissionGrants: [],
     };
+  }
+
+  /** Both sources — personal config and the folder's own `.heapcode/mcp.json`. */
+  private async listMcpServers(): Promise<ChatSettings['mcpServers']> {
+    const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
+    const connected = new Set(this.mcp?.connectedServerNames() ?? []);
+    const tools = this.mcp?.getToolDefinitions() ?? [];
+    return Object.entries({ ...global, ...project }).map(([name, server]) => ({
+      name,
+      connected: connected.has(name),
+      tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
+      spec: describeMcpServer(server),
+      project: name in project,
+    }));
   }
 
   private async indexStatus(): Promise<ChatIndexStatus> {
@@ -760,7 +899,8 @@ export class ChatSession implements HostSession {
           // product's, sent per run — the daemon holds no opinion about which
           // agent it is running, which is exactly what lets one daemon serve
           // both products without either leaking into the other.
-          tools: chatToolDefinitions,
+          // The static roster plus whatever the connected MCP servers offer.
+          tools: [...chatToolDefinitions, ...(this.mcp?.getToolDefinitions() ?? [])],
           // Composed per run rather than cached: a fact remembered during this
           // conversation should be in scope for the next question in it.
           systemPrompt: CHAT_SYSTEM_PROMPT + memorySection(await this.memory.list().catch(() => [])),
@@ -856,7 +996,11 @@ export class ChatSession implements HostSession {
      */
     peer.onRequest(METHODS.permissionRequest, async (raw): Promise<PermissionRequestResult> => {
       const { call } = raw as { call: ToolCall };
-      return { granted: CHAT_TOOL_NAMES.has(call.name) };
+      // Nothing on this roster changes the folder, so there is nothing to ask
+      // about. An MCP server's tools are the exception in principle — but they
+      // were registered by this person, in this config, and Heap Code applies
+      // the same reasoning to them.
+      return { granted: CHAT_TOOL_NAMES.has(call.name) || Boolean(this.mcp?.isMcpTool(call.name)) };
     });
 
     // Nothing to snapshot: no tool on this roster changes a file.
@@ -926,7 +1070,7 @@ export class ChatSession implements HostSession {
    * bug that sends the wrong roster — gets an error string, not execution.
    */
   private async executeTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
-    if (!CHAT_TOOL_NAMES.has(call.name)) {
+    if (!CHAT_TOOL_NAMES.has(call.name) && !this.mcp?.isMcpTool(call.name)) {
       return {
         id: call.id,
         name: call.name,
@@ -945,6 +1089,16 @@ export class ChatSession implements HostSession {
         // re-asserting the fact as though it were new information.
         content: entry ? `Remembered: ${entry.text}` : 'Nothing saved — already known, or empty.',
       };
+    }
+
+    if (call.name === CREATE_ARTIFACT_TOOL.name) return this.createArtifact(call);
+
+    if (this.mcp?.isMcpTool(call.name)) {
+      try {
+        return { id: call.id, name: call.name, content: await this.mcp.call(call.name, call.args) };
+      } catch (err) {
+        return { id: call.id, name: call.name, content: err instanceof Error ? err.message : String(err), isError: true };
+      }
     }
 
     // Answered by the person through the page, not by the filesystem.
@@ -1070,6 +1224,36 @@ export class ChatSession implements HostSession {
       return { kind: 'text', text: exif ? `${described}\n\n${exif}` : described };
     } catch {
       return { kind: 'unreadable', format: 'image' };
+    }
+  }
+
+  /** Store an artifact and tell the page about it. */
+  private async createArtifact(call: ToolCall): Promise<ToolResult> {
+    const args = call.args as { id?: string; title?: string; kind?: string; content?: string; language?: string };
+    const fail = (message: string): ToolResult => ({ id: call.id, name: call.name, content: message, isError: true });
+
+    if (!isArtifactKind(args.kind)) {
+      return fail(`Unknown artifact kind "${String(args.kind)}". Use one of: ${ARTIFACT_KINDS.join(', ')}.`);
+    }
+    if (typeof args.content !== 'string' || !args.content.trim()) return fail('An artifact needs content.');
+    if (typeof args.title !== 'string' || !args.title.trim()) return fail('An artifact needs a title.');
+
+    try {
+      const artifact = await this.artifacts.put({
+        id: args.id,
+        title: args.title,
+        kind: args.kind,
+        content: args.content,
+        language: args.language,
+      });
+      this.ui?.notify(CHAT_METHODS.artifactChanged, toArtifactMeta(artifact));
+      return {
+        id: call.id,
+        name: call.name,
+        content: `Created "${artifact.title}" (${artifact.kind}), shown beside the conversation. The person can save it into their files from there.`,
+      };
+    } catch (err) {
+      return fail(err instanceof Error ? err.message : String(err));
     }
   }
 

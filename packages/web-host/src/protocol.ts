@@ -682,6 +682,11 @@ export interface UiMcpServer {
    */
   spec?: string;
   /**
+   * Why the last connection attempt failed, when it did. "Not connected" on
+   * its own sends people to re-read a URL that was never the problem.
+   */
+  error?: string;
+  /**
    * Defined in this project's `.heapcode/mcp.json` rather than in personal
    * config. Editable by hand only: that file is meant to be committed, and a
    * settings panel should not write to something under version control on

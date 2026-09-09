@@ -73,6 +73,16 @@ interface ConnectedServer {
  */
 export class McpManager {
   private servers = new Map<string, ConnectedServer>();
+  /**
+   * Why the last connection attempt for a name failed.
+   *
+   * Kept because "not connected" on its own is the least useful thing a
+   * settings screen can say. Both web hosts construct this manager without an
+   * `onLog`, so until this existed the reason was formatted into a string and
+   * dropped on the floor — a server that needs OAuth, a typo'd URL and an
+   * npx package that isn't installed all looked identical.
+   */
+  private failures = new Map<string, string>();
   private connecting?: Promise<void>;
 
   constructor(
@@ -105,6 +115,10 @@ export class McpManager {
       this.servers.delete(name);
     }
 
+    for (const name of [...this.failures.keys()]) {
+      if (!(name in config)) this.failures.delete(name);
+    }
+
     for (const [name, server] of Object.entries(config)) {
       if (this.servers.has(name)) continue;
       try {
@@ -129,9 +143,12 @@ export class McpManager {
           untrustedOutput: true,
         }));
         this.servers.set(name, { client, tools, spec: JSON.stringify(server) });
+        this.failures.delete(name);
         this.onLog?.(`connected "${name}" (${tools.length} tools)`);
       } catch (err) {
-        this.onLog?.(`failed to connect "${name}": ${err instanceof Error ? err.message : String(err)}`);
+        const reason = explainConnectFailure(err);
+        this.failures.set(name, reason);
+        this.onLog?.(`failed to connect "${name}": ${reason}`);
       }
     }
   }
@@ -142,6 +159,11 @@ export class McpManager {
 
   connectedServerNames(): string[] {
     return [...this.servers.keys()];
+  }
+
+  /** Why `name` is not connected, if the last attempt failed. */
+  failureFor(name: string): string | undefined {
+    return this.failures.get(name);
   }
 
   isMcpTool(name: string): boolean {
@@ -167,4 +189,30 @@ export class McpManager {
 
 function sanitize(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+}
+
+/**
+ * A connection failure in the terms of the person who configured the server.
+ *
+ * The distinction that matters is authentication. A remote server that
+ * answers 401 is working correctly and refusing us, which is a different
+ * situation from a bad URL or a missing package, and the only one whose
+ * remedy is not "fix what you typed". Hosted connectors (Notion, Linear,
+ * Sentry) all sit behind OAuth, so this is the failure a person is most
+ * likely to hit first and least likely to diagnose from "not connected".
+ */
+export function explainConnectFailure(err: unknown): string {
+  const code = (err as { code?: unknown })?.code;
+  const message = err instanceof Error ? err.message : String(err);
+
+  if (code === 401 || code === 403 || /\b(401|403)\b|unauthorized|invalid_token/i.test(message)) {
+    return 'This server requires sign-in (OAuth), which Heap Code cannot do yet. A server that accepts a token in its command environment will work.';
+  }
+  if (code === 'ENOENT' || /ENOENT|command not found|spawn .* ENOENT/i.test(message)) {
+    return `Could not run that command — is it installed and on PATH? (${message})`;
+  }
+  if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/i.test(message)) {
+    return `Could not reach that URL: ${message}`;
+  }
+  return message;
 }

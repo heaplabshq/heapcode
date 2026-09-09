@@ -1329,6 +1329,7 @@ export class WebSession {
       connected: connected.has(name),
       tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
       spec: describeMcpServer(server),
+      error: connected.has(name) ? undefined : this.session?.mcpManager.failureFor(name),
       project: name in project,
     }));
   }

@@ -1188,6 +1188,7 @@ function Connectors({
                 )}
               </div>
               {m.spec && <p className="hint mono-hint">{m.spec}</p>}
+              {m.error && <p className="hint hint-warn">{m.error}</p>}
               {editing === m.name && !m.project && (
                 <EditServer
                   initial={m.spec ?? ''}

@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { McpManager, type McpServerConfig } from '../src/index.js';
+import { McpManager, explainConnectFailure, type McpServerConfig } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SERVER = join(__dirname, 'fixtures', 'mcpFixtureServer.mjs');
@@ -130,6 +130,27 @@ describe('McpManager', () => {
     } finally {
       manager.dispose();
     }
+  });
+
+  it('records why a server failed, so a settings panel can say more than "not connected"', async () => {
+    const manager = new McpManager(() => Promise.resolve({ broken: { command: 'this-binary-does-not-exist-12345' } }));
+    try {
+      await manager.ensureConnected();
+      expect(manager.failureFor('broken')).toBeTruthy();
+      expect(manager.failureFor('never-configured')).toBeUndefined();
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('a server that answers 401 is explained as needing sign-in, not as a typo', () => {
+    // What StreamableHTTPClientTransport throws for a hosted connector behind
+    // OAuth (mcp.notion.com and friends) when no auth provider is configured.
+    const err = Object.assign(new Error('Error POSTing to endpoint: {"error":"invalid_token"}'), { code: 401 });
+    expect(explainConnectFailure(err)).toMatch(/sign-in \(OAuth\)/);
+
+    // A missing command must not be swept into the same bucket.
+    expect(explainConnectFailure(Object.assign(new Error('spawn foo ENOENT'), { code: 'ENOENT' }))).toMatch(/on PATH/);
   });
 
   it('calling an unconnected server raises a clear error instead of throwing on undefined', async () => {

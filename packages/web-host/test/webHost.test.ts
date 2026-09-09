@@ -16,7 +16,8 @@ import {
 import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { AuthLimiter } from '../src/authLimit.js';
 import { startWebHost, type RunningWebHost } from '../src/server.js';
-import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs, type DaemonHello } from '../src/session.js';
+import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs } from '../src/session.js';
+import type { DaemonHello } from '../src/hello.js';
 import { WorkspaceStore } from '../src/workspaces.js';
 import {
   UI_METHODS,

@@ -28,7 +28,6 @@ import {
   providerPresets,
   resolveCapabilities,
   describeRole,
-  type ModelRoleTable,
   unifiedDiff,
   type AgentEvent,
   type AgentEventParams,
@@ -155,6 +154,7 @@ import {
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
 } from './protocol.js';
+import type { DaemonHello } from './hello.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
 import { listFolders, type WorkspaceStore } from './workspaces.js';
 import {
@@ -221,28 +221,6 @@ const WEB_REVIEW_CLIENT: ReviewClient = {
   attribution: 'Heap Code Web',
   deepHint: 'run "/pr-review deep"',
 };
-
-/** What the session knows and the connector needs; the rest of HelloParams is the connector's. */
-export interface DaemonHello {
-  root: string;
-  profiles: ProviderProfileConfig[];
-  activeProfile: string;
-  /**
-   * Which model on which connection serves each role — one global table.
-   *
-   * Required: every path that builds a hello must carry it. `reconnect` once
-   * did not, which made changing a role the one action that left the daemon
-   * with no table.
-   */
-  roles: ModelRoleTable;
-  keys: Record<string, string>;
-  /**
-   * Non-code file extensions this host can turn into text, if any (see
-   * HelloParams.documentExtensions). Absent for Heap Code, which indexes
-   * source files and needs no parser to do it.
-   */
-  documentExtensions?: string[];
-}
 
 export interface WebSessionDeps {
   root: string;

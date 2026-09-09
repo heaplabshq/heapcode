@@ -86,10 +86,16 @@ works, not a new bet.
 
 ## Guardrails
 
-1. **`packages/web-host/src/session.ts` is not edited by this plan.** It is
-   2,403 of web-host's 4,418 lines and it is the code path every Heap Code
-   session runs through. If a milestone appears to require touching it, that
-   is a signal to stop and re-scope, not to proceed carefully.
+1. **The `WebSession` class in `packages/web-host/src/session.ts` is not
+   edited by this plan.** It is the bulk of that package and the code path
+   every Heap Code session runs through. If a milestone appears to require
+   touching it, that is a signal to stop and re-scope, not to proceed
+   carefully.
+
+   Originally worded as "the file is not edited", which was very slightly too
+   strong: the file also held `DaemonHello`, a contract both hosts build. That
+   interface has moved to `hello.ts`, so the wording and the file now agree
+   again.
 2. **Divergence starts at the session, not the UI.** Chat is a separate host
    with its own session and its own tool roster — two arrays, never one array
    behind a filter. A flag threaded through a shared session is how chat
@@ -227,6 +233,15 @@ from `feat/history-tool-result-retention`, which changes `session.ts` for
 reasons that have nothing to do with Heap Chat. Diffing against `origin/main`
 reports that inherited work and makes the guardrail look violated when it is
 not.
+
+**One amendment, recorded rather than quietly reinterpreted.** The file did
+end up with a diff: `DaemonHello` lived in it, and Heap Chat legitimately
+needed to add an optional field to that shared contract. Rather than declare
+the guardrail satisfied "in spirit", the interface moved to
+`web-host/src/hello.ts` — so the whole diff to `session.ts` is one import line
+and the removal of a contract that was never session state. **The `WebSession`
+class body is untouched, and from here the `git diff` check is clean and
+means what it says.**
 
 ### C1 — Document ingestion
 

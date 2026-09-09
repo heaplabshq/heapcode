@@ -196,6 +196,14 @@ packages/chat-ui      Heap Chat screens (new)
 the primary use must not gain a click. The switcher lives in the rail's top
 row, beside the brand, the way the Claude app switches between chat and code.
 
+**Which folder each one opens, and why they differ.** `heapcode chat` is
+invoked with no project context, so it defaults to your home directory —
+defaulting it to whatever the terminal happened to be in would index a repo by
+accident. Mounted inside `heapcode web` it opens on **the folder the web host
+was run in**, because there you deliberately chose that folder and the toggle
+is a view onto the same work. It also inherits that workspace's existing index
+(both products key it by root), so switching costs nothing.
+
 **One origin, one token.** Heap Chat is mounted at `/chat` inside the same
 host (`WebHostOptions.mount`), so the switcher is a link. Two servers on two
 ports could not do this: the cookie is scoped per origin, so a link to the
@@ -463,6 +471,8 @@ Do not resolve these by picking a default — ask.
 | 2026-09-09 | Document extensions are a separate set from `CODE_EXTENSIONS`, behind an extractor seam | Heap Code's index policy is deliberate; widening it in place would change Heap Code's behavior as a side effect of chat work |
 | 2026-09-09 | `heapcode web` continues to land directly in code mode; the product switcher lives inside the app | The primary product's primary path must not gain a click |
 | 2026-09-09 | Heap Chat uses `@heapcode/web-ui`'s shell — rail, composer, transcript, stylesheet — rather than its own | Reverses an earlier decision on this plan. The heapbrowse precedent said "each product builds its own UI", but heapbrowse is a browser side panel with a different shape; these two sit behind one switcher on one origin, where two look-alike shells is exactly where a design system gets noticed for being absent. `Composer` and `MessageList` were already product-neutral; `Sidebar` needed its `UiState` prop widened to the two fields it reads, and its empty state parameterized |
+| 2026-09-09 | Mounted chat opens on the web host's folder; standalone `heapcode chat` still defaults to home | Amends an earlier decision that was right for the standalone command and over-applied to the mount. `heapcode chat` has no project context, so cwd would index a repo by accident; `heapcode web` was deliberately run somewhere, and a toggle that lands elsewhere is the surprising behaviour. It also stops the first switch starting a fresh embedding run over the home directory, and lets chat inherit the workspace index |
+| 2026-09-09 | Both products share one index per root, and a code-side rebuild prunes chat's document chunks | Accepted, not solved. `retainFiles` drops anything the walk did not see, and Heap Code's walk is `CODE_EXTENSIONS` only — so a manual Rebuild from code mode removes any PDF/CSV/image chunks, and chat re-adds them on next open. Self-healing and bounded to non-code files, which are rare in a repo; a separate index file would avoid it at the cost of embedding the whole repo twice |
 | 2026-09-09 | Heap Chat serves the same settings payload (`UiSettings`) and drives Heap Code's own `Settings`, `WorkspacePicker` and `ModelPicker` | Connections, the model role table and web search ARE the same global config — a provider added in one product must appear in the other, and it does, because there is one store. A second, smaller settings screen would have been a second place to add a provider, and the bespoke folder picker and missing model switcher were the three places this product still felt like a different app |
 | 2026-09-09 | `Settings` takes an optional `pages` list; Heap Chat offers Providers and Web search only | Personas, permissions, MCP and skills do not exist in this product, and a page rendering an empty section is worse than one that is not there. Memory is excluded too, despite existing here: on that page it means HEAPCODE.md project instructions, and the description would have been false |
 | 2026-09-09 | Both products are served from one origin under one token, via `WebHostOptions.mount` | The switcher has to be a link, and a link to another port arrives without the HttpOnly cookie and bounces to 401. The mounted session is built on the first browser that asks for it, so a `heapcode web` nobody switches in pays nothing |

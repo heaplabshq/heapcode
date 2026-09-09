@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -82,9 +81,20 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
         staticDir: chatStaticDir,
         createSession: (deps) =>
           new ChatSession({
-            // Heap Chat opens on your documents, not on the repo this command
-            // was run in — the same reason `heapcode chat` defaults to home.
-            root: canonicalize(homedir()),
+            // The same folder the code session is pointed at.
+            //
+            // This reverses the reasoning that governs the standalone command,
+            // and the distinction is real: `heapcode chat` is invoked with no
+            // project context, so defaulting it to wherever the terminal
+            // happened to be would index a repo by accident. Here you
+            // deliberately ran `heapcode web` in this folder, and the toggle
+            // is a view onto the same work — landing somewhere unrelated is
+            // the surprising behaviour, not the safe one.
+            //
+            // It also inherits the workspace's existing index (both products
+            // key it by root), so the toggle costs nothing instead of starting
+            // a fresh embedding run over the home directory.
+            root: deps.root,
             config: deps.config,
             secrets: deps.secrets,
             connect: deps.connect,

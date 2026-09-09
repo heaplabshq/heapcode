@@ -57,6 +57,7 @@ import {
 import { Composer } from './components/Composer.js';
 import { ModelPicker } from './components/ModelPicker.js';
 import { MessageList } from './components/MessageList.js';
+import { useTransientNotice } from './notice.js';
 import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
@@ -123,14 +124,6 @@ function outcomeNotice(res: UiSendMessageResult): { text: string; warn: boolean 
   }
 }
 
-/**
- * How long a notice stays before it clears itself.
- *
- * Long enough to read a sentence twice, short enough that it is gone by the
- * time you have finished reading the reply underneath it.
- */
-const NOTICE_MS = 6_000;
-
 /** Permission modes, least to most autonomous — same order the CLI lists them. */
 const MODES = ['plan', 'default', 'auto-edit', 'full-auto'];
 
@@ -173,7 +166,7 @@ export function App(): JSX.Element {
   /** When the visible run started, for the working indicator's clock. */
   const [runStartedAt, setRunStartedAt] = useState<number>();
   const [error, setError] = useState<string>();
-  const [notice, setNotice] = useState<string>();
+  const [notice, setNotice] = useTransientNotice();
   /**
    * How the last run ended, when it ended badly — announced instead of the
    * usual "Finished", then cleared when the next run starts.
@@ -984,21 +977,6 @@ export function App(): JSX.Element {
    * card is pinned — the transcript hides exactly the one the bar draws.
    */
   const pinnedTasks = busy ? currentTasks(transcript) : undefined;
-
-  /**
-   * A notice says something just happened — "Stopped.", "Index rebuilt.",
-   * "Now working in pin-folder." — and every one of them used to sit there
-   * until it was clicked. A confirmation of a finished action is not a
-   * standing condition, and a strip of stale chrome above the conversation is
-   * what it turned into. It clears itself now; clicking still dismisses it
-   * early. (The LAN warning is a different element and deliberately stays: it
-   * describes what this page IS, not something that happened.)
-   */
-  useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => setNotice(undefined), NOTICE_MS);
-    return () => clearTimeout(timer);
-  }, [notice]);
 
 
   // The indicator's clock starts when the run becomes visible here and stops

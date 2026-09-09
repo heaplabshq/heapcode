@@ -827,6 +827,12 @@ export class ChatSession implements HostSession {
   private async describeImage(path: string): Promise<DocumentRead> {
     const mediaType = imageMediaType(path);
     if (!mediaType || !this.connection || !this.profile) return { kind: 'unreadable', format: 'image' };
+    // Gated on the endpoint's declared capability, the same way tool calls
+    // are. Sending an image to a text-only model does not fail cleanly: it
+    // answers anyway, describing an image it never saw, and that description
+    // goes into the index as if it were what the photo shows. A wrong
+    // description is worse than no description, because it is searchable.
+    if (!resolveCapabilities(this.profile).vision) return { kind: 'unreadable', format: 'image' };
     try {
       const full = canonicalize(resolve(this.root, path));
       const rel = relative(this.root, full);

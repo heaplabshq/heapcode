@@ -315,15 +315,32 @@ Widening `UiMessage` is the honest fix and is not done.
 
 ### C4 — Image understanding
 
-- [ ] Vision describe-then-index so photos are searchable by content. Vision
+- [x] Vision describe-then-index so photos are searchable by content. Vision
       *chat* already works — `packages/core/src/providers/types.ts:14-15`
       sends images as data URLs — what is missing is indexing the
       descriptions (heapchat's `src/llm/vision.js`, 97 lines)
-- [ ] EXIF read for date/camera as retrievable metadata. **No map, no face
+- [x] EXIF read for date/camera as retrievable metadata. **No map, no face
       detection** (see non-goals)
 
 **Exit criteria:** "find the receipt from the electronics shop" returns the
 right photo and cites it.
+
+**Result, 2026-09-09** — a PNG of a receipt was described as *"…the first line
+reads 'RECEIPT' and the second line reads 'TOTAL 42.90'"*, indexed, and
+answered from correctly. Corpus holds at 12/12.
+
+**Two limitations, both real:**
+
+- **Vision is gated on the endpoint's `vision` capability, which is per
+  preset, not per model.** Every Ollama model reads as vision-capable, so a
+  text-only model on an Ollama endpoint will still be asked to describe an
+  image and will answer without having seen it. A wrong description is worse
+  than none, because it is searchable. A per-model probe is the honest fix.
+- **`list_dir` joined the roster here.** "Is there a receipt photo in this
+  folder?" is not answerable without being able to look, and the original five
+  could not enumerate anything — the model fell back to `search` with a
+  pattern of `.`, which matches nothing in a PNG, and concluded the photo did
+  not exist.
 
 ### C5 — Personal memory
 
@@ -396,6 +413,8 @@ Do not resolve these by picking a default — ask.
 | 2026-09-09 | Provider connections and the model role table are shared between products; conversation history and memory are not | One keychain entry and one Ollama config is the biggest ergonomic win available. But code sessions in a documents chat list, or project memory mixed with personal memory, would be actively wrong in both directions |
 | 2026-09-09 | Document extensions are a separate set from `CODE_EXTENSIONS`, behind an extractor seam | Heap Code's index policy is deliberate; widening it in place would change Heap Code's behavior as a side effect of chat work |
 | 2026-09-09 | `heapcode web` continues to land directly in code mode; the product switcher lives inside the app | The primary product's primary path must not gain a click |
+| 2026-09-09 | Image description is gated on `resolveCapabilities(profile).vision`, not on a length check of the reply | Sending an image to a text-only model does not fail cleanly — it answers anyway, describing something it never saw, and that goes into the index as if it were what the photo shows. The gate is per preset rather than per model, which is a known hole, not a solved problem |
+| 2026-09-09 | `list_dir` added to the roster after C4; `search` alone cannot answer "is there a photo of X here" | `search` reads raw bytes, so a PDF, a .docx and a PNG are all invisible to it. Without any way to enumerate, the model grepped for `.`, matched nothing, and reported the folder did not contain a file that was sitting in it |
 | 2026-09-09 | Prose is chunked by the existing line-window fallback, not a new prose-aware chunker | `chunkFile` already routes anything `isAstSupported` rejects to `chunkFileByLines`, and extracted text is normalized first (form feeds to breaks, runs of blank lines collapsed) so the windows are not spent on layout. A prose chunker is real work and there is no measurement to justify it until C2 exists |
 | 2026-09-09 | Extraction is a host callback (`document/extract`), by PATH, not a parser inside core | `pdf-parse` and `mammoth` are tens of megabytes and must not enter core or the CLI bundle, but the indexer is the daemon's. Sending the path rather than the bytes keeps a 12 MB PDF from becoming 16 MB of base64 per file; §6 already colocates the two. The host resolves it through realpath under its own root, because a symlink inside the folder defeats every prefix check |
 | 2026-09-09 | `pdf-parse`/`mammoth` are optionalDependencies of **the CLI**, external to its bundle | The bundle that runs is `packages/cli/dist/cli.js`, so that is where node resolves an external import from. Declared on chat-host they installed into the wrong node_modules and every PDF silently failed — which first read as a passing test, because `search` had matched an uncompressed PDF's raw bytes |

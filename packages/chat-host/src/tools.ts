@@ -21,6 +21,12 @@ import { sharedAgentTools, type ToolDefinition } from '@heapcode/core';
  */
 export const chatToolDefinitions: ToolDefinition[] = [
   sharedAgentTools.read_file,
+  // Added after C4: "is there a receipt photo in this folder?" is not
+  // answerable without being able to look. The roster's five had no way to
+  // enumerate anything, so the model fell back to `search` with a pattern of
+  // "." and reasoned about whatever that happened to match — which for a PNG
+  // is nothing, so it concluded the photo did not exist.
+  sharedAgentTools.list_dir,
   sharedAgentTools.search,
   sharedAgentTools.semantic_search,
   // Always offered, executed only when configured — the same posture Heap Code

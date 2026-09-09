@@ -45,20 +45,26 @@ export function MemoryPanel({
             Nothing yet. Say “remember that…” in a chat and it will be kept across every folder.
           </p>
         ) : (
-          <ul className="memory-list">
+          // `rows`/`row`, the same list every other panel in both products is
+          // built from. The `memory-*` classes this used had no rule anywhere,
+          // so the list rendered as bare <li>s — the one screen in Heap Chat
+          // that looked like it belonged to a different application.
+          <ul className="rows">
             {entries.map((e) => (
-              <li key={e.id}>
+              <li key={e.id} className="row">
                 <span className="memory-text">{e.text}</span>
-                <span className="memory-date">{e.at.slice(0, 10)}</span>
-                <button
-                  className="btn memory-forget"
-                  onClick={() => {
-                    void forget(e.id).then(refresh);
-                  }}
-                  aria-label={`Forget: ${e.text}`}
-                >
-                  Forget
-                </button>
+                <span className="hint memory-when">{e.at.slice(0, 10)}</span>
+                <div className="row-actions">
+                  <button
+                    className="btn btn-ghost-danger"
+                    onClick={() => {
+                      void forget(e.id).then(refresh);
+                    }}
+                    aria-label={`Forget: ${e.text}`}
+                  >
+                    Forget
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

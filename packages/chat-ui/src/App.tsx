@@ -18,6 +18,7 @@ import type {
   ChatGroundingParams,
   ChatHelloResult,
   ChatIndexStatus,
+  ChatMemoryResult,
   ChatRecentFoldersResult,
   ChatSendMessageResult,
   ChatState,
@@ -25,6 +26,7 @@ import type {
 import { Composer } from './components/Composer.js';
 import { GroundingBadge } from './components/GroundingBadge.js';
 import { FolderPicker } from './components/FolderPicker.js';
+import { MemoryPanel } from './components/MemoryPanel.js';
 import { MessageList } from './components/MessageList.js';
 
 const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/rpc`;
@@ -42,6 +44,7 @@ export function App(): JSX.Element {
   const [index, setIndex] = useState<ChatIndexStatus>();
   const [error, setError] = useState<string>();
   const [picking, setPicking] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [ask, setAsk] = useState<Pending>();
   const [grounding, setGrounding] = useState<ChatGroundingParams['grounding']>();
 
@@ -214,6 +217,9 @@ export function App(): JSX.Element {
                     : (index.message ?? index.state)}
             </div>
           ) : null}
+          <button className="folder" onClick={() => setShowMemory(true)}>
+            <span className="folder-hint">What I remember about you</span>
+          </button>
           {index?.missingParsers?.length ? (
             // Said out loud, because a skipped file type is indistinguishable
             // from an empty folder to whoever is asking the question.
@@ -266,6 +272,14 @@ export function App(): JSX.Element {
           <Composer disabled={status !== 'open'} running={running} onSend={send} onStop={stop} />
         )}
       </main>
+
+      {showMemory ? (
+        <MemoryPanel
+          load={() => client.request<ChatMemoryResult>(CHAT_METHODS.memory)}
+          forget={(id) => client.request<null>(CHAT_METHODS.forget, { id }).then(() => undefined)}
+          onClose={() => setShowMemory(false)}
+        />
+      ) : null}
 
       {picking ? (
         <FolderPicker

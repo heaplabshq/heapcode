@@ -1,7 +1,10 @@
 import { startWebHost, type RunningWebHost, type WebHostOptions } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from './session.js';
 
-export type ChatHostOptions = Omit<WebHostOptions, 'createSession'>;
+export type ChatHostOptions = Omit<WebHostOptions, 'createSession'> & {
+  /** Where personal memory lives; defaults to the global store. See ChatSessionDeps. */
+  memoryFile?: string;
+};
 
 /**
  * Serve Heap Chat.
@@ -27,6 +30,7 @@ export async function startChatHost(opts: ChatHostOptions): Promise<RunningWebHo
         workspaces: deps.workspaces,
         lan: deps.lan,
         nativeToolCalls: deps.nativeToolCalls,
+        memoryFile: opts.memoryFile,
       } satisfies ChatSessionDeps),
   });
 }

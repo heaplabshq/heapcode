@@ -43,6 +43,9 @@ export const CHAT_METHODS = {
   setFolder: 'chat/setFolder',
   indexStatus: 'chat/indexStatus',
   reindex: 'chat/reindex',
+  /** What the assistant has been told to remember about this person. */
+  memory: 'chat/memory',
+  forget: 'chat/forget',
 
   // host → browser (requests)
   askUser: 'chat/askUser',
@@ -194,6 +197,14 @@ export interface ChatSettings {
   activeProfile: string;
   webSearch: boolean;
   embeddingsConfigured: boolean;
+}
+
+export interface ChatMemoryResult {
+  entries: Array<{ id: string; text: string; at: string }>;
+}
+
+export interface ChatForgetParams {
+  id: string;
 }
 
 export interface ChatAskUserParams {

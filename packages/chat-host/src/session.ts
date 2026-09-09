@@ -34,6 +34,7 @@ import {
   SessionCheckpoint,
   WorkspaceToolExecutor,
   canonicalize,
+  chatMemoryFile,
   createContextWindowResolver,
   projectStateDir,
   trimHistoryForAgent,
@@ -69,10 +70,13 @@ import {
   type Evidence,
   type Grounding,
 } from './grounding.js';
+import { ChatMemory, memorySection } from './memory.js';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from './protocol.js';
 import type {
   ChatAskUserParams,
+  ChatForgetParams,
   ChatGroundingParams,
+  ChatMemoryResult,
   ChatAskUserResult,
   ChatBrowseFoldersParams,
   ChatBrowseFoldersResult,
@@ -154,6 +158,16 @@ export interface ChatSessionDeps {
   lan?: boolean;
   /** Overridden by tests; real hosts read it from the profile's capabilities. */
   nativeToolCalls?: boolean;
+  /**
+   * Where personal memory lives. Defaults to the global `chat-memory.json`.
+   *
+   * Injectable because the benchmark must not read it: the eval runs against
+   * the real config (that is the point — a real model, a real index), and it
+   * was therefore also inheriting whatever the person had asked the assistant
+   * to remember, straight into the system prompt of every case. A corpus whose
+   * results depend on the operator's own memory is not a baseline.
+   */
+  memoryFile?: string;
 }
 
 /**
@@ -193,6 +207,8 @@ export class ChatSession implements HostSession {
    * question is not evidence for this one.
    */
   private evidence: Evidence[] = [];
+  /** Facts about the person, global rather than per folder — see memory.ts. */
+  private readonly memory: ChatMemory;
   /**
    * The out-of-band model call in flight, if any — verification or an image
    * description. Its events stream over the same channel as the run's and must
@@ -215,6 +231,7 @@ export class ChatSession implements HostSession {
 
   constructor(private readonly deps: ChatSessionDeps) {
     this.root = deps.root;
+    this.memory = new ChatMemory(deps.memoryFile ?? chatMemoryFile());
   }
 
   /** The model this session's runs use — the chat role, then the profile's own. */
@@ -452,6 +469,16 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.indexStatus, async (): Promise<ChatIndexStatus> => this.indexStatus());
 
+    ui.onRequest(CHAT_METHODS.memory, async (): Promise<ChatMemoryResult> => ({
+      entries: await this.memory.list(),
+    }));
+
+    ui.onRequest(CHAT_METHODS.forget, async (raw) => {
+      const { id } = raw as ChatForgetParams;
+      await this.memory.forget(id);
+      return null;
+    });
+
     ui.onRequest(CHAT_METHODS.reindex, async () => {
       await this.connection?.peer.request(METHODS.ragIndex, { full: true }).catch(() => undefined);
       return null;
@@ -584,7 +611,9 @@ export class ChatSession implements HostSession {
           // agent it is running, which is exactly what lets one daemon serve
           // both products without either leaking into the other.
           tools: chatToolDefinitions,
-          systemPrompt: CHAT_SYSTEM_PROMPT,
+          // Composed per run rather than cached: a fact remembered during this
+          // conversation should be in scope for the next question in it.
+          systemPrompt: CHAT_SYSTEM_PROMPT + memorySection(await this.memory.list().catch(() => [])),
           nativeToolCalls: this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls,
           contextWindow,
           maxTokens: profile.maxTokens,
@@ -661,11 +690,18 @@ export class ChatSession implements HostSession {
     });
 
     /**
-     * Every tool on this roster is `read` class, so there is nothing to ask
-     * about — granting is the honest answer, not a rubber stamp. The check is
-     * on the *name* rather than the class the daemon reports, so a tool that
-     * somehow reached this host without being on the roster is denied here as
-     * well as refused in `executeTool`.
+     * Granted for anything on the roster, denied for anything else.
+     *
+     * Every tool here reads, with one exception — `remember`, which is `write`
+     * class and writes to the assistant's own memory, never to the folder.
+     * That is not a prompt-worthy action: the person asked it to remember
+     * something, and a confirmation dialog for "shall I do the thing you just
+     * told me to do" is noise. Memory is reviewable and deletable in the
+     * sidebar instead, which is the control that actually helps.
+     *
+     * The check is on the *name*, not on the class the daemon reports, so a
+     * tool that reached this host without being on the roster is refused here
+     * as well as in `executeTool`.
      */
     peer.onRequest(METHODS.permissionRequest, async (raw): Promise<PermissionRequestResult> => {
       const { call } = raw as { call: ToolCall };
@@ -749,6 +785,17 @@ export class ChatSession implements HostSession {
         isError: true,
       };
     }
+    if (call.name === 'remember') {
+      const entry = await this.memory.remember(String(call.args.fact ?? ''));
+      return {
+        id: call.id,
+        name: call.name,
+        // "Already knew that" is a real and useful answer: it stops the model
+        // re-asserting the fact as though it were new information.
+        content: entry ? `Remembered: ${entry.text}` : 'Nothing saved — already known, or empty.',
+      };
+    }
+
     // Answered by the person through the page, not by the filesystem.
     if (call.name === 'ask_user') {
       return { id: call.id, name: call.name, content: await this.askUser(call, signal) };

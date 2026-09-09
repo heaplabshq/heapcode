@@ -10,6 +10,7 @@
  */
 export * from './extractors.js';
 export * from './grounding.js';
+export * from './memory.js';
 export * from './protocol.js';
 export * from './prompt.js';
 export * from './server.js';

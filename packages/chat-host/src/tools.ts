@@ -19,6 +19,38 @@ import { sharedAgentTools, type ToolDefinition } from '@heapcode/core';
  * `download_file`, `multi_edit`, `create_directory` and `delegate_task`.
  * Heap Chat reads; it does not change the folder it is pointed at.
  */
+/**
+ * Heap Chat's own tool — no shared definition to reuse, because Heap Code has
+ * no equivalent: its memory is a file in the repo that the user edits, plus a
+ * distillation step that proposes notes at the end of a session. This is the
+ * other shape, the one a conversational assistant needs: the person says
+ * "remember that…" and it is remembered now.
+ *
+ * `write` class, and honestly so. It is the one thing on this roster that
+ * changes state — not in the folder, which stays untouched, but in what the
+ * assistant will know tomorrow.
+ */
+export const REMEMBER_TOOL: ToolDefinition = {
+  name: 'remember',
+  description:
+    'Save a durable fact about this person for future conversations — a preference, a constraint, a ' +
+    'name or relationship, something they asked you to remember. Use it when they say "remember that…", ' +
+    'and sparingly on your own: only for things that will still be true and still matter next month. ' +
+    'Not for anything specific to the current question, and not for facts about the FILES — those are ' +
+    'in the files already and re-reading them is cheap.',
+  parameters: {
+    type: 'object',
+    properties: {
+      fact: {
+        type: 'string',
+        description: 'One fact, in a single sentence, written so it makes sense with no other context.',
+      },
+    },
+    required: ['fact'],
+  },
+  permission: 'write',
+};
+
 export const chatToolDefinitions: ToolDefinition[] = [
   sharedAgentTools.read_file,
   // Added after C4: "is there a receipt photo in this folder?" is not
@@ -40,6 +72,7 @@ export const chatToolDefinitions: ToolDefinition[] = [
   // (agent/loop.ts:951), so without it both that and `chat/askUser` are
   // protocol that can never fire. Executed by the session, not the executor.
   sharedAgentTools.ask_user,
+  REMEMBER_TOOL,
 ];
 
 /** Tool names this host will execute. Anything else is refused, not attempted. */

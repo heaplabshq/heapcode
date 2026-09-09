@@ -81,6 +81,10 @@ async function main(): Promise<void> {
     secrets: new SecretsStore(secretsFile()),
     // Under the throwaway home, so a benchmark run never edits the recent list.
     workspaces: new WorkspaceStore(join(home, 'workspaces.json')),
+    // Likewise, and for a stronger reason: personal memory is injected into
+    // the system prompt, so a run against the operator's real store would
+    // give different results on different machines and call it a baseline.
+    memoryFile: join(home, 'chat-memory.json'),
     port: 0,
     connect: (hello) =>
       connectToServer(

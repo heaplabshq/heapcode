@@ -344,18 +344,26 @@ answered from correctly. Corpus holds at 12/12.
 
 ### C5 — Personal memory
 
-- [ ] Personal memory store, **separate from `.heapcode/memory.md`**. Same
+- [x] Personal memory store, **separate from `.heapcode/memory.md`**. Same
       mechanism, different store: project memory about a repo and personal
       memory about the user must not mix in either direction
-- [ ] Decide whether learned-procedure memory (heapchat's
+- [x] Decide whether learned-procedure memory (heapchat's
       `src/llm/skills.js`, 139 lines — recalled by embedding similarity, with
       near-duplicate merging and LRU eviction) is in scope, and **name it
-      something other than "skills"**. `extraction-audit.md` flags this
+      something other than "skills"**. **Decided: out of scope**, moved to the
+      Backlog — see the Decisions log. `extraction-audit.md` flags this
       explicitly: heapcode's `SKILL.md` skills and heapchat's learned
       procedures are unrelated concepts sharing a word
 
 **Exit criteria:** a fact stated in one chat is recalled in a later,
 unrelated one, and nothing personal leaks into a Heap Code session.
+
+**Result, 2026-09-09** — "remember that I'm allergic to shellfish and I prefer
+amounts in GBP" wrote two entries; a *new* conversation asked about dinner
+recalled the allergy and said explicitly that it came from memory rather than
+from the files. Heap Code is untouched: this store is
+`~/.heapcode/chat-memory.json`, and `.heapcode/memory.md` is not read or
+written by this host.
 
 ---
 
@@ -381,12 +389,16 @@ Do not resolve these by picking a default — ask.
 | 1 | **Rename the repo / binary?** `heapcode` already hosts heapbrowse; adding Heap Chat makes a binary named `heapcode` that launches Heap Chat. `heap code` / `heap chat` is the clean version. GitHub redirects old URLs; the npm name `@heaplabs/heapcode-cli` and the Marketplace listing are unaffected (neither is the repo name) | Cheapest to do **before** `chat-host` exists. Retargeting one product's links beats three |
 | 2 | Does chat mode get its own desktop/Electron shell, or is `heapcode chat` in a browser tab enough? | heapchat's value as a daily app came partly from being an app. Affects whether packaging work is in scope at all |
 | 3 | Prose chunking strategy (C1) | Line-window fallback may be adequate; a prose-aware chunker is real work |
-| 4 | Is learned-procedure memory in scope (C5)? | It was one of heapchat's more distinctive ideas, and also one of its least-validated |
+| ~~4~~ | ~~Is learned-procedure memory in scope (C5)?~~ | **Resolved: no.** See the Decisions log |
 
 ---
 
 ## Backlog — park ideas here, do not start
 
+- **Learned-procedure memory** — heapchat's `src/llm/skills.js`: procedures
+  the agent writes after solving something, recalled by embedding similarity.
+  Distinctive, and its least-validated idea; C5's exit criteria do not need it,
+  and it must not be called "skills" if it is ever built
 - Rich inline rendering of tabular/numeric tool results (tables, charts, KPI
   cards). `web-ui`'s `Preview` and artifact frame are the natural home
 - Deep-work multi-agent roster (planner → researcher → drafter → critic).
@@ -413,6 +425,10 @@ Do not resolve these by picking a default — ask.
 | 2026-09-09 | Provider connections and the model role table are shared between products; conversation history and memory are not | One keychain entry and one Ollama config is the biggest ergonomic win available. But code sessions in a documents chat list, or project memory mixed with personal memory, would be actively wrong in both directions |
 | 2026-09-09 | Document extensions are a separate set from `CODE_EXTENSIONS`, behind an extractor seam | Heap Code's index policy is deliberate; widening it in place would change Heap Code's behavior as a side effect of chat work |
 | 2026-09-09 | `heapcode web` continues to land directly in code mode; the product switcher lives inside the app | The primary product's primary path must not gain a click |
+| 2026-09-09 | Personal memory is its own JSON store at `~/.heapcode/chat-memory.json`, global rather than per folder | Project memory is about a repo and is committed beside it; this is about the person and should follow them between folders. Mixing them puts dietary preferences into a repo's shared notes, or build quirks into a conversation about a tenancy agreement. JSON rather than markdown because entries are deleted individually |
+| 2026-09-09 | `remember` runs without a permission prompt, and the control is a reviewable list instead | It is the one `write`-class tool on the roster, and what it writes is the assistant's own memory, never the folder. "Shall I remember the thing you just told me to remember" is noise; being able to see everything it holds and delete any of it is the control that helps |
+| 2026-09-09 | Learned-procedure memory is out of scope, moved to Backlog | Open Decision 4, resolved by default rather than by asking, because the session could not. It was heapchat's least-validated idea, C5's exit criteria do not need it, and `extraction-audit.md` warns it shares a name with an unrelated concept already in this repo |
+| 2026-09-09 | The eval takes an injected `memoryFile` pointing at its throwaway home | Personal memory is injected into the system prompt, so a benchmark reading the operator's real store gives different results on different machines and calls it a baseline. Found by using the feature, not by reading the code |
 | 2026-09-09 | Image description is gated on `resolveCapabilities(profile).vision`, not on a length check of the reply | Sending an image to a text-only model does not fail cleanly — it answers anyway, describing something it never saw, and that goes into the index as if it were what the photo shows. The gate is per preset rather than per model, which is a known hole, not a solved problem |
 | 2026-09-09 | `list_dir` added to the roster after C4; `search` alone cannot answer "is there a photo of X here" | `search` reads raw bytes, so a PDF, a .docx and a PNG are all invisible to it. Without any way to enumerate, the model grepped for `.`, matched nothing, and reported the folder did not contain a file that was sitting in it |
 | 2026-09-09 | Prose is chunked by the existing line-window fallback, not a new prose-aware chunker | `chunkFile` already routes anything `isAstSupported` rejects to `chunkFileByLines`, and extracted text is normalized first (form feeds to breaks, runs of blank lines collapsed) so the windows are not spent on layout. A prose chunker is real work and there is no measurement to justify it until C2 exists |

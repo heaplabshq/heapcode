@@ -27,6 +27,7 @@ export async function startChatHost(opts: ChatHostOptions): Promise<RunningWebHo
         secrets: deps.secrets,
         connect: deps.connect,
         clientVersion: deps.clientVersion,
+        mcpLogins: deps.mcpLogins,
         workspaces: deps.workspaces,
         lan: deps.lan,
         nativeToolCalls: deps.nativeToolCalls,

@@ -155,6 +155,7 @@ import {
   type UiWorkspacesResult,
 } from './protocol.js';
 import type { DaemonHello } from './hello.js';
+import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
 import { listFolders, type WorkspaceStore } from './workspaces.js';
 import {
@@ -226,6 +227,13 @@ export interface WebSessionDeps {
   root: string;
   config: ConfigStore;
   secrets: SecretsStore;
+  /**
+   * OAuth logins in flight, shared with the mounted product because both
+   * answer on the same origin. Absent for a host that cannot land a redirect,
+   * in which case MCP servers behind OAuth report that they need a sign-in
+   * rather than offering one that could not finish.
+   */
+  mcpLogins?: McpLoginRegistry;
   /**
    * Opens the daemon connection. Injected rather than called directly so tests
    * can point at an in-process server, and so the CLI can supply the path to
@@ -425,10 +433,15 @@ export class WebSession {
     // sidebar is how you get back to an earlier one.
     this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
 
-    this.session = buildAgentSession(root, config, secrets, clientVersion, (original, snippet) =>
+    this.session = buildAgentSession(
+      root,
+      config,
+      secrets,
+      clientVersion,
       // Reaches for the connection at call time, not now: the session is built
       // before the daemon link exists, and a switched workspace replaces both.
-      this.applyMerge(original, snippet),
+      (original, snippet) => this.applyMerge(original, snippet),
+      this.deps.mcpLogins?.redirectUri(),
     );
     this.permissions = new PermissionEngine(
       permissionsFile(root),
@@ -1196,6 +1209,21 @@ export class WebSession {
       return null;
     });
 
+    ui.onRequest(UI_METHODS.signInMcpServer, async (raw) => {
+      await this.start();
+      const { name } = raw as UiNameParams;
+      return startMcpSignIn(this.session!.mcpManager, this.deps.mcpLogins, name, () => void this.pushState());
+    });
+
+    ui.onRequest(UI_METHODS.signOutMcpServer, async (raw) => {
+      await this.start();
+      const { name } = raw as UiNameParams;
+      await this.session!.mcpManager.signOut(name);
+      this.reconnectMcp();
+      void this.pushState();
+      return null;
+    });
+
     ui.onRequest(UI_METHODS.deleteProfile, async (raw) => {
       const { name } = raw as UiNameParams;
       if (name === this.profile?.name) throw new Error('Cannot delete the connection currently in use.');
@@ -1324,12 +1352,15 @@ export class WebSession {
   private async listMcpServers(connected: Set<string>): Promise<UiMcpServer[]> {
     const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
     const tools = this.session?.mcpManager.getToolDefinitions() ?? [];
+    const signedIn = await storedTokenNames(this.deps.secrets, Object.keys({ ...global, ...project }));
     return Object.entries({ ...global, ...project }).map(([name, server]) => ({
       name,
       connected: connected.has(name),
       tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
       spec: describeMcpServer(server),
       error: connected.has(name) ? undefined : this.session?.mcpManager.failureFor(name),
+      needsAuth: !connected.has(name) && Boolean(this.session?.mcpManager.awaitingSignIn(name)),
+      signedIn: signedIn.has(name),
       project: name in project,
     }));
   }

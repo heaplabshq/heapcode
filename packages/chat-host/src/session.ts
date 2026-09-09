@@ -49,6 +49,7 @@ import {
   projectStateDir,
   trimHistoryForAgent,
   type ConfigStore,
+  SecretsMcpAuthStore,
   type SecretsStore,
 } from '@heapcode/host';
 import {
@@ -70,6 +71,7 @@ import {
 } from '@heapcode/web-host';
 import { UI_MODEL_ROLES } from '@heapcode/web-host/protocol';
 import type { Artifact } from '@heapcode/web-host';
+import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from '@heapcode/web-host';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
 import {
   IMAGE_MAX_BYTES,
@@ -193,6 +195,11 @@ export interface ChatSessionDeps {
   secrets: SecretsStore;
   connect: (hello: DaemonHello) => Promise<ServerConnection>;
   clientVersion?: string;
+  /**
+   * OAuth logins in flight. The same registry the code product uses: chat is
+   * mounted on that server, so one `/oauth/callback` answers for both.
+   */
+  mcpLogins?: McpLoginRegistry;
   /** Recently opened folders, for the picker. */
   workspaces?: WorkspaceStore;
   /** Bound to a non-loopback address — passed down, never inferred here. */
@@ -324,7 +331,13 @@ export class ChatSession implements HostSession {
     // MCP servers — global (~/.heapcode/config.json) merged with the folder's
     // own .heapcode/mcp.json, exactly as Heap Code loads them, because they
     // are the same config. Reconnect is idempotent.
-    this.mcp ??= new McpManager(() => loadMcpServers(this.root, config), undefined, this.deps.clientVersion);
+    this.mcp ??= new McpManager(
+      () => loadMcpServers(this.root, config),
+      undefined,
+      this.deps.clientVersion,
+      new SecretsMcpAuthStore(this.deps.secrets),
+      this.deps.mcpLogins?.redirectUri(),
+    );
     void this.mcp.ensureConnected().catch(() => undefined);
 
     this.executor = new WorkspaceToolExecutor(
@@ -692,6 +705,19 @@ export class ChatSession implements HostSession {
       return null;
     });
 
+    ui.onRequest(CHAT_METHODS.signInMcpServer, async (raw) => {
+      const { name } = raw as { name: string };
+      return startMcpSignIn(this.mcp!, this.deps.mcpLogins, name, () => void this.pushState());
+    });
+
+    ui.onRequest(CHAT_METHODS.signOutMcpServer, async (raw) => {
+      const { name } = raw as { name: string };
+      await this.mcp?.signOut(name);
+      await this.mcp?.ensureConnected().catch(() => undefined);
+      void this.pushState();
+      return null;
+    });
+
     ui.onRequest(CHAT_METHODS.deleteMcpServer, async (raw) => {
       const { name } = raw as { name: string };
       await this.deps.config.deleteMcpServer(name);
@@ -817,12 +843,15 @@ export class ChatSession implements HostSession {
     const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
     const connected = new Set(this.mcp?.connectedServerNames() ?? []);
     const tools = this.mcp?.getToolDefinitions() ?? [];
+    const signedIn = await storedTokenNames(this.deps.secrets, Object.keys({ ...global, ...project }));
     return Object.entries({ ...global, ...project }).map(([name, server]) => ({
       name,
       connected: connected.has(name),
       tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
       spec: describeMcpServer(server),
       error: connected.has(name) ? undefined : this.mcp?.failureFor(name),
+      needsAuth: !connected.has(name) && Boolean(this.mcp?.awaitingSignIn(name)),
+      signedIn: signedIn.has(name),
       project: name in project,
     }));
   }

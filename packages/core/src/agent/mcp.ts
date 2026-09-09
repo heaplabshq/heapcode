@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { isAuthFailure, McpOAuthProvider, type McpAuthStore } from './mcpAuth.js';
 import type { ToolDefinition } from './tools.js';
 
 /**
@@ -83,6 +84,10 @@ export class McpManager {
    * npx package that isn't installed all looked identical.
    */
   private failures = new Map<string, string>();
+  /** Servers that answered 401 and have a sign-in waiting to be started. */
+  private needsAuth = new Set<string>();
+  /** One per server, so a login and a reconnect share stored registration. */
+  private providers = new Map<string, McpOAuthProvider>();
   private connecting?: Promise<void>;
 
   constructor(
@@ -92,6 +97,16 @@ export class McpManager {
     private readonly onLog?: (line: string) => void,
     /** This host's own version, reported to servers in the handshake. */
     private readonly clientVersion: string = UNKNOWN_CLIENT_VERSION,
+    /**
+     * Where OAuth tokens live, and the loopback URI the browser returns to.
+     *
+     * Both host-supplied, and both absent for a host that has nowhere to put
+     * a token or no way to open a browser — in which case a server behind
+     * OAuth reports `needsAuth` and stops, which is still better than the
+     * bare 401 it used to report.
+     */
+    private readonly authStore?: McpAuthStore,
+    private readonly redirectUri?: string,
   ) {}
 
   dispose(): void {
@@ -118,15 +133,22 @@ export class McpManager {
     for (const name of [...this.failures.keys()]) {
       if (!(name in config)) this.failures.delete(name);
     }
+    for (const name of [...this.needsAuth]) {
+      if (!(name in config)) this.needsAuth.delete(name);
+    }
 
     for (const [name, server] of Object.entries(config)) {
       if (this.servers.has(name)) continue;
       try {
         const client = new Client({ name: CLIENT_NAME, version: this.clientVersion || UNKNOWN_CLIENT_VERSION });
+        // Attached only when the host can complete a login. Given one, the
+        // SDK sends a stored token, refreshes it when stale, and re-registers
+        // if the callback moved — all before `connect` returns.
+        const authProvider = server.url ? this.providerFor(name) : undefined;
         const transport = server.url
           ? server.transport === 'sse'
-            ? new SSEClientTransport(new URL(server.url))
-            : new StreamableHTTPClientTransport(new URL(server.url))
+            ? new SSEClientTransport(new URL(server.url), { authProvider })
+            : new StreamableHTTPClientTransport(new URL(server.url), { authProvider })
           : new StdioClientTransport({
               command: server.command ?? '',
               args: server.args ?? [],
@@ -144,9 +166,20 @@ export class McpManager {
         }));
         this.servers.set(name, { client, tools, spec: JSON.stringify(server) });
         this.failures.delete(name);
+        this.needsAuth.delete(name);
         this.onLog?.(`connected "${name}" (${tools.length} tools)`);
       } catch (err) {
-        const reason = explainConnectFailure(err);
+        // A 401 is the server working correctly and refusing us, which is a
+        // waiting state rather than a fault: the remedy is a sign-in, not a
+        // correction to what was typed.
+        const awaiting = Boolean(server.url) && isAuthFailure(err);
+        if (awaiting) this.needsAuth.add(name);
+        else this.needsAuth.delete(name);
+        const reason = awaiting
+          ? this.canSignIn()
+            ? 'Not signed in. Choose Sign in to authorize this server.'
+            : explainConnectFailure(err)
+          : explainConnectFailure(err);
         this.failures.set(name, reason);
         this.onLog?.(`failed to connect "${name}": ${reason}`);
       }
@@ -164,6 +197,63 @@ export class McpManager {
   /** Why `name` is not connected, if the last attempt failed. */
   failureFor(name: string): string | undefined {
     return this.failures.get(name);
+  }
+
+  /**
+   * Whether this host has somewhere to keep tokens.
+   *
+   * That, not the redirect URI, is what decides it: `heapcode web` knows its
+   * callback at startup, but a terminal opens an ephemeral port per login and
+   * passes it to `providerFor` then. Requiring the URI up front would have
+   * told every terminal it could not sign in.
+   */
+  canSignIn(): boolean {
+    return Boolean(this.authStore);
+  }
+
+  /** `name` answered 401 and a sign-in would connect it. */
+  awaitingSignIn(name: string): boolean {
+    return this.needsAuth.has(name) && this.canSignIn();
+  }
+
+  /**
+   * The provider for one server, shared between connecting and signing in so
+   * both halves of a login see the same stored client registration.
+   *
+   * `redirectOverride` is for a host that cannot know its callback until the
+   * login starts: a terminal opens an ephemeral loopback port per sign-in, so
+   * the URI differs from the one this manager was built with, and a provider
+   * cached under the other one would register against the wrong port. Keyed
+   * by both, because a registration is only valid for the URI it was made for.
+   */
+  providerFor(name: string, redirectOverride?: string): McpOAuthProvider | undefined {
+    const redirect = redirectOverride ?? this.redirectUri;
+    if (!this.authStore || !redirect) return undefined;
+    const key = `${name}\u0000${redirect}`;
+    let provider = this.providers.get(key);
+    if (!provider) {
+      provider = new McpOAuthProvider(name, this.authStore, redirect);
+      this.providers.set(key, provider);
+    }
+    return provider;
+  }
+
+  /** The configured URL for `name`, which a login has to be aimed at. */
+  async serverUrl(name: string): Promise<string | undefined> {
+    return (await this.loadConfig())[name]?.url;
+  }
+
+  /** Forget one server's tokens and registration, and drop its connection. */
+  async signOut(name: string): Promise<void> {
+    await this.authStore?.clear(name);
+    for (const key of [...this.providers.keys()]) {
+      if (key.startsWith(`${name}\u0000`)) this.providers.delete(key);
+    }
+    const server = this.servers.get(name);
+    if (server) {
+      void server.client.close();
+      this.servers.delete(name);
+    }
   }
 
   isMcpTool(name: string): boolean {

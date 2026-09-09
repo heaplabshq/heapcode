@@ -10,6 +10,7 @@ import type {
   UiConnectionModelsResult,
   UiConversationMeta,
   UiEventParams,
+  UiMcpSignInResult,
   UiMessage,
   UiProbeProviderParams,
   UiProbeProviderResult,
@@ -69,6 +70,8 @@ export const CHAT_METHODS = {
   // MCP servers — the same connectors Heap Code registers, from the same config.
   saveMcpServer: 'chat/saveMcpServer',
   deleteMcpServer: 'chat/deleteMcpServer',
+  signInMcpServer: 'chat/signInMcpServer',
+  signOutMcpServer: 'chat/signOutMcpServer',
 
   // settings — the same surface Heap Code's dialog drives, because the things
   // it edits (connections, the model role table, web search) are global
@@ -262,6 +265,7 @@ export type {
   UiTreeEntry as ChatTreeEntry,
   UiConversationMeta as ChatConversationMeta,
   UiEventParams as ChatEventParams,
+  UiMcpSignInResult as ChatMcpSignInResult,
   UiMessage as ChatMessageEntry,
   UiConnectionModelsResult as ChatConnectionModelsResult,
   UiProbeProviderParams as ChatProbeProviderParams,

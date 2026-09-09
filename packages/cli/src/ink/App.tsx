@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { signInToMcpServer } from '@heapcode/core/node';
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
@@ -140,7 +141,11 @@ const COMMANDS: SlashCommand[] = [
   { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
   { name: '/index', description: 'Rebuild the semantic search + repo map indexes' },
   { name: '/pr-review', args: '[deep]', description: "Review the current branch's PR and (on confirmation) post it to GitHub — needs the gh CLI" },
-  { name: '/mcp', args: '[add <name> <command…|url>|remove <name>]', description: 'List, add, or remove MCP servers' },
+  {
+    name: '/mcp',
+    args: '[add <name> <command…|url>|remove <name>|login <name>|logout <name>]',
+    description: 'List, add, remove, or sign in to MCP servers',
+  },
   { name: '/subagents', args: '[on|off]', description: 'Toggle delegate_task — lets the agent hand off sub-tasks to a fresh sub-agent' },
   { name: '/clear', description: 'Clear the screen and start a new conversation' },
   { name: '/new', description: 'Start a new conversation' },
@@ -1698,6 +1703,39 @@ export function App({
           return true;
         }
 
+        // Hosted connectors (Notion, Linear, Sentry) refuse an anonymous
+        // request and say so in a WWW-Authenticate header. The terminal has no
+        // server to land a redirect on, so it opens a loopback port for the
+        // length of this login and closes it again.
+        if (action === 'login' || action === 'signin') {
+          const name = rest[1];
+          if (!name) {
+            pushSystem('Usage: /mcp login <name>');
+            return true;
+          }
+          pushSystem(`Opening your browser to sign in to "${name}"…`);
+          const result = await signInToMcpServer(mcpManager, name, (url) =>
+            pushSystem(`If your browser did not open, visit:\n  ${url}`),
+          );
+          pushSystem(
+            result.ok
+              ? `Signed in to "${name}" — ${mcpManager.getToolDefinitions().filter((t) => t.name.startsWith(`mcp__${name}__`)).length} tool(s) available now.`
+              : `Could not sign in to "${name}": ${result.detail ?? 'unknown error'}`,
+          );
+          return true;
+        }
+
+        if (action === 'logout' || action === 'signout') {
+          const name = rest[1];
+          if (!name) {
+            pushSystem('Usage: /mcp logout <name>');
+            return true;
+          }
+          await mcpManager.signOut(name);
+          pushSystem(`Signed out of "${name}".`);
+          return true;
+        }
+
         if (action === 'remove') {
           const name = rest[1];
           if (!name) {
@@ -1731,9 +1769,16 @@ export function App({
               // connected is the thing worth seeing, and a "3 connected" line
               // hides exactly that.
               const where = name in project ? ' [project]' : '';
-              const state = connected.has(name) ? 'connected' : 'not connected';
+              const state = connected.has(name)
+                ? 'connected'
+                : mcpManager.awaitingSignIn(name)
+                  ? `not signed in — run "/mcp login ${name}"`
+                  : 'not connected';
               const spec = all[name] ? `\n  ${describeMcpServer(all[name]!)}` : '';
-              return `${name}${where} — ${state}${spec}`;
+              const why = !connected.has(name) && !mcpManager.awaitingSignIn(name) && mcpManager.failureFor(name)
+                ? `\n  ${mcpManager.failureFor(name)}`
+                : '';
+              return `${name}${where} — ${state}${spec}${why}`;
             }),
             `${mcpManager.getToolDefinitions().length} tool(s) total. "/mcp add <name> <command…|url>" to add, "/mcp remove <name>" to remove.`,
           ].join('\n'),

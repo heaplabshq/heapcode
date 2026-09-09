@@ -5,6 +5,7 @@ import { hostname, networkInterfaces } from 'node:os';
 import { RpcPeer } from '@heapcode/core';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { AuthLimiter } from './authLimit.js';
+import { CALLBACK_PATH, callbackPage, createMcpLoginRegistry } from './mcpLogin.js';
 import { WebSession, type WebSessionDeps } from './session.js';
 import { serveStatic } from './static.js';
 import { webSocketDuplex } from './wsDuplex.js';
@@ -97,7 +98,15 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
   // The browser is told which side of the trust boundary it is on, so it can
   // say so — the terminal warning is only seen by whoever ran the command, and
   // LAN mode's whole point is that other people open the page (§6.1, W3.4).
-  const deps = { ...opts, lan: !isLoopback(host) };
+  /**
+   * The redirect always follows this server's own loopback origin, never the
+   * origin the page was opened from. Hosted authorization servers require
+   * HTTPS for anything else — Notion answers a plain-HTTP LAN redirect with
+   * "Redirect URI must use HTTPS unless it is a loopback HTTP URI" — so a
+   * LAN-reached page must still be signed in from the machine running this.
+   */
+  const mcpLogins = createMcpLoginRegistry(() => `http://127.0.0.1:${boundPort()}`);
+  const deps = { ...opts, lan: !isLoopback(host), mcpLogins };
   const session = opts.createSession ? opts.createSession(deps) : new WebSession(deps);
 
   const mount = opts.mount;
@@ -127,6 +136,30 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '900' });
       res.end('too many failed attempts');
       return;
+    }
+
+    // Before the cookie check, and deliberately: the browser arrives here on a
+    // cross-site navigation from the authorization server, which SameSite=Strict
+    // withholds the cookie from. `state` is what authenticates this — 24 random
+    // bytes minted per attempt, single-use, and worthless without a matching
+    // code. Weakening the cookie to Lax for every other route would be the
+    // larger concession. Rate limiting still applies: it ran above.
+    if (url.pathname === CALLBACK_PATH) {
+      const send = (ok: boolean, detail?: string): void => {
+        res.writeHead(ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(callbackPage({ ok, detail }));
+      };
+      const error = url.searchParams.get('error_description') ?? url.searchParams.get('error');
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      if (error) return send(false, error);
+      if (!code || !state) return send(false, 'The authorization server returned no code.');
+      try {
+        const matched = await mcpLogins.complete(state, code);
+        return send(matched, matched ? undefined : 'No sign-in is in progress. Start again from Settings.');
+      } catch (err) {
+        return send(false, err instanceof Error ? err.message : String(err));
+      }
     }
 
     if (url.pathname === '/healthz') {

@@ -98,6 +98,9 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
             config: deps.config,
             secrets: deps.secrets,
             connect: deps.connect,
+            // The same registry the code product uses: one /oauth/callback
+            // on this origin answers for whichever side began the sign-in.
+            mcpLogins: deps.mcpLogins,
             clientVersion: deps.clientVersion,
             workspaces: deps.workspaces,
             lan: deps.lan,

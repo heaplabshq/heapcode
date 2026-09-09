@@ -25,6 +25,7 @@ import type {
   ChatGroundingParams,
   ChatHelloResult,
   ChatIndexStatus,
+  ChatMcpSignInResult,
   ChatMemoryResult,
   ChatRecentFoldersResult,
   ChatArtifactMeta,
@@ -537,6 +538,11 @@ export function App(): JSX.Element {
           onResetPermissions={() => {}}
           onSaveMcpServer={(name, spec) => edit(CHAT_METHODS.saveMcpServer, { name, spec })}
           onDeleteMcpServer={(name) => edit(CHAT_METHODS.deleteMcpServer, { name })}
+          onSignInMcpServer={async (name) => {
+            const res = (await client.request(CHAT_METHODS.signInMcpServer, { name })) as ChatMcpSignInResult;
+            return res.authorizationUrl;
+          }}
+          onSignOutMcpServer={(name) => edit(CHAT_METHODS.signOutMcpServer, { name })}
         />
       ) : null}
     </div>

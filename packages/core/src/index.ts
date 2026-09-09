@@ -28,6 +28,7 @@ export * from './agent/recap.js';
 export * from './agent/permissionModes.js';
 export * from './agent/webSearch.js';
 export * from './agent/mcp.js';
+export * from './agent/mcpAuth.js';
 export * from './agent/skills.js';
 export * from './agent/projectInstructions.js';
 export * from './agent/checkpoint.js';

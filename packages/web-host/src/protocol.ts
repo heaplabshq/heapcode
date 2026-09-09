@@ -63,6 +63,8 @@ export const UI_METHODS = {
   deleteProfile: 'ui/deleteProfile',
   saveMcpServer: 'ui/saveMcpServer',
   deleteMcpServer: 'ui/deleteMcpServer',
+  signInMcpServer: 'ui/signInMcpServer',
+  signOutMcpServer: 'ui/signOutMcpServer',
   useProfile: 'ui/useProfile',
   setRole: 'ui/setRole',
   listConnectionModels: 'ui/listConnectionModels',
@@ -687,6 +689,13 @@ export interface UiMcpServer {
    */
   error?: string;
   /**
+   * The server refused us and a sign-in would connect it. Distinct from
+   * `error`: nothing is misconfigured, it is simply waiting on OAuth.
+   */
+  needsAuth?: boolean;
+  /** A stored token exists, so the row can offer to sign out. */
+  signedIn?: boolean;
+  /**
    * Defined in this project's `.heapcode/mcp.json` rather than in personal
    * config. Editable by hand only: that file is meant to be committed, and a
    * settings panel should not write to something under version control on
@@ -700,6 +709,11 @@ export interface UiSaveMcpServerParams {
   name: string;
   /** A URL, or a command line. Parsed the same way the CLI parses it. */
   spec: string;
+}
+
+/** `ui/signInMcpServer` — where to send the browser to authorize a server. */
+export interface UiMcpSignInResult {
+  authorizationUrl: string;
 }
 
 /** A provider preset as the settings UI needs it — core's, minus capabilities. */

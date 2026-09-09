@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentEvent } from '@heapcode/core';
 import {
   UI_METHODS,
+  type UiMcpSignInResult,
   UI_PROTOCOL_VERSION,
   type UiAskUserParams,
   type UiConversationMeta,
@@ -1234,6 +1235,11 @@ export function App(): JSX.Element {
           }
           onSaveMcpServer={(name, spec) => act(UI_METHODS.saveMcpServer, { name, spec })}
           onDeleteMcpServer={(name) => act(UI_METHODS.deleteMcpServer, { name })}
+          onSignInMcpServer={async (name) => {
+            const res = (await rpc.request(UI_METHODS.signInMcpServer, { name })) as UiMcpSignInResult;
+            return res.authorizationUrl;
+          }}
+          onSignOutMcpServer={(name) => act(UI_METHODS.signOutMcpServer, { name })}
           loadSkills={loadSkills}
           loadMemory={loadMemory}
           listModels={listProfileModels}

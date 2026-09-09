@@ -42,6 +42,13 @@ export interface SettingsProps {
   /** Add or replace an MCP server. `spec` is a URL or a command line. */
   onSaveMcpServer(name: string, spec: string): void;
   onDeleteMcpServer(name: string): void;
+  /**
+   * Begin an OAuth sign-in and return where to send the browser. Optional:
+   * a host with nowhere to land a redirect offers no button rather than one
+   * that fails, and the row explains itself instead.
+   */
+  onSignInMcpServer?(name: string): Promise<string>;
+  onSignOutMcpServer?(name: string): void;
   /** Models a given profile's endpoint serves, for the role fields' type-ahead. */
   listModels?(profileName: string): Promise<string[]>;
   /** Tests an endpoint that isn't a saved profile yet, and reports what it serves. */
@@ -354,6 +361,8 @@ export function Settings(props: SettingsProps): JSX.Element {
                   servers={s.mcpServers}
                   onSave={props.onSaveMcpServer}
                   onDelete={props.onDeleteMcpServer}
+                  onSignIn={props.onSignInMcpServer}
+                  onSignOut={props.onSignOutMcpServer}
                 />
               )}
 
@@ -1140,14 +1149,33 @@ function Connectors({
   servers,
   onSave,
   onDelete,
+  onSignIn,
+  onSignOut,
 }: {
   servers: UiMcpServer[];
   onSave(name: string, spec: string): void;
   onDelete(name: string): void;
+  onSignIn?(name: string): Promise<string>;
+  onSignOut?(name: string): void;
 }): JSX.Element {
   const [name, setName] = useState('');
   const [spec, setSpec] = useState('');
   const [editing, setEditing] = useState<string>();
+  const [signingIn, setSigningIn] = useState<string>();
+
+  const signIn = async (server: string): Promise<void> => {
+    if (!onSignIn) return;
+    setSigningIn(server);
+    try {
+      // Opened from the click that asked for it, so the browser treats it as
+      // user-initiated rather than a popup. The tab lands on the callback
+      // page and the settings panel updates itself when the token arrives.
+      const url = await onSignIn(server);
+      window.open(url, '_blank', 'noopener');
+    } finally {
+      setSigningIn(undefined);
+    }
+  };
 
   const add = (): void => {
     if (!name.trim() || !spec.trim()) return;
@@ -1178,6 +1206,16 @@ function Connectors({
                   <span className="hint">from this project&rsquo;s .heapcode/mcp.json</span>
                 ) : (
                   <div className="row-actions">
+                    {m.needsAuth && onSignIn && (
+                      <button className="btn" disabled={signingIn === m.name} onClick={() => void signIn(m.name)}>
+                        {signingIn === m.name ? 'Opening…' : 'Sign in'}
+                      </button>
+                    )}
+                    {m.signedIn && onSignOut && (
+                      <button className="btn" onClick={() => onSignOut(m.name)}>
+                        Sign out
+                      </button>
+                    )}
                     <button className="btn" onClick={() => setEditing(editing === m.name ? undefined : m.name)}>
                       {editing === m.name ? 'Close' : 'Edit'}
                     </button>

@@ -105,6 +105,29 @@ export function parseMcpServerEnv(text: string): Record<string, string> | { erro
 }
 
 /**
+ * One server's environment after applying `KEY=value` pairs to it.
+ *
+ * Merged rather than replaced, because changing one key on a terminal should
+ * not mean retyping the rest, and an empty value is how you drop one. `env`
+ * is removed entirely when nothing is left, so a server that never needed one
+ * does not carry an empty object around in config.
+ */
+export function mergeMcpServerEnv(
+  server: McpServerConfig,
+  pairs: string,
+): McpServerConfig | { error: string } {
+  const parsed = parseMcpServerEnv(pairs);
+  if ('error' in parsed) return parsed;
+  const next = { ...(server.env ?? {}) };
+  for (const [key, value] of Object.entries(parsed)) {
+    if (value === '') delete next[key];
+    else next[key] = value;
+  }
+  const { env: _replaced, ...rest } = server;
+  return Object.keys(next).length > 0 ? { ...rest, env: next } : rest;
+}
+
+/**
  * A parsed server, carrying whatever environment it should end up with.
  *
  * `env` absent means "leave what is stored alone". The settings panel is never

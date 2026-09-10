@@ -33,6 +33,21 @@ describe('parseMcpServerEnv', () => {
   });
 });
 
+describe('the terminal form', () => {
+  it('reads the space-separated pairs /mcp env passes', () => {
+    // `/mcp env notion API_KEY=abc OTHER=def` arrives as one string; the
+    // command splits on whitespace and hands each pair over as a line.
+    expect(parseMcpServerEnv('API_KEY=abc OTHER=def'.split(/\s+/).join('\n'))).toEqual({
+      API_KEY: 'abc',
+      OTHER: 'def',
+    });
+  });
+
+  it('reads an empty value, which is how the terminal removes one', () => {
+    expect(parseMcpServerEnv('API_KEY=')).toEqual({ API_KEY: '' });
+  });
+});
+
 describe('withEnv', () => {
   const command: McpServerConfig = { command: 'npx', args: ['-y', 'server'] };
 

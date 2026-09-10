@@ -5,10 +5,10 @@ import {
   formatAuditDashboard,
   McpManager,
   type RagStatusResult,
-  type McpServerConfig,
 } from '@heapcode/core';
 import { signInToMcpServer } from '@heapcode/core/node';
 import { SecretStorageMcpAuthStore } from './mcpAuthStore.js';
+import { loadMcpServers } from './mcpConfig.js';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { exportBundle, importBundle } from './bundle.js';
@@ -94,7 +94,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // loader instead); `[mcp]` prefixing stays here so the log channel reads
   // the same as it always has.
   const mcp = new McpManager(
-    () => vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
+    // Settings plus the project's own .heapcode/mcp.json — see mcpConfig.ts
+    // for what is deliberately not merged.
+    () => loadMcpServers(),
     (line) => log.appendLine(`[mcp] ${line}`),
     String(context.extension.packageJSON.version ?? ''),
     // Tokens go to SecretStorage, not to settings.json — which syncs, is
@@ -328,9 +330,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }),
     vscode.commands.registerCommand('heapcode.signInMcpServer', async () => {
-      const names = Object.keys(
-        vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
-      );
+      const names = Object.keys(await loadMcpServers());
       if (names.length === 0) {
         void vscode.window.showInformationMessage('No MCP servers configured yet.');
         return;

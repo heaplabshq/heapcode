@@ -19,7 +19,7 @@ import { ServerLink } from './serverLink.js';
 import { HeapCodeActionProvider } from './codeActions.js';
 import { HeapCodeCompletionProvider } from './completionProvider.js';
 import { generateCommitMessage } from './gitCommit.js';
-import { JsonConversationStore } from './historyStore.js';
+import { createConversationStore, migrateConversations } from './historyStore.js';
 import { trackActiveEditor, trackTerminal } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager, readWebSearchSettings, setWebSearchKeyFlow } from './profileManager.js';
@@ -65,8 +65,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const track = (name: string, meta?: Record<string, unknown>) => telemetry.track(name, meta);
   const retention = new RetentionTracker(context.workspaceState, track);
   const profiles = new ProfileManager(context.secrets, log);
+  // Caches and shadow-git stay in extension storage. Only the conversation
+  // history moves, because only it is a thing the other hosts also write.
   const storageDir = context.storageUri ?? context.globalStorageUri;
-  const store = new JsonConversationStore(storageDir);
+  // The same file the CLI and `heapcode web` use for this project, when the
+  // workspace is a local folder — so a chat started in a terminal is here, and
+  // the reverse. Falls back to extension storage otherwise; see historyStore.
+  const store = createConversationStore(context);
+  void migrateConversations(context, store, (line) => log.appendLine(line));
   // Chat turns and model listing run on the core server too; this is their
   // connection, kept separate from the agent's (see ServerLink's note).
   const serverOptions = {

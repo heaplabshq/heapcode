@@ -1276,7 +1276,7 @@ function Connectors({
             className="card-input env-input"
             rows={2}
             value={env}
-            placeholder={'NOTION_TOKEN=ntn_…\nONE_PER_LINE=value'}
+            placeholder={'API_KEY=…\nONE_PER_LINE=value'}
             aria-label="Environment variables for this MCP server"
             onChange={(e) => setEnv(e.target.value)}
           />
@@ -1332,7 +1332,7 @@ function EditServer({
           className="card-input env-input"
           rows={2}
           value={env}
-          placeholder={envKeys.length > 0 ? 'Type to replace what is set' : 'NOTION_TOKEN=ntn_…'}
+          placeholder={envKeys.length > 0 ? 'Type to replace what is set' : 'API_KEY=…'}
           aria-label="Environment variables for this MCP server"
           onChange={(e) => setEnv(e.target.value)}
         />

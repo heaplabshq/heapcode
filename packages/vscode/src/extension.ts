@@ -376,7 +376,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const envLine = await vscode.window.showInputBox({
           title: `Environment for "${name}" (optional)`,
           prompt: 'KEY=value, separated by spaces. Leave empty if it needs none.',
-          placeHolder: 'NOTION_TOKEN=ntn_…',
+          placeHolder: 'API_KEY=…',
         });
         const env: Record<string, string> = {};
         for (const pair of (envLine ?? '').split(/\s+/).filter(Boolean)) {

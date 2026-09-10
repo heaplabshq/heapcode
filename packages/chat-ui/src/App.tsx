@@ -28,6 +28,8 @@ import type {
   ChatIndexStatus,
   ChatMcpSignInResult,
   ChatMemoryResult,
+  ChatPermissionParams,
+  ChatPermissionResult,
   ChatRecentFoldersResult,
   ChatArtifactMeta,
   ChatArtifactResult,
@@ -81,6 +83,12 @@ interface Pending {
   answer: (text: string) => void;
 }
 
+/** A connector's tool waiting to be allowed. */
+interface PendingPermission {
+  params: ChatPermissionParams;
+  decide: (granted: boolean, remember?: boolean) => void;
+}
+
 export function App(): JSX.Element {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
   const [state, setState] = useState<ChatState>();
@@ -93,6 +101,7 @@ export function App(): JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [ask, setAsk] = useState<Pending>();
+  const [permission, setPermission] = useState<PendingPermission>();
   const [grounding, setGrounding] = useState<ChatGroundingParams['grounding']>();
   const [railCollapsed, setRailCollapsed] = useState(
     () => localStorage.getItem('heapchat.rail') === 'collapsed',
@@ -172,6 +181,19 @@ export function App(): JSX.Element {
           answer: (text) => {
             setAsk(undefined);
             resolve({ answer: text });
+          },
+        });
+      });
+    });
+
+    client.onRequest(CHAT_METHODS.permission, async (raw) => {
+      const params = raw as ChatPermissionParams;
+      return new Promise<ChatPermissionResult>((resolve) => {
+        setPermission({
+          params,
+          decide: (granted, remember) => {
+            setPermission(undefined);
+            resolve({ granted, remember });
           },
         });
       });
@@ -405,6 +427,30 @@ export function App(): JSX.Element {
               ),
             }}
           />
+
+          {permission && (
+            <div className="card card-permission" role="alertdialog" aria-label="Allow this connector?">
+              <div className="card-body">
+                <strong>{permission.params.server}</strong> wants to run{' '}
+                <code>{permission.params.tool.split('__').slice(2).join('__')}</code>.
+                {/* Shown, not summarised: what a connector is being asked to do
+                    is the whole of what there is to judge here, and this is
+                    third-party code that can do whatever it was written to. */}
+                <pre className="permission-args">{JSON.stringify(permission.params.args, null, 2)}</pre>
+              </div>
+              <div className="card-actions">
+                <button className="btn btn-primary" onClick={() => permission.decide(true)}>
+                  Allow once
+                </button>
+                <button className="btn" onClick={() => permission.decide(true, true)}>
+                  Allow for this chat
+                </button>
+                <button className="btn btn-ghost-danger" onClick={() => permission.decide(false)}>
+                  Deny
+                </button>
+              </div>
+            </div>
+          )}
 
           {ask && (
             <div className="card" role="alertdialog" aria-label="Question">

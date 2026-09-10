@@ -87,6 +87,7 @@ export const CHAT_METHODS = {
 
   // host → browser (requests)
   askUser: 'chat/askUser',
+  permission: 'chat/permission',
 
   // host → browser (notifications)
   event: 'chat/event',
@@ -253,6 +254,30 @@ export interface ChatAskUserParams {
 
 export interface ChatAskUserResult {
   answer: string;
+}
+
+/**
+ * `chat/permission` — an MCP server's tool wants to run.
+ *
+ * Only ever raised for those. Heap Chat's own roster cannot change anything,
+ * which is what lets it run without asking; a connector's tools are ordinary
+ * third-party code and may do whatever they were written to do.
+ */
+export interface ChatPermissionParams {
+  runId: string;
+  callId: string;
+  /** Prefixed name, as the model called it. */
+  tool: string;
+  /** The connector it belongs to, for a sentence a person can act on. */
+  server: string;
+  /** Arguments, rendered for review. */
+  args: Record<string, unknown>;
+}
+
+export interface ChatPermissionResult {
+  granted: boolean;
+  /** Stop asking for this tool for the rest of this conversation. */
+  remember?: boolean;
 }
 
 export type {

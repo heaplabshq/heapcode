@@ -111,6 +111,8 @@ import type {
   ChatSaveProfileParams,
   ChatSetRoleParams,
   ChatAskUserResult,
+  ChatPermissionParams,
+  ChatPermissionResult,
   ChatBrowseFoldersParams,
   ChatBrowseFoldersResult,
   ChatConversationMeta,
@@ -131,7 +133,7 @@ import type {
   ChatState,
 } from './protocol.js';
 import { CHAT_SYSTEM_PROMPT } from './prompt.js';
-import { CHAT_TOOL_NAMES, chatToolDefinitions } from './tools.js';
+import { CHAT_TOOL_NAMES, chatToolDefinitions, permissionFor } from './tools.js';
 
 /**
  * The three outcomes of trying to read a path as a document.
@@ -238,6 +240,8 @@ export class ChatSession implements HostSession {
   private connection?: ServerConnection;
   private executor?: WorkspaceToolExecutor;
   private mcp?: McpManager;
+  /** Connector tools allowed for the rest of this conversation. Never stored. */
+  private allowedTools = new Set<string>();
   /**
    * What the assistant has produced, under the state dir — never in the
    * folder. Rebuilt on a folder switch, like everything else derived from the
@@ -505,6 +509,8 @@ export class ChatSession implements HostSession {
       if (!found) throw new Error('No such conversation');
       this.conversation = found;
       this.turnEntries = [];
+      // A grant was given for what was happening in the other conversation.
+      this.allowedTools.clear();
       return { id: found.id, messages: toUiMessages(found.messages) };
     });
 
@@ -512,6 +518,7 @@ export class ChatSession implements HostSession {
       if (this.activeRunId) throw new Error('A run is in progress; stop it before starting a new chat.');
       this.conversation = { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
       this.turnEntries = [];
+      this.allowedTools.clear();
       return { id: this.conversation.id, messages: [] };
     });
 
@@ -1049,10 +1056,15 @@ export class ChatSession implements HostSession {
     peer.onRequest(METHODS.permissionRequest, async (raw): Promise<PermissionRequestResult> => {
       const { call } = raw as { call: ToolCall };
       // Nothing on this roster changes the folder, so there is nothing to ask
-      // about. An MCP server's tools are the exception in principle — but they
-      // were registered by this person, in this config, and Heap Code applies
-      // the same reasoning to them.
-      return { granted: CHAT_TOOL_NAMES.has(call.name) || Boolean(this.mcp?.isMcpTool(call.name)) };
+      // about.
+      const outcome = permissionFor(
+        call.name,
+        Boolean(this.mcp?.isMcpTool(call.name)),
+        this.allowedTools.has(call.name),
+      );
+      if (outcome === 'grant') return { granted: true };
+      if (outcome === 'deny') return { granted: false };
+      return { granted: await this.askPermission(call) };
     });
 
     // Nothing to snapshot: no tool on this roster changes a file.
@@ -1310,6 +1322,35 @@ export class ChatSession implements HostSession {
   }
 
   /** Ask the person a question, through the page. Fails closed with no page attached. */
+  /**
+   * Ask before running a connector's tool.
+   *
+   * Fails closed. No UI attached means nobody can answer, and a silent yes is
+   * the one outcome this exists to prevent — so a run with no one watching
+   * gets a refusal the model can report rather than a write nobody saw.
+   *
+   * "Allow for this chat" is remembered in memory only, and only for the
+   * conversation it was given in: a grant is a judgement about what is
+   * happening now, not a setting.
+   */
+  private async askPermission(call: ToolCall): Promise<boolean> {
+    if (this.allowedTools.has(call.name)) return true;
+    if (!this.ui) return false;
+    const server = call.name.slice('mcp__'.length).split('__')[0] ?? '';
+    const answer = await this.ui
+      .request<ChatPermissionResult>(CHAT_METHODS.permission, {
+        runId: this.activeRunId ?? '',
+        callId: call.id,
+        tool: call.name,
+        server,
+        args: call.args,
+      } satisfies ChatPermissionParams)
+      .catch(() => undefined);
+    if (!answer?.granted) return false;
+    if (answer.remember) this.allowedTools.add(call.name);
+    return true;
+  }
+
   private async askUser(call: ToolCall, signal?: AbortSignal): Promise<string> {
     if (!this.ui) return ASK_USER_NO_ANSWER;
     const answer = await this.ui

@@ -1732,6 +1732,14 @@ body {
 /* KEY=value lines. Monospace because that is what is being typed, and
    resizable vertically only — sideways would break the card's column. */
 .env-input { font-family: var(--mono); font-size: 12px; resize: vertical; min-height: 46px; }
+/* The arguments a connector is about to be called with. Scrolls rather than
+   wraps: these are JSON, and a broken line is harder to judge than a scrolled
+   one. Capped so a large payload cannot push the buttons off the screen. */
+.permission-args {
+  font-family: var(--mono); font-size: 11.5px; margin: 8px 0 0;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; max-height: 180px; overflow: auto;
+}
 /* Why a connector is not connected. Warn, not danger: nothing is broken —
    the server is refusing us, or was never reachable to begin with. */
 .hint-warn { color: var(--warn); margin: 6px 0 0; }

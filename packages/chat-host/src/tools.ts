@@ -143,3 +143,25 @@ export const chatToolDefinitions: ToolDefinition[] = [
 
 /** Tool names this host will execute. Anything else is refused, not attempted. */
 export const CHAT_TOOL_NAMES: ReadonlySet<string> = new Set(chatToolDefinitions.map((t) => t.name));
+
+/** What to do about a tool call, before it runs. */
+export type PermissionOutcome = 'grant' | 'ask' | 'deny';
+
+/**
+ * Whether a call runs, asks first, or is refused.
+ *
+ * Heap Chat's own roster cannot change anything — that is the whole design —
+ * so there is nothing to ask about and asking would be noise. A connector's
+ * tools are not that: they are third-party code doing whatever they were
+ * written to do, and this product tells people it never writes over anything.
+ *
+ * This used to return grant for both, which was below what Heap Code does
+ * with the same call and below what Claude Desktop and Cursor do. Anything
+ * that is neither is refused, because the check is on the name rather than on
+ * the class the daemon reports for it.
+ */
+export function permissionFor(name: string, isMcpTool: boolean, alreadyAllowed: boolean): PermissionOutcome {
+  if (CHAT_TOOL_NAMES.has(name)) return 'grant';
+  if (!isMcpTool) return 'deny';
+  return alreadyAllowed ? 'grant' : 'ask';
+}

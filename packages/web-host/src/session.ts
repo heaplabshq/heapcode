@@ -28,7 +28,6 @@ import {
   providerPresets,
   resolveCapabilities,
   describeRole,
-  type ModelRoleTable,
   unifiedDiff,
   type AgentEvent,
   type AgentEventParams,
@@ -68,6 +67,7 @@ import {
   loadMcpServerSources,
   mcpNameProblem,
   parseMcpServerSpec,
+  withEnv,
   listSkillsFormatted,
   permissionsFile,
   projectStateDir,
@@ -155,6 +155,8 @@ import {
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
 } from './protocol.js';
+import type { DaemonHello } from './hello.js';
+import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
 import { listFolders, type WorkspaceStore } from './workspaces.js';
 import {
@@ -222,26 +224,17 @@ const WEB_REVIEW_CLIENT: ReviewClient = {
   deepHint: 'run "/pr-review deep"',
 };
 
-/** What the session knows and the connector needs; the rest of HelloParams is the connector's. */
-export interface DaemonHello {
-  root: string;
-  profiles: ProviderProfileConfig[];
-  activeProfile: string;
-  /**
-   * Which model on which connection serves each role — one global table.
-   *
-   * Required: every path that builds a hello must carry it. `reconnect` once
-   * did not, which made changing a role the one action that left the daemon
-   * with no table.
-   */
-  roles: ModelRoleTable;
-  keys: Record<string, string>;
-}
-
 export interface WebSessionDeps {
   root: string;
   config: ConfigStore;
   secrets: SecretsStore;
+  /**
+   * OAuth logins in flight, shared with the mounted product because both
+   * answer on the same origin. Absent for a host that cannot land a redirect,
+   * in which case MCP servers behind OAuth report that they need a sign-in
+   * rather than offering one that could not finish.
+   */
+  mcpLogins?: McpLoginRegistry;
   /**
    * Opens the daemon connection. Injected rather than called directly so tests
    * can point at an in-process server, and so the CLI can supply the path to
@@ -441,10 +434,15 @@ export class WebSession {
     // sidebar is how you get back to an earlier one.
     this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
 
-    this.session = buildAgentSession(root, config, secrets, clientVersion, (original, snippet) =>
+    this.session = buildAgentSession(
+      root,
+      config,
+      secrets,
+      clientVersion,
       // Reaches for the connection at call time, not now: the session is built
       // before the daemon link exists, and a switched workspace replaces both.
-      this.applyMerge(original, snippet),
+      (original, snippet) => this.applyMerge(original, snippet),
+      this.deps.mcpLogins?.redirectUri(),
     );
     this.permissions = new PermissionEngine(
       permissionsFile(root),
@@ -1192,12 +1190,12 @@ export class WebSession {
      */
     ui.onRequest(UI_METHODS.saveMcpServer, async (raw) => {
       await this.start();
-      const { name, spec } = raw as UiSaveMcpServerParams;
+      const { name, spec, env } = raw as UiSaveMcpServerParams;
       const nameProblem = mcpNameProblem(name);
       if (nameProblem) throw new Error(nameProblem);
       const parsed = parseMcpServerSpec(spec);
       if ('error' in parsed) throw new Error(parsed.error);
-      await this.deps.config.saveMcpServer(name.trim(), parsed);
+      await this.deps.config.saveMcpServer(name.trim(), await withEnv(this.deps.config, name.trim(), parsed, env));
       this.reconnectMcp();
       void this.pushState();
       return null;
@@ -1207,6 +1205,21 @@ export class WebSession {
       await this.start();
       const { name } = raw as UiNameParams;
       await this.deps.config.deleteMcpServer(name);
+      this.reconnectMcp();
+      void this.pushState();
+      return null;
+    });
+
+    ui.onRequest(UI_METHODS.signInMcpServer, async (raw) => {
+      await this.start();
+      const { name } = raw as UiNameParams;
+      return startMcpSignIn(this.session!.mcpManager, this.deps.mcpLogins, name, () => void this.pushState());
+    });
+
+    ui.onRequest(UI_METHODS.signOutMcpServer, async (raw) => {
+      await this.start();
+      const { name } = raw as UiNameParams;
+      await this.session!.mcpManager.signOut(name);
       this.reconnectMcp();
       void this.pushState();
       return null;
@@ -1340,11 +1353,17 @@ export class WebSession {
   private async listMcpServers(connected: Set<string>): Promise<UiMcpServer[]> {
     const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
     const tools = this.session?.mcpManager.getToolDefinitions() ?? [];
+    const signedIn = await storedTokenNames(this.deps.secrets, Object.keys({ ...global, ...project }));
     return Object.entries({ ...global, ...project }).map(([name, server]) => ({
       name,
       connected: connected.has(name),
       tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
       spec: describeMcpServer(server),
+      error: connected.has(name) ? undefined : this.session?.mcpManager.failureFor(name),
+      needsAuth: !connected.has(name) && Boolean(this.session?.mcpManager.awaitingSignIn(name)),
+      signedIn: signedIn.has(name),
+      // Names only. These are credentials, and this list is on screen.
+      envKeys: Object.keys(server.env ?? {}),
       project: name in project,
     }));
   }

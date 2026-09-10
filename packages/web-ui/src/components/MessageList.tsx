@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { renderMarkdown } from '../markdown.js';
 import { activityOf, type Item, type Transcript } from '../transcript.js';
@@ -35,6 +36,14 @@ export interface MessageListProps {
    * pinned; unset means nothing is pinned and every card renders here.
    */
   hideTaskId?: string;
+  /**
+   * The empty state, when the product it belongs to is not Heap Code.
+   *
+   * Parameterized rather than duplicated: an empty transcript is the first
+   * thing anyone sees, and two copies of this block would be two places for
+   * the layout to drift while the rest of the shell stayed identical.
+   */
+  empty?: { title: string; body: string; hint?: ReactNode };
 }
 
 export function MessageList({
@@ -45,6 +54,7 @@ export function MessageList({
   onEdit,
   onRestore,
   hideTaskId,
+  empty,
 }: MessageListProps): JSX.Element {
   const end = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -127,8 +137,8 @@ export function MessageList({
     >
       {total === 0 && (
         <div className="empty">
-          <h1>Heap Code</h1>
-          <p>Ask for a change, a fix, or an explanation. The agent works in this workspace.</p>
+          <h1>{empty?.title ?? 'Heap Code'}</h1>
+          <p>{empty?.body ?? 'Ask for a change, a fix, or an explanation. The agent works in this workspace.'}</p>
           {/* One clause per span, separated rather than run together. As a
               single sentence it wrapped mid-phrase — "Paste a screenshot /
               straight into the box" — because the break landed wherever the
@@ -138,6 +148,10 @@ export function MessageList({
               are decoration between clauses a reader already hears as
               separate, so they stay out of the accessibility tree. */}
           <p className="empty-hint">
+            {empty ? (
+              empty.hint
+            ) : (
+              <>
             <span>
               Press <kbd>⌘K</kbd> for commands
             </span>
@@ -153,6 +167,8 @@ export function MessageList({
               </span>
               Paste a screenshot straight into the box
             </span>
+              </>
+            )}
           </p>
         </div>
       )}

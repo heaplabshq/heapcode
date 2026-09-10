@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 
@@ -75,7 +75,21 @@ const SHELL_CSP = [
  * runs first — reads whatever the user running the host can read. It is the
  * same jail `run_command` applies to its cwd, for the same reason.
  */
-export async function serveStatic(dir: string, urlPath: string, res: ServerResponse): Promise<boolean> {
+export async function serveStatic(
+  dir: string,
+  urlPath: string,
+  res: ServerResponse,
+  /**
+   * Launch-time facts stamped onto `<html>` as data-* attributes, for a static
+   * SPA that has to know something only the host knows — today, whether the
+   * other product is mounted alongside it.
+   *
+   * Injected here rather than fetched by the page: it is fixed for the life of
+   * the process, and a probe would mean the switcher appears a beat after
+   * everything else, or flickers when the request is slow.
+   */
+  rootAttrs?: Record<string, string>,
+): Promise<boolean> {
   const root = resolve(dir);
 
   const candidate = safeJoin(root, urlPath);
@@ -87,6 +101,7 @@ export async function serveStatic(dir: string, urlPath: string, res: ServerRespo
   if (!isInside(root, file)) return false;
 
   const type = TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream';
+  const html = type.startsWith('text/html');
   res.writeHead(200, {
     'content-type': type,
     // A local tool serving a freshly built bundle: never let a stale asset
@@ -98,6 +113,18 @@ export async function serveStatic(dir: string, urlPath: string, res: ServerRespo
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
   });
+  if (html && rootAttrs && Object.keys(rootAttrs).length > 0) {
+    // Values are host-controlled, never user input, but escaped anyway: a
+    // quote reaching an attribute is how injection starts, and the cost of
+    // being sure here is one replace.
+    const attrs = Object.entries(rootAttrs)
+      .map(([k, v]) => ` data-${k}="${v.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`)}"`)
+      .join('');
+    const source = await readFile(file, 'utf8');
+    res.end(source.replace(/<html(?=[\s>])/i, `<html${attrs}`));
+    return true;
+  }
+
   createReadStream(file).pipe(res);
   return true;
 }

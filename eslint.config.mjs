@@ -1,7 +1,9 @@
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/out/**', '**/media/webview/**', '**/*.vsix'] },
+  // `**/.out/**` is the eval runner's esbuild bundle — generated, gitignored,
+  // and not ours to lint.
+  { ignores: ['**/dist/**', '**/out/**', '**/.out/**', '**/media/webview/**', '**/*.vsix'] },
   ...tseslint.configs.recommended,
   {
     rules: {

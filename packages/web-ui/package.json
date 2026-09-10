@@ -7,6 +7,59 @@
     "./markdown": {
       "types": "./src/markdown.ts",
       "default": "./src/markdown.ts"
+    },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "default": "./src/rpc.ts"
+    },
+    "./panelWidth": {
+      "types": "./src/panelWidth.ts",
+      "default": "./src/panelWidth.ts"
+    },
+    "./transcript": {
+      "types": "./src/transcript.ts",
+      "default": "./src/transcript.ts"
+    },
+    "./styles.css": "./src/styles.css",
+    "./components/Sidebar": {
+      "types": "./src/components/Sidebar.tsx",
+      "default": "./src/components/Sidebar.tsx"
+    },
+    "./components/Composer": {
+      "types": "./src/components/Composer.tsx",
+      "default": "./src/components/Composer.tsx"
+    },
+    "./components/MessageList": {
+      "types": "./src/components/MessageList.tsx",
+      "default": "./src/components/MessageList.tsx"
+    },
+    "./components/Empty": {
+      "types": "./src/components/Empty.tsx",
+      "default": "./src/components/Empty.tsx"
+    },
+    "./mark": {
+      "types": "./src/mark.ts",
+      "default": "./src/mark.ts"
+    },
+    "./components/ProductToggle": {
+      "types": "./src/components/ProductToggle.tsx",
+      "default": "./src/components/ProductToggle.tsx"
+    },
+    "./components/Settings": {
+      "types": "./src/components/Settings.tsx",
+      "default": "./src/components/Settings.tsx"
+    },
+    "./components/WorkspacePicker": {
+      "types": "./src/components/WorkspacePicker.tsx",
+      "default": "./src/components/WorkspacePicker.tsx"
+    },
+    "./components/ModelPicker": {
+      "types": "./src/components/ModelPicker.tsx",
+      "default": "./src/components/ModelPicker.tsx"
+    },
+    "./components/Preview": {
+      "types": "./src/components/Preview.tsx",
+      "default": "./src/components/Preview.tsx"
     }
   },
   "scripts": {

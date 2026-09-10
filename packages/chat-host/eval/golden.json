@@ -1,0 +1,106 @@
+[
+  {
+    "id": "budget-direct",
+    "q": "What is the offsite budget?",
+    "expect_contains": [
+      "47,200|47200"
+    ],
+    "expect_grounded": true,
+    "expect_source": "policy.md"
+  },
+  {
+    "id": "budget-paraphrase",
+    "q": "whats the max spend sanctioned for the team getaway thing",
+    "expect_contains": [
+      "47,200|47200"
+    ],
+    "expect_grounded": true
+  },
+  {
+    "id": "invoice-exact-number",
+    "q": "What's the total on invoice 4821?",
+    "expect_contains": [
+      "187"
+    ],
+    "expect_not_contains": [
+      "4821[^.]{0,40}4300",
+      "4300[^.]{0,40}4821"
+    ],
+    "expect_grounded": true,
+    "expect_source": "invoice-uniqlo.txt"
+  },
+  {
+    "id": "invoice-other",
+    "q": "Which invoice is from Zara and what is its number?",
+    "expect_contains": [
+      "7755"
+    ],
+    "expect_grounded": true
+  },
+  {
+    "id": "team-designer",
+    "q": "Who is the product designer on the team?",
+    "expect_contains": [
+      "Priya"
+    ],
+    "expect_grounded": true
+  },
+  {
+    "id": "team-data-engineer",
+    "q": "Who handles data engineering?",
+    "expect_contains": [
+      "Arjun"
+    ],
+    "expect_grounded": true
+  },
+  {
+    "id": "remote-days",
+    "q": "How many days of remote work are allowed per week?",
+    "expect_contains": [
+      "3|three"
+    ],
+    "expect_grounded": true
+  },
+  {
+    "id": "conflation-trap",
+    "q": "What is Kareena's salary?",
+    "expect_not_contains": [
+      "Kareena[^.]{0,40}(950,000|950000)",
+      "(950,000|950000)[^.]{0,40}Kareena",
+      "Kareena's salary is"
+    ],
+    "note": "Kareena is not in the files — must not answer from the Deepika document"
+  },
+  {
+    "id": "csv-total",
+    "q": "What is the total of all amounts in expenses.csv?",
+    "expect_contains": [
+      "3,500|3500"
+    ],
+    "expect_grounded": true
+  },
+  {
+    "id": "general-knowledge",
+    "q": "What is the capital of France?",
+    "expect_contains": [
+      "Paris"
+    ],
+    "expect_grounded": false
+  },
+  {
+    "id": "general-math",
+    "q": "What is 17 multiplied by 3?",
+    "expect_contains": [
+      "51"
+    ],
+    "expect_grounded": false
+  },
+  {
+    "id": "absent-policy",
+    "q": "What does the policy say about bringing pets to the office?",
+    "expect_not_contains": [
+      "pets are allowed|pets allowed|permitted to bring"
+    ],
+    "note": "Nothing about pets exists — must not invent a policy"
+  }
+]

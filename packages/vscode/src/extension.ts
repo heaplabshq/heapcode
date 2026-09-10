@@ -7,6 +7,8 @@ import {
   type RagStatusResult,
   type McpServerConfig,
 } from '@heapcode/core';
+import { signInToMcpServer } from '@heapcode/core/node';
+import { SecretStorageMcpAuthStore } from './mcpAuthStore.js';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { exportBundle, importBundle } from './bundle.js';
@@ -89,6 +91,12 @@ export function activate(context: vscode.ExtensionContext): void {
     () => vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
     (line) => log.appendLine(`[mcp] ${line}`),
     String(context.extension.packageJSON.version ?? ''),
+    // Tokens go to SecretStorage, not to settings.json — which syncs, is
+    // committed in some workspaces, and is rendered in a settings editor.
+    // The CLI's equivalent is its chmod-600 secrets file; each host uses the
+    // best store it has, which is why this is injected rather than chosen
+    // inside core.
+    new SecretStorageMcpAuthStore(context.secrets),
   );
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (workspaceRoot?.scheme === 'file') {
@@ -313,6 +321,31 @@ export function activate(context: vscode.ExtensionContext): void {
         `Heap Code: cleared ${cleared} stored permission grant(s) — the agent will ask again.`,
       );
     }),
+    vscode.commands.registerCommand('heapcode.signInMcpServer', async () => {
+      const names = Object.keys(
+        vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
+      );
+      if (names.length === 0) {
+        void vscode.window.showInformationMessage('No MCP servers configured yet.');
+        return;
+      }
+      const name = names.length === 1 ? names[0] : await vscode.window.showQuickPick(names, { title: 'Sign in to which server?' });
+      if (!name) return;
+
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Signing in to "${name}"…` },
+        async () => {
+          const result = await signInToMcpServer(mcp, name, (url) => {
+            // openExternal rather than printing: a webview notification has
+            // nowhere to show a link someone can select and copy.
+            void vscode.env.openExternal(vscode.Uri.parse(url));
+          });
+          if (result.ok) void vscode.window.showInformationMessage(`Signed in to "${name}".`);
+          else void vscode.window.showErrorMessage(`Could not sign in to "${name}": ${result.detail ?? 'unknown error'}`);
+        },
+      );
+    }),
+
     vscode.commands.registerCommand('heapcode.addMcpServer', async () => {
       const name = await vscode.window.showInputBox({
         title: 'MCP server name',
@@ -337,7 +370,20 @@ export function activate(context: vscode.ExtensionContext): void {
         });
         if (!commandLine) return;
         const [command, ...args] = commandLine.split(/\s+/);
-        servers[name] = { command, args };
+        // A local server is started with only the basics now — PATH, language,
+        // proxy settings — so a credential it needs has to be named here
+        // rather than picked up from whatever the editor was launched with.
+        const envLine = await vscode.window.showInputBox({
+          title: `Environment for "${name}" (optional)`,
+          prompt: 'KEY=value, separated by spaces. Leave empty if it needs none.',
+          placeHolder: 'API_KEY=…',
+        });
+        const env: Record<string, string> = {};
+        for (const pair of (envLine ?? '').split(/\s+/).filter(Boolean)) {
+          const at = pair.indexOf('=');
+          if (at > 0) env[pair.slice(0, at)] = pair.slice(at + 1);
+        }
+        servers[name] = Object.keys(env).length > 0 ? { command, args, env } : { command, args };
       } else {
         const url = await vscode.window.showInputBox({ title: 'Server URL', prompt: 'https://…' });
         if (!url) return;

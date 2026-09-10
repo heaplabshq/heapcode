@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import type { McpAuthRecord, McpAuthStore } from '@heapcode/core';
 import { secretsFile } from '../paths.js';
 
 /**
@@ -45,5 +46,50 @@ export class SecretsStore {
     const secrets = await this.load();
     delete secrets[`apiKey.${profileName}`];
     await this.persist();
+  }
+
+  /**
+   * OAuth records for MCP servers, keyed `mcpAuth.<server>`.
+   *
+   * Here rather than in `config.json` because these are bearer tokens and
+   * that file is read straight into a settings panel. They land in the same
+   * chmod-600 file as API keys, which is what they are.
+   */
+  async getMcpAuth(server: string): Promise<McpAuthRecord | undefined> {
+    const raw = (await this.load())[`mcpAuth.${server}`];
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw) as McpAuthRecord;
+    } catch {
+      // A record we cannot read is a record we cannot use; reporting absence
+      // asks for a fresh sign-in instead of failing the connection.
+      return undefined;
+    }
+  }
+
+  async setMcpAuth(server: string, record: McpAuthRecord): Promise<void> {
+    const secrets = await this.load();
+    secrets[`mcpAuth.${server}`] = JSON.stringify(record);
+    await this.persist();
+  }
+
+  async deleteMcpAuth(server: string): Promise<void> {
+    const secrets = await this.load();
+    delete secrets[`mcpAuth.${server}`];
+    await this.persist();
+  }
+}
+
+/** `SecretsStore` as the shape core's OAuth provider reads and writes. */
+export class SecretsMcpAuthStore implements McpAuthStore {
+  constructor(private readonly secrets: SecretsStore) {}
+  read(server: string): Promise<McpAuthRecord | undefined> {
+    return this.secrets.getMcpAuth(server);
+  }
+  write(server: string, record: McpAuthRecord): Promise<void> {
+    return this.secrets.setMcpAuth(server, record);
+  }
+  clear(server: string): Promise<void> {
+    return this.secrets.deleteMcpAuth(server);
   }
 }

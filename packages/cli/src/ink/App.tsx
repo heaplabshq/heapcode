@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { signInToMcpServer } from '@heapcode/core/node';
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
@@ -86,6 +87,7 @@ import {
   createContextWindowResolver,
   describeMcpServer,
   loadMcpServerSources,
+  mergeMcpServerEnv,
   mcpNameProblem,
   parseMcpServerSpec,
   listPermissionGrants,
@@ -140,7 +142,11 @@ const COMMANDS: SlashCommand[] = [
   { name: '/search', args: '<query>', description: 'Search the workspace (semantic if indexed, plain text otherwise)' },
   { name: '/index', description: 'Rebuild the semantic search + repo map indexes' },
   { name: '/pr-review', args: '[deep]', description: "Review the current branch's PR and (on confirmation) post it to GitHub — needs the gh CLI" },
-  { name: '/mcp', args: '[add <name> <command…|url>|remove <name>]', description: 'List, add, or remove MCP servers' },
+  {
+    name: '/mcp',
+    args: '[add <name> <spec>|remove <name>|env <name> K=V|login <name>|logout <name>]',
+    description: 'List, add, remove, configure, or sign in to MCP servers',
+  },
   { name: '/subagents', args: '[on|off]', description: 'Toggle delegate_task — lets the agent hand off sub-tasks to a fresh sub-agent' },
   { name: '/clear', description: 'Clear the screen and start a new conversation' },
   { name: '/new', description: 'Start a new conversation' },
@@ -1698,6 +1704,91 @@ export function App({
           return true;
         }
 
+        // Hosted connectors (Notion, Linear, Sentry) refuse an anonymous
+        // request and say so in a WWW-Authenticate header. The terminal has no
+        // server to land a redirect on, so it opens a loopback port for the
+        // length of this login and closes it again.
+        if (action === 'login' || action === 'signin') {
+          const name = rest[1];
+          if (!name) {
+            pushSystem('Usage: /mcp login <name>');
+            return true;
+          }
+          pushSystem(`Opening your browser to sign in to "${name}"…`);
+          const result = await signInToMcpServer(mcpManager, name, (url) =>
+            pushSystem(`If your browser did not open, visit:\n  ${url}`),
+          );
+          pushSystem(
+            result.ok
+              ? `Signed in to "${name}" — ${mcpManager.getToolDefinitions().filter((t) => t.name.startsWith(`mcp__${name}__`)).length} tool(s) available now.`
+              : `Could not sign in to "${name}": ${result.detail ?? 'unknown error'}`,
+          );
+          return true;
+        }
+
+        if (action === 'logout' || action === 'signout') {
+          const name = rest[1];
+          if (!name) {
+            pushSystem('Usage: /mcp logout <name>');
+            return true;
+          }
+          await mcpManager.signOut(name);
+          pushSystem(`Signed out of "${name}".`);
+          return true;
+        }
+
+        // A local server is started with only the basics — see childEnv — so a
+        // credential it needs has to be named per server. The settings panel
+        // in both web products has a box for that; this is the terminal's.
+        if (action === 'env') {
+          const name = rest[1];
+          if (!name) {
+            pushSystem('Usage: /mcp env <name> KEY=value …   (KEY= removes one, /mcp env <name> lists them)');
+            return true;
+          }
+          const { global, project } = configStore
+            ? await loadMcpServerSources(cwd ?? process.cwd(), configStore)
+            : { global: {}, project: {} };
+          if (name in project && !(name in global)) {
+            // Same rule the settings panel follows: that file is meant to be
+            // committed, and a credential does not belong in it anyway.
+            pushSystem(`"${name}" comes from this project's .heapcode/mcp.json — edit it there.`);
+            return true;
+          }
+          const server = global[name];
+          if (!server) {
+            pushSystem(`No MCP server called "${name}". Add one with "/mcp add ${name} <command…|url>".`);
+            return true;
+          }
+
+          const pairs = rest.slice(2).join(' ').trim();
+          if (!pairs) {
+            const keys = Object.keys(server.env ?? {});
+            // Names only. A terminal scrollback is a worse place for a token
+            // than a settings panel, not a better one.
+            pushSystem(keys.length > 0 ? `${name} is started with: ${keys.join(', ')}` : `${name} has no environment set.`);
+            return true;
+          }
+
+          // One pair per whitespace-separated token, so a value cannot contain
+          // a space — true of every token and key this is for, and the
+          // settings panel takes the ones where it is not.
+          const merged = mergeMcpServerEnv(server, pairs.split(/\s+/).join('\n'));
+          if ('error' in merged) {
+            pushSystem(merged.error);
+            return true;
+          }
+          await configStore?.saveMcpServer(name, merged);
+          await mcpManager.ensureConnected();
+          const keys = Object.keys(merged.env ?? {});
+          pushSystem(
+            keys.length > 0
+              ? `${name} is now started with: ${keys.join(', ')}${mcpManager.connectedServerNames().includes(name) ? '' : ' — still not connected.'}`
+              : `${name} now has no environment set.`,
+          );
+          return true;
+        }
+
         if (action === 'remove') {
           const name = rest[1];
           if (!name) {
@@ -1731,11 +1822,18 @@ export function App({
               // connected is the thing worth seeing, and a "3 connected" line
               // hides exactly that.
               const where = name in project ? ' [project]' : '';
-              const state = connected.has(name) ? 'connected' : 'not connected';
+              const state = connected.has(name)
+                ? 'connected'
+                : mcpManager.awaitingSignIn(name)
+                  ? `not signed in — run "/mcp login ${name}"`
+                  : 'not connected';
               const spec = all[name] ? `\n  ${describeMcpServer(all[name]!)}` : '';
-              return `${name}${where} — ${state}${spec}`;
+              const why = !connected.has(name) && !mcpManager.awaitingSignIn(name) && mcpManager.failureFor(name)
+                ? `\n  ${mcpManager.failureFor(name)}`
+                : '';
+              return `${name}${where} — ${state}${spec}${why}`;
             }),
-            `${mcpManager.getToolDefinitions().length} tool(s) total. "/mcp add <name> <command…|url>" to add, "/mcp remove <name>" to remove.`,
+            `${mcpManager.getToolDefinitions().length} tool(s) total. "/mcp add <name> <command…|url>" to add, "/mcp env <name> KEY=value" for a credential it needs, "/mcp remove <name>" to remove.`,
           ].join('\n'),
         );
         return true;

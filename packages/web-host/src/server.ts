@@ -5,13 +5,38 @@ import { hostname, networkInterfaces } from 'node:os';
 import { RpcPeer } from '@heapcode/core';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { AuthLimiter } from './authLimit.js';
+import { CALLBACK_PATH, callbackPage, createMcpLoginRegistry, describeCallbackError } from './mcpLogin.js';
 import { WebSession, type WebSessionDeps } from './session.js';
 import { serveStatic } from './static.js';
 import { webSocketDuplex } from './wsDuplex.js';
 
 export const DEFAULT_PORT = 7411;
 
+/**
+ * What this server needs a session to be: something a browser can be pointed
+ * at, and that outlives the browser.
+ *
+ * Exists so the HTTP/WS/auth shell can serve a session that is not
+ * `WebSession`. Heap Chat is a different product with a different tool roster,
+ * a different system prompt and no workspace panel (docs/CHAT_MODE_PLAN.md) —
+ * and the one thing that must not happen is that it becomes a mode flag
+ * threaded through the session Heap Code runs on. Injecting the session here
+ * is what keeps the two apart while they share this shell, the token
+ * exchange, and the origin allowlist below, none of which is product-specific.
+ */
+export interface HostSession {
+  attach(peer: RpcPeer): void;
+  detach(peer: RpcPeer): void;
+  close(): Promise<void>;
+}
+
 export interface WebHostOptions extends Omit<WebSessionDeps, 'root'> {
+  /**
+   * Where this host says things the person needs to see — today, only how a
+   * sign-in ended. Optional: a test host has no terminal, and the callback
+   * page still carries the reason either way.
+   */
+  onLog?: (line: string) => void;
   root: string;
   /** Bind address. Anything but a loopback address is an explicit LAN opt-in. */
   host?: string;
@@ -22,6 +47,34 @@ export interface WebHostOptions extends Omit<WebSessionDeps, 'root'> {
   staticDir?: string;
   /** Overridden only by tests, which cannot wait out a fifteen-minute block. */
   limiter?: AuthLimiter;
+  /**
+   * Builds the session this host serves. Defaults to `WebSession` — Heap Code
+   * — so every existing caller is unaffected.
+   */
+  createSession?: (deps: WebSessionDeps & { lan: boolean }) => HostSession;
+  /**
+   * A second product mounted under `mount.path` on the same origin.
+   *
+   * One origin and one token is what makes a switcher between the two
+   * products work at all: they authenticate with an HttpOnly cookie scoped to
+   * this host, so a link to a *different* port would arrive unauthenticated
+   * and bounce to 401. Serving both here means the toggle is a link.
+   *
+   * The two sessions stay entirely separate — different classes, different
+   * rosters, different prompts (docs/CHAT_MODE_PLAN.md §Guardrails 2). What
+   * they share is the front door: this shell, the token exchange, the origin
+   * allowlist and the rate limiter, none of which is product-specific.
+   *
+   * Built lazily, on the first browser that asks for it, so a `heapcode web`
+   * whose chat tab is never opened pays nothing for it.
+   */
+  mount?: {
+    /** URL prefix, e.g. `/chat`. No trailing slash. */
+    path: string;
+    /** Directory holding the mounted product's built SPA. */
+    staticDir?: string;
+    createSession: (deps: WebSessionDeps & { lan: boolean }) => HostSession;
+  };
 }
 
 export interface RunningWebHost {
@@ -29,7 +82,7 @@ export interface RunningWebHost {
   token: string;
   port: number;
   host: string;
-  session: WebSession;
+  session: HostSession;
   close(): Promise<void>;
 }
 
@@ -51,7 +104,26 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
   // The browser is told which side of the trust boundary it is on, so it can
   // say so — the terminal warning is only seen by whoever ran the command, and
   // LAN mode's whole point is that other people open the page (§6.1, W3.4).
-  const session = new WebSession({ ...opts, lan: !isLoopback(host) });
+  /**
+   * The redirect always follows this server's own loopback origin, never the
+   * origin the page was opened from. Hosted authorization servers require
+   * HTTPS for anything else — Notion answers a plain-HTTP LAN redirect with
+   * "Redirect URI must use HTTPS unless it is a loopback HTTP URI" — so a
+   * LAN-reached page must still be signed in from the machine running this.
+   */
+  const mcpLogins = createMcpLoginRegistry(() => `http://127.0.0.1:${boundPort()}`);
+  const deps = { ...opts, lan: !isLoopback(host), mcpLogins };
+  const session = opts.createSession ? opts.createSession(deps) : new WebSession(deps);
+
+  const mount = opts.mount;
+  /** The mounted product's session, built on first use rather than at launch. */
+  let mounted: HostSession | undefined;
+  const mountedSession = (): HostSession => (mounted ??= mount!.createSession(deps));
+  /** Does this URL belong to the mounted product? */
+  const underMount = (pathname: string): boolean =>
+    Boolean(mount) && (pathname === mount!.path || pathname.startsWith(`${mount!.path}/`));
+  /** That URL with the mount prefix removed, so the SPA is served from its own root. */
+  const stripMount = (pathname: string): string => pathname.slice(mount!.path.length) || '/';
 
   const http = createServer((req, res) => {
     void handleHttp(req, res).catch(() => {
@@ -70,6 +142,48 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '900' });
       res.end('too many failed attempts');
       return;
+    }
+
+    // Before the cookie check, and deliberately: the browser arrives here on a
+    // cross-site navigation from the authorization server, which SameSite=Strict
+    // withholds the cookie from. `state` is what authenticates this — 24 random
+    // bytes minted per attempt, single-use, and worthless without a matching
+    // code. Weakening the cookie to Lax for every other route would be the
+    // larger concession. Rate limiting still applies: it ran above.
+    if (url.pathname === CALLBACK_PATH) {
+      const send = (ok: boolean, detail?: string): void => {
+        res.writeHead(ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(callbackPage({ ok, detail }));
+      };
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      const failed = url.searchParams.get('error') ?? url.searchParams.get('error_description');
+      // Printed where the person can see it: a refusal from a third party is
+      // the one failure here nobody can debug from inside the browser tab,
+      // and the tab is closed by the time they think to ask. The code is
+      // withheld — it is a credential, and it is not what went wrong.
+      const report = (outcome: string): void => {
+        const shown = [...url.searchParams].filter(([k]) => k !== 'code').map(([k, v]) => `${k}=${v}`);
+        opts.onLog?.(`[mcp] sign-in ${outcome}${shown.length ? ` — ${shown.join(' ')}` : ''}`);
+      };
+
+      if (failed) {
+        report('refused');
+        return send(false, describeCallbackError(url.searchParams.get('error'), url.searchParams.get('error_description')));
+      }
+      if (!code || !state) {
+        report('returned no code');
+        return send(false, 'The authorization server returned no code.');
+      }
+      try {
+        const matched = await mcpLogins.complete(state, code);
+        report(matched ? 'completed' : 'had no login in progress');
+        return send(matched, matched ? undefined : 'No sign-in is in progress. Start again from Settings.');
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        report(`failed to exchange the code — ${detail}`);
+        return send(false, detail);
+      }
     }
 
     if (url.pathname === '/healthz') {
@@ -110,7 +224,22 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     }
     limiter.succeed(peer);
 
-    if (staticDir && (await serveStatic(staticDir, url.pathname, res))) return;
+    // The mounted product first: its prefix is more specific than the root,
+    // and the root's index.html fallback would otherwise swallow it.
+    if (mount?.staticDir && underMount(url.pathname)) {
+      // The mounted page is told where its own socket is and that the other
+      // product is here. It cannot infer either: served standalone it sits at
+      // the root with its socket at /rpc, and mounted it sits under a prefix —
+      // hardcoding one of those breaks the other, which is exactly what a
+      // first attempt at this did.
+      const attrs = { 'rpc-path': `${mount.path}/rpc`, 'sibling': 'code' };
+      if (await serveStatic(mount.staticDir, stripMount(url.pathname), res, attrs)) return;
+    }
+
+    // The page is told whether the other product is there, so the switcher is
+    // absent rather than broken when it is not.
+    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': mount ? 'true' : 'false' })))
+      return;
 
     res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('not found');
@@ -133,7 +262,12 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     if (limiter.blocked(peer)) return reject(429, 'Too Many Requests');
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    if (url.pathname !== '/rpc') return reject(404, 'Not Found');
+    // `/rpc` is Heap Code's socket; `<mount>/rpc` is the mounted product's.
+    // Which session a browser reaches is decided here, by path, and nowhere
+    // else — a mode flag carried inside the connection would be the one thing
+    // this arrangement exists to avoid.
+    const forMount = Boolean(mount) && url.pathname === `${mount!.path}/rpc`;
+    if (url.pathname !== '/rpc' && !forMount) return reject(404, 'Not Found');
 
     // CSRF defense. A page on another origin must not be able to open this
     // socket and start running shell commands as the user — the browser sends
@@ -156,13 +290,13 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     }
     limiter.succeed(peer);
 
-    wss.handleUpgrade(req, socket, head, (ws) => attach(ws));
+    wss.handleUpgrade(req, socket, head, (ws) => attach(ws, forMount ? mountedSession() : session));
   });
 
-  function attach(ws: WebSocket): void {
+  function attach(ws: WebSocket, target: HostSession): void {
     const peer = new RpcPeer(webSocketDuplex(ws), 'ui');
-    session.attach(peer);
-    ws.on('close', () => session.detach(peer));
+    target.attach(peer);
+    ws.on('close', () => target.detach(peer));
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -184,6 +318,8 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     async close() {
       wss.close();
       await session.close();
+      // Only if something actually opened it; an unused mount has no session.
+      await mounted?.close();
       await new Promise<void>((resolve) => http.close(() => resolve()));
     },
   };

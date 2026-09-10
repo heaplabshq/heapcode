@@ -10,3 +10,4 @@
  */
 
 export * from './fs.js';
+export * from './mcpSignIn.js';

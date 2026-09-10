@@ -63,6 +63,8 @@ export const UI_METHODS = {
   deleteProfile: 'ui/deleteProfile',
   saveMcpServer: 'ui/saveMcpServer',
   deleteMcpServer: 'ui/deleteMcpServer',
+  signInMcpServer: 'ui/signInMcpServer',
+  signOutMcpServer: 'ui/signOutMcpServer',
   useProfile: 'ui/useProfile',
   setRole: 'ui/setRole',
   listConnectionModels: 'ui/listConnectionModels',
@@ -682,6 +684,23 @@ export interface UiMcpServer {
    */
   spec?: string;
   /**
+   * Why the last connection attempt failed, when it did. "Not connected" on
+   * its own sends people to re-read a URL that was never the problem.
+   */
+  error?: string;
+  /**
+   * The server refused us and a sign-in would connect it. Distinct from
+   * `error`: nothing is misconfigured, it is simply waiting on OAuth.
+   */
+  needsAuth?: boolean;
+  /** A stored token exists, so the row can offer to sign out. */
+  signedIn?: boolean;
+  /**
+   * Names of the variables this server is started with — never the values.
+   * They are credentials, and this list is rendered in the settings panel.
+   */
+  envKeys?: string[];
+  /**
    * Defined in this project's `.heapcode/mcp.json` rather than in personal
    * config. Editable by hand only: that file is meant to be committed, and a
    * settings panel should not write to something under version control on
@@ -695,6 +714,19 @@ export interface UiSaveMcpServerParams {
   name: string;
   /** A URL, or a command line. Parsed the same way the CLI parses it. */
   spec: string;
+  /**
+   * `KEY=value` lines for the server's own environment.
+   *
+   * Absent means "leave what is stored alone" — the panel never sends the
+   * values back, because it is never shown them, so an edit to the command
+   * must not wipe the credential beside it. An empty string clears them.
+   */
+  env?: string;
+}
+
+/** `ui/signInMcpServer` — where to send the browser to authorize a server. */
+export interface UiMcpSignInResult {
+  authorizationUrl: string;
 }
 
 /** A provider preset as the settings UI needs it — core's, minus capabilities. */

@@ -110,6 +110,7 @@ packages/webview-ui  React chat UI
 docs/PRD.md          Product requirements (source of truth)
 docs/PLAN.md         VS Code extension milestone tracker + decisions log
 docs/CLI_PLAN.md     CLI milestone tracker + decisions log
+docs/CHAT_MODE_PLAN.md  Heap Chat mode — decisions, guardrails, milestone tracker
 ```
 
 `core` never imports `vscode` (lint-enforced) — the CLI and any future JetBrains/Neovim adapters reuse it wholesale.

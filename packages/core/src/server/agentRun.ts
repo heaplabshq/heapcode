@@ -170,6 +170,7 @@ export async function runAgentForSession(
     history: params.history,
     images: params.images,
     workspaceName: params.workspaceName,
+    systemPrompt: params.systemPrompt,
     tools: params.tools,
     nativeToolCalls: params.nativeToolCalls,
     contextWindow: params.contextWindow,

@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { McpManager, type McpServerConfig } from '../src/index.js';
+import { McpManager, childEnv, explainConnectFailure, type McpServerConfig } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SERVER = join(__dirname, 'fixtures', 'mcpFixtureServer.mjs');
@@ -127,6 +127,82 @@ describe('McpManager', () => {
       expect(manager.connectedServerNames()).toEqual([]);
       expect(manager.getToolDefinitions()).toEqual([]);
       expect(logs.some((l) => l.includes('broken'))).toBe(true);
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('records why a server failed, so a settings panel can say more than "not connected"', async () => {
+    const manager = new McpManager(() => Promise.resolve({ broken: { command: 'this-binary-does-not-exist-12345' } }));
+    try {
+      await manager.ensureConnected();
+      expect(manager.failureFor('broken')).toBeTruthy();
+      expect(manager.failureFor('never-configured')).toBeUndefined();
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it('a server that answers 401 is explained as needing sign-in, not as a typo', () => {
+    // What StreamableHTTPClientTransport throws for a hosted connector behind
+    // OAuth (mcp.notion.com and friends) when no auth provider is configured.
+    const err = Object.assign(new Error('Error POSTing to endpoint: {"error":"invalid_token"}'), { code: 401 });
+    expect(explainConnectFailure(err)).toMatch(/sign-in \(OAuth\)/);
+
+    // A missing command must not be swept into the same bucket.
+    expect(explainConnectFailure(Object.assign(new Error('spawn foo ENOENT'), { code: 'ENOENT' }))).toMatch(/on PATH/);
+  });
+
+  it('does not hand a third-party server the whole environment', () => {
+    // These servers are usually fetched from a registry at the moment they
+    // start, so "whatever is exported in the shell" is the wrong grant.
+    const env = childEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/me',
+      ANTHROPIC_API_KEY: 'sk-ant-secret',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret',
+      GITHUB_TOKEN: 'ghp-secret',
+      DATABASE_URL: 'postgres://user:pw@host/db',
+    });
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/me' });
+  });
+
+  it('keeps what a program needs to run and to reach the network', () => {
+    // Dropping a proxy or a CA bundle does not fail loudly — it fails as a
+    // timeout inside someone else's code.
+    const env = childEnv({
+      PATH: '/usr/bin',
+      https_proxy: 'http://proxy:3128',
+      NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem',
+      LANG: 'en_GB.UTF-8',
+      TMPDIR: '/tmp',
+      // Windows spelling, and Node's spawn misbehaves without it.
+      SystemRoot: 'C:\\Windows',
+    });
+    expect(Object.keys(env).sort()).toEqual(['LANG', 'NODE_EXTRA_CA_CERTS', 'PATH', 'SystemRoot', 'TMPDIR', 'https_proxy']);
+  });
+
+  it('skips an exported shell function, which is what Shellshock was made of', () => {
+    expect(childEnv({ PATH: '/usr/bin', TERM: '() { :; }; evil' })).toEqual({ PATH: '/usr/bin' });
+  });
+
+  it('covers everything the SDK’s own default environment would inherit', async () => {
+    // `StdioClientTransport` applies this list when no env is passed, so it is
+    // the floor: anything it keeps and this drops is a regression for someone.
+    const { DEFAULT_INHERITED_ENV_VARS } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const source = Object.fromEntries(DEFAULT_INHERITED_ENV_VARS.map((k: string) => [k, 'x']));
+    expect(Object.keys(childEnv(source)).sort()).toEqual([...DEFAULT_INHERITED_ENV_VARS].sort());
+  });
+
+  it('lets a server declare the one variable it does need', async () => {
+    // The remedy for the allowlist: say so per server, rather than exporting
+    // it into every process on the machine.
+    const manager = new McpManager(() =>
+      Promise.resolve({ fixture: { command: 'node', args: [FIXTURE_SERVER], env: { NOTION_TOKEN: 'ntn_x' } } }),
+    );
+    try {
+      await manager.ensureConnected();
+      expect(manager.connectedServerNames()).toEqual(['fixture']);
     } finally {
       manager.dispose();
     }

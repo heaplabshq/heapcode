@@ -1,7 +1,7 @@
 {
   "name": "@heaplabs/heapcode-cli",
   "version": "0.6.0",
-  "description": "Model-agnostic AI coding agent for your terminal — chat, autonomous agent mode, semantic codebase search, and MCP, with any OpenAI-compatible API, local or cloud.",
+  "description": "Model-agnostic AI coding agent for your terminal \u2014 chat, autonomous agent mode, semantic codebase search, and MCP, with any OpenAI-compatible API, local or cloud.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "repository": {
     "type": "git",
@@ -40,6 +40,7 @@
     "prepublishOnly": "node prepublish-check.mjs"
   },
   "devDependencies": {
+    "@heapcode/chat-host": "workspace:*",
     "@heapcode/core": "workspace:*",
     "@heapcode/host": "workspace:*",
     "@heapcode/repomap": "workspace:*",
@@ -60,5 +61,10 @@
     "tree-sitter-wasms": "^0.1.12",
     "typescript": "^5.5.4",
     "web-tree-sitter": "^0.25.6"
+  },
+  "optionalDependencies": {
+    "exifr": "^7.1.3",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5"
   }
 }

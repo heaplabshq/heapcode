@@ -146,3 +146,19 @@ describe('a standalone tab', () => {
     expect(doc.querySelector('iframe')!.srcdoc).toContain('Content-Security-Policy');
   });
 });
+
+describe('markdown artifacts', () => {
+  it('inserts pre-rendered markdown rather than quoting it as source', () => {
+    // The regression this pins: `markdown` shared a case with `code` and
+    // `default`, both of which escape — so every markdown artifact rendered
+    // as a wall of `&lt;h1&gt;` instead of as a document. Preview hands this
+    // function HTML that renderMarkdown has already sanitized.
+    const doc = buildFrameDocument({ kind: 'markdown', content: '<h1>Title</h1><p>Body</p>' });
+    expect(doc).toContain('<h1>Title</h1>');
+    expect(doc).not.toContain('&lt;h1&gt;');
+  });
+
+  it('still quotes code and unknown kinds as source', () => {
+    expect(buildFrameDocument({ kind: 'code', content: '<h1>x</h1>' })).toContain('&lt;h1&gt;');
+  });
+});

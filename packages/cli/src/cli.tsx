@@ -40,6 +40,7 @@ import {
   profileUse,
 } from './profileCli.js';
 import { runHeadless } from './headless.js';
+import { runChat } from './chatCli.js';
 import { runWeb } from './webCli.js';
 import { AuditLog } from './audit.js';
 import { checkForUpdate } from './updateCheck.js';
@@ -152,6 +153,30 @@ async function main(): Promise<void> {
       port,
       // `--host` with no value is the common way to mean "expose it"; 0.0.0.0
       // is what that has to mean, and runWeb warns loudly about it.
+      host: hostFlag >= 0 ? (argv[hostFlag + 1] ?? '0.0.0.0') : undefined,
+    });
+    return;
+  }
+
+  if (argv[0] === 'chat') {
+    const portFlag = argv.findIndex((a) => a === '--port');
+    const hostFlag = argv.findIndex((a) => a === '--host');
+    const port = portFlag >= 0 ? Number(argv[portFlag + 1]) : undefined;
+    if (port !== undefined && !Number.isInteger(port)) {
+      console.error('--port takes a number, e.g. `heapcode chat --port 7413`');
+      process.exitCode = 1;
+      return;
+    }
+    // The first bare argument after `chat` is the folder. Flags and their
+    // values are skipped rather than positionally assumed, so
+    // `heapcode chat --port 7413 ~/Documents` means what it looks like.
+    const flagValues = new Set([portFlag + 1, hostFlag + 1].filter((i) => i > 0));
+    const folder = argv
+      .slice(1)
+      .find((a, i) => !a.startsWith('-') && !flagValues.has(i + 1));
+    process.exitCode = await runChat({
+      folder,
+      port,
       host: hostFlag >= 0 ? (argv[hostFlag + 1] ?? '0.0.0.0') : undefined,
     });
     return;
@@ -440,6 +465,7 @@ Usage:
   heapcode model <list|set ROLE CONNECTION MODEL|clear ROLE>   Which model serves each role (also /roles)
   heapcode audit                            Local usage/audit dashboard — event names + coarse metadata only, never code/prompts/paths; nothing leaves this machine
   heapcode web [--port N] [--host H]        Serve the browser UI for this workspace on 127.0.0.1 (--host exposes it to your network — see the warning it prints)
+  heapcode chat [folder] [--port N]        Serve Heap Chat over a folder (defaults to your home directory) — read, search, ask and draft; it writes new documents, never over yours
 
 Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text

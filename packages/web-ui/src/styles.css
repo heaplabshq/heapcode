@@ -429,6 +429,11 @@ body {
   display: block;
 }
 
+/* A long unbroken run — a URL, a hash, a chain of figures — is one word, and
+   one word wider than the pane used to scroll the whole page sideways. Code
+   blocks and tables are unaffected: both set their own `overflow-x: auto`, and
+   `white-space: pre` offers no wrap for this to act on. */
+.msg-body, .bubble { overflow-wrap: anywhere; }
 .msg-body > *:first-child { margin-top: 0; }
 .msg-body > *:last-child { margin-bottom: 0; }
 .msg-body pre {
@@ -607,6 +612,15 @@ body {
   white-space: pre-wrap; color: var(--text-dim);
   border-left: 2px solid var(--border); padding-left: 10px;
   margin: 4px 0 0; font-size: 12.5px;
+  /* `pre-wrap` breaks at whitespace, and a model working through arithmetic
+     writes lines that have none — "13,051+62,093+43,687+…" is one word to a
+     text layout engine. Without this it ran off the right of the viewport and
+     took the page's horizontal scroll with it. */
+  overflow-wrap: anywhere;
+  /* Stated rather than inherited from the element: Heap Code renders this in
+     a <pre> and Heap Chat in a <div>, so the same block came out monospace on
+     one side of the switcher and sans on the other. */
+  font-family: var(--mono);
 }
 
 /* ---------- working indicator ----------
@@ -1715,6 +1729,20 @@ body {
 .row-actions { margin-left: auto; display: flex; gap: 6px; }
 /* An MCP server's command line or URL, under its name. */
 .mono-hint { font-family: var(--mono); font-size: 11.5px; margin: 6px 0 0; word-break: break-all; }
+/* KEY=value lines. Monospace because that is what is being typed, and
+   resizable vertically only — sideways would break the card's column. */
+.env-input { font-family: var(--mono); font-size: 12px; resize: vertical; min-height: 46px; }
+/* The arguments a connector is about to be called with. Scrolls rather than
+   wraps: these are JSON, and a broken line is harder to judge than a scrolled
+   one. Capped so a large payload cannot push the buttons off the screen. */
+.permission-args {
+  font-family: var(--mono); font-size: 11.5px; margin: 8px 0 0;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; max-height: 180px; overflow: auto;
+}
+/* Why a connector is not connected. Warn, not danger: nothing is broken —
+   the server is refusing us, or was never reachable to begin with. */
+.hint-warn { color: var(--warn); margin: 6px 0 0; }
 .row code { font-family: var(--mono); font-size: 12px; }
 
 .badge {
@@ -1947,3 +1975,43 @@ body {
   max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .idx-link:hover { color: var(--accent); border-color: var(--accent); }
+
+/* ---- product switcher ----
+   Sits in the rail's top row beside the brand. Deliberately quiet: it is a
+   switch between two products, not a primary action, and it is next to the
+   product's own name so the current half is already implied. */
+.product-toggle {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: auto;
+  padding: 1px;
+  border-radius: 7px;
+  background: var(--surface-2, rgb(0 0 0 / 0.05));
+}
+.rail-collapsed .product-toggle { display: none; }
+.product-tab {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--text-dim, #6b655c);
+  text-decoration: none;
+}
+.product-tab:hover { color: var(--text, inherit); }
+.product-tab-on {
+  background: var(--surface, #fff);
+  color: var(--text, inherit);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

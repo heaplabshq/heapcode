@@ -180,6 +180,10 @@
         "title": "Heap Code: Add MCP Server"
       },
       {
+        "command": "heapcode.signInMcpServer",
+        "title": "Heap Code: Sign In to MCP Server"
+      },
+      {
         "command": "heapcode.resetPermissions",
         "title": "Heap Code: Reset Agent Permissions"
       },

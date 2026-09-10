@@ -13,6 +13,7 @@
  */
 
 export * from './authLimit.js';
+export * from './hello.js';
 export * from './protocol.js';
 export * from './server.js';
 export * from './session.js';
@@ -21,3 +22,4 @@ export * from './artifacts.js';
 export * from './workspace.js';
 export * from './workspaces.js';
 export * from './wsDuplex.js';
+export * from './mcpLogin.js';

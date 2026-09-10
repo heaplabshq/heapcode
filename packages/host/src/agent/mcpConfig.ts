@@ -76,6 +76,80 @@ export function parseMcpServerSpec(spec: string): McpServerConfig | { error: str
   return parts.length > 1 ? { command, args: parts.slice(1) } : { command };
 }
 
+/**
+ * `KEY=value` lines into the shape config stores.
+ *
+ * A server that needs a credential now has to say so — `childEnv` no longer
+ * passes the shell's own variables through — so there has to be somewhere to
+ * write one that is not a text editor open on config.json.
+ *
+ * Values are taken verbatim after the first `=`, since a token may contain
+ * one. Surrounding quotes are stripped, because pasting from a `.env` file is
+ * how most of these will arrive.
+ */
+export function parseMcpServerEnv(text: string): Record<string, string> | { error: string } {
+  const env: Record<string, string> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const at = line.indexOf('=');
+    if (at < 1) return { error: `Write one KEY=value per line — could not read "${line}".` };
+    const key = line.slice(0, at).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return { error: `"${key}" is not a usable variable name.` };
+    env[key] = line
+      .slice(at + 1)
+      .trim()
+      .replace(/^(["'])(.*)\1$/, '$2');
+  }
+  return env;
+}
+
+/**
+ * One server's environment after applying `KEY=value` pairs to it.
+ *
+ * Merged rather than replaced, because changing one key on a terminal should
+ * not mean retyping the rest, and an empty value is how you drop one. `env`
+ * is removed entirely when nothing is left, so a server that never needed one
+ * does not carry an empty object around in config.
+ */
+export function mergeMcpServerEnv(
+  server: McpServerConfig,
+  pairs: string,
+): McpServerConfig | { error: string } {
+  const parsed = parseMcpServerEnv(pairs);
+  if ('error' in parsed) return parsed;
+  const next = { ...(server.env ?? {}) };
+  for (const [key, value] of Object.entries(parsed)) {
+    if (value === '') delete next[key];
+    else next[key] = value;
+  }
+  const { env: _replaced, ...rest } = server;
+  return Object.keys(next).length > 0 ? { ...rest, env: next } : rest;
+}
+
+/**
+ * A parsed server, carrying whatever environment it should end up with.
+ *
+ * `env` absent means "leave what is stored alone". The settings panel is never
+ * shown the values — they are credentials — so it cannot send them back, and
+ * an edit that only changes the command must not take the token with it.
+ * An empty string is the explicit "remove them".
+ */
+export async function withEnv(
+  config: { load(): Promise<{ mcpServers?: Record<string, McpServerConfig> }> },
+  name: string,
+  parsed: McpServerConfig,
+  env: string | undefined,
+): Promise<McpServerConfig> {
+  if (env === undefined) {
+    const stored = (await config.load()).mcpServers?.[name]?.env;
+    return stored && Object.keys(stored).length > 0 ? { ...parsed, env: stored } : parsed;
+  }
+  const next = parseMcpServerEnv(env);
+  if ('error' in next) throw new Error(next.error);
+  return Object.keys(next).length > 0 ? { ...parsed, env: next } : parsed;
+}
+
 /** How a stored server reads back — the same string `parseMcpServerSpec` accepts. */
 export function describeMcpServer(server: McpServerConfig): string {
   if (server.url) return server.url;

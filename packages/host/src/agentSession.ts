@@ -1,6 +1,6 @@
 import { McpManager, WEB_SEARCH_SECRET_NAME, type ToolDefinition } from '@heapcode/core';
 import type { ConfigStore } from './config/store.js';
-import type { SecretsStore } from './config/secrets.js';
+import { SecretsMcpAuthStore, type SecretsStore } from './config/secrets.js';
 import { WorkspaceToolExecutor, agentToolDefinitions } from './agent/workspaceTools.js';
 import { SessionCheckpoint } from './agent/checkpoint.js';
 import { ShadowGit } from './agent/shadowGit.js';
@@ -49,6 +49,15 @@ export function buildAgentSession(
    * configured the executor reports the failed edit exactly as it always has.
    */
   applyMerge?: (original: string, snippet: string) => Promise<string | undefined>,
+  /**
+   * Where an OAuth callback comes back to, when this host can answer one.
+   *
+   * Absent for a host with nowhere to land a redirect — MCP servers behind
+   * OAuth then report that they need a sign-in rather than attempting one.
+   * Must be a loopback origin: hosted servers require HTTPS otherwise, and
+   * Notion refuses a plain-HTTP LAN redirect outright.
+   */
+  mcpRedirectUri?: string,
 ): AgentSession {
   const checkpoint = new SessionCheckpoint(root);
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
@@ -79,7 +88,13 @@ export function buildAgentSession(
   // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with
   // project-scoped (<cwd>/.heapcode/mcp.json), project wins name collisions.
   // Reconnected (idempotent) at the start of every task by the caller.
-  const mcpManager = new McpManager(() => loadMcpServers(root, config), undefined, clientVersion);
+  const mcpManager = new McpManager(
+    () => loadMcpServers(root, config),
+    undefined,
+    clientVersion,
+    secrets ? new SecretsMcpAuthStore(secrets) : undefined,
+    mcpRedirectUri,
+  );
 
   return { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools: agentToolDefinitions };
 }

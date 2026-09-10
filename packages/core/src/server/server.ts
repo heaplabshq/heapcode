@@ -28,6 +28,8 @@ import {
   type HelloParams,
   type HelloResult,
   type KeyRequestParams,
+  type DocumentExtractParams,
+  type DocumentExtractResult,
   type KeyRequestResult,
   type ListModelsParams,
   type ListModelsResult,
@@ -182,6 +184,15 @@ export class HeapcodeServer {
       rag ??= new SessionRag(active, {
         emit: (event, runId) => void peer.notifyWithBackpressure(METHODS.ragEvent, { runId, event } satisfies RagEventParams),
         requestKey,
+        // Only reached for extensions the host itself declared in hello, so a
+        // host that declared none is never asked. A host that refuses or
+        // errors gets the same answer as an unreadable file: skip it.
+        extractDocument: async (path) => {
+          const res = await peer
+            .request<DocumentExtractResult>(METHODS.documentExtract, { path } satisfies DocumentExtractParams)
+            .catch(() => undefined);
+          return res?.text;
+        },
         log: (line) => this.onLog(`[session ${active.id.slice(0, 8)}] ${line}`),
       });
       return rag;

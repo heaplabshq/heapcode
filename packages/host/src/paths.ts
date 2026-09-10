@@ -112,6 +112,23 @@ export function workspacesFile(): string {
   return join(globalDir(), 'workspaces.json');
 }
 
+/**
+ * What Heap Chat has learned about the person, across every folder.
+ *
+ * Global rather than per-project, and that is the whole distinction from
+ * `.heapcode/memory.md`: project memory is about a repo and belongs beside it,
+ * where it can be committed and shared. This is about the person — how they
+ * like to be helped, what they have told the assistant to remember — and
+ * following them from folder to folder is the point.
+ *
+ * Deliberately NOT the same store. Project memory leaking into a personal
+ * conversation, or personal facts leaking into a repo's committed notes, are
+ * both bad, and they are bad in different ways.
+ */
+export function chatMemoryFile(): string {
+  return join(globalDir(), 'chat-memory.json');
+}
+
 export function conversationsFile(root?: string): string {
   return join(projectStateDir(root), 'conversations.json');
 }

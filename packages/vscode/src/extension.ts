@@ -370,7 +370,20 @@ export function activate(context: vscode.ExtensionContext): void {
         });
         if (!commandLine) return;
         const [command, ...args] = commandLine.split(/\s+/);
-        servers[name] = { command, args };
+        // A local server is started with only the basics now — PATH, language,
+        // proxy settings — so a credential it needs has to be named here
+        // rather than picked up from whatever the editor was launched with.
+        const envLine = await vscode.window.showInputBox({
+          title: `Environment for "${name}" (optional)`,
+          prompt: 'KEY=value, separated by spaces. Leave empty if it needs none.',
+          placeHolder: 'NOTION_TOKEN=ntn_…',
+        });
+        const env: Record<string, string> = {};
+        for (const pair of (envLine ?? '').split(/\s+/).filter(Boolean)) {
+          const at = pair.indexOf('=');
+          if (at > 0) env[pair.slice(0, at)] = pair.slice(at + 1);
+        }
+        servers[name] = Object.keys(env).length > 0 ? { command, args, env } : { command, args };
       } else {
         const url = await vscode.window.showInputBox({ title: 'Server URL', prompt: 'https://…' });
         if (!url) return;

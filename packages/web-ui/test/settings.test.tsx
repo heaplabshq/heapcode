@@ -457,7 +457,24 @@ describe('MCP servers', () => {
       target: { value: 'https://mcp.example.com/sse' },
     });
     fireEvent.click(screen.getByText('Add server'));
-    expect(onSaveMcpServer).toHaveBeenCalledWith('github', 'https://mcp.example.com/sse');
+    // The third argument is the server's own environment. Undefined here, and
+    // undefined means "leave what is stored alone" — the panel is never sent
+    // the values, so it must not be able to blank them by saying nothing.
+    expect(onSaveMcpServer).toHaveBeenCalledWith('github', 'https://mcp.example.com/sse', undefined);
+  });
+
+  it('sends a credential typed beside the command, and keeps it out of the row', () => {
+    const onSaveMcpServer = vi.fn();
+    open({ onSaveMcpServer });
+    fireEvent.change(screen.getByLabelText('MCP server name'), { target: { value: 'notion' } });
+    fireEvent.change(screen.getByLabelText('MCP server command or URL'), {
+      target: { value: 'npx -y @notionhq/notion-mcp-server' },
+    });
+    fireEvent.change(screen.getByLabelText('Environment variables for this MCP server'), {
+      target: { value: 'NOTION_TOKEN=ntn_abc' },
+    });
+    fireEvent.click(screen.getByText('Add server'));
+    expect(onSaveMcpServer).toHaveBeenCalledWith('notion', 'npx -y @notionhq/notion-mcp-server', 'NOTION_TOKEN=ntn_abc');
   });
 
   it('will not send a half-filled form', () => {

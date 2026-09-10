@@ -560,7 +560,7 @@ export function App(): JSX.Element {
           onToggleSubAgents={() => {}}
           onToggleNativeTools={() => {}}
           onResetPermissions={() => {}}
-          onSaveMcpServer={(name, spec) => edit(CHAT_METHODS.saveMcpServer, { name, spec })}
+          onSaveMcpServer={(name, spec, env) => edit(CHAT_METHODS.saveMcpServer, { name, spec, env })}
           onDeleteMcpServer={(name) => edit(CHAT_METHODS.deleteMcpServer, { name })}
           onSignInMcpServer={async (name) => {
             const res = (await client.request(CHAT_METHODS.signInMcpServer, { name })) as ChatMcpSignInResult;

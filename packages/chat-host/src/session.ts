@@ -40,6 +40,7 @@ import {
   loadMcpServers,
   mcpNameProblem,
   parseMcpServerSpec,
+  withEnv,
   SessionCheckpoint,
   WorkspaceToolExecutor,
   canonicalize,
@@ -694,12 +695,12 @@ export class ChatSession implements HostSession {
     });
 
     ui.onRequest(CHAT_METHODS.saveMcpServer, async (raw) => {
-      const { name, spec } = raw as { name: string; spec: string };
+      const { name, spec, env } = raw as { name: string; spec: string; env?: string };
       const nameProblem = mcpNameProblem(name);
       if (nameProblem) throw new Error(nameProblem);
       const parsed = parseMcpServerSpec(spec);
       if ('error' in parsed) throw new Error(parsed.error);
-      await this.deps.config.saveMcpServer(name.trim(), parsed);
+      await this.deps.config.saveMcpServer(name.trim(), await withEnv(this.deps.config, name.trim(), parsed, env));
       await this.mcp?.ensureConnected().catch(() => undefined);
       void this.pushState();
       return null;
@@ -852,6 +853,8 @@ export class ChatSession implements HostSession {
       error: connected.has(name) ? undefined : this.mcp?.failureFor(name),
       needsAuth: !connected.has(name) && Boolean(this.mcp?.awaitingSignIn(name)),
       signedIn: signedIn.has(name),
+      // Names only. These are credentials, and this list is on screen.
+      envKeys: Object.keys(server.env ?? {}),
       project: name in project,
     }));
   }

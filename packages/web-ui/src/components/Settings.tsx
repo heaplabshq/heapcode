@@ -40,7 +40,7 @@ export interface SettingsProps {
    */
   listConnectionModels?(connection: string): Promise<string[]>;
   /** Add or replace an MCP server. `spec` is a URL or a command line. */
-  onSaveMcpServer(name: string, spec: string): void;
+  onSaveMcpServer(name: string, spec: string, env?: string): void;
   onDeleteMcpServer(name: string): void;
   /**
    * Begin an OAuth sign-in and return where to send the browser. Optional:
@@ -1153,13 +1153,14 @@ function Connectors({
   onSignOut,
 }: {
   servers: UiMcpServer[];
-  onSave(name: string, spec: string): void;
+  onSave(name: string, spec: string, env?: string): void;
   onDelete(name: string): void;
   onSignIn?(name: string): Promise<string>;
   onSignOut?(name: string): void;
 }): JSX.Element {
   const [name, setName] = useState('');
   const [spec, setSpec] = useState('');
+  const [env, setEnv] = useState('');
   const [editing, setEditing] = useState<string>();
   const [signingIn, setSigningIn] = useState<string>();
 
@@ -1179,9 +1180,10 @@ function Connectors({
 
   const add = (): void => {
     if (!name.trim() || !spec.trim()) return;
-    onSave(name.trim(), spec.trim());
+    onSave(name.trim(), spec.trim(), env.trim() || undefined);
     setName('');
     setSpec('');
+    setEnv('');
   };
 
   return (
@@ -1226,12 +1228,17 @@ function Connectors({
                 )}
               </div>
               {m.spec && <p className="hint mono-hint">{m.spec}</p>}
+              {m.envKeys && m.envKeys.length > 0 && (
+                // Names, never values. This list is on screen.
+                <p className="hint mono-hint">{m.envKeys.join(', ')}</p>
+              )}
               {m.error && <p className="hint hint-warn">{m.error}</p>}
               {editing === m.name && !m.project && (
                 <EditServer
                   initial={m.spec ?? ''}
-                  onSave={(next) => {
-                    onSave(m.name, next);
+                  envKeys={m.envKeys ?? []}
+                  onSave={(next, nextEnv) => {
+                    onSave(m.name, next, nextEnv);
                     setEditing(undefined);
                   }}
                 />
@@ -1264,9 +1271,20 @@ function Connectors({
             }}
           />
         </Field>
+        <Field label="Environment (optional)">
+          <textarea
+            className="card-input env-input"
+            rows={2}
+            value={env}
+            placeholder={'NOTION_TOKEN=ntn_…\nONE_PER_LINE=value'}
+            aria-label="Environment variables for this MCP server"
+            onChange={(e) => setEnv(e.target.value)}
+          />
+        </Field>
         <p className="hint">
           A URL is a remote server; anything else is run as a local command. Its tools go through the same permission
-          prompts as everything else.
+          prompts as everything else. A local server is started with only the basics — your PATH, language and proxy
+          settings — so anything else it needs, such as an API token, belongs above rather than exported in your shell.
         </p>
         <div className="form-actions">
           <button className="btn btn-primary" disabled={!name.trim() || !spec.trim()} onClick={add}>
@@ -1279,8 +1297,26 @@ function Connectors({
 }
 
 /** The one editable thing about a stored server: what it points at. */
-function EditServer({ initial, onSave }: { initial: string; onSave(spec: string): void }): JSX.Element {
+/**
+ * Editing one server.
+ *
+ * The environment box starts empty however many variables are stored, because
+ * this panel is never sent their values — they are credentials. Leaving it
+ * empty keeps them; typing replaces the set; "Remove" clears it. Anything else
+ * would mean either showing a token on screen or losing it on an unrelated
+ * edit to the command.
+ */
+function EditServer({
+  initial,
+  envKeys,
+  onSave,
+}: {
+  initial: string;
+  envKeys: string[];
+  onSave(spec: string, env?: string): void;
+}): JSX.Element {
   const [spec, setSpec] = useState(initial);
+  const [env, setEnv] = useState('');
   return (
     <div className="profile-edit">
       <Field label="Command or URL">
@@ -1291,10 +1327,34 @@ function EditServer({ initial, onSave }: { initial: string; onSave(spec: string)
           onChange={(e) => setSpec(e.target.value)}
         />
       </Field>
+      <Field label="Environment">
+        <textarea
+          className="card-input env-input"
+          rows={2}
+          value={env}
+          placeholder={envKeys.length > 0 ? 'Type to replace what is set' : 'NOTION_TOKEN=ntn_…'}
+          aria-label="Environment variables for this MCP server"
+          onChange={(e) => setEnv(e.target.value)}
+        />
+      </Field>
+      {envKeys.length > 0 && (
+        <p className="hint">
+          Set: {envKeys.join(', ')}. Values are not shown. Leave the box empty to keep them.
+        </p>
+      )}
       <div className="form-actions">
-        <button className="btn btn-primary" disabled={!spec.trim()} onClick={() => onSave(spec.trim())}>
+        <button
+          className="btn btn-primary"
+          disabled={!spec.trim()}
+          onClick={() => onSave(spec.trim(), env.trim() || undefined)}
+        >
           Save
         </button>
+        {envKeys.length > 0 && (
+          <button className="btn btn-ghost-danger" onClick={() => onSave(spec.trim(), '')}>
+            Remove environment
+          </button>
+        )}
       </div>
     </div>
   );

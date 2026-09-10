@@ -154,7 +154,7 @@ export class McpManager {
           : new StdioClientTransport({
               command: server.command ?? '',
               args: server.args ?? [],
-              env: { ...(process.env as Record<string, string>), ...server.env },
+              env: { ...childEnv(), ...server.env },
             });
         await client.connect(transport);
         const listed = await client.listTools();
@@ -298,6 +298,84 @@ export class McpManager {
       .join('\n');
     return text || JSON.stringify(result);
   }
+}
+
+/**
+ * Environment variables an MCP server is allowed to inherit.
+ *
+ * Matched case-insensitively, which covers both `HTTPS_PROXY` and
+ * `https_proxy` and Windows' own casing of `SystemRoot`.
+ */
+const INHERITED_ENV: ReadonlySet<string> = new Set(
+  [
+    // Finding an interpreter, and the places one expects to write.
+    'path',
+    'home',
+    'shell',
+    'user',
+    'logname',
+    'tmpdir',
+    // Text handling and dates, which change a server's *output* when absent.
+    'lang',
+    'lc_all',
+    'lc_ctype',
+    'tz',
+    // Windows: node's own spawn misbehaves without SystemRoot, and package
+    // managers keep their caches under APPDATA.
+    'systemroot',
+    'systemdrive',
+    'windir',
+    'pathext',
+    'comspec',
+    'appdata',
+    'localappdata',
+    'programdata',
+    'programfiles',
+    'programfiles(x86)',
+    'temp',
+    'tmp',
+    'userprofile',
+    'homedrive',
+    'homepath',
+    'processor_architecture',
+    'number_of_processors',
+    'os',
+    // Reaching the network at all, on a machine behind a proxy or a corporate
+    // CA. Dropping these does not fail loudly — it fails as a timeout inside
+    // someone else's code, which is the worst way for this to go wrong.
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'no_proxy',
+    'ssl_cert_file',
+    'ssl_cert_dir',
+    'node_extra_ca_certs',
+    'requests_ca_bundle',
+    'curl_ca_bundle',
+  ].map((name) => name.toLowerCase()),
+);
+
+/**
+ * The environment a stdio MCP server is started with.
+ *
+ * An allowlist, because the alternative was the whole of `process.env`. These
+ * servers are third-party programs, usually fetched from a registry at the
+ * moment they start (`npx -y …`, `uvx …`), and handing each one a copy of
+ * every exported variable gave it whatever happened to be in the shell —
+ * provider keys, cloud credentials, tokens for services it has no connection
+ * to. None of that is needed to list a directory or fetch a stock price.
+ *
+ * What a server genuinely requires it declares in its own config, and that is
+ * merged over this.
+ */
+export function childEnv(
+  source: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value !== undefined && INHERITED_ENV.has(name.toLowerCase())) env[name] = value;
+  }
+  return env;
 }
 
 function sanitize(name: string): string {

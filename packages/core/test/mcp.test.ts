@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { McpManager, explainConnectFailure, type McpServerConfig } from '../src/index.js';
+import { McpManager, childEnv, explainConnectFailure, type McpServerConfig } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SERVER = join(__dirname, 'fixtures', 'mcpFixtureServer.mjs');
@@ -151,6 +151,49 @@ describe('McpManager', () => {
 
     // A missing command must not be swept into the same bucket.
     expect(explainConnectFailure(Object.assign(new Error('spawn foo ENOENT'), { code: 'ENOENT' }))).toMatch(/on PATH/);
+  });
+
+  it('does not hand a third-party server the whole environment', () => {
+    // These servers are usually fetched from a registry at the moment they
+    // start, so "whatever is exported in the shell" is the wrong grant.
+    const env = childEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/me',
+      ANTHROPIC_API_KEY: 'sk-ant-secret',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret',
+      GITHUB_TOKEN: 'ghp-secret',
+      DATABASE_URL: 'postgres://user:pw@host/db',
+    });
+    expect(env).toEqual({ PATH: '/usr/bin', HOME: '/home/me' });
+  });
+
+  it('keeps what a program needs to run and to reach the network', () => {
+    // Dropping a proxy or a CA bundle does not fail loudly — it fails as a
+    // timeout inside someone else's code.
+    const env = childEnv({
+      PATH: '/usr/bin',
+      https_proxy: 'http://proxy:3128',
+      NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem',
+      LANG: 'en_GB.UTF-8',
+      TMPDIR: '/tmp',
+      // Windows spelling, and Node's spawn misbehaves without it.
+      SystemRoot: 'C:\\Windows',
+    });
+    expect(Object.keys(env).sort()).toEqual(['LANG', 'NODE_EXTRA_CA_CERTS', 'PATH', 'SystemRoot', 'TMPDIR', 'https_proxy']);
+  });
+
+  it('lets a server declare the one variable it does need', async () => {
+    // The remedy for the allowlist: say so per server, rather than exporting
+    // it into every process on the machine.
+    const manager = new McpManager(() =>
+      Promise.resolve({ fixture: { command: 'node', args: [FIXTURE_SERVER], env: { NOTION_TOKEN: 'ntn_x' } } }),
+    );
+    try {
+      await manager.ensureConnected();
+      expect(manager.connectedServerNames()).toEqual(['fixture']);
+    } finally {
+      manager.dispose();
+    }
   });
 
   it('calling an unconnected server raises a clear error instead of throwing on undefined', async () => {

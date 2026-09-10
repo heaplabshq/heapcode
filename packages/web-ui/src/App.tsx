@@ -1184,7 +1184,7 @@ export function App(): JSX.Element {
           onSaveProfile={(profile: UiProfileDraft, apiKey?: string) =>
             act(UI_METHODS.saveProfile, { profile, apiKey })
           }
-          onSaveMcpServer={(name, spec) => act(UI_METHODS.saveMcpServer, { name, spec })}
+          onSaveMcpServer={(name, spec, env) => act(UI_METHODS.saveMcpServer, { name, spec, env })}
           onDeleteMcpServer={(name) => act(UI_METHODS.deleteMcpServer, { name })}
           onSignInMcpServer={async (name) => {
             const res = (await rpc.request(UI_METHODS.signInMcpServer, { name })) as UiMcpSignInResult;

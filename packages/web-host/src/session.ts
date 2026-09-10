@@ -67,6 +67,7 @@ import {
   loadMcpServerSources,
   mcpNameProblem,
   parseMcpServerSpec,
+  withEnv,
   listSkillsFormatted,
   permissionsFile,
   projectStateDir,
@@ -1189,12 +1190,12 @@ export class WebSession {
      */
     ui.onRequest(UI_METHODS.saveMcpServer, async (raw) => {
       await this.start();
-      const { name, spec } = raw as UiSaveMcpServerParams;
+      const { name, spec, env } = raw as UiSaveMcpServerParams;
       const nameProblem = mcpNameProblem(name);
       if (nameProblem) throw new Error(nameProblem);
       const parsed = parseMcpServerSpec(spec);
       if ('error' in parsed) throw new Error(parsed.error);
-      await this.deps.config.saveMcpServer(name.trim(), parsed);
+      await this.deps.config.saveMcpServer(name.trim(), await withEnv(this.deps.config, name.trim(), parsed, env));
       this.reconnectMcp();
       void this.pushState();
       return null;
@@ -1361,6 +1362,8 @@ export class WebSession {
       error: connected.has(name) ? undefined : this.session?.mcpManager.failureFor(name),
       needsAuth: !connected.has(name) && Boolean(this.session?.mcpManager.awaitingSignIn(name)),
       signedIn: signedIn.has(name),
+      // Names only. These are credentials, and this list is on screen.
+      envKeys: Object.keys(server.env ?? {}),
       project: name in project,
     }));
   }

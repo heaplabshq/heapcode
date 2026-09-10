@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { readCliApiKey, readCliConfig } from './cliConfig.js';
 import {
   createProvider,
   DEFAULT_CONTEXT_WINDOW,
@@ -94,6 +95,61 @@ export async function setWebSearchKeyFlow(secrets: vscode.SecretStorage): Promis
   }
 }
 
+/**
+ * VS Code's connections, plus any from the CLI it does not already name.
+ *
+ * Settings win on a clash: they are the more specific source, and someone who
+ * has configured a connection in the editor means the one in the editor. The
+ * CLI's are appended so a provider set up in a terminal is simply there.
+ */
+function withCliConnections(config: ModelConfig): ModelConfig {
+  const shared = readCliConfig();
+  if (!shared) return config;
+  const named = new Set(config.connections.map((c) => c.name));
+  const extra = shared.connections.filter((c) => !named.has(c.name));
+  if (extra.length === 0) return config;
+  return { connections: [...config.connections, ...extra], roles: config.roles };
+}
+
+/**
+ * Which connections and roles this window uses, from a plain settings reader —
+ * so the precedence is testable without a VS Code instance. `read` is
+ * `workspace.getConfiguration('heapcode').get`.
+ *
+ * Order is deliberate: anything configured in the editor wins, including the
+ * legacy shapes, because someone who set a connection here meant this one. The
+ * CLI's are consulted only for names the editor does not have, and taken whole
+ * when the editor has nothing at all.
+ */
+export function resolveModelConfig(read: <T>(key: string, fallback: T) => T): ModelConfig {
+  const connections = read<ProviderConnection[]>('connections', []);
+  if (connections.length > 0) {
+    return withCliConnections({ connections, roles: read<ModelRoleTable>('modelRoles', {}) });
+  }
+  const profiles = read<LegacyProviderProfile[]>('profiles', []);
+  if (profiles.length > 0) {
+    return withCliConnections(migrateProfiles(profiles, read<string>('activeProfile', '')));
+  }
+  // Nothing configured in the editor. If the CLI has connections, take them
+  // whole — roles included — rather than synthesizing the localhost default
+  // below and asking someone to set up a provider they already set up.
+  const shared = readCliConfig();
+  if (shared) return { connections: shared.connections, roles: shared.roles };
+  // Legacy fallback: synthesize one from the flat v0.1 settings.
+  const model = read<string>('model', '');
+  return {
+    connections: [{ name: 'default', preset: 'custom', baseUrl: read<string>('baseUrl', 'http://localhost:11434/v1') }],
+    roles: {
+      chat: {
+        connection: 'default',
+        model,
+        temperature: read<number | undefined>('temperature', undefined),
+        maxTokens: read<number | undefined>('maxTokens', undefined),
+      },
+    },
+  };
+}
+
 export class ProfileManager {
   private readonly changeEmitter = new vscode.EventEmitter<void>();
   readonly onDidChange = this.changeEmitter.event;
@@ -147,29 +203,7 @@ export class ProfileManager {
    */
   getModelConfig(): ModelConfig {
     const cfg = vscode.workspace.getConfiguration('heapcode');
-    const connections = cfg.get<ProviderConnection[]>('connections', []);
-    if (connections.length > 0) {
-      return { connections, roles: cfg.get<ModelRoleTable>('modelRoles', {}) };
-    }
-    const profiles = cfg.get<LegacyProviderProfile[]>('profiles', []);
-    if (profiles.length > 0) {
-      return migrateProfiles(profiles, cfg.get<string>('activeProfile', ''));
-    }
-    // Legacy fallback: synthesize one from the flat v0.1 settings.
-    const model = cfg.get<string>('model', '');
-    return {
-      connections: [
-        { name: 'default', preset: 'custom', baseUrl: cfg.get<string>('baseUrl', 'http://localhost:11434/v1') },
-      ],
-      roles: {
-        chat: {
-          connection: 'default',
-          model,
-          temperature: cfg.get<number>('temperature'),
-          maxTokens: cfg.get<number>('maxTokens'),
-        },
-      },
-    };
+    return resolveModelConfig(<T,>(key: string, fallback: T) => cfg.get<T>(key, fallback));
   }
 
   getConnections(): ProviderConnection[] {
@@ -211,6 +245,10 @@ export class ProfileManager {
     return (
       (await this.secrets.get(profileSecretKey(profile.name))) ||
       (await this.secrets.get(LEGACY_KEY_SECRET)) ||
+      // A connection that came from the CLI's config keeps its key in the
+      // CLI's secrets file. Checked last, so anything stored in SecretStorage
+      // for the same name still wins.
+      readCliApiKey(profile.name) ||
       undefined
     );
   }

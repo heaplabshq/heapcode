@@ -315,6 +315,9 @@ const INHERITED_ENV: ReadonlySet<string> = new Set(
     'user',
     'logname',
     'tmpdir',
+    // The SDK's own list carries TERM, and a server that formats output for a
+    // terminal misbehaves without it.
+    'term',
     // Text handling and dates, which change a server's *output* when absent.
     'lang',
     'lc_all',
@@ -335,6 +338,7 @@ const INHERITED_ENV: ReadonlySet<string> = new Set(
     'temp',
     'tmp',
     'userprofile',
+    'username',
     'homedrive',
     'homepath',
     'processor_architecture',
@@ -367,13 +371,26 @@ const INHERITED_ENV: ReadonlySet<string> = new Set(
  *
  * What a server genuinely requires it declares in its own config, and that is
  * merged over this.
+ *
+ * The SDK ships `getDefaultEnvironment()` doing the same thing, and its list
+ * is the starting point for this one — `StdioClientTransport` uses it whenever
+ * a caller passes no `env` at all, which is to say the leak here was this file
+ * opting out of a safe default rather than a default nobody had written. This
+ * is a superset for two reasons the SDK's list does not cover: proxy and CA
+ * variables, without which a server on a corporate network fails as a timeout
+ * rather than an error, and locale and timezone, which silently change what a
+ * server returns rather than whether it works.
  */
 export function childEnv(
   source: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(source)) {
-    if (value !== undefined && INHERITED_ENV.has(name.toLowerCase())) env[name] = value;
+    if (value === undefined || !INHERITED_ENV.has(name.toLowerCase())) continue;
+    // An exported bash function, which is what Shellshock was made of. The
+    // SDK's own default environment skips these and so does this.
+    if (value.startsWith('()')) continue;
+    env[name] = value;
   }
   return env;
 }

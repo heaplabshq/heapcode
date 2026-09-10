@@ -182,6 +182,18 @@ describe('McpManager', () => {
     expect(Object.keys(env).sort()).toEqual(['LANG', 'NODE_EXTRA_CA_CERTS', 'PATH', 'SystemRoot', 'TMPDIR', 'https_proxy']);
   });
 
+  it('skips an exported shell function, which is what Shellshock was made of', () => {
+    expect(childEnv({ PATH: '/usr/bin', TERM: '() { :; }; evil' })).toEqual({ PATH: '/usr/bin' });
+  });
+
+  it('covers everything the SDK’s own default environment would inherit', async () => {
+    // `StdioClientTransport` applies this list when no env is passed, so it is
+    // the floor: anything it keeps and this drops is a regression for someone.
+    const { DEFAULT_INHERITED_ENV_VARS } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const source = Object.fromEntries(DEFAULT_INHERITED_ENV_VARS.map((k: string) => [k, 'x']));
+    expect(Object.keys(childEnv(source)).sort()).toEqual([...DEFAULT_INHERITED_ENV_VARS].sort());
+  });
+
   it('lets a server declare the one variable it does need', async () => {
     // The remedy for the allowlist: say so per server, rather than exporting
     // it into every process on the machine.

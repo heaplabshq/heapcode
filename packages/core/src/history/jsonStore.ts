@@ -21,6 +21,21 @@ export class JsonConversationStore implements ConversationStore {
 
   private async load(): Promise<Conversation[]> {
     if (this.cache) return this.cache;
+    return this.reload();
+  }
+
+  /**
+   * Read the file, ignoring anything already cached.
+   *
+   * Every write goes through this. One project's history is a single file
+   * shared by every host on the machine — the terminal, `heapcode web`, Heap
+   * Chat and the extension all resolve to the same `conversationsFile(root)` —
+   * so a store that saved its cached view wrote back a picture of the file
+   * from whenever it last read, and silently dropped every conversation
+   * another host had added since. Two sessions open on one project was enough:
+   * whichever saved second won, and the other's chats were gone.
+   */
+  private async reload(): Promise<Conversation[]> {
     const text = await this.file.read();
     try {
       this.cache = text ? (JSON.parse(text) as Conversation[]) : [];
@@ -66,7 +81,9 @@ export class JsonConversationStore implements ConversationStore {
   }
 
   async save(conversation: Conversation): Promise<void> {
-    const all = await this.load();
+    // Re-read first: what is on disk now may include conversations another
+    // host wrote while this one was open. See `reload`.
+    const all = await this.reload();
     const index = all.findIndex((c) => c.id === conversation.id);
     if (index >= 0) all[index] = conversation;
     else all.push(conversation);
@@ -76,7 +93,7 @@ export class JsonConversationStore implements ConversationStore {
   }
 
   async delete(id: string): Promise<void> {
-    this.cache = (await this.load()).filter((c) => c.id !== id);
+    this.cache = (await this.reload()).filter((c) => c.id !== id);
     await this.persist();
   }
 }

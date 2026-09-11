@@ -32,11 +32,23 @@ describe('CopyButton', () => {
   });
 
   it('confirms, then goes back to offering', async () => {
+    // The label is a glyph, so the accessible name is what carries the state —
+    // and what a tooltip and a screen reader both read.
     render(<CopyButton text="x" />);
     await act(async () => void fireEvent.click(screen.getByRole('button')));
-    expect(screen.getByRole('button').textContent).toBe('Copied');
+    expect(screen.getByRole('button').getAttribute('aria-label')).toBe('Copied');
     act(() => void vi.advanceTimersByTime(1_500));
-    expect(screen.getByRole('button').textContent).toBe('Copy');
+    expect(screen.getByRole('button').getAttribute('aria-label')).toBe('Copy');
+  });
+
+  it('is an icon, not a word', () => {
+    render(<CopyButton text="x" />);
+    const button = screen.getByRole('button');
+    expect(button.querySelector('svg')).toBeTruthy();
+    expect(button.textContent).toBe('');
+    // Which makes the name the only thing saying what it does.
+    expect(button.getAttribute('aria-label')).toBe('Copy');
+    expect(button.getAttribute('title')).toBe('Copy');
   });
 
   it('says so when the clipboard refuses, rather than looking like it worked', async () => {
@@ -46,9 +58,8 @@ describe('CopyButton', () => {
     });
     render(<CopyButton text="x" />);
     await act(async () => void fireEvent.click(screen.getByRole('button')));
-    expect(screen.getByRole('button').textContent).toMatch(/Couldn.t copy/);
-    // And the accessible name follows the label, so it is not announced as
-    // "Copy" after a failure.
+    // Nothing visible says so but the glyph, so the name has to.
     expect(screen.getByRole('button').getAttribute('aria-label')).toBe('Could not copy');
+    expect(screen.getByRole('button').getAttribute('title')).toMatch(/refused clipboard access/);
   });
 });

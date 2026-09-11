@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { CopyButton } from '@heapcode/web-ui/components/CopyButton';
 import { renderMarkdown } from '@heapcode/web-ui/markdown';
 import type { Step, Turn } from '../useChat.js';
 import { RunSteps } from './RunSteps.js';
@@ -189,6 +190,13 @@ export function MessageList({
                     />
                   ) : null,
                 )}
+              {/* The reply's own toolbar, as in the other surfaces. Not while
+                  streaming: half a reply is not what anyone means to copy. */}
+              {!turn.streaming && turn.content?.trim() && (
+                <div className="msg-actions msg-actions-reply">
+                  <CopyButton text={turn.content} />
+                </div>
+              )}
             </>
           )}
           {turn.streaming && <span className="cursor" aria-label="responding" />}

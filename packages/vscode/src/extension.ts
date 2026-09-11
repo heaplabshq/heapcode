@@ -5,10 +5,10 @@ import {
   formatAuditDashboard,
   McpManager,
   type RagStatusResult,
-  type McpServerConfig,
 } from '@heapcode/core';
 import { signInToMcpServer } from '@heapcode/core/node';
 import { SecretStorageMcpAuthStore } from './mcpAuthStore.js';
+import { loadMcpServers } from './mcpConfig.js';
 import { AgentController, registerAgentDiffProvider } from './agent/controller.js';
 import { PermissionEngine } from './agent/permissions.js';
 import { exportBundle, importBundle } from './bundle.js';
@@ -19,7 +19,7 @@ import { ServerLink } from './serverLink.js';
 import { HeapCodeActionProvider } from './codeActions.js';
 import { HeapCodeCompletionProvider } from './completionProvider.js';
 import { generateCommitMessage } from './gitCommit.js';
-import { JsonConversationStore } from './historyStore.js';
+import { createConversationStore, migrateConversations } from './historyStore.js';
 import { trackActiveEditor, trackTerminal } from './contextCollector.js';
 import { registerInlineEdit } from './inlineEdit.js';
 import { ProfileManager, readWebSearchSettings, setWebSearchKeyFlow } from './profileManager.js';
@@ -65,8 +65,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const track = (name: string, meta?: Record<string, unknown>) => telemetry.track(name, meta);
   const retention = new RetentionTracker(context.workspaceState, track);
   const profiles = new ProfileManager(context.secrets, log);
+  // Caches and shadow-git stay in extension storage. Only the conversation
+  // history moves, because only it is a thing the other hosts also write.
   const storageDir = context.storageUri ?? context.globalStorageUri;
-  const store = new JsonConversationStore(storageDir);
+  // The same file the CLI and `heapcode web` use for this project, when the
+  // workspace is a local folder — so a chat started in a terminal is here, and
+  // the reverse. Falls back to extension storage otherwise; see historyStore.
+  const store = createConversationStore(context);
+  void migrateConversations(context, store, (line) => log.appendLine(line));
   // Chat turns and model listing run on the core server too; this is their
   // connection, kept separate from the agent's (see ServerLink's note).
   const serverOptions = {
@@ -88,7 +94,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // loader instead); `[mcp]` prefixing stays here so the log channel reads
   // the same as it always has.
   const mcp = new McpManager(
-    () => vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
+    // Settings plus the project's own .heapcode/mcp.json — see mcpConfig.ts
+    // for what is deliberately not merged.
+    () => loadMcpServers(),
     (line) => log.appendLine(`[mcp] ${line}`),
     String(context.extension.packageJSON.version ?? ''),
     // Tokens go to SecretStorage, not to settings.json — which syncs, is
@@ -120,6 +128,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // permission/request, snapshot/before and key/request — see
     // docs/phase3-protocol-design.md §7.
     serverOptions,
+    // What `search_history` reads: the live conversation for the current one,
+    // the store for any other.
+    async (id) =>
+      !id || id === chatProvider.currentConversation.id ? chatProvider.currentConversation : store.get(id),
   );
   chatProvider.agent = agent;
   agent.permissionMode = () => chatProvider.permissionMode;
@@ -322,9 +334,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }),
     vscode.commands.registerCommand('heapcode.signInMcpServer', async () => {
-      const names = Object.keys(
-        vscode.workspace.getConfiguration('heapcode').get<Record<string, McpServerConfig>>('mcpServers', {}),
-      );
+      const names = Object.keys(await loadMcpServers());
       if (names.length === 0) {
         void vscode.window.showInformationMessage('No MCP servers configured yet.');
         return;

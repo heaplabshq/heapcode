@@ -365,18 +365,25 @@ async function main(): Promise<void> {
   // indexers, MCP) is built by the same shared path headless.ts uses — see
   // agentSession.ts's own comment on why (guardrail #8: headless is a
   // first-class peer of the interactive UI, not a bolted-on shortcut).
+  // Tracks the active conversation id across /new and /resume so it can be
+  // printed on exit — App owns the actual conversation object (including
+  // swapping it out entirely on /new/resume), so this is the one thing it
+  // reports back up rather than cli.tsx reading its internal state. Declared
+  // before the session because `search_history` resolves through it.
+  let sessionId = conversation.id;
+
   const { checkpoint, executor, shadowGit, repoMapIndexer, mcpManager, tools } = buildAgentSession(
     root,
     config,
     secrets,
     cliVersion(),
+    undefined,
+    undefined,
+    // Read from the store by whichever conversation is active. Turns land
+    // there as they finish, which is what a question about "earlier" means —
+    // the turn in progress is the one the model can still see.
+    (id) => historyStore.get(id ?? sessionId),
   );
-
-  // Tracks the active conversation id across /new and /resume so it can be
-  // printed on exit — App owns the actual conversation object (including
-  // swapping it out entirely on /new/resume), so this is the one thing it
-  // reports back up rather than cli.tsx reading its internal state.
-  let sessionId = conversation.id;
 
   debounceResizeEvents(process.stdout);
 

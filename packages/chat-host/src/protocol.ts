@@ -33,9 +33,13 @@ import type {
  *
  * Absent here, and deliberately: everything the workspace panel needs
  * (`changes`, `diff`, `checkpoints`, `rewind`, `revert*`, `fileTree`,
- * `readFile`), `review`, `repoMap`, `runCommand`, and `restoreTurn`/
- * `editMessage`. Those are checkpoint- and code-shaped; this host takes no
- * snapshots because it changes nothing.
+ * `readFile`), `review`, `repoMap`, `runCommand`, and `restoreTurn`. Those
+ * are checkpoint- and code-shaped; this host takes no snapshots because it
+ * changes nothing.
+ *
+ * `editMessage` was in that list and should not have been. Rewriting a prompt
+ * and re-asking is not checkpoint-shaped — only the workspace restore inside
+ * Heap Code's version is, and this host simply omits that part.
  */
 export const CHAT_PROTOCOL_VERSION = 1;
 
@@ -44,6 +48,7 @@ export const CHAT_METHODS = {
   hello: 'chat/hello',
   state: 'chat/state',
   sendMessage: 'chat/sendMessage',
+  editMessage: 'chat/editMessage',
   cancel: 'chat/cancel',
   conversations: 'chat/conversations',
   openConversation: 'chat/openConversation',
@@ -254,6 +259,21 @@ export interface ChatAskUserParams {
 
 export interface ChatAskUserResult {
   answer: string;
+}
+
+/**
+ * `chat/editMessage` — rewrite a sent prompt and ask again.
+ *
+ * Truncates the conversation at that turn and resends. No workspace restore:
+ * nothing here changed a file, so there is nothing to put back.
+ */
+export interface ChatEditMessageParams {
+  /** Which user turn, 0-based, as stamped on the transcript. */
+  ordinal: number;
+  text: string;
+  runId?: string;
+  /** Carried through, so an edit keeps the screenshot the question was about. */
+  images?: string[];
 }
 
 /**

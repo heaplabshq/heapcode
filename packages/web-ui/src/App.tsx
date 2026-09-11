@@ -193,6 +193,8 @@ export function App(): JSX.Element {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   /** Text the global `/` shortcut hands to the composer; cleared once used. */
   const [seed, setSeed] = useState<string>();
+  /** Attachments to restore with `seed` — see Composer's `seedImages`. */
+  const [seedImages, setSeedImages] = useState<string[]>();
   /**
    * The user turn being edited, if any: its ordinal (handed back to
    * `ui/editMessage`) and the text the composer opened with. Sending while this
@@ -486,7 +488,12 @@ export function App(): JSX.Element {
   );
 
   /** Stable identity: the composer's seed effect depends on it. */
-  const clearSeed = useCallback(() => setSeed(undefined), []);
+  const clearSeed = useCallback(() => {
+    setSeed(undefined);
+    // Cleared together: a later seed with no attachments must not re-apply the
+    // ones from the edit before it.
+    setSeedImages(undefined);
+  }, []);
 
   const refreshSettings = useCallback(() => {
     void rpc
@@ -802,9 +809,10 @@ export function App(): JSX.Element {
   );
 
   /** Load a sent prompt into the composer to edit; sending truncates + resends. */
-  const startEdit = useCallback((ordinal: number, text: string) => {
+  const startEdit = useCallback((ordinal: number, text: string, images?: string[]) => {
     setEditing({ ordinal, text });
     setSeed(text);
+    setSeedImages(images);
   }, []);
 
   /** Restore the workspace to the checkpoint before a turn, conversation intact. */
@@ -1044,6 +1052,7 @@ export function App(): JSX.Element {
             busy={busy}
             disabled={status !== 'open'}
             editing={editing !== undefined}
+            seedImages={seedImages}
             onCancelEdit={() => setEditing(undefined)}
             footer={
               <>

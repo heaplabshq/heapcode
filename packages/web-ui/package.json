@@ -21,6 +21,10 @@
       "default": "./src/transcript.ts"
     },
     "./styles.css": "./src/styles.css",
+    "./components/CopyButton": {
+      "types": "./src/components/CopyButton.tsx",
+      "default": "./src/components/CopyButton.tsx"
+    },
     "./components/Sidebar": {
       "types": "./src/components/Sidebar.tsx",
       "default": "./src/components/Sidebar.tsx"

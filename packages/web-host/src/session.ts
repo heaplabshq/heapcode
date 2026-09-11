@@ -443,6 +443,11 @@ export class WebSession {
       // before the daemon link exists, and a switched workspace replaces both.
       (original, snippet) => this.applyMerge(original, snippet),
       this.deps.mcpLogins?.redirectUri(),
+      // The live conversation, not a copy: the turn in progress is not in the
+      // store yet (`persistTurn` writes when it finishes), and a run asking
+      // what was said earlier usually means earlier in this same turn's
+      // conversation.
+      (id) => this.conversationFor(id),
     );
     this.permissions = new PermissionEngine(
       permissionsFile(root),
@@ -1923,6 +1928,19 @@ export class WebSession {
     if (convo.title === 'New chat') convo.title = display.slice(0, 60);
     convo.updatedAt = Date.now();
     await this.history!.save(convo);
+  }
+
+  /**
+   * The conversation `search_history` should read.
+   *
+   * Unnamed means the one in progress, taken from memory rather than from the
+   * store: the current turn is only written when it finishes, so reading from
+   * disk would miss exactly the part a long run is most likely to be asked
+   * about. A named one comes from the store, which is where the rest live.
+   */
+  private async conversationFor(id?: string): Promise<Conversation | undefined> {
+    if (!id || id === this.conversation?.id) return this.conversation;
+    return this.history?.get(id);
   }
 
   async cancel(_runId?: string): Promise<void> {

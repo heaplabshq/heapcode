@@ -27,6 +27,7 @@ export * from './agent/commandRisk.js';
 export * from './agent/recap.js';
 export * from './agent/permissionModes.js';
 export * from './agent/webSearch.js';
+export * from './agent/historySearch.js';
 export * from './agent/mcp.js';
 export * from './agent/mcpAuth.js';
 export * from './agent/skills.js';

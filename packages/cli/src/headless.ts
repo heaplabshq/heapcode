@@ -293,6 +293,11 @@ export async function runHeadless(opts: HeadlessOptions): Promise<number> {
           return undefined;
         }
       },
+      undefined,
+      // The conversation this run continues, in memory: `--resume` loads it
+      // whole, and a single headless run never compacts what it has not yet
+      // written. A named id still comes from the store.
+      async (id) => (!id || id === conversation?.id ? conversation : historyStore.get(id)),
     );
     const telemetryEnabled = opts.telemetryEnabled ?? (await config.load()).telemetryEnabled ?? true;
     // Flag beats config beats core's default — the same precedence every other

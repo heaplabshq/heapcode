@@ -1795,3 +1795,15 @@ select.settings-input {
 .hljs-property {
   color: var(--vscode-symbolIcon-variableForeground, #9cdcfe);
 }
+
+/* The reply's toolbar. VS Code's own theme variables, so it follows whatever
+   theme the editor is in — only the class names are shared with the other
+   surfaces. */
+.msg-actions-reply { display: flex; gap: 8px; margin-top: 8px; opacity: 0.45; transition: opacity 0.12s; }
+.turn.assistant:hover .msg-actions-reply,
+.msg-actions-reply:focus-within { opacity: 1; }
+.msg-action {
+  background: none; border: 0; cursor: pointer; padding: 0;
+  color: var(--vscode-descriptionForeground); font: inherit; font-size: 12px;
+}
+.msg-action:hover { color: var(--vscode-foreground); }

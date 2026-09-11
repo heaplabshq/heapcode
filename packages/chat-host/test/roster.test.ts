@@ -102,3 +102,13 @@ describe('what runs without asking', () => {
     expect(permissionFor('run_command', false, true)).toBe('deny');
   });
 });
+
+describe('recalling the conversation', () => {
+  it('is offered here too — chat compacts long conversations the same way', () => {
+    expect(CHAT_TOOL_NAMES.has('search_history')).toBe(true);
+  });
+
+  it('stays a read, so it is not the roster\'s one approval prompt', () => {
+    expect(chatToolDefinitions.find((t) => t.name === 'search_history')?.permission).toBe('read');
+  });
+});

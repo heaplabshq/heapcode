@@ -74,6 +74,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private viewReady = false;
   private pendingSends: string[] = [];
   private conversation: Conversation = newConversation();
+
+  /**
+   * The conversation as it stands, for `search_history`.
+   *
+   * Read from memory rather than the store: the turn in progress is only
+   * written when it finishes, and that is the part a long conversation is most
+   * likely to be asked about.
+   */
+  get currentConversation(): Conversation {
+    return this.conversation;
+  }
   private abortController?: AbortController;
 
   /** Set right after construction (controller needs this.post, we need controller). */

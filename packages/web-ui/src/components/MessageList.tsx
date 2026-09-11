@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CopyButton } from './CopyButton.js';
 import { renderMarkdown } from '../markdown.js';
 import { activityOf, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
@@ -27,7 +28,7 @@ export interface MessageListProps {
   /** When the run started, for the indicator's elapsed counter. */
   runStartedAt?: number;
   /** Edit a sent prompt: loads it into the composer; sending truncates + resends. */
-  onEdit?(ordinal: number, text: string): void;
+  onEdit?(ordinal: number, text: string, images?: string[]): void;
   /** Restore the workspace to the checkpoint before this turn (conversation stays). */
   onRestore?(ordinal: number): void;
   /**
@@ -211,7 +212,7 @@ const Row = memo(function Row({
   item: Item;
   onOpenPath?(path: string): void;
   busy?: boolean;
-  onEdit?(ordinal: number, text: string): void;
+  onEdit?(ordinal: number, text: string, images?: string[]): void;
   onRestore?(ordinal: number): void;
 }): JSX.Element | null {
   switch (item.kind) {
@@ -231,6 +232,15 @@ const Row = memo(function Row({
             // page holds the socket that runs commands.
             dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }}
           />
+          {/* The reply's own toolbar. Assistant turns only: a user turn already
+              has Edit, and copying back what you just typed is not a thing
+              anyone needs. Hidden while streaming — half a reply is not what
+              someone means to copy. */}
+          {item.role === 'assistant' && !item.streaming && item.text.trim() && (
+            <div className="msg-actions msg-actions-reply">
+              <CopyButton text={item.text} />
+            </div>
+          )}
           {/* Edit/restore a sent prompt. Only a real user turn carries an
               ordinal, and only one with a checkpoint can be rewound — so the
               buttons key off those, and hide while a run is in flight (the
@@ -241,7 +251,9 @@ const Row = memo(function Row({
                 <button
                   className="edit-msg"
                   title="Edit this message — reverts the code and conversation to this point and resends"
-                  onClick={() => onEdit(item.ordinal!, item.text)}
+                  // The attachments go back with the text: editing a turn that
+                  // carried a screenshot used to resend the question without it.
+                  onClick={() => onEdit(item.ordinal!, item.text, item.images)}
                 >
                   Edit
                 </button>

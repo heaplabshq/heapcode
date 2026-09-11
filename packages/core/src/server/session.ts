@@ -21,6 +21,9 @@ export type KeyRequester = (connectionName: string) => Promise<void>;
  * Keys live here in memory for the connection's lifetime and are never
  * written to disk (custody note, Option A2).
  */
+/** Enough to cover a burst of clicks; small enough that a stale id cannot accumulate. */
+const MAX_EARLY_CANCELS = 32;
+
 export class Session {
   readonly id: string;
   readonly root: string;
@@ -52,6 +55,11 @@ export class Session {
    */
   private readonly asked = new Set<string>();
   private readonly runs = new Map<string, AbortController>();
+  /**
+   * Runs cancelled before they were registered — see `beginRun`. Held only
+   * until the run arrives and claims it.
+   */
+  private readonly cancelledEarly = new Set<string>();
   private disposed = false;
 
   /** The daemon log, when the server gave the session one. */
@@ -227,6 +235,12 @@ export class Session {
   beginRun(runId: string): AbortController {
     const controller = new AbortController();
     this.runs.set(runId, controller);
+    // Stop can land before the run it names has reached here: the host sends
+    // `agent/run` and `agent/cancel` on the same socket, but the run has to
+    // travel, be dispatched and get this far, and a click in that window used
+    // to find an empty map and do nothing at all — the run then started and
+    // carried on, with the UI already showing it as stopped.
+    if (this.cancelledEarly.delete(runId)) controller.abort();
     return controller;
   }
 
@@ -236,7 +250,16 @@ export class Session {
 
   cancelRun(runId: string): boolean {
     const controller = this.runs.get(runId);
-    if (!controller) return false;
+    if (!controller) {
+      // Not started yet — remember, so `beginRun` starts it aborted. Bounded,
+      // because a cancel for a run that never arrives would otherwise sit here
+      // for the life of the session.
+      this.cancelledEarly.add(runId);
+      if (this.cancelledEarly.size > MAX_EARLY_CANCELS) {
+        this.cancelledEarly.delete(this.cancelledEarly.values().next().value!);
+      }
+      return false;
+    }
     controller.abort();
     return true;
   }
@@ -251,6 +274,7 @@ export class Session {
     this.disposed = true;
     for (const [, controller] of this.runs) controller.abort();
     this.runs.clear();
+    this.cancelledEarly.clear();
     this.keys.clear();
     this.providers.clear();
     this.profiles.clear();

@@ -100,6 +100,24 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true });
 });
 
+/**
+ * Wait for something to actually have happened, rather than for a duration.
+ *
+ * Both cancellation tests used to sleep a fixed number of milliseconds and
+ * assume the work had started by then. That holds when the file runs alone and
+ * stops holding when the whole suite runs in parallel: the run had managed two
+ * model calls in the time the test had allowed for the command to be spawned,
+ * so Stop cancelled something that had not started, and the command it was
+ * supposed to kill ran to completion afterwards.
+ */
+async function waitUntil(done: () => boolean, what: string, timeoutMs = 15_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 /** Boots daemon + web host wired to a scripted model. */
 async function boot(
   // `sse` covers a streamed chat turn; `sse-raw` covers delta shapes the
@@ -1285,8 +1303,12 @@ describe('web host — cancellation', () => {
       .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'sleep', runId })
       .catch(() => undefined);
 
-    // Wait for the command to actually be running before stopping it.
-    await new Promise((r) => setTimeout(r, 700));
+    // Stop is only meaningful once there is something to stop, and how long
+    // that takes depends on the machine. Wait for the tool call itself.
+    await waitUntil(
+      () => browser.events.some((e) => e.type === 'tool_call'),
+      'the command to start',
+    );
     await browser.peer.request(UI_METHODS.cancel, { runId });
     await running;
 
@@ -1343,7 +1365,13 @@ describe('web host — cancellation', () => {
       .request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'loop forever', runId })
       .catch(() => undefined);
 
-    await new Promise((r) => setTimeout(r, 250));
+    // A tool call, not a model call: the first requests to reach the mock are
+    // not necessarily the agent's, so counting them cancelled a run that had
+    // not started — which the daemon then ran to completion.
+    await waitUntil(
+      () => browser.events.some((e) => e.type === 'tool_call'),
+      'the agent loop to be running',
+    );
     await browser.peer.request(UI_METHODS.cancel, { runId });
     await running;
 

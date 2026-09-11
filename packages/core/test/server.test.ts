@@ -454,3 +454,52 @@ describe('daemonAddress', () => {
     expect(address).toContain(String(PROTOCOL_VERSION));
   });
 });
+
+/**
+ * Stop can land before the run it names has been registered. The host sends
+ * `agent/run` and `agent/cancel` on the same socket, but the run has to
+ * travel, be dispatched and reach `beginRun` — and a click in that window used
+ * to find an empty map and do nothing, after which the run started and carried
+ * on with the UI already showing it as stopped.
+ *
+ * Found by making a flaky cancellation test wait for the right thing: it had
+ * been sleeping 250ms, which was usually — not always — enough for the run to
+ * have started.
+ */
+describe('Session — cancelling a run that has not started yet', () => {
+  const hello = {
+    token: 't',
+    protocolVersion: PROTOCOL_VERSION,
+    client: { name: 'test' },
+    root: '/r',
+    profiles: [],
+    activeProfile: '',
+    roles: {},
+  };
+
+  it('starts the run already aborted', () => {
+    const session = new Session('s', hello);
+    expect(session.cancelRun('not-yet')).toBe(false);
+    expect(session.beginRun('not-yet').signal.aborted).toBe(true);
+  });
+
+  it('claims the cancel once, so the next run of that id is unaffected', () => {
+    const session = new Session('s', hello);
+    session.cancelRun('reused');
+    expect(session.beginRun('reused').signal.aborted).toBe(true);
+    session.endRun('reused');
+    expect(session.beginRun('reused').signal.aborted).toBe(false);
+  });
+
+  it('leaves an ordinary run alone', () => {
+    const session = new Session('s', hello);
+    expect(session.beginRun('normal').signal.aborted).toBe(false);
+  });
+
+  it('cancels a registered run the way it always did', () => {
+    const session = new Session('s', hello);
+    const controller = session.beginRun('live');
+    expect(session.cancelRun('live')).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+  });
+});

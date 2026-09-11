@@ -6,8 +6,12 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import fg from 'fast-glob';
 import {
+  SEARCH_HISTORY_TOOL,
   applySearchReplace,
   applySearchReplaceAll,
+  formatHistoryMatches,
+  searchConversation,
+  type Conversation,
   buildEditSnippet,
   describeAmbiguity,
   checkPackageExists,
@@ -137,6 +141,7 @@ function buildCommandResult(opts: {
  * its execution needs cross-cutting context this executor doesn't have.
  */
 export const agentToolDefinitions: ToolDefinition[] = [
+  SEARCH_HISTORY_TOOL,
   T.read_file,
   T.list_dir,
   T.search,
@@ -196,6 +201,15 @@ export class WorkspaceToolExecutor {
     private applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
     /** Resolves web-search config + key at call time, so enabling it mid-session takes effect. */
     private readonly webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>,
+    /**
+     * The conversation record `search_history` reads.
+     *
+     * Injected, and resolved at call time, because the executor is built
+     * before there is a conversation and the active one changes underneath it
+     * — /new, /resume, a switched workspace. A host that passes nothing simply
+     * does not offer the tool's answer, and says so.
+     */
+    private readonly conversationHistory?: (id?: string) => Promise<Conversation | undefined>,
   ) {
     this.cwd = root;
   }
@@ -224,6 +238,8 @@ export class WorkspaceToolExecutor {
         return `Search for /${a.pattern}/${a.glob ? ` in ${a.glob}` : ''}`;
       case 'semantic_search':
         return `Semantic search: "${a.query}"`;
+      case 'search_history':
+        return `Search the conversation for "${a.query}"`;
       case 'repo_map':
         return a.path ? `Repo map: ${a.path}` : 'Repo map';
       case 'write_file':
@@ -315,6 +331,19 @@ export class WorkspaceToolExecutor {
       }
       case 'search':
         return ok(await this.search(a.pattern ?? '', a.glob));
+      case 'search_history': {
+        const query = a.query ?? '';
+        if (!query.trim()) return fail('Missing "query" argument.');
+        if (!this.conversationHistory) return fail('This session has no conversation record to search.');
+        const conversation = await this.conversationHistory(a.conversation_id);
+        if (!conversation) {
+          return fail(
+            a.conversation_id ? `No conversation "${a.conversation_id}".` : 'This session has no conversation yet.',
+          );
+        }
+        const matches = searchConversation(conversation, query, { limit: a.limit ? Number(a.limit) : undefined });
+        return ok(formatHistoryMatches(matches, query));
+      }
       case 'semantic_search': {
         const query = a.query ?? '';
         if (!query.trim()) return fail('Missing "query" argument.');

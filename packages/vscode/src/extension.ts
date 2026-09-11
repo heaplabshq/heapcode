@@ -128,6 +128,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // permission/request, snapshot/before and key/request — see
     // docs/phase3-protocol-design.md §7.
     serverOptions,
+    // What `search_history` reads: the live conversation for the current one,
+    // the store for any other.
+    async (id) =>
+      !id || id === chatProvider.currentConversation.id ? chatProvider.currentConversation : store.get(id),
   );
   chatProvider.agent = agent;
   agent.permissionMode = () => chatProvider.permissionMode;

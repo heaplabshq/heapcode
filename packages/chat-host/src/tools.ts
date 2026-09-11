@@ -1,4 +1,4 @@
-import { sharedAgentTools, type ToolDefinition } from '@heapcode/core';
+import { SEARCH_HISTORY_TOOL, sharedAgentTools, type ToolDefinition } from '@heapcode/core';
 import { CREATE_ARTIFACT_TOOL } from '@heapcode/web-host';
 
 /**
@@ -127,6 +127,10 @@ export const chatToolDefinitions: ToolDefinition[] = [
   // (agent/loop.ts:951), so without it both that and `chat/askUser` are
   // protocol that can never fire. Executed by the session, not the executor.
   sharedAgentTools.ask_user,
+  // Long conversations are trimmed and then compacted, here as anywhere. The
+  // record stays complete; this is how the model reads it rather than
+  // answering from its own summary.
+  SEARCH_HISTORY_TOOL,
   // Producing something to look at — and, if the person wants it, to save.
   // This is the whole of "writing" in this product.
   described(

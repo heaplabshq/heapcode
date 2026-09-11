@@ -356,6 +356,10 @@ export class ChatSession implements HostSession {
         config: (await config.load()).webSearch ?? {},
         apiKey: await secrets.getApiKey(WEB_SEARCH_SECRET_NAME),
       }),
+      // The live conversation, not a copy from the store: the turn in progress
+      // is only written when it finishes, and that is exactly the part a long
+      // conversation is asked about.
+      async (id) => (!id || id === this.conversation?.id ? this.conversation : this.history?.get(id)),
     );
 
     const apiKey = await secrets.getApiKey(profile.name);

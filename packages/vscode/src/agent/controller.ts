@@ -43,6 +43,7 @@ import {
   buildAgentHistory,
   type StoredMessage,
 } from '@heapcode/core';
+import type { Conversation } from '@heapcode/core';
 import { agentToolDefinitions, WorkspaceToolExecutor } from './workspaceTools.js';
 import { SessionCheckpoint } from './checkpoint.js';
 import { PermissionEngine } from './permissions.js';
@@ -190,6 +191,8 @@ export class AgentController {
     private readonly track?: (name: string, meta?: Record<string, unknown>) => void,
     private readonly shadowGit?: ShadowGit,
     private readonly server: AgentServerOptions = {},
+    /** The conversation record `search_history` reads; see workspaceTools. */
+    private readonly conversationHistory?: (id?: string) => Promise<Conversation | undefined>,
   ) {}
 
   get running(): boolean {
@@ -500,6 +503,7 @@ export class AgentController {
       // Read per call, so flipping heapcode.webSearch.provider (or storing a
       // key) takes effect without restarting the session.
       this.webSearchSettings,
+      this.conversationHistory,
     );
     this.abort = new AbortController();
     this.post({ type: 'agentStatus', status: 'running', changedFiles: [] });

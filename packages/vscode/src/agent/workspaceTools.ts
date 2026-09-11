@@ -38,6 +38,10 @@ import {
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
+  SEARCH_HISTORY_TOOL,
+  formatHistoryMatches,
+  searchConversation,
+  type Conversation,
 } from '@heapcode/core';
 import type { SessionCheckpoint } from './checkpoint.js';
 import { filterIgnored } from '../ignoreFiles.js';
@@ -201,6 +205,7 @@ const GO_TO_DEFINITION_TOOL: ToolDefinition = {
  * than derived.
  */
 export const agentToolDefinitions: ToolDefinition[] = [
+  SEARCH_HISTORY_TOOL,
   T.read_file,
   T.list_dir,
   T.search,
@@ -253,6 +258,12 @@ export class WorkspaceToolExecutor {
     private readonly applyMerge?: (original: string, updateSnippet: string) => Promise<string | undefined>,
     /** Resolves web-search config + key at call time, so enabling it mid-session takes effect. */
     private readonly webSearchSettings?: () => Promise<{ config: WebSearchConfig; apiKey?: string }>,
+    /**
+     * The conversation record `search_history` reads. Resolved at call time:
+     * the executor is built before there is a conversation, and the active one
+     * changes underneath it.
+     */
+    private readonly conversationHistory?: (id?: string) => Promise<Conversation | undefined>,
   ) {
     this.cwd = root.fsPath;
   }
@@ -271,6 +282,8 @@ export class WorkspaceToolExecutor {
         return `Search for /${a.pattern}/${a.glob ? ` in ${a.glob}` : ''}`;
       case 'semantic_search':
         return `Semantic search: "${a.query}"`;
+      case 'search_history':
+        return `Search the conversation for "${a.query}"`;
       case 'repo_map':
         return a.path ? `Repo map: ${a.path}` : 'Repo map';
       case 'get_diagnostics':
@@ -380,6 +393,19 @@ export class WorkspaceToolExecutor {
       }
       case 'search':
         return ok(await this.search(a.pattern ?? '', a.glob));
+      case 'search_history': {
+        const query = a.query ?? '';
+        if (!query.trim()) return fail('Missing "query" argument.');
+        if (!this.conversationHistory) return fail('This session has no conversation record to search.');
+        const conversation = await this.conversationHistory(a.conversation_id);
+        if (!conversation) {
+          return fail(
+            a.conversation_id ? `No conversation "${a.conversation_id}".` : 'This session has no conversation yet.',
+          );
+        }
+        const matches = searchConversation(conversation, query, { limit: a.limit ? Number(a.limit) : undefined });
+        return ok(formatHistoryMatches(matches, query));
+      }
       case 'semantic_search': {
         const query = a.query ?? '';
         if (this.semanticSearch) {

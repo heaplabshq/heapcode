@@ -1,4 +1,4 @@
-import { McpManager, WEB_SEARCH_SECRET_NAME, type ToolDefinition } from '@heapcode/core';
+import { McpManager, WEB_SEARCH_SECRET_NAME, type Conversation, type ToolDefinition } from '@heapcode/core';
 import type { ConfigStore } from './config/store.js';
 import { SecretsMcpAuthStore, type SecretsStore } from './config/secrets.js';
 import { WorkspaceToolExecutor, agentToolDefinitions } from './agent/workspaceTools.js';
@@ -58,6 +58,13 @@ export function buildAgentSession(
    * Notion refuses a plain-HTTP LAN redirect outright.
    */
   mcpRedirectUri?: string,
+  /**
+   * The conversation record `search_history` reads — see WorkspaceToolExecutor.
+   *
+   * Resolved at call time rather than captured, because this is built before
+   * a conversation exists and the active one changes underneath it.
+   */
+  conversationHistory?: (id?: string) => Promise<Conversation | undefined>,
 ): AgentSession {
   const checkpoint = new SessionCheckpoint(root);
   const shadowGit = new ShadowGit(root, shadowGitDir(root));
@@ -83,6 +90,7 @@ export function buildAgentSession(
       config: (await config.load()).webSearch ?? {},
       apiKey: await secrets?.getApiKey(WEB_SEARCH_SECRET_NAME),
     }),
+    conversationHistory,
   );
 
   // MCP servers — global (~/.heapcode/config.json's mcpServers) merged with

@@ -111,6 +111,7 @@ import type {
   ChatSaveProfileParams,
   ChatSetRoleParams,
   ChatAskUserResult,
+  ChatEditMessageParams,
   ChatPermissionParams,
   ChatPermissionResult,
   ChatBrowseFoldersParams,
@@ -489,6 +490,11 @@ export class ChatSession implements HostSession {
     ui.onRequest(CHAT_METHODS.sendMessage, async (raw): Promise<ChatSendMessageResult> => {
       const { text, runId, images } = raw as ChatSendMessageParams;
       return this.send(text, runId, acceptImages(images));
+    });
+
+    ui.onRequest(CHAT_METHODS.editMessage, async (raw): Promise<ChatSendMessageResult> => {
+      const { ordinal, text, runId, images } = raw as ChatEditMessageParams;
+      return this.editMessage(ordinal, text, runId ?? randomUUID(), acceptImages(images));
     });
 
     ui.onRequest(CHAT_METHODS.cancel, async () => {
@@ -1337,6 +1343,43 @@ export class ChatSession implements HostSession {
    * conversation it was given in: a grant is a judgement about what is
    * happening now, not a setting.
    */
+  /** Index in `conversation.messages` of the Nth real (non-UI) user turn, or -1. */
+  private userMessageIndex(ordinal: number): number {
+    const messages = this.conversation?.messages ?? [];
+    let seen = -1;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i]!.role === 'user' && !messages[i]!.ui) {
+        seen++;
+        if (seen === ordinal) return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Rewrite a sent prompt and ask again: truncate the conversation at that
+   * turn, then run the new text.
+   *
+   * Heap Code's version also restores the workspace to the checkpoint before
+   * the turn. There is nothing to restore here — no tool on this roster
+   * changes a file — which is the whole of the difference, and the reason this
+   * was wrongly grouped with `restoreTurn` as too code-shaped to offer.
+   */
+  private async editMessage(
+    ordinal: number,
+    text: string,
+    runId: string,
+    images?: string[],
+  ): Promise<ChatSendMessageResult> {
+    if (this.activeRunId) throw new Error('A run is in progress; stop it before editing.');
+    const index = this.userMessageIndex(ordinal);
+    if (index === -1) throw new Error('Could not locate that message to edit.');
+
+    this.conversation!.messages = this.conversation!.messages.slice(0, index);
+    await this.history!.save(this.conversation!);
+    return this.send(text, runId, images);
+  }
+
   private async askPermission(call: ToolCall): Promise<boolean> {
     if (this.allowedTools.has(call.name)) return true;
     if (!this.ui) return false;

@@ -5,8 +5,11 @@ import {
   concat,
   emptyTranscript,
   fromMessages,
+  nextOrdinal,
   reduce,
   settle,
+  stampOrdinal,
+  userTurnItemIndex,
   withUserMessage,
   type Transcript,
 } from '@heapcode/web-ui/transcript';
@@ -102,6 +105,10 @@ export function App(): JSX.Element {
   const [showMemory, setShowMemory] = useState(false);
   const [ask, setAsk] = useState<Pending>();
   const [permission, setPermission] = useState<PendingPermission>();
+  const [editing, setEditing] = useState<{ ordinal: number }>();
+  const [seed, setSeed] = useState<string>();
+  /** Attachments to restore with `seed` — see Composer's `seedImages`. */
+  const [seedImages, setSeedImages] = useState<string[]>();
   const [grounding, setGrounding] = useState<ChatGroundingParams['grounding']>();
   const [railCollapsed, setRailCollapsed] = useState(
     () => localStorage.getItem('heapchat.rail') === 'collapsed',
@@ -245,22 +252,53 @@ export function App(): JSX.Element {
       .catch((e: Error) => setError(e.message));
   };
 
-  const send = (text: string): void => {
+  const send = (text: string, images?: string[]): void => {
     const id = crypto.randomUUID();
     runId.current = id;
     setRunStartedAt(Date.now());
-    setTranscript((t) => withUserMessage(t, text));
     setError(undefined);
     setGrounding(undefined);
-    client
-      .request<ChatSendMessageResult>(CHAT_METHODS.sendMessage, { text, runId: id })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => {
-        runId.current = undefined;
-        setRunStartedAt(undefined);
-        setTranscript(settle);
-        refreshConversations();
+
+    const done = (): void => {
+      runId.current = undefined;
+      setRunStartedAt(undefined);
+      setTranscript(settle);
+      refreshConversations();
+    };
+
+    // Editing an earlier turn: the host truncates the stored conversation and
+    // resends, so the visible transcript is truncated to match and the new
+    // turn keeps the edited ordinal — it IS that turn, re-asked.
+    const edit = editing;
+    setEditing(undefined);
+    if (edit) {
+      setTranscript((t) => {
+        const truncated = { ...t, items: t.items.slice(0, userTurnItemIndex(t, edit.ordinal)) };
+        return stampOrdinal(withUserMessage(truncated, text, images), edit.ordinal);
       });
+      client
+        .request<ChatSendMessageResult>(CHAT_METHODS.editMessage, { ordinal: edit.ordinal, text, runId: id, images })
+        .catch((e: Error) => setError(e.message))
+        .finally(done);
+      return;
+    }
+
+    // `images` reaches both halves: the transcript, so a pasted screenshot is
+    // visible in the turn that sent it, and the request, so the model actually
+    // receives it. This dropped the argument entirely — the composer accepted
+    // a screenshot, showed it as attached, and sent the text alone.
+    setTranscript((t) => stampOrdinal(withUserMessage(t, text, images), nextOrdinal(t)));
+    client
+      .request<ChatSendMessageResult>(CHAT_METHODS.sendMessage, { text, runId: id, images })
+      .catch((e: Error) => setError(e.message))
+      .finally(done);
+  };
+
+  /** Load a sent prompt back into the composer; sending truncates and re-asks. */
+  const startEdit = (ordinal: number, text: string, images?: string[]): void => {
+    setEditing({ ordinal });
+    setSeed(text);
+    setSeedImages(images);
   };
 
   const cancel = (): void => {
@@ -387,6 +425,10 @@ export function App(): JSX.Element {
             transcript={transcript}
             busy={busy}
             runStartedAt={runStartedAt}
+            // Edit and re-ask, the same gesture Heap Code has. No `onRestore`:
+            // that rewinds the workspace to a checkpoint, and nothing here
+            // takes one because nothing here changes a file.
+            onEdit={startEdit}
             // A path in a tool chip opens in the panel, the same gesture Heap
             // Code has — here it reads a document rather than showing a diff.
             onOpenPath={(path) => {
@@ -482,6 +524,14 @@ export function App(): JSX.Element {
             onReject={setNotice}
             busy={busy}
             disabled={status !== 'open'}
+            seed={seed}
+            seedImages={seedImages}
+            onSeedUsed={() => {
+              setSeed(undefined);
+              setSeedImages(undefined);
+            }}
+            editing={editing !== undefined}
+            onCancelEdit={() => setEditing(undefined)}
             footer={
               <>
                 {/* Heap Code's own picker and model switcher, not lookalikes:

@@ -27,7 +27,7 @@ export interface MessageListProps {
   /** When the run started, for the indicator's elapsed counter. */
   runStartedAt?: number;
   /** Edit a sent prompt: loads it into the composer; sending truncates + resends. */
-  onEdit?(ordinal: number, text: string): void;
+  onEdit?(ordinal: number, text: string, images?: string[]): void;
   /** Restore the workspace to the checkpoint before this turn (conversation stays). */
   onRestore?(ordinal: number): void;
   /**
@@ -211,7 +211,7 @@ const Row = memo(function Row({
   item: Item;
   onOpenPath?(path: string): void;
   busy?: boolean;
-  onEdit?(ordinal: number, text: string): void;
+  onEdit?(ordinal: number, text: string, images?: string[]): void;
   onRestore?(ordinal: number): void;
 }): JSX.Element | null {
   switch (item.kind) {
@@ -241,7 +241,9 @@ const Row = memo(function Row({
                 <button
                   className="edit-msg"
                   title="Edit this message — reverts the code and conversation to this point and resends"
-                  onClick={() => onEdit(item.ordinal!, item.text)}
+                  // The attachments go back with the text: editing a turn that
+                  // carried a screenshot used to resend the question without it.
+                  onClick={() => onEdit(item.ordinal!, item.text, item.images)}
                 >
                   Edit
                 </button>

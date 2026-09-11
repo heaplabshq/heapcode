@@ -20,6 +20,15 @@ export interface ComposerProps {
    * Cleared through `onSeedUsed` so the same seed can be sent again later.
    */
   seed?: string;
+  /**
+   * Attachments to restore alongside `seed`.
+   *
+   * Editing a turn seeds its text back into the box; without this it did not
+   * seed the screenshot that went with it, so re-sending an edited message
+   * silently dropped the image the question was about. Restored as attachments
+   * rather than re-sent invisibly, so removing one is still just removing it.
+   */
+  seedImages?: string[];
   onSeedUsed?(): void;
   /**
    * Set while an earlier message is being edited: shows the bar that says so,
@@ -49,6 +58,7 @@ export function Composer({
   footer,
   onReject,
   seed,
+  seedImages,
   onSeedUsed,
   editing,
   onCancelEdit,
@@ -93,11 +103,12 @@ export function Composer({
   useEffect(() => {
     if (seed === undefined) return;
     setText(seed);
+    setImages(seedImages ?? []);
     setMenuDismissed(false);
     setPicked(0);
     ref.current?.focus();
     onSeedUsed?.();
-  }, [seed, onSeedUsed]);
+  }, [seed, seedImages, onSeedUsed]);
 
   // A new query is a new list; keeping the old index would leave the highlight
   // on whatever row happened to be in that position.

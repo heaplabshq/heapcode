@@ -460,6 +460,17 @@ body {
    assert themselves when the pointer is over the message they act on. */
 .msg-actions { display: flex; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity 0.12s; }
 .msg-user:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+/* The reply's toolbar is always there, unlike the user turn's hover actions:
+   it is the affordance for the reply rather than a correction to it, and a
+   control nobody can see is one nobody uses. Dim until the message is under
+   the cursor, so a long transcript is not a column of buttons. */
+.msg-actions-reply { opacity: 0.45; margin-top: 8px; }
+.msg-assistant:hover .msg-actions-reply, .msg-actions-reply:focus-within { opacity: 1; }
+.msg-action {
+  background: none; border: 0; cursor: pointer; padding: 0;
+  color: var(--text-dim); font: inherit; font-size: 12px;
+}
+.msg-action:hover { color: var(--text); }
 .edit-msg {
   background: none; border: 0; cursor: pointer; padding: 0;
   color: var(--text-dim); font: inherit; font-size: 12px;

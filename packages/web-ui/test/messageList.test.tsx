@@ -210,3 +210,34 @@ describe('the empty state', () => {
     expect(container.querySelector('.messages-empty')).toBeNull();
   });
 });
+
+describe('the reply toolbar', () => {
+  const reply = (over: Record<string, unknown> = {}): Transcript => ({
+    items: [{ kind: 'text', id: 'a1', role: 'assistant', text: 'Here is the answer.', ...over }] as never,
+  });
+
+  it('offers Copy under a finished reply', () => {
+    render(<MessageList transcript={reply()} />);
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
+  });
+
+  it('stays away while the reply is still streaming', () => {
+    // Half an answer is not what anyone means to copy.
+    render(<MessageList transcript={reply({ streaming: true })} />);
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+  });
+
+  it('stays away from an empty reply', () => {
+    render(<MessageList transcript={reply({ text: '   ' })} />);
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+  });
+
+  it('is not offered on a user turn, which has Edit instead', () => {
+    const turn: Transcript = {
+      items: [{ kind: 'text', id: 'u1', role: 'user', text: 'a question', ordinal: 0 }],
+    } as never;
+    render(<MessageList transcript={turn} onEdit={() => undefined} />);
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+    expect(screen.getByRole('button', { name: /edit/i })).toBeTruthy();
+  });
+});

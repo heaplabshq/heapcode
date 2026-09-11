@@ -16,6 +16,7 @@ import {
   getPermissionModeInfo,
   type PermissionMode,
 } from '@heapcode/core/permissionModes';
+import { CopyButton } from './components/CopyButton.js';
 import { postToExtension } from './vscodeApi.js';
 import { renderMarkdown } from './markdown.js';
 import { SettingsView, type SettingsData } from './SettingsView.js';
@@ -1390,10 +1391,20 @@ export function App() {
                   m.content === '' && streaming && i === messages.length - 1 ? (
                     <span className="thinking">…</span>
                   ) : (
-                    <div
-                      className="markdown"
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
-                    />
+                    <>
+                      <div
+                        className="markdown"
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }}
+                      />
+                      {/* The reply's own toolbar, as in the other surfaces. Not
+                          while the last reply is still streaming: half an answer
+                          is not what anyone means to copy. */}
+                      {!(streaming && i === messages.length - 1) && m.content.trim() && (
+                        <div className="msg-actions-reply">
+                          <CopyButton text={m.content} />
+                        </div>
+                      )}
+                    </>
                   )
                 ) : (
                   <>

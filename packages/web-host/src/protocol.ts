@@ -230,6 +230,15 @@ export interface UiMessage {
   role: 'user' | 'assistant';
   content: string;
   /**
+   * Images sent with this turn, as URLs this page can load.
+   *
+   * Not the bytes: the host keeps one file per image beside the conversation
+   * and hands back a path under `/attachment/`, so opening a conversation
+   * costs one small JSON rather than every screenshot in it, and the browser
+   * fetches and caches each picture only when it renders.
+   */
+  images?: string[];
+  /**
    * Which real user turn this is (0-based), set only on user messages. The
    * browser hands it back to `ui/editMessage` / `ui/restoreTurn` to name the
    * turn without the host having to guess from text.

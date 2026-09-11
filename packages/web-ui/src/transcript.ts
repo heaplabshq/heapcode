@@ -167,6 +167,10 @@ export function fromMessages(messages: UiMessage[], prefix = 'h'): Transcript {
         role: m.role,
         text: m.content,
         streaming: m.ui?.streaming,
+        // Carried through, or a reloaded turn loses the screenshot it was
+        // about — the host stores one file per image and sends back a URL, and
+        // dropping it here is what made that invisible.
+        ...(m.images?.length ? { images: m.images } : {}),
         ...(m.role === 'user' && m.ordinal !== undefined
           ? { ordinal: m.ordinal, ...(m.checkpoint ? { checkpoint: m.checkpoint } : {}) }
           : {}),

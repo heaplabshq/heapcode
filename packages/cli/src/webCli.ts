@@ -105,6 +105,8 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
             // The same registry the code product uses: one /oauth/callback
             // on this origin answers for whichever side began the sign-in.
             mcpLogins: deps.mcpLogins,
+            // Mounted here, so its attachment URLs must carry the prefix.
+            basePath: '/chat',
             clientVersion: deps.clientVersion,
             workspaces: deps.workspaces,
             lan: deps.lan,

@@ -66,6 +66,7 @@ import {
   listPermissionGrants,
   loadMcpServerSources,
   mcpNameProblem,
+  AttachmentStore,
   parseMcpServerSpec,
   withEnv,
   listSkillsFormatted,
@@ -156,6 +157,7 @@ import {
   type UiWorkspacesResult,
 } from './protocol.js';
 import type { DaemonHello } from './hello.js';
+import { attachmentPath } from './attachmentRoute.js';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
 import { listFolders, type WorkspaceStore } from './workspaces.js';
@@ -380,6 +382,7 @@ export class WebSession {
   private personaId: string;
   private subAgents: boolean;
   /** Rebuilt on a workspace switch — artifacts live under the project's state dir. */
+  private attachments!: AttachmentStore;
   private artifacts: ArtifactStore;
 
   constructor(private readonly deps: WebSessionDeps) {
@@ -389,6 +392,7 @@ export class WebSession {
     this.subAgents = deps.subAgents ?? false;
     // Under the project's state dir, not the workspace — see ArtifactStore.
     this.artifacts = new ArtifactStore(join(projectStateDir(deps.root), 'artifacts'));
+    this.attachments = new AttachmentStore(join(projectStateDir(deps.root), 'attachments'));
   }
 
   /**
@@ -544,6 +548,7 @@ export class WebSession {
     this.reasoningAcc = '';
     this.buffers.clear();
     this.artifacts = new ArtifactStore(join(projectStateDir(target), 'artifacts'));
+    this.attachments = new AttachmentStore(join(projectStateDir(target), 'attachments'));
 
     // `start()` records the folder as recent once it actually opens.
     await this.start();
@@ -1750,11 +1755,11 @@ export class WebSession {
         } satisfies AgentRunParams,
         this.abort.signal,
       );
-      await this.persistTurn(task, images?.length);
+      await this.persistTurn(task, images);
       persisted = true;
       return { runId, outcome, maxIterations };
     } finally {
-      if (!persisted) await this.persistUnfinishedTurn(task, images?.length);
+      if (!persisted) await this.persistUnfinishedTurn(task, images);
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
@@ -1784,11 +1789,11 @@ export class WebSession {
    * the daemon is not an exchange, and recording it would leave an
    * unanswered prompt in the history for the next turn to puzzle over.
    */
-  private async persistUnfinishedTurn(task: string, imageCount?: number): Promise<void> {
+  private async persistUnfinishedTurn(task: string, images?: string[]): Promise<void> {
     if (!this.conversation) return;
     if (this.turnEntries.length === 0 && !this.lastText.trim() && !this.reasoningAcc.trim()) return;
     try {
-      await this.persistTurn(task, imageCount);
+      await this.persistTurn(task, images);
     } catch {
       /* Losing the write is bad; losing the error that caused it is worse. */
     }
@@ -1892,15 +1897,14 @@ export class WebSession {
    * can show a readable transcript while the agent still gets full context
    * on the next turn (history/types.ts:7-10).
    */
-  private async persistTurn(display: string, imageCount?: number): Promise<void> {
+  private async persistTurn(display: string, images?: string[]): Promise<void> {
     const convo = this.conversation!;
-    // Attachments are noted, not stored. A screenshot is a couple of megabytes
-    // of base64, and conversations.json is read whole on every load — the same
-    // reason `clipArgs` exists. The model saw them on the turn they were sent;
-    // a reload gets the note, which is the honest record of what happened.
-    const line = imageCount
-      ? `${display}\n\n_(${imageCount} image${imageCount === 1 ? '' : 's'} attached)_`
-      : display;
+    // The bytes go beside the conversation, not in it: conversations.json is
+    // read whole on every load, and a screenshot is megabytes of base64. What
+    // the message keeps is an id per image. This used to keep only a count,
+    // so a reload lost the picture the question was about.
+    const ids = images?.length ? await this.attachments.putAll(images) : undefined;
+    const line = display;
     // A run that ends mid-thought (cancelled, or a provider that never sends
     // `reasoning_end`) still has thinking worth keeping.
     if (this.reasoningAcc.trim()) {
@@ -1921,7 +1925,13 @@ export class WebSession {
       ? this.turnEntries
       : [...this.turnEntries, { role: 'assistant', content: this.lastText } as StoredMessage];
     convo.messages.push(
-      { role: 'user', content: display, display: line, checkpoint: this.pendingCheckpoint } as StoredMessage,
+      {
+        role: 'user',
+        content: display,
+        display: line,
+        checkpoint: this.pendingCheckpoint,
+        ...(ids?.length ? { images: ids } : {}),
+      } as StoredMessage,
       ...entries,
     );
     this.pendingCheckpoint = undefined;
@@ -1941,6 +1951,11 @@ export class WebSession {
   private async conversationFor(id?: string): Promise<Conversation | undefined> {
     if (!id || id === this.conversation?.id) return this.conversation;
     return this.history?.get(id);
+  }
+
+  /** An image sent with an earlier turn — see HostSession.attachment. */
+  async attachment(id: string): Promise<{ bytes: Buffer; mediaType: string } | undefined> {
+    return this.attachments?.read(id);
   }
 
   async cancel(_runId?: string): Promise<void> {
@@ -2382,7 +2397,21 @@ export function mergeProfile(
  * `live` marks a turn still in flight (`pendingTurn`), where a tool chip with
  * no result yet is a call still running rather than one that returned nothing.
  */
-export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean }): UiMessage[] {
+export function toUiMessages(
+  messages: StoredMessage[],
+  opts?: {
+    live?: boolean;
+    /**
+     * Path prefix for attachment URLs — `/chat` for the mounted product.
+     *
+     * Without it a mounted page would ask the root for its images, and the
+     * root is a different session with a different store: chat's screenshots
+     * are chat's. The page cannot fix this itself because these are absolute
+     * paths, which is what keeps them working whatever the page's own URL is.
+     */
+    attachmentBase?: string;
+  },
+): UiMessage[] {
   const out: UiMessage[] = [];
   // The ordinal counts real user turns only — the same numbering the browser's
   // edit/restore buttons hand back to `ui/editMessage` / `ui/restoreTurn`.
@@ -2422,7 +2451,9 @@ export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean 
     }
 
     const content = m.display ?? m.content ?? '';
-    if (!content.trim()) continue;
+    // A turn that was only a screenshot has no text, and dropping it would
+    // lose the image with it.
+    if (!content.trim() && !m.images?.length) continue;
     if (m.ui?.reasoning) {
       out.push({ role: 'assistant', content, ui: { reasoning: true } });
       continue;
@@ -2433,6 +2464,9 @@ export function toUiMessages(messages: StoredMessage[], opts?: { live?: boolean 
       // Only a real user turn gets an ordinal/checkpoint — assistant prose and
       // plans have nothing to rewind to.
       ...(m.role === 'user' && !m.ui ? { ordinal, ...(m.checkpoint ? { checkpoint: m.checkpoint } : {}) } : {}),
+      // Ids become paths the page can load; the bytes never travel with the
+      // transcript. `attachmentPath` is shared with the route that serves them.
+      ...(m.images?.length ? { images: m.images.map((id) => `${opts?.attachmentBase ?? ''}${attachmentPath(id)}`) } : {}),
       ...(m.ui?.plan ? { ui: { plan: true } } : {}),
     });
   }

@@ -22,4 +22,5 @@ export * from './artifacts.js';
 export * from './workspace.js';
 export * from './workspaces.js';
 export * from './wsDuplex.js';
+export * from './attachmentRoute.js';
 export * from './mcpLogin.js';

@@ -50,6 +50,7 @@ import {
   projectStateDir,
   trimHistoryForAgent,
   type ConfigStore,
+  AttachmentStore,
   SecretsMcpAuthStore,
   type SecretsStore,
 } from '@heapcode/host';
@@ -204,6 +205,12 @@ export interface ChatSessionDeps {
    * mounted on that server, so one `/oauth/callback` answers for both.
    */
   mcpLogins?: McpLoginRegistry;
+  /**
+   * Where this product is served from, when it is mounted inside another —
+   * `/chat` under `heapcode web`. Attachment URLs are absolute, so they carry
+   * this prefix or they reach the wrong session's store.
+   */
+  basePath?: string;
   /** Recently opened folders, for the picker. */
   workspaces?: WorkspaceStore;
   /** Bound to a non-loopback address — passed down, never inferred here. */
@@ -248,6 +255,7 @@ export class ChatSession implements HostSession {
    * folder. Rebuilt on a folder switch, like everything else derived from the
    * root.
    */
+  private attachments: AttachmentStore;
   private artifacts: ArtifactStore;
   private profile?: ProviderProfileConfig;
   private ui?: RpcPeer;
@@ -294,6 +302,7 @@ export class ChatSession implements HostSession {
     this.root = deps.root;
     this.memory = new ChatMemory(deps.memoryFile ?? chatMemoryFile());
     this.artifacts = new ArtifactStore(join(projectStateDir(deps.root), 'artifacts'));
+    this.attachments = new AttachmentStore(join(projectStateDir(deps.root), 'attachments'));
   }
 
   /** The model this session's runs use — the chat role, then the profile's own. */
@@ -410,6 +419,9 @@ export class ChatSession implements HostSession {
     this.mcp = undefined;
     this.root = target;
     this.artifacts = new ArtifactStore(join(projectStateDir(target), 'artifacts'));
+    // Same reasoning as the artifacts above: a switched folder must not keep
+    // serving the previous one's images.
+    this.attachments = new AttachmentStore(join(projectStateDir(target), 'attachments'));
     this.conversation = undefined;
     this.history = undefined;
     this.turnEntries = [];
@@ -478,7 +490,7 @@ export class ChatSession implements HostSession {
       return {
         protocolVersion: CHAT_PROTOCOL_VERSION,
         state: await this.state(),
-        messages: toUiMessages(this.conversation?.messages ?? []),
+        messages: toUiMessages(this.conversation?.messages ?? [], { attachmentBase: this.deps.basePath }),
         activeRunId: this.activeRunId,
         replay: replay ? [...replay] : undefined,
         pending: this.activeRunId ? this.pendingMessages() : undefined,
@@ -521,7 +533,7 @@ export class ChatSession implements HostSession {
       this.turnEntries = [];
       // A grant was given for what was happening in the other conversation.
       this.allowedTools.clear();
-      return { id: found.id, messages: toUiMessages(found.messages) };
+      return { id: found.id, messages: toUiMessages(found.messages, { attachmentBase: this.deps.basePath }) };
     });
 
     ui.onRequest(CHAT_METHODS.newConversation, async (): Promise<ChatOpenConversationResult> => {
@@ -968,11 +980,11 @@ export class ChatSession implements HostSession {
       // honest fix when a reload needs it.
       const grounding = await this.groundingFor(this.lastAnswerText()).catch(() => undefined);
       if (grounding) this.ui?.notify(CHAT_METHODS.grounding, { runId, grounding } satisfies ChatGroundingParams);
-      await this.persistTurn(task, images?.length);
+      await this.persistTurn(task, images);
       persisted = true;
       return { runId, outcome, maxIterations };
     } finally {
-      if (!persisted) await this.persistTurn(task, images?.length);
+      if (!persisted) await this.persistTurn(task, images);
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
@@ -998,6 +1010,11 @@ export class ChatSession implements HostSession {
    * - The local abort happens too, so `agent/run` settles even if the daemon
    *   is wedged and never answers.
    */
+  /** An image sent with an earlier turn — see HostSession.attachment. */
+  async attachment(id: string): Promise<{ bytes: Buffer; mediaType: string } | undefined> {
+    return this.attachments.read(id);
+  }
+
   async cancel(): Promise<void> {
     const target = this.activeRunId;
     if (!target) return;
@@ -1023,11 +1040,17 @@ export class ChatSession implements HostSession {
     return toUiMessages(live, { live: true });
   }
 
-  private async persistTurn(task: string, imageCount?: number): Promise<void> {
+  private async persistTurn(task: string, images?: string[]): Promise<void> {
     if (!this.conversation || !this.history) return;
+    // The bytes go beside the conversation, not in it — this file is read
+    // whole on every load, and a screenshot is megabytes of base64. The
+    // message keeps an id per image; this used to keep only a count, so a
+    // reload lost the picture the question was about.
+    const ids = images?.length ? await this.attachments.putAll(images) : undefined;
     const user: StoredMessage = {
       role: 'user',
-      content: imageCount ? `${task}\n\n[${imageCount} image${imageCount === 1 ? '' : 's'} attached]` : task,
+      content: task,
+      ...(ids?.length ? { images: ids } : {}),
     } as StoredMessage;
     this.conversation.messages.push(user, ...this.turnEntries);
     this.conversation.updatedAt = Date.now();

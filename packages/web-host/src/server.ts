@@ -5,6 +5,7 @@ import { hostname, networkInterfaces } from 'node:os';
 import { RpcPeer } from '@heapcode/core';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { AuthLimiter } from './authLimit.js';
+import { ATTACHMENT_PREFIX } from './attachmentRoute.js';
 import { CALLBACK_PATH, callbackPage, createMcpLoginRegistry, describeCallbackError } from './mcpLogin.js';
 import { WebSession, type WebSessionDeps } from './session.js';
 import { serveStatic } from './static.js';
@@ -28,6 +29,15 @@ export interface HostSession {
   attach(peer: RpcPeer): void;
   detach(peer: RpcPeer): void;
   close(): Promise<void>;
+  /**
+   * An image sent with an earlier turn, by id.
+   *
+   * Served rather than carried in the transcript: a conversation with ten
+   * screenshots stays a small JSON, and the browser fetches each picture once,
+   * when it renders it. Optional so a host with no attachments answers 404
+   * without having to implement anything.
+   */
+  attachment?(id: string): Promise<{ bytes: Buffer; mediaType: string } | undefined>;
 }
 
 export interface WebHostOptions extends Omit<WebSessionDeps, 'root'> {
@@ -223,6 +233,36 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       return;
     }
     limiter.succeed(peer);
+
+    // Images sent with an earlier turn. After the cookie check, deliberately:
+    // an attachment is as private as the conversation carrying it. Before the
+    // static handlers, or index.html would answer for it — which is exactly
+    // what happened, and what a 200 of text/html for a PNG looks like.
+    const underMountPath = Boolean(mount) && underMount(url.pathname);
+    const attachmentAt = underMountPath ? stripMount(url.pathname) : url.pathname;
+    if (attachmentAt.startsWith(ATTACHMENT_PREFIX)) {
+      const id = decodeURIComponent(attachmentAt.slice(ATTACHMENT_PREFIX.length));
+      // Whichever product the page belongs to. Both resolve the same
+      // directory for the same folder, so today this picks the same file
+      // either way — content-addressed images shared by two products the same
+      // person is running are a saving, not a leak. It routes by product
+      // anyway, so separating the stores later is a change in one place.
+      const owner = underMountPath ? mountedSession() : session;
+      const found = await owner.attachment?.(id);
+      if (!found) {
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        res.end('not found');
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': found.mediaType,
+        // Content-addressed, so the bytes behind an id never change.
+        'cache-control': 'private, max-age=31536000, immutable',
+        'content-length': String(found.bytes.length),
+      });
+      res.end(found.bytes);
+      return;
+    }
 
     // The mounted product first: its prefix is more specific than the root,
     // and the root's index.html fallback would otherwise swallow it.

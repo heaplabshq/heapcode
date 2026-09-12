@@ -15,6 +15,7 @@ import {
 } from '@heapcode/web-ui/transcript';
 import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
+import { Toasts } from '@heapcode/web-ui/components/Toasts';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
 import { ProductToggle } from '@heapcode/web-ui/components/ProductToggle';
 import { Settings } from '@heapcode/web-ui/components/Settings';
@@ -301,6 +302,25 @@ export function App(): JSX.Element {
     setSeedImages(images);
   };
 
+  /**
+   * Leave edit mode, and empty the box it filled.
+   *
+   * An ordinal only means something in the conversation it came from, so it
+   * has to go when the conversation does — otherwise starting a new chat while
+   * editing left the state behind, and sending asked the host to edit turn 3
+   * of a conversation with no turns: "Could not locate that message to edit."
+   *
+   * Seeding `''` rather than clearing the seed: the composer only reads a seed
+   * that is defined, so `undefined` would leave the old text sitting in a box
+   * that is no longer editing anything.
+   */
+  const leaveEdit = (): void => {
+    if (!editing) return;
+    setEditing(undefined);
+    setSeed('');
+    setSeedImages(undefined);
+  };
+
   const cancel = (): void => {
     // A request, not a notification. The host registers `chat/cancel` as a
     // request handler, and RpcPeer routes notifications only to notification
@@ -315,6 +335,7 @@ export function App(): JSX.Element {
       .then(() => {
         setTranscript(emptyTranscript);
         setGrounding(undefined);
+        leaveEdit();
         refreshConversations();
       })
       .catch((e: Error) => setError(e.message));
@@ -326,6 +347,7 @@ export function App(): JSX.Element {
       .then((r) => {
         setTranscript(fromMessages(r.messages));
         setGrounding(undefined);
+        leaveEdit();
         refreshConversations();
       })
       .catch((e: Error) => setError(e.message));
@@ -407,7 +429,6 @@ export function App(): JSX.Element {
             </div>
           )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
-          {error && <div className="banner banner-error">{error}</div>}
           {index?.missingParsers?.length ? (
             // Load-bearing: a skipped file type and an empty folder look
             // identical to whoever asked the question.
@@ -415,11 +436,6 @@ export function App(): JSX.Element {
               Not reading {index.missingParsers.join(', ')} — parser not installed.
             </div>
           ) : null}
-          {notice && (
-            <div className="banner" onClick={() => setNotice(undefined)} role="status">
-              {notice}
-            </div>
-          )}
 
           <MessageList
             transcript={transcript}
@@ -518,6 +534,15 @@ export function App(): JSX.Element {
             />
           ) : null}
 
+          {/* Conditions stay in the banners above; these are the things that
+              just happened, said next to where they happened and then gone. */}
+          <Toasts
+            error={error}
+            onDismissError={() => setError(undefined)}
+            notice={notice}
+            onDismissNotice={() => setNotice(undefined)}
+          />
+
           <Composer
             onSend={send}
             onCancel={cancel}
@@ -531,7 +556,7 @@ export function App(): JSX.Element {
               setSeedImages(undefined);
             }}
             editing={editing !== undefined}
-            onCancelEdit={() => setEditing(undefined)}
+            onCancelEdit={leaveEdit}
             footer={
               <>
                 {/* Heap Code's own picker and model switcher, not lookalikes:

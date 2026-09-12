@@ -1076,6 +1076,26 @@ body {
 }
 .banner-error { color: var(--danger); }
 
+/* Toasts: things that happened, directly above the composer where they
+   happened. In flow rather than floating — the composer's height changes as
+   you type, and an absolutely-placed card above it either covers it or drifts
+   away from it. The cost is a small shift when one appears, which is cheaper
+   than a message sitting on top of the box you are typing in. */
+.toasts {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 0 var(--gutter) 8px;
+}
+.toast {
+  pointer-events: auto; cursor: pointer;
+  max-width: min(560px, 100%); text-align: left;
+  padding: 8px 12px; border-radius: var(--radius);
+  background: var(--bg-raised); border: 1px solid var(--border);
+  color: var(--text); font: inherit; font-size: 12.5px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.16);
+}
+.toast:hover { background: var(--hover); }
+.toast-error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+
 /* The LAN warning. Not dismissible on purpose: it describes what this page IS,
    not something that happened, and a security notice you can silence is one
    nobody reads twice. Kept to one line so it costs a strip, not a dialog. */

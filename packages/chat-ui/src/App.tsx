@@ -583,6 +583,8 @@ export function App(): JSX.Element {
 
                 <span className="composer-bar-right">
                   <ModelPicker
+                    // Keyed on the connection — see the note in web-ui's App.
+                    key={state?.profile}
                     current={state?.model ?? ''}
                     placement="up"
                     listModels={() =>

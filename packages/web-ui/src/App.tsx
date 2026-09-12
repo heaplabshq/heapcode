@@ -1123,6 +1123,12 @@ export function App(): JSX.Element {
                     onOpenSettings={() => openSettings('context')}
                   />
                   <ModelPicker
+                    // Keyed on the connection: the list belongs to whichever
+                    // provider is active, and the picker fetches once and
+                    // keeps what it got. Switching connection used to leave
+                    // the previous provider's models in the menu until the
+                    // page was reloaded.
+                    key={state?.profile}
                     current={state?.model ?? ''}
                     placement="up"
                     listModels={() => rpc.request<UiListModelsResult>(UI_METHODS.listModels).then((r) => r.models)}

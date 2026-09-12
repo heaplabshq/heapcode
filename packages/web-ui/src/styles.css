@@ -422,7 +422,10 @@ body {
 /* Attachments sit above the words, at a size you can actually read — a
    60px thumbnail is fine while you are still composing, but once sent this is
    part of what you asked, so it gets room. */
-.msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+/* Attachments align with the person who sent them, the way the text bubble
+   above them does — a screenshot pulled to the left of a right-hand turn reads
+   as belonging to the reply below it. */
+.msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; justify-content: flex-end; }
 .msg-images img {
   max-width: min(260px, 100%); max-height: 220px;
   border-radius: var(--radius); border: 1px solid var(--border);
@@ -473,11 +476,8 @@ body {
   color: var(--text-dim); font: inherit; line-height: 0; border-radius: 4px;
 }
 .msg-action:hover { color: var(--text); background: var(--hover); }
-.edit-msg {
-  background: none; border: 0; cursor: pointer; padding: 0;
-  color: var(--text-dim); font: inherit; font-size: 12px;
-}
-.edit-msg:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
+/* Restore is the destructive one of the pair — it puts files back — so it
+   says so on hover rather than reading as another neutral glyph. */
 .restore-msg:hover:not(:disabled) { color: var(--danger); }
 
 /* The bar over the composer while an earlier message is being edited — the

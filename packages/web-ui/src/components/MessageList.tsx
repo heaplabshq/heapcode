@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CopyButton } from './CopyButton.js';
+import { ICON_EDIT, ICON_RESTORE } from './icons.js';
 import { renderMarkdown } from '../markdown.js';
 import { activityOf, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
@@ -249,22 +250,28 @@ const Row = memo(function Row({
             <div className="msg-actions">
               {onEdit && (
                 <button
-                  className="edit-msg"
+                  className="msg-action"
+                  // Icons, as everywhere else in these toolbars. The title and
+                  // the accessible name carry the meaning the word used to —
+                  // and say more than "Edit" did, since what this does to the
+                  // conversation is not obvious from the glyph.
+                  aria-label="Edit this message"
                   title="Edit this message — reverts the code and conversation to this point and resends"
                   // The attachments go back with the text: editing a turn that
                   // carried a screenshot used to resend the question without it.
                   onClick={() => onEdit(item.ordinal!, item.text, item.images)}
                 >
-                  Edit
+                  {ICON_EDIT}
                 </button>
               )}
               {onRestore && item.checkpoint && (
                 <button
-                  className="edit-msg restore-msg"
+                  className="msg-action restore-msg"
+                  aria-label="Restore workspace files to before this message"
                   title="Restore workspace files to the state before this message ran (conversation stays)"
                   onClick={() => onRestore(item.ordinal!)}
                 >
-                  Restore
+                  {ICON_RESTORE}
                 </button>
               )}
             </div>

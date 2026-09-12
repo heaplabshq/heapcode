@@ -8,7 +8,7 @@
  * rendered as undifferentiated `<pre>` text while the CLI coloured the same
  * string. Both look fine in a reducer snapshot.
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MessageList } from '../src/components/MessageList.js';
 import { emptyTranscript, reduce, withNotice, type Transcript } from '../src/transcript.js';
@@ -239,5 +239,29 @@ describe('the reply toolbar', () => {
     render(<MessageList transcript={turn} onEdit={() => undefined} />);
     expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
     expect(screen.getByRole('button', { name: /edit/i })).toBeTruthy();
+  });
+
+  it('draws Edit as an icon, like the rest of the toolbar', () => {
+    // The word read as part of the message rather than a control on it. The
+    // accessible name is what says so now, and it says more than "Edit" did.
+    const turn: Transcript = {
+      items: [{ kind: 'text', id: 'u1', role: 'user', text: 'a question', ordinal: 0 }],
+    } as never;
+    render(<MessageList transcript={turn} onEdit={() => undefined} />);
+    const button = screen.getByRole('button', { name: 'Edit this message' });
+    expect(button.querySelector('svg')).toBeTruthy();
+    expect(button.textContent).toBe('');
+  });
+
+  it('hands the turn’s own attachments back when editing it', () => {
+    const seen: unknown[] = [];
+    const turn: Transcript = {
+      items: [
+        { kind: 'text', id: 'u1', role: 'user', text: 'look', ordinal: 0, images: ['/attachment/a.png'] },
+      ],
+    } as never;
+    render(<MessageList transcript={turn} onEdit={(...args) => seen.push(args)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+    expect(seen).toEqual([[0, 'look', ['/attachment/a.png']]]);
   });
 });

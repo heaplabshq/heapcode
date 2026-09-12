@@ -1144,6 +1144,12 @@ export function App(): JSX.Element {
               onPointerDown={startPanelDrag}
             />
             <Panel
+              // Keyed on the folder: the panel is a view *of* a workspace, and
+              // its tabs load once on mount. Switching folders used to leave
+              // the file tree, the opened file and the preview showing the
+              // previous one until a tab was clicked, which remounted them by
+              // accident. A new workspace is a new panel.
+              key={state?.root}
               width={panelWidth}
               tab={panelTab}
               onTab={setPanelTab}

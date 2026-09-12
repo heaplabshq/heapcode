@@ -610,6 +610,10 @@ export function App(): JSX.Element {
               onPointerDown={startPanelDrag}
             />
             <ChatPanel
+              // Keyed on the folder — see the note in web-ui's App. Its tabs
+              // load once on mount, so a switched folder kept showing the
+              // previous one's files until a tab was clicked.
+              key={state?.folder}
               width={panelWidth}
               tab={panelTab}
               onTab={setPanelTab}

@@ -1202,6 +1202,11 @@ body {
 /* A step past hover, like the rail's open conversation — `--chip-bg` here is
    within two points of the panel's own background. */
 .file-row-active { background: var(--hover-strong); }
+/* Ignored by .gitignore. Greyed rather than absent, the way an editor shows
+   them: the agent can read these, so hiding them showed less of the folder
+   than the thing working in it could see. */
+.file-row-ignored .file-path,
+.file-row-ignored .tree-icon { opacity: 0.5; }
 .file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
 .tree-icon { color: var(--text-dim); width: 1ch; }
 /* Fixed width, so the two columns line up down the list rather than tracking

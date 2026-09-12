@@ -897,6 +897,15 @@ export interface UiTreeEntry {
   name: string;
   path: string;
   directory: boolean;
+  /**
+   * Matched by the workspace's `.gitignore`.
+   *
+   * Shown rather than hidden, and marked. The agent reads these — `read_file`
+   * and `list_dir` do not consult gitignore — so a panel that dropped them
+   * showed less of the workspace than the thing working in it could see, and
+   * a deliberately-ignored note was simply missing with nothing to say why.
+   */
+  ignored?: boolean;
 }
 
 export interface UiFileTreeResult {

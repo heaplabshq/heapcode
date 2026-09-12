@@ -233,22 +233,26 @@ const Row = memo(function Row({
             // page holds the socket that runs commands.
             dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }}
           />
-          {/* The reply's own toolbar. Assistant turns only: a user turn already
-              has Edit, and copying back what you just typed is not a thing
-              anyone needs. Hidden while streaming — half a reply is not what
-              someone means to copy. */}
+          {/* The reply's toolbar, under the reply and aligned with it.
+              Hidden while streaming — half a reply is not what someone means
+              to copy. */}
           {item.role === 'assistant' && !item.streaming && item.text.trim() && (
             <div className="msg-actions msg-actions-reply">
               <CopyButton text={item.text} />
             </div>
           )}
-          {/* Edit/restore a sent prompt. Only a real user turn carries an
-              ordinal, and only one with a checkpoint can be rewound — so the
-              buttons key off those, and hide while a run is in flight (the
-              host refuses them then anyway). */}
-          {item.role === 'user' && item.ordinal !== undefined && !busy && (onEdit || onRestore) && (
+          {/* The turn's own toolbar, aligned with the turn: a control for a
+              right-hand message belongs on its right, or it reads as belonging
+              to whatever is below it.
+
+              Copy is offered whatever else is — it needs nothing but text.
+              Edit and Restore need a real user turn (only those carry an
+              ordinal) and a checkpoint respectively, and both hide while a run
+              is in flight, since the host refuses them then anyway. */}
+          {item.role === 'user' && item.text.trim() && (
             <div className="msg-actions">
-              {onEdit && (
+              <CopyButton text={item.text} />
+              {item.ordinal !== undefined && !busy && onEdit && (
                 <button
                   className="msg-action"
                   // Icons, as everywhere else in these toolbars. The title and
@@ -264,7 +268,7 @@ const Row = memo(function Row({
                   {ICON_EDIT}
                 </button>
               )}
-              {onRestore && item.checkpoint && (
+              {item.ordinal !== undefined && !busy && onRestore && item.checkpoint && (
                 <button
                   className="msg-action restore-msg"
                   aria-label="Restore workspace files to before this message"

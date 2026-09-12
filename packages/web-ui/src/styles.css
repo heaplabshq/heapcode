@@ -463,6 +463,9 @@ body {
    assert themselves when the pointer is over the message they act on. */
 .msg-actions { display: flex; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity 0.12s; }
 .msg-user:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+/* A control for a right-aligned message belongs on its right. The reply's
+   toolbar keeps the default, which puts it under the left edge of the reply. */
+.msg-user .msg-actions { justify-content: flex-end; }
 /* The reply's toolbar is always there, unlike the user turn's hover actions:
    it is the affordance for the reply rather than a correction to it, and a
    control nobody can see is one nobody uses. Dim until the message is under

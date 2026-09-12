@@ -232,13 +232,24 @@ describe('the reply toolbar', () => {
     expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
   });
 
-  it('is not offered on a user turn, which has Edit instead', () => {
+  it('is offered on a user turn too, beside Edit', () => {
     const turn: Transcript = {
       items: [{ kind: 'text', id: 'u1', role: 'user', text: 'a question', ordinal: 0 }],
     } as never;
     render(<MessageList transcript={turn} onEdit={() => undefined} />);
-    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /edit/i })).toBeTruthy();
+  });
+
+  it('offers Copy on a user turn even where editing is not', () => {
+    // It needs nothing but text — no ordinal, no handler, and not waiting for
+    // a run to finish.
+    const turn: Transcript = {
+      items: [{ kind: 'text', id: 'u1', role: 'user', text: 'a question', ordinal: 0 }],
+    } as never;
+    render(<MessageList transcript={turn} busy />);
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /edit/i })).toBeNull();
   });
 
   it('draws Edit as an icon, like the rest of the toolbar', () => {

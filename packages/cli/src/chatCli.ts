@@ -54,13 +54,9 @@ export async function runChat(opts: ChatCliOptions = {}): Promise<number> {
   const config = new ConfigStore(configFile());
   const secrets = new SecretsStore(secretsFile());
 
+  // Not a precondition — see webCli.ts. Settings is a page in the app this
+  // command serves, so the app has to open before it can be configured.
   const profile = await config.getActiveProfile();
-  if (!profile) {
-    process.stderr.write(
-      'No provider connection configured yet.\nRun `heapcode` once to set one up, or `heapcode connection add`.\n',
-    );
-    return 1;
-  }
 
   let running;
   try {
@@ -93,7 +89,11 @@ export async function runChat(opts: ChatCliOptions = {}): Promise<number> {
 
   process.stdout.write(`\n  Heap Chat — read, search, ask and draft\n\n  ${running.url}\n\n`);
   process.stdout.write(root ? `  Folder: ${root}\n` : `  No folder — pick one in the app to read your files.\n`);
-  process.stdout.write(`  Connection: ${profile.name} (${profile.model})\n\n`);
+  process.stdout.write(
+    profile
+      ? `  Connection: ${profile.name} (${profile.model})\n\n`
+      : '  No model configured yet — open the page and add a connection in Settings.\n\n',
+  );
 
   if (!isLoopback(host)) {
     // Milder than `heapcode web`'s warning, and deliberately so: this host has

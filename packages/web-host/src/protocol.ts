@@ -524,6 +524,16 @@ export interface UiState {
   contextWindow?: number;
   profiles: Array<{ name: string; model: string; hasKey: boolean }>;
   daemon: 'up' | 'down';
+  /**
+   * Why this host has no model yet, present only while it has none.
+   *
+   * A condition rather than an event — it is true of the page until somebody
+   * changes it — so the browser shows it as a standing banner with a way into
+   * Settings, and the session is otherwise up: history, files and the
+   * settings screen all work, and the first thing that needs a model fails
+   * with this same sentence.
+   */
+  setup?: string;
   runId?: string;
   /**
    * The host is bound to a non-loopback address, so this page is reachable from

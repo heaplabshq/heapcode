@@ -48,13 +48,13 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
   const config = new ConfigStore(configFile());
   const secrets = new SecretsStore(secretsFile());
 
+  // Deliberately not a precondition. The screen that configures a connection
+  // is in the browser this command serves, so refusing to start sent someone
+  // with no config back to a terminal to do something the app can do — and
+  // `heapcode web` is, for some people, the whole product. The host comes up
+  // without a model and says so on the page; this is only what the terminal
+  // prints below.
   const profile = await config.getActiveProfile();
-  if (!profile) {
-    process.stderr.write(
-      'No provider profile configured yet.\nRun `heapcode` once to set one up, or `heapcode profile add`.\n',
-    );
-    return 1;
-  }
 
   let running;
   try {
@@ -127,7 +127,11 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
 
   process.stdout.write(`\n  Heap Code Web\n\n  ${running.url}\n\n`);
   process.stdout.write(`  Workspace: ${root}\n`);
-  process.stdout.write(`  Connection: ${profile.name} (${profile.model})\n\n`);
+  process.stdout.write(
+    profile
+      ? `  Connection: ${profile.name} (${profile.model})\n\n`
+      : '  No model configured yet — open the page and add a connection in Settings.\n\n',
+  );
 
   if (!isLoopback(host)) {
     // Loud, because this is the one flag that turns a personal tool into a

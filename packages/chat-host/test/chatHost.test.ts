@@ -45,7 +45,7 @@ function sse(text: string): { kind: 'sse'; chunks: string[] } {
 
 async function boot(
   responses: Array<{ kind: 'sse'; chunks: string[] }>,
-  opts: { withFolder?: boolean } = {},
+  opts: { withFolder?: boolean; withConnection?: boolean } = {},
 ): Promise<{
   peer: RpcPeer;
   folder: string;
@@ -62,12 +62,18 @@ async function boot(
   const configPath = join(home, 'config.json');
   await writeFile(
     configPath,
-    JSON.stringify({
-      activeProfile: 'mock',
-      profiles: [
-        { name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model', capabilities: { nativeToolCalls: false } },
-      ],
-    }),
+    JSON.stringify(
+      // `{}` is a machine where `heapcode` has never been run — the state the
+      // host used to refuse to open in.
+      opts.withConnection === false
+        ? {}
+        : {
+            activeProfile: 'mock',
+            profiles: [
+              { name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model', capabilities: { nativeToolCalls: false } },
+            ],
+          },
+    ),
     'utf8',
   );
 
@@ -272,5 +278,51 @@ describe('the chat host with no folder', () => {
     const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withFolder: false });
     await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
     await expect(peer.request(CHAT_METHODS.fileTree, { path: '' })).rejects.toThrow(/No folder is open/);
+  });
+  /**
+   * Before there is anything to chat with.
+   *
+   * The command used to print "No provider connection configured" and exit,
+   * which is a dead end for someone whose whole reason for running this is
+   * the page it serves: Settings — where a connection is added — is on that
+   * page. It opens instead, says what is missing, and refuses only the part
+   * that genuinely needs a model.
+   */
+  it('opens with no connection at all, and says so rather than refusing', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], {
+      withConnection: false,
+    });
+    const hello = await peer.request<ChatHelloResult>(CHAT_METHODS.hello, {
+      protocolVersion: CHAT_PROTOCOL_VERSION,
+    });
+    expect(hello.state.setup).toMatch(/no connection yet/i);
+    expect(hello.state.setup).toMatch(/settings/i);
+    expect(hello.state.daemon).toBe('down');
+    await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).rejects.toThrow(
+      hello.state.setup!,
+    );
+  });
+
+  it('starts chatting the moment a connection is added, without a restart', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], {
+      withConnection: false,
+    });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    // What the Settings dialog sends after you fill in the add-connection form.
+    await peer.request(CHAT_METHODS.saveProfile, {
+      profile: {
+        name: 'mock',
+        preset: 'custom',
+        baseUrl: mock!.baseUrl,
+        model: 'mock-model',
+        capabilities: { nativeToolCalls: false },
+      },
+    });
+
+    const state = await peer.request<ChatState>(CHAT_METHODS.state);
+    expect(state.setup).toBeUndefined();
+    expect(state.daemon).toBe('up');
+    await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).resolves.toBeTruthy();
   });
 });

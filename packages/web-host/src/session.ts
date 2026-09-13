@@ -304,6 +304,12 @@ export class WebSession {
   private session?: Awaited<ReturnType<typeof buildAgentSession>>;
   private permissions?: PermissionEngine;
   private profile?: ProviderProfileConfig;
+  /**
+   * Why this session has no model, while it has none. Reaches the browser in
+   * `state.setup`, which is the only thing standing between a first-run page
+   * and the settings screen that fixes it.
+   */
+  private setupNeeded?: string;
 
   /** The browser currently attached, if any. Null between tabs. */
   private ui?: RpcPeer;
@@ -413,30 +419,48 @@ export class WebSession {
   // lifecycle
   // -------------------------------------------------------------------------
 
-  /** Connects to the daemon and builds the agent session. Idempotent. */
+  /**
+   * Connects to the daemon and builds the agent session. Idempotent.
+   *
+   * Throws when there is no model to run on, which is what every handler that
+   * needs one wants: the sentence travels back to the browser as that
+   * request's error. The two callers that have to work *before* there is a
+   * model — the handshake and the settings screen — use `open()` and read the
+   * same sentence off its return value instead.
+   */
   async start(): Promise<void> {
-    if (this.connection) return;
+    const missing = await this.open();
+    if (missing) throw new Error(missing);
+  }
+
+  /**
+   * Bring the session as far up as the configuration allows.
+   *
+   * Returns what is missing rather than throwing it. Someone who has never
+   * run the CLI has no connection yet, and the screen that would fix that is
+   * *inside* this app — so refusing the handshake left them looking at a page
+   * whose only working part was the one it would not show them. The session
+   * opens without a model, says so in `state.setup`, and the first thing that
+   * genuinely needs a model is where it fails.
+   */
+  private async open(): Promise<string | undefined> {
+    if (this.connection) return undefined;
 
     const { config, secrets, clientVersion } = this.deps;
     const root = this.root;
-    const profile = await config.getActiveProfile();
-    if (!profile) {
-      const connections = await config.listConnections();
-      throw new Error(
-        connections.length > 0
-          ? `Chat has no model set. Run \`heapcode model set chat ${
-              (await config.getRoles()).chat?.connection ?? connections[0]!.name
-            } <model>\` before \`heapcode web\`.`
-          : 'No provider connection configured. Run `heapcode connection add` (or start the CLI once) before `heapcode web`.',
-      );
-    }
-    this.profile = profile;
-    this.agentModel = (await config.resolve('agent'))?.model ?? profile.model;
 
-    this.history = new JsonConversationStore(conversationsFile(root));
+    // Ahead of the model check: neither of these depends on one, and the
+    // browser asks for the conversation list as soon as it connects.
+    this.history ??= new JsonConversationStore(conversationsFile(root));
     // Launch default is a fresh conversation, matching `heapcode` itself; the
     // sidebar is how you get back to an earlier one.
     this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
+
+    const profile = await config.getActiveProfile();
+    if (!profile) return (this.setupNeeded = await this.describeMissingModel());
+    this.setupNeeded = undefined;
+    this.profile = profile;
+    this.agentModel = (await config.resolve('agent'))?.model ?? profile.model;
 
     this.session = buildAgentSession(
       root,
@@ -499,6 +523,23 @@ export class WebSession {
     // by the *previous* switch. The store swallows its own write errors, so
     // awaiting cannot fail an otherwise-good open.
     await this.deps.workspaces?.record(root);
+    return undefined;
+  }
+
+  /**
+   * What to tell someone who has no model yet, and where to fix it.
+   *
+   * Two different states wear the same symptom: no endpoint at all, and an
+   * endpoint whose chat role names no model — which is what an interrupted
+   * edit of the role table leaves behind. They need different sentences, and
+   * both now point at Settings rather than at a command, because this is a
+   * page you are already looking at.
+   */
+  private async describeMissingModel(): Promise<string> {
+    const connections = await this.deps.config.listConnections();
+    if (connections.length === 0) return 'No connection yet — add one in Settings to start chatting.';
+    const named = (await this.deps.config.getRoles()).chat?.connection ?? connections[0]!.name;
+    return `No model set for chat — pick one for "${named}" in Settings.`;
   }
 
   async close(): Promise<void> {
@@ -550,8 +591,10 @@ export class WebSession {
     this.artifacts = new ArtifactStore(join(projectStateDir(target), 'artifacts'));
     this.attachments = new AttachmentStore(join(projectStateDir(target), 'attachments'));
 
-    // `start()` records the folder as recent once it actually opens.
-    await this.start();
+    // `open()` records the folder as recent once it actually opens. Not
+    // `start()`: switching folders is not something a missing model should be
+    // able to refuse.
+    await this.open();
     void this.pushState();
     void this.pushWorkspace();
   }
@@ -572,8 +615,9 @@ export class WebSession {
     ui.onRequest(UI_METHODS.hello, async (raw): Promise<UiHelloResult> => {
       // Connect on hello rather than at construction, so a configuration
       // error surfaces as a readable message in the UI instead of a server
-      // that refused to start.
-      await this.start();
+      // that refused to start. `open`, not `start`: an unconfigured host must
+      // still hand the browser a page, because Settings is on it.
+      await this.open();
       const params = (raw ?? {}) as UiHelloParams;
       const replay =
         params.resumeRunId && this.buffers.has(params.resumeRunId)
@@ -614,14 +658,16 @@ export class WebSession {
       return null;
     });
 
+    // The sidebar, like Settings, belongs to the shell rather than to a run:
+    // `open()`, so it still works on a host that has no model yet.
     ui.onRequest(UI_METHODS.conversations, async (): Promise<UiConversationMeta[]> => {
-      await this.start();
+      await this.open();
       const list = await this.history!.list();
       return list.map((c) => ({ ...c, active: c.id === this.conversation?.id }));
     });
 
     ui.onRequest(UI_METHODS.openConversation, async (raw): Promise<UiOpenConversationResult> => {
-      await this.start();
+      await this.open();
       const { id } = raw as UiOpenConversationParams;
       if (this.activeRunId) throw new Error('A run is in progress; cancel it before switching conversations.');
       const found = await this.history!.get(id);
@@ -632,7 +678,7 @@ export class WebSession {
     });
 
     ui.onRequest(UI_METHODS.newConversation, async (): Promise<UiOpenConversationResult> => {
-      await this.start();
+      await this.open();
       if (this.activeRunId) throw new Error('A run is in progress; cancel it before starting a new chat.');
       this.conversation = { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
       void this.pushState();
@@ -825,7 +871,7 @@ export class WebSession {
   /** The workspace panel (§7.3): changes, diffs, files, checkpoints. */
   private attachWorkspace(ui: RpcPeer): void {
     ui.onRequest(UI_METHODS.changes, async (): Promise<UiChangesResult> => {
-      await this.start();
+      await this.open();
       return { files: await this.changedFiles() };
     });
 
@@ -1034,7 +1080,10 @@ export class WebSession {
    * than now.
    */
   private async changedFiles(): Promise<UiChangedFile[]> {
-    const checkpoint = this.session!.checkpoint;
+    // No session, so nothing has run, so nothing has been changed by one —
+    // an empty list, not a failure.
+    if (!this.session) return [];
+    const checkpoint = this.session.checkpoint;
     await checkpoint.captureFinals();
     const out: UiChangedFile[] = [];
     for (const file of checkpoint.changedFiles()) {
@@ -1063,7 +1112,9 @@ export class WebSession {
   /** The settings surface (§9's W5 rows). Split out only for readability. */
   private attachSettings(ui: RpcPeer): void {
     ui.onRequest(UI_METHODS.settings, async (): Promise<UiSettings> => {
-      await this.start();
+      // The one screen that has to render before there is a model: it is
+      // where the model gets chosen.
+      await this.open();
       const cfg = await this.deps.config.load();
       const modelConfig = await this.deps.config.modelConfig();
       const profiles = await Promise.all(
@@ -1087,7 +1138,9 @@ export class WebSession {
           promptTier: p.promptTier,
         })),
       );
-      const connected = new Set(this.session!.mcpManager.connectedServerNames());
+      // No agent session yet means nothing has connected yet, not an error:
+      // MCP servers are started by `open()`, which stops short without a model.
+      const connected = new Set(this.session?.mcpManager.connectedServerNames() ?? []);
       return {
         personas: BUILTIN_PERSONAS.map((p) => ({ id: p.id, label: p.label, description: p.description })),
         persona: this.personaId,
@@ -1174,6 +1227,10 @@ export class WebSession {
       });
       await this.deps.config.saveProfile(next);
       if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
+      // The connection someone just added may be the one the session was
+      // waiting for. Retried here so the page comes alive where they are
+      // standing, rather than on the next reload.
+      if (!this.connection) await this.open();
       if (profile.name === this.profile?.name) {
         const before = this.profile;
         this.profile = (await this.deps.config.getProfile(profile.name)) ?? next;
@@ -1427,6 +1484,9 @@ export class WebSession {
   private async reconnect(): Promise<void> {
     this.connection?.close();
     this.connection = undefined;
+    // Nothing to replace: this is the first connection, because until now
+    // there was no model to build a session for.
+    if (!this.session) return void (await this.start());
     const profile = this.profile!;
     const apiKey = await this.deps.secrets.getApiKey(profile.name);
     this.connection = await this.deps.connect({
@@ -1584,6 +1644,7 @@ export class WebSession {
       contextWindow: this.profile ? this.contextWindowFor.known(this.profile, this.model).window : undefined,
       profiles,
       daemon: this.connection ? 'up' : 'down',
+      setup: this.setupNeeded,
       runId: this.activeRunId,
       lan: this.deps.lan,
     };

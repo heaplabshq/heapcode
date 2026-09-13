@@ -266,6 +266,8 @@ export class ChatSession implements HostSession {
   private attachments: AttachmentStore;
   private artifacts: ArtifactStore;
   private profile?: ProviderProfileConfig;
+  /** Why this session has no model, while it has none. Travels in `state.setup`. */
+  private setupNeeded?: string;
   private ui?: RpcPeer;
 
   private activeRunId?: string;
@@ -326,25 +328,42 @@ export class ChatSession implements HostSession {
   // lifecycle
   // ---------------------------------------------------------------------------
 
-  /** Connects to the daemon and builds the tool executor. Idempotent. */
+  /**
+   * Connects to the daemon and builds the tool executor. Idempotent.
+   *
+   * Throws when there is no model to run on, so a handler that needs one
+   * fails with a sentence the page can show. `open()` is the same thing
+   * without the throw, for the handshake — see there.
+   */
   async start(): Promise<void> {
-    if (this.connection) return;
+    const missing = await this.open();
+    if (missing) throw new Error(missing);
+  }
+
+  /**
+   * Bring the session as far up as the configuration allows, and say what is
+   * missing rather than throwing it.
+   *
+   * The settings screen is a page in this app, so a host that refused to open
+   * without a model was refusing to show the only thing that could give it
+   * one. It opens anyway, reports the gap in `state.setup`, and fails at the
+   * first thing that actually needs a model — which is sending a message.
+   */
+  private async open(): Promise<string | undefined> {
+    if (this.connection) return undefined;
 
     const { config, secrets } = this.deps;
+
+    // Ahead of the model check, because the sidebar asks for the conversation
+    // list as soon as the page loads.
+    this.history ??= new JsonConversationStore(chatConversationsFile(this.root));
+    this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
+
     const profile = await config.getActiveProfile();
-    if (!profile) {
-      const connections = await config.listConnections();
-      throw new Error(
-        connections.length > 0
-          ? 'Heap Chat has no model set. Run `heapcode model set chat <connection> <model>` first.'
-          : 'No provider connection configured. Run `heapcode connection add` before `heapcode chat`.',
-      );
-    }
+    if (!profile) return (this.setupNeeded = await this.describeMissingModel());
+    this.setupNeeded = undefined;
     this.profile = profile;
     this.chatModel = (await config.resolve('chat'))?.model ?? profile.model;
-
-    this.history = new JsonConversationStore(chatConversationsFile(this.root));
-    this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
 
     // A checkpoint is constructed because the executor's constructor takes
     // one, and nothing here will ever ask it to record anything: no tool on
@@ -409,6 +428,22 @@ export class ChatSession implements HostSession {
       void this.startIndexing();
       await this.deps.workspaces?.record(this.root);
     }
+    return undefined;
+  }
+
+  /**
+   * What to tell someone who has no model yet, and where to fix it.
+   *
+   * Two states, one symptom: no endpoint at all, and an endpoint whose chat
+   * role names no model — what an interrupted edit of the role table leaves
+   * behind. Both point at Settings, which is a click away on the page they
+   * are reading this on.
+   */
+  private async describeMissingModel(): Promise<string> {
+    const connections = await this.deps.config.listConnections();
+    if (connections.length === 0) return 'No connection yet — add one in Settings to start chatting.';
+    const named = (await this.deps.config.getRoles()).chat?.connection ?? connections[0]!.name;
+    return `No model set for chat — pick one for "${named}" in Settings.`;
   }
 
   async close(): Promise<void> {
@@ -505,8 +540,10 @@ export class ChatSession implements HostSession {
     ui.onRequest(CHAT_METHODS.hello, async (raw): Promise<ChatHelloResult> => {
       const params = raw as ChatHelloParams;
       // Connect on hello, not at construction: a configuration error should
-      // reach the page as a message rather than crash the launch.
-      await this.start();
+      // reach the page as a message rather than crash the launch. `open`, not
+      // `start` — with no model the page still has to render, because
+      // Settings is on it.
+      await this.open();
       const replay = params.resumeRunId ? this.buffers.get(params.resumeRunId) : undefined;
       return {
         protocolVersion: CHAT_PROTOCOL_VERSION,
@@ -614,6 +651,9 @@ export class ChatSession implements HostSession {
       const next = mergeProfile(await this.deps.config.getProfile(profile.name), profile);
       await this.deps.config.saveProfile(next);
       if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
+      // The connection just added may be the one this session was waiting
+      // for, so the page comes alive where they are standing.
+      if (!this.connection) await this.open();
       if (profile.name === this.profile?.name) {
         this.profile = (await this.deps.config.getProfile(profile.name)) ?? next;
         // The daemon was handed the profile once, at hello, and reads its own
@@ -824,6 +864,7 @@ export class ChatSession implements HostSession {
       contextWindow: this.profile ? this.contextWindowFor.known(this.profile, this.model).window : undefined,
       profiles: withKeys,
       daemon: this.connection ? 'up' : 'down',
+      setup: this.setupNeeded,
       runId: this.activeRunId,
       lan: this.deps.lan,
     };

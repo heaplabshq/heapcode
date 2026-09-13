@@ -1035,6 +1035,19 @@ export function App(): JSX.Element {
               </span>
             </div>
           )}
+          {/* A condition, not an event: it is true of this page until
+              somebody changes it, and the thing that changes it is one click
+              away. Above the transcript with the other standing notices
+              rather than in a toast, which would expire while still true. */}
+          {state?.setup && (
+            <div className="banner banner-warn" role="alert">
+              <strong>Nothing to chat with yet.</strong>
+              <span>{state.setup}</span>
+              <button type="button" className="banner-action" onClick={() => openSettings()}>
+                Open Settings
+              </button>
+            </div>
+          )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
 
           {/* Above the scroller, not inside it: the list is about the run in

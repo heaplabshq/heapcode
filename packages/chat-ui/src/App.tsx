@@ -428,6 +428,19 @@ export function App(): JSX.Element {
               </span>
             </div>
           )}
+          {/* A condition, not an event: it is true of this page until
+              somebody changes it, and the thing that changes it is one click
+              away. Above the transcript with the other standing notices
+              rather than in a toast, which would expire while still true. */}
+          {state?.setup && (
+            <div className="banner banner-warn" role="alert">
+              <strong>Nothing to chat with yet.</strong>
+              <span>{state.setup}</span>
+              <button type="button" className="banner-action" onClick={() => openSettings()}>
+                Open Settings
+              </button>
+            </div>
+          )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
           {index?.missingParsers?.length ? (
             // Load-bearing: a skipped file type and an empty folder look
@@ -465,7 +478,11 @@ export function App(): JSX.Element {
               title: 'Heap Chat',
               body: state?.folder
                 ? `Work with what is in ${state.folderName} — read it, search it, ask about it, and draft from it. Anything grounded in your files says which one it came from.`
-                : 'Choose a folder to get started.',
+                : // Not "choose a folder to get started" any more: with no folder
+                  // this still answers questions, searches the web, remembers
+                  // and drafts documents. A folder is what grounds it in your
+                  // own files, not what switches it on.
+                  'Ask anything. Point it at a folder — bottom left — when you want answers grounded in your own files.',
               hint: (
                 <>
                   <span>Documents, spreadsheets, PDFs and photos</span>

@@ -170,6 +170,66 @@ describe('opening the app before it is configured', () => {
     );
   });
 
+  /**
+   * The dropdowns, on a host with no model.
+   *
+   * These used to go through the daemon, which is only up once a model has
+   * been chosen — so every model list was empty in exactly the state where
+   * you are trying to choose one. The list appeared once, from the connection
+   * test, and was gone again after a reload.
+   */
+  it('lists an endpoint\u2019s models with no daemon, which is how a model gets chosen', async () => {
+    const peer = await bootUnconfigured(NO_MODEL);
+    await peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION, client: { name: 'test' } });
+
+    // No profileName: the composer's picker asks this way, and the answer has
+    // to be the connection being configured rather than nothing.
+    const composer = await peer.request<UiListModelsResult>(UI_METHODS.listModels);
+    expect(composer.models.map((m) => m.id)).toContain('mock-model');
+
+    // By name: the Model field of the connection being edited in Settings.
+    const named = await peer.request<UiListModelsResult>(UI_METHODS.listModels, { profileName: 'mock' });
+    expect(named.models.map((m) => m.id)).toContain('mock-model');
+
+    // And the role rows, which ask per connection.
+    const role = await peer.request<{ models: string[] }>(UI_METHODS.listConnectionModels, {
+      connection: 'mock',
+    });
+    expect(role.models).toContain('other-model');
+  });
+
+  it('tests a connection that does not exist yet, with no daemon to route through', async () => {
+    const peer = await bootUnconfigured(NO_CONNECTION);
+    await peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION, client: { name: 'test' } });
+    const probe = await peer.request<UiProbeProviderResult>(UI_METHODS.probeProvider, {
+      preset: 'custom',
+      baseUrl: mock!.baseUrl,
+    });
+    expect(probe.ok).toBe(true);
+    expect(probe.models).toContain('mock-model');
+  });
+
+  /**
+   * Picking from the composer, on a host with no model.
+   *
+   * `setModel` is a session override everywhere else. With nothing
+   * configured there is nothing to override, and a picker that accepts a
+   * model and then refuses to run is worse than one that refuses the pick —
+   * so here the pick is the configuration.
+   */
+  it('treats a pick from the composer as the configuration when there is none', async () => {
+    const peer = await bootUnconfigured(NO_MODEL);
+    await peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION, client: { name: 'test' } });
+
+    await peer.request(UI_METHODS.setModel, { model: 'mock-model' });
+
+    const state = await peer.request<UiState>(UI_METHODS.state);
+    expect(state.setup).toBeUndefined();
+    expect(state.model).toBe('mock-model');
+    expect(state.daemon).toBe('up');
+    await expect(peer.request(UI_METHODS.sendMessage, { text: 'hello?' })).resolves.toBeTruthy();
+  });
+
   it('comes alive when a model is chosen, without a reload', async () => {
     const peer = await bootUnconfigured(NO_MODEL);
     await peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION, client: { name: 'test' } });

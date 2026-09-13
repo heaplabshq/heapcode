@@ -24,7 +24,6 @@ import {
   getPersona,
   isPermissionMode,
   lineDiffStats,
-  createProvider,
   providerPresets,
   resolveCapabilities,
   describeRole,
@@ -158,6 +157,7 @@ import {
 } from './protocol.js';
 import type { DaemonHello } from './hello.js';
 import { attachmentPath } from './attachmentRoute.js';
+import { connectionModels, probeConnection } from './models.js';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
 import { listFolders, type WorkspaceStore } from './workspaces.js';
@@ -535,6 +535,34 @@ export class WebSession {
    * both now point at Settings rather than at a command, because this is a
    * page you are already looking at.
    */
+  /**
+   * The connection a model list is about when nobody said which.
+   *
+   * The chat role's, even when it names no model — that is the connection
+   * someone is in the middle of configuring — and otherwise the only one
+   * there is.
+   */
+  private async defaultConnectionName(): Promise<string | undefined> {
+    if (this.profile) return this.profile.name;
+    const roles = await this.deps.config.getRoles();
+    if (roles.chat?.connection) return roles.chat.connection;
+    return (await this.deps.config.listConnections())[0]?.name;
+  }
+
+  /**
+   * Make a model the chat role's, and start on it.
+   *
+   * The one path by which picking a model from the composer configures the
+   * host rather than overriding a session that does not exist yet.
+   */
+  private async adoptChatModel(model: string): Promise<void> {
+    const connection = await this.defaultConnectionName();
+    if (!connection) throw new Error('No connection yet — add one in Settings first.');
+    await this.deps.config.setChatModel(connection, model);
+    await this.open();
+    void this.pushState();
+  }
+
   private async describeMissingModel(): Promise<string> {
     const connections = await this.deps.config.listConnections();
     if (connections.length === 0) return 'No connection yet — add one in Settings to start chatting.';
@@ -686,9 +714,17 @@ export class WebSession {
     });
 
     ui.onRequest(UI_METHODS.listModels, async (raw): Promise<UiListModelsResult> => {
-      await this.start();
       const { profileName } = (raw ?? {}) as UiListModelsParams;
-      const res = await this.connection!.peer.request<{ models: Array<{ id: string; contextLength?: number }> }>(
+      await this.open();
+      // No daemon, because no model has been chosen yet — and this list is
+      // how you choose one. Asked of the endpoint directly instead, the same
+      // call the connection test makes.
+      if (!this.connection) {
+        const name = profileName ?? (await this.defaultConnectionName());
+        if (!name) return { models: [] };
+        return { models: await connectionModels(this.deps.config, this.deps.secrets, name) };
+      }
+      const res = await this.connection.peer.request<{ models: Array<{ id: string; contextLength?: number }> }>(
         METHODS.listModels,
         // The daemon resolves an unknown name through `key/request`, which this
         // host answers from its own config and secrets — so any configured
@@ -698,32 +734,21 @@ export class WebSession {
       return { models: res.models };
     });
 
-    ui.onRequest(UI_METHODS.probeProvider, async (raw): Promise<UiProbeProviderResult> => {
-      const { preset, baseUrl, apiKey, useStoredKeyFor } = (raw ?? {}) as UiProbeProviderParams;
-      if (!baseUrl?.trim()) return { ok: false, models: [], error: 'Enter a base URL first.' };
-      // Deliberately not routed through the daemon: it resolves saved profiles
-      // by name, and the whole point here is a profile that does not exist yet.
-      const known = providerPresets.find((p) => p.id === preset);
-      const key = apiKey || (useStoredKeyFor ? await this.deps.secrets.getApiKey(useStoredKeyFor) : undefined);
-      try {
-        const provider = createProvider(
-          { name: 'probe', preset: (known?.id ?? 'custom') as ProviderProfileConfig['preset'], baseUrl, model: '' },
-          key,
-        );
-        const models = await provider.listModels();
-        if (models.length === 0) {
-          // Reached it, but it lists nothing — a real setup (some proxies serve
-          // models they refuse to enumerate), so this is not an error.
-          return { ok: true, models: [], error: 'Connected, but the endpoint lists no models — type the id yourself.' };
-        }
-        return { ok: true, models: models.map((m) => m.id) };
-      } catch (err) {
-        return { ok: false, models: [], error: err instanceof Error ? err.message : String(err) };
-      }
-    });
+    ui.onRequest(UI_METHODS.probeProvider, async (raw): Promise<UiProbeProviderResult> =>
+      probeConnection(this.deps.secrets, (raw ?? {}) as UiProbeProviderParams),
+    );
 
     ui.onRequest(UI_METHODS.setModel, async (raw) => {
       const { model } = raw as UiSetModelParams;
+      // With nothing configured there is no session model for this to
+      // override, and a picker that appears to accept a model and then
+      // refuses to run is worse than one that refuses the pick. So here it
+      // writes the chat role — the same thing Settings would have written —
+      // and the session starts on it.
+      if (!this.profile && model) {
+        await this.adoptChatModel(model);
+        return null;
+      }
       this.modelOverride = model;
       void this.pushState();
       return null;
@@ -1343,10 +1368,14 @@ export class WebSession {
      * connection is a cloud provider.
      */
     ui.onRequest(UI_METHODS.listConnectionModels, async (raw): Promise<UiConnectionModelsResult> => {
-      await this.start();
+      await this.open();
       const { connection } = raw as UiConnectionModelsParams;
       try {
-        const { models } = await this.connection!.peer.request<{ models: Array<{ id: string }> }>(
+        if (!this.connection) {
+          const models = await connectionModels(this.deps.config, this.deps.secrets, connection);
+          return { models: models.map((m) => m.id) };
+        }
+        const { models } = await this.connection.peer.request<{ models: Array<{ id: string }> }>(
           METHODS.listModels,
           { profileName: connection },
         );

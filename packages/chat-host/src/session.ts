@@ -75,6 +75,7 @@ import {
 import { UI_MODEL_ROLES } from '@heapcode/web-host/protocol';
 import type { Artifact } from '@heapcode/web-host';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from '@heapcode/web-host';
+import { connectionModels, probeConnection } from '@heapcode/web-host';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
 import {
   IMAGE_MAX_BYTES,
@@ -439,6 +440,27 @@ export class ChatSession implements HostSession {
    * behind. Both point at Settings, which is a click away on the page they
    * are reading this on.
    */
+  /**
+   * The connection a model list is about when nobody said which — the chat
+   * role's even when it names no model, since that is the one being
+   * configured, and otherwise the only one there is.
+   */
+  private async defaultConnectionName(): Promise<string | undefined> {
+    if (this.profile) return this.profile.name;
+    const roles = await this.deps.config.getRoles();
+    if (roles.chat?.connection) return roles.chat.connection;
+    return (await this.deps.config.listConnections())[0]?.name;
+  }
+
+  /** Make a model the chat role's, and start on it. See `setModel`. */
+  private async adoptChatModel(model: string): Promise<void> {
+    const connection = await this.defaultConnectionName();
+    if (!connection) throw new Error('No connection yet — add one in Settings first.');
+    await this.deps.config.setChatModel(connection, model);
+    await this.open();
+    void this.pushState();
+  }
+
   private async describeMissingModel(): Promise<string> {
     const connections = await this.deps.config.listConnections();
     if (connections.length === 0) return 'No connection yet — add one in Settings to start chatting.';
@@ -604,7 +626,16 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.listModels, async (raw): Promise<ChatListModelsResult> => {
       const { profileName } = (raw ?? {}) as ChatListModelsParams;
-      const res = await this.connection!.peer.request<{ models: ModelInfo[] }>(METHODS.listModels, {
+      await this.open();
+      // No daemon, because no model has been chosen yet — and this list is
+      // how you choose one. Asked of the endpoint directly instead.
+      if (!this.connection) {
+        const name = profileName ?? (await this.defaultConnectionName());
+        if (!name) return { models: [] };
+        const models = await connectionModels(this.deps.config, this.deps.secrets, name);
+        return { models: models.map((m) => ({ id: m.id, contextLength: m.contextLength })) };
+      }
+      const res = await this.connection.peer.request<{ models: ModelInfo[] }>(METHODS.listModels, {
         profileName: profileName ?? this.profile?.name,
       });
       return { models: res.models.map((m) => ({ id: m.id, contextLength: m.contextLength })) };
@@ -612,6 +643,13 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.setModel, async (raw) => {
       const { model } = raw as ChatSetModelParams;
+      // Nothing configured yet: there is no session model for this to
+      // override, so the pick becomes the chat role itself rather than a
+      // setting that silently fails at the first message.
+      if (!this.profile && model) {
+        await this.adoptChatModel(model);
+        return null;
+      }
       this.modelOverride = model || undefined;
       void this.warmContextWindow();
       void this.pushState();
@@ -704,18 +742,26 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.listConnectionModels, async (raw): Promise<ChatConnectionModelsResult> => {
       const { connection } = raw as { connection: string };
-      const res = await this.connection!.peer
-        .request<{ models: ModelInfo[] }>(METHODS.listModels, { profileName: connection })
-        .catch(() => ({ models: [] as ModelInfo[] }));
+      await this.open();
+      const res = await (this.connection
+        ? this.connection.peer.request<{ models: ModelInfo[] }>(METHODS.listModels, { profileName: connection })
+        : connectionModels(this.deps.config, this.deps.secrets, connection).then((models) => ({ models }))
+      ).catch(() => ({ models: [] as ModelInfo[] }));
       return { models: res.models.map((m) => m.id) };
     });
 
-    ui.onRequest(CHAT_METHODS.probeProvider, async (raw): Promise<ChatProbeProviderResult> => {
-      const params = raw as ChatProbeProviderParams;
-      return this.connection!.peer.request<ChatProbeProviderResult>(METHODS.listModels, {
-        probe: { baseUrl: params.baseUrl, apiKey: params.apiKey, preset: params.preset },
-      });
-    });
+    /**
+     * Test an endpoint before it is a connection.
+     *
+     * Local, not through the daemon — which is what Heap Code has always
+     * done, and the reason matters here: this used to reach for a daemon
+     * session that does not exist until a model is set, so on a host with
+     * nothing configured the "Test connection" button in the add-connection
+     * form threw. That is the one button someone in that state has to press.
+     */
+    ui.onRequest(CHAT_METHODS.probeProvider, async (raw): Promise<ChatProbeProviderResult> =>
+      probeConnection(this.deps.secrets, (raw ?? {}) as ChatProbeProviderParams),
+    );
 
     ui.onRequest(CHAT_METHODS.setWebSearch, async (raw) => {
       const { provider, enabled, apiKey } = raw as { provider?: string; enabled?: boolean; apiKey?: string };

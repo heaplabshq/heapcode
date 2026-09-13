@@ -45,7 +45,7 @@ function sse(text: string): { kind: 'sse'; chunks: string[] } {
 
 async function boot(
   responses: Array<{ kind: 'sse'; chunks: string[] }>,
-  opts: { withFolder?: boolean; withConnection?: boolean } = {},
+  opts: { withFolder?: boolean; withConnection?: boolean; withModel?: boolean } = {},
 ): Promise<{
   peer: RpcPeer;
   folder: string;
@@ -64,9 +64,15 @@ async function boot(
     configPath,
     JSON.stringify(
       // `{}` is a machine where `heapcode` has never been run — the state the
-      // host used to refuse to open in.
+      // host used to refuse to open in. `withModel: false` is the other
+      // half: an endpoint whose chat role names no model.
       opts.withConnection === false
         ? {}
+        : opts.withModel === false
+        ? {
+            connections: [{ name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, capabilities: { nativeToolCalls: false } }],
+            roles: { chat: { connection: 'mock', model: '' } },
+          }
         : {
             activeProfile: 'mock',
             profiles: [
@@ -322,6 +328,51 @@ describe('the chat host with no folder', () => {
 
     const state = await peer.request<ChatState>(CHAT_METHODS.state);
     expect(state.setup).toBeUndefined();
+    expect(state.daemon).toBe('up');
+    await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).resolves.toBeTruthy();
+  });
+  /**
+   * The add-connection form, on a host with nothing configured.
+   *
+   * "Test connection" here used to be routed through the daemon, which does
+   * not exist until a model is set — so the one button someone in this state
+   * has to press threw on a missing session.
+   */
+  it('tests an endpoint with no daemon to route the request through', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], {
+      withConnection: false,
+    });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    const probe = await peer.request<{ ok: boolean; models: string[] }>(CHAT_METHODS.probeProvider, {
+      preset: 'custom',
+      baseUrl: mock!.baseUrl,
+    });
+    expect(probe.ok).toBe(true);
+    expect(probe.models).toContain('mock-model');
+  });
+
+  it('lists a connection\u2019s models before there is a model to run on', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withModel: false });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    const listed = await peer.request<{ models: Array<{ id: string }> }>(CHAT_METHODS.listModels);
+    expect(listed.models.map((m) => m.id)).toContain('mock-model');
+
+    const role = await peer.request<{ models: string[] }>(CHAT_METHODS.listConnectionModels, {
+      connection: 'mock',
+    });
+    expect(role.models).toContain('other-model');
+  });
+
+  it('takes a pick from the model picker as the configuration when there is none', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withModel: false });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    await peer.request(CHAT_METHODS.setModel, { model: 'mock-model' });
+
+    const state = await peer.request<ChatState>(CHAT_METHODS.state);
+    expect(state.setup).toBeUndefined();
+    expect(state.model).toBe('mock-model');
     expect(state.daemon).toBe('up');
     await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).resolves.toBeTruthy();
   });

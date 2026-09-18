@@ -14,6 +14,8 @@ import {
   UI_PROTOCOL_VERSION,
   type UiConversationMeta,
   type UiHelloResult,
+  type UiListModelsResult,
+  type UiProbeProviderResult,
   type UiSettings,
   type UiState,
 } from '../src/protocol.js';

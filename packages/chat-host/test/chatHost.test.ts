@@ -43,7 +43,10 @@ function sse(text: string): { kind: 'sse'; chunks: string[] } {
   };
 }
 
-async function boot(responses: Array<{ kind: 'sse'; chunks: string[] }>): Promise<{
+async function boot(
+  responses: Array<{ kind: 'sse'; chunks: string[] }>,
+  opts: { withFolder?: boolean; withConnection?: boolean; withModel?: boolean } = {},
+): Promise<{
   peer: RpcPeer;
   folder: string;
 }> {
@@ -59,17 +62,29 @@ async function boot(responses: Array<{ kind: 'sse'; chunks: string[] }>): Promis
   const configPath = join(home, 'config.json');
   await writeFile(
     configPath,
-    JSON.stringify({
-      activeProfile: 'mock',
-      profiles: [
-        { name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model', capabilities: { nativeToolCalls: false } },
-      ],
-    }),
+    JSON.stringify(
+      // `{}` is a machine where `heapcode` has never been run — the state the
+      // host used to refuse to open in. `withModel: false` is the other
+      // half: an endpoint whose chat role names no model.
+      opts.withConnection === false
+        ? {}
+        : opts.withModel === false
+        ? {
+            connections: [{ name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, capabilities: { nativeToolCalls: false } }],
+            roles: { chat: { connection: 'mock', model: '' } },
+          }
+        : {
+            activeProfile: 'mock',
+            profiles: [
+              { name: 'mock', preset: 'custom', baseUrl: mock.baseUrl, model: 'mock-model', capabilities: { nativeToolCalls: false } },
+            ],
+          },
+    ),
     'utf8',
   );
 
   host = await startChatHost({
-    root: folder,
+    root: opts.withFolder === false ? undefined : folder,
     config: new ConfigStore(configPath),
     secrets: new SecretsStore(join(home, 'secrets.json')),
     workspaces: new WorkspaceStore(join(home, 'workspaces.json')),
@@ -203,5 +218,162 @@ describe('artifacts are scoped to the folder', () => {
 
     const after = await peer.request<{ artifacts: unknown[] }>(CHAT_METHODS.artifacts);
     expect(after.artifacts).toEqual([]);
+  });
+});
+
+
+/** The system prompt from the first chat call, which is where the roster lives. */
+function systemPromptSent(): string {
+  const chat = mock!.requests.find((r) => r.path.includes('chat/completions'));
+  const body = chat?.body as { messages?: Array<{ role: string; content: string }> } | undefined;
+  return body?.messages?.find((m) => m.role === 'system')?.content ?? '';
+}
+
+/**
+ * Heap Chat with no folder open.
+ *
+ * Someone who just wants to ask a question should not have to nominate a
+ * directory first — and the standalone command used to default to the home
+ * directory, so `heapcode chat` with no argument quietly began embedding
+ * everything the person owned.
+ */
+describe('the chat host with no folder', () => {
+  it('reports no folder rather than inventing one', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withFolder: false });
+    const hello = await peer.request<ChatHelloResult>(CHAT_METHODS.hello, {
+      protocolVersion: CHAT_PROTOCOL_VERSION,
+    });
+    expect(hello.state.folder).toBe('');
+    expect(hello.state.folderName).toBe('');
+    // Still a working session: the daemon is up and it can answer.
+    expect(hello.state.daemon).toBe('up');
+  });
+
+  it('offers the web and writing, but not the four tools that need files', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withFolder: false });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    await peer.request(CHAT_METHODS.sendMessage, { text: 'what is a 1099?' });
+
+    // The roster is carried in the prompt when native tool calls are off.
+    const prompt = systemPromptSent();
+    // On the heading that declares each tool, not anywhere the word appears:
+    // `search` turns up in prose in web_search's own description, and every
+    // tool is introduced as `### name`.
+    const offers = (name: string): boolean => prompt.includes(`### ${name}\n`);
+    for (const name of ['read_file', 'list_dir', 'search', 'semantic_search']) {
+      expect(offers(name), `${name} should not be offered`).toBe(false);
+    }
+    for (const name of ['web_search', 'create_artifact', 'search_history']) {
+      expect(offers(name), `${name} should still be offered`).toBe(true);
+    }
+  });
+
+  it('tells the model there is no folder, rather than that it works in one', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withFolder: false });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    await peer.request(CHAT_METHODS.sendMessage, { text: 'hello' });
+
+    const prompt = systemPromptSent();
+    expect(prompt).toContain('No folder is open');
+    // A session told it works "in a folder of their own files" when there is
+    // none will offer to read what is there and apologise for not finding it.
+    expect(prompt).not.toContain('works alongside someone in a folder');
+  });
+
+  it('refuses the file panel plainly instead of listing something', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withFolder: false });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    await expect(peer.request(CHAT_METHODS.fileTree, { path: '' })).rejects.toThrow(/No folder is open/);
+  });
+  /**
+   * Before there is anything to chat with.
+   *
+   * The command used to print "No provider connection configured" and exit,
+   * which is a dead end for someone whose whole reason for running this is
+   * the page it serves: Settings — where a connection is added — is on that
+   * page. It opens instead, says what is missing, and refuses only the part
+   * that genuinely needs a model.
+   */
+  it('opens with no connection at all, and says so rather than refusing', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], {
+      withConnection: false,
+    });
+    const hello = await peer.request<ChatHelloResult>(CHAT_METHODS.hello, {
+      protocolVersion: CHAT_PROTOCOL_VERSION,
+    });
+    expect(hello.state.setup).toMatch(/no connection yet/i);
+    expect(hello.state.setup).toMatch(/settings/i);
+    expect(hello.state.daemon).toBe('down');
+    await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).rejects.toThrow(
+      hello.state.setup!,
+    );
+  });
+
+  it('starts chatting the moment a connection is added, without a restart', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], {
+      withConnection: false,
+    });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    // What the Settings dialog sends after you fill in the add-connection form.
+    await peer.request(CHAT_METHODS.saveProfile, {
+      profile: {
+        name: 'mock',
+        preset: 'custom',
+        baseUrl: mock!.baseUrl,
+        model: 'mock-model',
+        capabilities: { nativeToolCalls: false },
+      },
+    });
+
+    const state = await peer.request<ChatState>(CHAT_METHODS.state);
+    expect(state.setup).toBeUndefined();
+    expect(state.daemon).toBe('up');
+    await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).resolves.toBeTruthy();
+  });
+  /**
+   * The add-connection form, on a host with nothing configured.
+   *
+   * "Test connection" here used to be routed through the daemon, which does
+   * not exist until a model is set — so the one button someone in this state
+   * has to press threw on a missing session.
+   */
+  it('tests an endpoint with no daemon to route the request through', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], {
+      withConnection: false,
+    });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    const probe = await peer.request<{ ok: boolean; models: string[] }>(CHAT_METHODS.probeProvider, {
+      preset: 'custom',
+      baseUrl: mock!.baseUrl,
+    });
+    expect(probe.ok).toBe(true);
+    expect(probe.models).toContain('mock-model');
+  });
+
+  it('lists a connection\u2019s models before there is a model to run on', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withModel: false });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    const listed = await peer.request<{ models: Array<{ id: string }> }>(CHAT_METHODS.listModels);
+    expect(listed.models.map((m) => m.id)).toContain('mock-model');
+
+    const role = await peer.request<{ models: string[] }>(CHAT_METHODS.listConnectionModels, {
+      connection: 'mock',
+    });
+    expect(role.models).toContain('other-model');
+  });
+
+  it('takes a pick from the model picker as the configuration when there is none', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withModel: false });
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    await peer.request(CHAT_METHODS.setModel, { model: 'mock-model' });
+
+    const state = await peer.request<ChatState>(CHAT_METHODS.state);
+    expect(state.setup).toBeUndefined();
+    expect(state.model).toBe('mock-model');
+    expect(state.daemon).toBe('up');
+    await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).resolves.toBeTruthy();
   });
 });

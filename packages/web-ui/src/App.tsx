@@ -45,6 +45,7 @@ import { findCommand, type Command } from './commands.js';
 import { Palette } from './components/Palette.js';
 import { Shortcuts } from './components/Shortcuts.js';
 import { Settings, type UiProfileDraft } from './components/Settings.js';
+import { Toasts } from './components/Toasts.js';
 import { usePanelWidth } from './panelWidth.js';
 import { RpcClient } from './rpc.js';
 import {
@@ -815,6 +816,28 @@ export function App(): JSX.Element {
     setSeedImages(images);
   }, []);
 
+  /**
+   * Leave edit mode, and empty the box it filled.
+   *
+   * An ordinal only means something in the conversation it came from, so it
+   * has to go when the conversation does — otherwise starting a new one while
+   * editing left the state behind, and sending asked the host to edit a turn
+   * that conversation does not have.
+   *
+   * Seeding `''` rather than clearing the seed: the composer only reads a seed
+   * that is defined, so `undefined` leaves the old text in a box that is no
+   * longer editing anything.
+   */
+  const leaveEdit = useCallback(() => {
+    setEditing((current) => {
+      if (current) {
+        setSeed('');
+        setSeedImages(undefined);
+      }
+      return undefined;
+    });
+  }, []);
+
   /** Restore the workspace to the checkpoint before a turn, conversation intact. */
   const restoreTurn = useCallback(
     (ordinal: number) => {
@@ -885,11 +908,12 @@ export function App(): JSX.Element {
         .then((res) => {
           setTranscript(fromMessages(res.messages));
           dismissPending();
+          leaveEdit();
           refreshConversations();
         })
         .catch((err: Error) => setError(err.message));
     },
-    [rpc, refreshConversations, dismissPending],
+    [rpc, refreshConversations, dismissPending, leaveEdit],
   );
 
   /**
@@ -930,10 +954,11 @@ export function App(): JSX.Element {
       .then(() => {
         setTranscript(emptyTranscript);
         dismissPending();
+        leaveEdit();
         refreshConversations();
       })
       .catch((err: Error) => setError(err.message));
-  }, [rpc, refreshConversations, dismissPending]);
+  }, [rpc, refreshConversations, dismissPending, leaveEdit]);
 
   newConversationRef.current = newConversation;
 
@@ -1010,13 +1035,20 @@ export function App(): JSX.Element {
               </span>
             </div>
           )}
-          {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
-          {error && <div className="banner banner-error">{error}</div>}
-          {notice && (
-            <div className="banner" onClick={() => setNotice(undefined)} role="status">
-              {notice}
+          {/* A condition, not an event: it is true of this page until
+              somebody changes it, and the thing that changes it is one click
+              away. Above the transcript with the other standing notices
+              rather than in a toast, which would expire while still true. */}
+          {state?.setup && (
+            <div className="banner banner-warn" role="alert">
+              <strong>Nothing to chat with yet.</strong>
+              <span>{state.setup}</span>
+              <button type="button" className="banner-action" onClick={() => openSettings()}>
+                Open Settings
+              </button>
             </div>
           )}
+          {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
 
           {/* Above the scroller, not inside it: the list is about the run in
               flight, so it has to stay put while the transcript moves. And
@@ -1043,6 +1075,15 @@ export function App(): JSX.Element {
           {ask && <AskUserCard pending={ask} />}
           {review && <ReviewCard pending={review} />}
 
+          {/* Conditions stay in the banners above; these are the things that
+              just happened, said next to where they happened and then gone. */}
+          <Toasts
+            error={error}
+            onDismissError={() => setError(undefined)}
+            notice={notice}
+            onDismissNotice={() => setNotice(undefined)}
+          />
+
           <Composer
             onSend={send}
             onCancel={cancel}
@@ -1053,7 +1094,7 @@ export function App(): JSX.Element {
             disabled={status !== 'open'}
             editing={editing !== undefined}
             seedImages={seedImages}
-            onCancelEdit={() => setEditing(undefined)}
+            onCancelEdit={leaveEdit}
             footer={
               <>
                 {/* Which folder, then how much freedom, then which model —
@@ -1095,6 +1136,12 @@ export function App(): JSX.Element {
                     onOpenSettings={() => openSettings('context')}
                   />
                   <ModelPicker
+                    // Keyed on the connection: the list belongs to whichever
+                    // provider is active, and the picker fetches once and
+                    // keeps what it got. Switching connection used to leave
+                    // the previous provider's models in the menu until the
+                    // page was reloaded.
+                    key={state?.profile}
                     current={state?.model ?? ''}
                     placement="up"
                     listModels={() => rpc.request<UiListModelsResult>(UI_METHODS.listModels).then((r) => r.models)}
@@ -1116,6 +1163,12 @@ export function App(): JSX.Element {
               onPointerDown={startPanelDrag}
             />
             <Panel
+              // Keyed on the folder: the panel is a view *of* a workspace, and
+              // its tabs load once on mount. Switching folders used to leave
+              // the file tree, the opened file and the preview showing the
+              // previous one until a tab was clicked, which remounted them by
+              // accident. A new workspace is a new panel.
+              key={state?.root}
               width={panelWidth}
               tab={panelTab}
               onTab={setPanelTab}

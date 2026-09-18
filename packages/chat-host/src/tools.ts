@@ -75,7 +75,14 @@ export const REMEMBER_TOOL: ToolDefinition = {
   permission: 'write',
 };
 
-export const chatToolDefinitions: ToolDefinition[] = [
+/**
+ * The four that only mean something with a folder open.
+ *
+ * Offered only when there is one. A session with no folder that still listed
+ * `read_file` would have the model reaching for it, failing, and explaining
+ * the failure — instead of simply answering the question it was asked.
+ */
+export const folderToolDefinitions: ToolDefinition[] = [
   described(
     sharedAgentTools.read_file,
     'Read a file, or a line range of it. Returns its content with line numbers. PDFs, Word documents ' +
@@ -107,6 +114,10 @@ export const chatToolDefinitions: ToolDefinition[] = [
       'a regex search cannot. Use it whenever the question is about what something says rather than ' +
       'what it is called.',
   ),
+];
+
+/** Everything that needs no folder: the web, the conversation, and writing. */
+export const generalToolDefinitions: ToolDefinition[] = [
   // Always offered, executed only when configured — the same posture Heap Code
   // takes. A model that cannot see the tool has no way to know web search is a
   // concept here, and one that cannot see it will claim it searched anyway.
@@ -146,6 +157,21 @@ export const chatToolDefinitions: ToolDefinition[] = [
 ];
 
 /** Tool names this host will execute. Anything else is refused, not attempted. */
+/**
+ * The roster for a session, which depends on whether it has a folder.
+ *
+ * Heap Chat can be opened on nothing — someone who just wants to ask a
+ * question should not have to nominate a directory first. With no folder it
+ * still has the web, its memory, the conversation and `create_artifact`; what
+ * it loses is the four tools that only mean something against files.
+ */
+export function chatToolsFor(hasFolder: boolean): ToolDefinition[] {
+  return hasFolder ? [...folderToolDefinitions, ...generalToolDefinitions] : [...generalToolDefinitions];
+}
+
+/** Both rosters, for the permission check — a name is on one list or neither. */
+export const chatToolDefinitions: ToolDefinition[] = [...folderToolDefinitions, ...generalToolDefinitions];
+
 export const CHAT_TOOL_NAMES: ReadonlySet<string> = new Set(chatToolDefinitions.map((t) => t.name));
 
 /** What to do about a tool call, before it runs. */

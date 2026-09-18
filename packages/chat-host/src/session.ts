@@ -50,6 +50,8 @@ import {
   projectStateDir,
   trimHistoryForAgent,
   type ConfigStore,
+  AttachmentStore,
+  globalDir,
   SecretsMcpAuthStore,
   type SecretsStore,
 } from '@heapcode/host';
@@ -73,6 +75,7 @@ import {
 import { UI_MODEL_ROLES } from '@heapcode/web-host/protocol';
 import type { Artifact } from '@heapcode/web-host';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from '@heapcode/web-host';
+import { connectionModels, probeConnection } from '@heapcode/web-host';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
 import {
   IMAGE_MAX_BYTES,
@@ -133,8 +136,8 @@ import type {
   ChatSettings,
   ChatState,
 } from './protocol.js';
-import { CHAT_SYSTEM_PROMPT } from './prompt.js';
-import { CHAT_TOOL_NAMES, chatToolDefinitions, permissionFor } from './tools.js';
+import { chatSystemPrompt } from './prompt.js';
+import { CHAT_TOOL_NAMES, chatToolsFor, folderToolDefinitions, permissionFor } from './tools.js';
 
 /**
  * The three outcomes of trying to read a path as a document.
@@ -193,8 +196,15 @@ const REPLAY_BUFFER = 2_000;
 const TOOL_SUMMARY_CHARS = 2_000;
 
 export interface ChatSessionDeps {
-  /** The folder this session reads. Canonicalized by the caller. */
-  root: string;
+  /**
+   * The folder this session reads, canonicalized by the caller.
+   *
+   * Optional: Heap Chat can be opened on nothing. Someone who just wants to
+   * ask a question should not have to nominate a directory first, and the
+   * standalone command used to default to the home directory — which meant
+   * `heapcode chat` quietly began embedding everything the person owned.
+   */
+  root?: string;
   config: ConfigStore;
   secrets: SecretsStore;
   connect: (hello: DaemonHello) => Promise<ServerConnection>;
@@ -204,6 +214,12 @@ export interface ChatSessionDeps {
    * mounted on that server, so one `/oauth/callback` answers for both.
    */
   mcpLogins?: McpLoginRegistry;
+  /**
+   * Where this product is served from, when it is mounted inside another —
+   * `/chat` under `heapcode web`. Attachment URLs are absolute, so they carry
+   * this prefix or they reach the wrong session's store.
+   */
+  basePath?: string;
   /** Recently opened folders, for the picker. */
   workspaces?: WorkspaceStore;
   /** Bound to a non-loopback address — passed down, never inferred here. */
@@ -237,7 +253,7 @@ export interface ChatSessionDeps {
  * than a filter over the coding session.
  */
 export class ChatSession implements HostSession {
-  private root: string;
+  private root?: string;
   private connection?: ServerConnection;
   private executor?: WorkspaceToolExecutor;
   private mcp?: McpManager;
@@ -248,8 +264,11 @@ export class ChatSession implements HostSession {
    * folder. Rebuilt on a folder switch, like everything else derived from the
    * root.
    */
+  private attachments: AttachmentStore;
   private artifacts: ArtifactStore;
   private profile?: ProviderProfileConfig;
+  /** Why this session has no model, while it has none. Travels in `state.setup`. */
+  private setupNeeded?: string;
   private ui?: RpcPeer;
 
   private activeRunId?: string;
@@ -293,7 +312,8 @@ export class ChatSession implements HostSession {
   constructor(private readonly deps: ChatSessionDeps) {
     this.root = deps.root;
     this.memory = new ChatMemory(deps.memoryFile ?? chatMemoryFile());
-    this.artifacts = new ArtifactStore(join(projectStateDir(deps.root), 'artifacts'));
+    this.artifacts = new ArtifactStore(join(chatStateDir(deps.root), 'artifacts'));
+    this.attachments = new AttachmentStore(join(chatStateDir(deps.root), 'attachments'));
   }
 
   /** The model this session's runs use — the chat role, then the profile's own. */
@@ -301,7 +321,7 @@ export class ChatSession implements HostSession {
     return this.modelOverride || this.chatModel || this.profile?.model || '';
   }
 
-  get folderRoot(): string {
+  get folderRoot(): string | undefined {
     return this.root;
   }
 
@@ -309,25 +329,42 @@ export class ChatSession implements HostSession {
   // lifecycle
   // ---------------------------------------------------------------------------
 
-  /** Connects to the daemon and builds the tool executor. Idempotent. */
+  /**
+   * Connects to the daemon and builds the tool executor. Idempotent.
+   *
+   * Throws when there is no model to run on, so a handler that needs one
+   * fails with a sentence the page can show. `open()` is the same thing
+   * without the throw, for the handshake — see there.
+   */
   async start(): Promise<void> {
-    if (this.connection) return;
+    const missing = await this.open();
+    if (missing) throw new Error(missing);
+  }
+
+  /**
+   * Bring the session as far up as the configuration allows, and say what is
+   * missing rather than throwing it.
+   *
+   * The settings screen is a page in this app, so a host that refused to open
+   * without a model was refusing to show the only thing that could give it
+   * one. It opens anyway, reports the gap in `state.setup`, and fails at the
+   * first thing that actually needs a model — which is sending a message.
+   */
+  private async open(): Promise<string | undefined> {
+    if (this.connection) return undefined;
 
     const { config, secrets } = this.deps;
+
+    // Ahead of the model check, because the sidebar asks for the conversation
+    // list as soon as the page loads.
+    this.history ??= new JsonConversationStore(chatConversationsFile(this.root));
+    this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
+
     const profile = await config.getActiveProfile();
-    if (!profile) {
-      const connections = await config.listConnections();
-      throw new Error(
-        connections.length > 0
-          ? 'Heap Chat has no model set. Run `heapcode model set chat <connection> <model>` first.'
-          : 'No provider connection configured. Run `heapcode connection add` before `heapcode chat`.',
-      );
-    }
+    if (!profile) return (this.setupNeeded = await this.describeMissingModel());
+    this.setupNeeded = undefined;
     this.profile = profile;
     this.chatModel = (await config.resolve('chat'))?.model ?? profile.model;
-
-    this.history = new JsonConversationStore(chatConversationsFile(this.root));
-    this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
 
     // A checkpoint is constructed because the executor's constructor takes
     // one, and nothing here will ever ask it to record anything: no tool on
@@ -338,7 +375,9 @@ export class ChatSession implements HostSession {
     // own .heapcode/mcp.json, exactly as Heap Code loads them, because they
     // are the same config. Reconnect is idempotent.
     this.mcp ??= new McpManager(
-      () => loadMcpServers(this.root, config),
+      // With no folder there is no project file to merge; the personal
+      // servers in ~/.heapcode/config.json still apply.
+      () => (this.root ? loadMcpServers(this.root, config) : config.load().then((c) => c.mcpServers ?? {})),
       undefined,
       this.deps.clientVersion,
       new SecretsMcpAuthStore(this.deps.secrets),
@@ -346,7 +385,10 @@ export class ChatSession implements HostSession {
     );
     void this.mcp.ensureConnected().catch(() => undefined);
 
-    this.executor = new WorkspaceToolExecutor(
+    // Only with a folder: nothing on the general roster reads a file, so an
+    // executor rooted at nothing is never asked for one.
+    this.executor = this.root
+      ? new WorkspaceToolExecutor(
       this.root,
       new SessionCheckpoint(this.root),
       60_000,
@@ -361,11 +403,14 @@ export class ChatSession implements HostSession {
       // is only written when it finishes, and that is exactly the part a long
       // conversation is asked about.
       async (id) => (!id || id === this.conversation?.id ? this.conversation : this.history?.get(id)),
-    );
+        )
+      : undefined;
 
     const apiKey = await secrets.getApiKey(profile.name);
     this.connection = await this.deps.connect({
-      root: this.root,
+      // The daemon wants somewhere to resolve relative paths against; with no
+      // folder open, nothing on the roster produces one.
+      root: this.root ?? homedir(),
       profiles: [profile],
       activeProfile: profile.name,
       roles: await config.getRoles(),
@@ -377,8 +422,50 @@ export class ChatSession implements HostSession {
     });
     this.registerDaemonHandlers(this.connection.peer);
     void this.warmContextWindow();
-    void this.startIndexing();
-    await this.deps.workspaces?.record(this.root);
+    // Only with a folder. This used to run unconditionally against a root that
+    // defaulted to the home directory, so opening the standalone command began
+    // embedding everything the person owned.
+    if (this.root) {
+      void this.startIndexing();
+      await this.deps.workspaces?.record(this.root);
+    }
+    return undefined;
+  }
+
+  /**
+   * What to tell someone who has no model yet, and where to fix it.
+   *
+   * Two states, one symptom: no endpoint at all, and an endpoint whose chat
+   * role names no model — what an interrupted edit of the role table leaves
+   * behind. Both point at Settings, which is a click away on the page they
+   * are reading this on.
+   */
+  /**
+   * The connection a model list is about when nobody said which — the chat
+   * role's even when it names no model, since that is the one being
+   * configured, and otherwise the only one there is.
+   */
+  private async defaultConnectionName(): Promise<string | undefined> {
+    if (this.profile) return this.profile.name;
+    const roles = await this.deps.config.getRoles();
+    if (roles.chat?.connection) return roles.chat.connection;
+    return (await this.deps.config.listConnections())[0]?.name;
+  }
+
+  /** Make a model the chat role's, and start on it. See `setModel`. */
+  private async adoptChatModel(model: string): Promise<void> {
+    const connection = await this.defaultConnectionName();
+    if (!connection) throw new Error('No connection yet — add one in Settings first.');
+    await this.deps.config.setChatModel(connection, model);
+    await this.open();
+    void this.pushState();
+  }
+
+  private async describeMissingModel(): Promise<string> {
+    const connections = await this.deps.config.listConnections();
+    if (connections.length === 0) return 'No connection yet — add one in Settings to start chatting.';
+    const named = (await this.deps.config.getRoles()).chat?.connection ?? connections[0]!.name;
+    return `No model set for chat — pick one for "${named}" in Settings.`;
   }
 
   async close(): Promise<void> {
@@ -409,7 +496,10 @@ export class ChatSession implements HostSession {
     this.mcp?.dispose();
     this.mcp = undefined;
     this.root = target;
-    this.artifacts = new ArtifactStore(join(projectStateDir(target), 'artifacts'));
+    this.artifacts = new ArtifactStore(join(chatStateDir(target), 'artifacts'));
+    // Same reasoning as the artifacts above: a switched folder must not keep
+    // serving the previous one's images.
+    this.attachments = new AttachmentStore(join(chatStateDir(target), 'attachments'));
     this.conversation = undefined;
     this.history = undefined;
     this.turnEntries = [];
@@ -472,13 +562,15 @@ export class ChatSession implements HostSession {
     ui.onRequest(CHAT_METHODS.hello, async (raw): Promise<ChatHelloResult> => {
       const params = raw as ChatHelloParams;
       // Connect on hello, not at construction: a configuration error should
-      // reach the page as a message rather than crash the launch.
-      await this.start();
+      // reach the page as a message rather than crash the launch. `open`, not
+      // `start` — with no model the page still has to render, because
+      // Settings is on it.
+      await this.open();
       const replay = params.resumeRunId ? this.buffers.get(params.resumeRunId) : undefined;
       return {
         protocolVersion: CHAT_PROTOCOL_VERSION,
         state: await this.state(),
-        messages: toUiMessages(this.conversation?.messages ?? []),
+        messages: toUiMessages(this.conversation?.messages ?? [], { attachmentBase: this.deps.basePath }),
         activeRunId: this.activeRunId,
         replay: replay ? [...replay] : undefined,
         pending: this.activeRunId ? this.pendingMessages() : undefined,
@@ -521,7 +613,7 @@ export class ChatSession implements HostSession {
       this.turnEntries = [];
       // A grant was given for what was happening in the other conversation.
       this.allowedTools.clear();
-      return { id: found.id, messages: toUiMessages(found.messages) };
+      return { id: found.id, messages: toUiMessages(found.messages, { attachmentBase: this.deps.basePath }) };
     });
 
     ui.onRequest(CHAT_METHODS.newConversation, async (): Promise<ChatOpenConversationResult> => {
@@ -534,7 +626,16 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.listModels, async (raw): Promise<ChatListModelsResult> => {
       const { profileName } = (raw ?? {}) as ChatListModelsParams;
-      const res = await this.connection!.peer.request<{ models: ModelInfo[] }>(METHODS.listModels, {
+      await this.open();
+      // No daemon, because no model has been chosen yet — and this list is
+      // how you choose one. Asked of the endpoint directly instead.
+      if (!this.connection) {
+        const name = profileName ?? (await this.defaultConnectionName());
+        if (!name) return { models: [] };
+        const models = await connectionModels(this.deps.config, this.deps.secrets, name);
+        return { models: models.map((m) => ({ id: m.id, contextLength: m.contextLength })) };
+      }
+      const res = await this.connection.peer.request<{ models: ModelInfo[] }>(METHODS.listModels, {
         profileName: profileName ?? this.profile?.name,
       });
       return { models: res.models.map((m) => ({ id: m.id, contextLength: m.contextLength })) };
@@ -542,6 +643,13 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.setModel, async (raw) => {
       const { model } = raw as ChatSetModelParams;
+      // Nothing configured yet: there is no session model for this to
+      // override, so the pick becomes the chat role itself rather than a
+      // setting that silently fails at the first message.
+      if (!this.profile && model) {
+        await this.adoptChatModel(model);
+        return null;
+      }
       this.modelOverride = model || undefined;
       void this.warmContextWindow();
       void this.pushState();
@@ -551,7 +659,7 @@ export class ChatSession implements HostSession {
     ui.onRequest(CHAT_METHODS.settings, async (): Promise<ChatSettings> => this.settings());
 
     ui.onRequest(CHAT_METHODS.recentFolders, async (): Promise<ChatRecentFoldersResult> => ({
-      current: this.root,
+      current: this.root ?? '',
       recent: (await this.deps.workspaces?.list()) ?? [],
       home: homedir(),
     }));
@@ -581,6 +689,9 @@ export class ChatSession implements HostSession {
       const next = mergeProfile(await this.deps.config.getProfile(profile.name), profile);
       await this.deps.config.saveProfile(next);
       if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
+      // The connection just added may be the one this session was waiting
+      // for, so the page comes alive where they are standing.
+      if (!this.connection) await this.open();
       if (profile.name === this.profile?.name) {
         this.profile = (await this.deps.config.getProfile(profile.name)) ?? next;
         // The daemon was handed the profile once, at hello, and reads its own
@@ -631,18 +742,26 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.listConnectionModels, async (raw): Promise<ChatConnectionModelsResult> => {
       const { connection } = raw as { connection: string };
-      const res = await this.connection!.peer
-        .request<{ models: ModelInfo[] }>(METHODS.listModels, { profileName: connection })
-        .catch(() => ({ models: [] as ModelInfo[] }));
+      await this.open();
+      const res = await (this.connection
+        ? this.connection.peer.request<{ models: ModelInfo[] }>(METHODS.listModels, { profileName: connection })
+        : connectionModels(this.deps.config, this.deps.secrets, connection).then((models) => ({ models }))
+      ).catch(() => ({ models: [] as ModelInfo[] }));
       return { models: res.models.map((m) => m.id) };
     });
 
-    ui.onRequest(CHAT_METHODS.probeProvider, async (raw): Promise<ChatProbeProviderResult> => {
-      const params = raw as ChatProbeProviderParams;
-      return this.connection!.peer.request<ChatProbeProviderResult>(METHODS.listModels, {
-        probe: { baseUrl: params.baseUrl, apiKey: params.apiKey, preset: params.preset },
-      });
-    });
+    /**
+     * Test an endpoint before it is a connection.
+     *
+     * Local, not through the daemon — which is what Heap Code has always
+     * done, and the reason matters here: this used to reach for a daemon
+     * session that does not exist until a model is set, so on a host with
+     * nothing configured the "Test connection" button in the add-connection
+     * form threw. That is the one button someone in that state has to press.
+     */
+    ui.onRequest(CHAT_METHODS.probeProvider, async (raw): Promise<ChatProbeProviderResult> =>
+      probeConnection(this.deps.secrets, (raw ?? {}) as ChatProbeProviderParams),
+    );
 
     ui.onRequest(CHAT_METHODS.setWebSearch, async (raw) => {
       const { provider, enabled, apiKey } = raw as { provider?: string; enabled?: boolean; apiKey?: string };
@@ -658,6 +777,7 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.fileTree, async (raw): Promise<ChatFileTreeResult> => {
       const { path } = (raw ?? {}) as { path?: string };
+      if (!this.root) throw new Error('No folder is open.');
       return { path: path ?? '', entries: await listDirectory(this.root, path ?? '') };
     });
 
@@ -671,6 +791,7 @@ export class ChatSession implements HostSession {
       if (read.kind === 'unreadable') {
         return { path, content: '', note: `No preview — this ${read.format ?? 'file'} has no readable text.` };
       }
+      if (!this.root) throw new Error('No folder is open.');
       return { path, ...(await readWorkspaceFile(this.root, path)) };
     });
 
@@ -702,7 +823,10 @@ export class ChatSession implements HostSession {
       const chosen = artifact.versions[version ? version - 1 : artifact.versions.length - 1];
       if (!chosen) throw new Error('No such version');
       // Root-jailed by the executor, like every other path this host touches.
-      const result = await this.executor!.execute({
+      // With no folder open there is nowhere to put it — the artifact is still
+      // there to read, it just has no destination yet.
+      if (!this.executor) throw new Error('Open a folder to save this into.');
+      const result = await this.executor.execute({
         id: `save-artifact-${id}`,
         name: 'write_file',
         args: { path, content: chosen.content },
@@ -777,13 +901,16 @@ export class ChatSession implements HostSession {
       })),
     );
     return {
-      folder: this.root,
-      folderName: basename(this.root),
+      // Empty means no folder, which the page renders as its own state rather
+      // than as a folder called "".
+      folder: this.root ?? '',
+      folderName: this.root ? basename(this.root) : '',
       profile: this.profile?.name ?? '',
       model: this.model,
       contextWindow: this.profile ? this.contextWindowFor.known(this.profile, this.model).window : undefined,
       profiles: withKeys,
       daemon: this.connection ? 'up' : 'down',
+      setup: this.setupNeeded,
       runId: this.activeRunId,
       lan: this.deps.lan,
     };
@@ -858,7 +985,9 @@ export class ChatSession implements HostSession {
 
   /** Both sources — personal config and the folder's own `.heapcode/mcp.json`. */
   private async listMcpServers(): Promise<ChatSettings['mcpServers']> {
-    const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
+    const { global, project } = this.root
+      ? await loadMcpServerSources(this.root, this.deps.config)
+      : { global: (await this.deps.config.load()).mcpServers ?? {}, project: {} };
     const connected = new Set(this.mcp?.connectedServerNames() ?? []);
     const tools = this.mcp?.getToolDefinitions() ?? [];
     const signedIn = await storedTokenNames(this.deps.secrets, Object.keys({ ...global, ...project }));
@@ -940,16 +1069,19 @@ export class ChatSession implements HostSession {
           task,
           history,
           images,
-          workspaceName: basename(this.root),
+          workspaceName: this.root ? basename(this.root) : '',
           // The roster, and the identity that goes with it. Both are this
           // product's, sent per run — the daemon holds no opinion about which
           // agent it is running, which is exactly what lets one daemon serve
           // both products without either leaking into the other.
           // The static roster plus whatever the connected MCP servers offer.
-          tools: [...chatToolDefinitions, ...(this.mcp?.getToolDefinitions() ?? [])],
+          // The roster this session actually has: without a folder the four
+          // file tools are not offered, so the model is not reaching for
+          // something that cannot work and explaining the failure.
+          tools: [...chatToolsFor(Boolean(this.root)), ...(this.mcp?.getToolDefinitions() ?? [])],
           // Composed per run rather than cached: a fact remembered during this
           // conversation should be in scope for the next question in it.
-          systemPrompt: CHAT_SYSTEM_PROMPT + memorySection(await this.memory.list().catch(() => [])),
+          systemPrompt: chatSystemPrompt(Boolean(this.root)) + memorySection(await this.memory.list().catch(() => [])),
           nativeToolCalls: this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls,
           contextWindow,
           maxTokens: profile.maxTokens,
@@ -968,11 +1100,11 @@ export class ChatSession implements HostSession {
       // honest fix when a reload needs it.
       const grounding = await this.groundingFor(this.lastAnswerText()).catch(() => undefined);
       if (grounding) this.ui?.notify(CHAT_METHODS.grounding, { runId, grounding } satisfies ChatGroundingParams);
-      await this.persistTurn(task, images?.length);
+      await this.persistTurn(task, images);
       persisted = true;
       return { runId, outcome, maxIterations };
     } finally {
-      if (!persisted) await this.persistTurn(task, images?.length);
+      if (!persisted) await this.persistTurn(task, images);
       this.activeRunId = undefined;
       this.abort = undefined;
       this.pendingDisplay = undefined;
@@ -998,6 +1130,11 @@ export class ChatSession implements HostSession {
    * - The local abort happens too, so `agent/run` settles even if the daemon
    *   is wedged and never answers.
    */
+  /** An image sent with an earlier turn — see HostSession.attachment. */
+  async attachment(id: string): Promise<{ bytes: Buffer; mediaType: string } | undefined> {
+    return this.attachments.read(id);
+  }
+
   async cancel(): Promise<void> {
     const target = this.activeRunId;
     if (!target) return;
@@ -1023,11 +1160,17 @@ export class ChatSession implements HostSession {
     return toUiMessages(live, { live: true });
   }
 
-  private async persistTurn(task: string, imageCount?: number): Promise<void> {
+  private async persistTurn(task: string, images?: string[]): Promise<void> {
     if (!this.conversation || !this.history) return;
+    // The bytes go beside the conversation, not in it — this file is read
+    // whole on every load, and a screenshot is megabytes of base64. The
+    // message keeps an id per image; this used to keep only a count, so a
+    // reload lost the picture the question was about.
+    const ids = images?.length ? await this.attachments.putAll(images) : undefined;
     const user: StoredMessage = {
       role: 'user',
-      content: imageCount ? `${task}\n\n[${imageCount} image${imageCount === 1 ? '' : 's'} attached]` : task,
+      content: task,
+      ...(ids?.length ? { images: ids } : {}),
     } as StoredMessage;
     this.conversation.messages.push(user, ...this.turnEntries);
     this.conversation.updatedAt = Date.now();
@@ -1154,6 +1297,18 @@ export class ChatSession implements HostSession {
         isError: true,
       };
     }
+    // A folder tool with no folder. It is not on the roster in that case, so
+    // reaching here means the model asked for something it was never offered —
+    // answered plainly rather than as a failure, because the honest reply is
+    // that there is nothing to read, not that reading went wrong.
+    if (!this.root && folderToolDefinitions.some((t) => t.name === call.name)) {
+      return {
+        id: call.id,
+        name: call.name,
+        content: 'No folder is open, so there are no files to read. Answer from what you know, or say that opening a folder is how to look.',
+        isError: true,
+      };
+    }
     if (call.name === 'remember') {
       const entry = await this.memory.remember(String(call.args.fact ?? ''));
       return {
@@ -1219,6 +1374,7 @@ export class ChatSession implements HostSession {
     if (isImage(path)) return this.describeImage(path);
     const extractor = chatExtractors.find((e) => e.handles(path));
     if (!extractor) return { kind: 'not-a-document' };
+    if (!this.root) return { kind: 'unreadable' };
     try {
       const full = canonicalize(resolve(this.root, path));
       const rel = relative(this.root, full);
@@ -1259,6 +1415,7 @@ export class ChatSession implements HostSession {
     // goes into the index as if it were what the photo shows. A wrong
     // description is worse than no description, because it is searchable.
     if (!resolveCapabilities(this.profile).vision) return { kind: 'unreadable', format: 'image' };
+    if (!this.root) return { kind: 'unreadable' };
     try {
       const full = canonicalize(resolve(this.root, path));
       const rel = relative(this.root, full);
@@ -1595,6 +1752,17 @@ export class ChatSession implements HostSession {
  * (docs/CHAT_MODE_PLAN.md): opening a folder that happens to be a repo must
  * not show you the coding sessions you had in it, and vice versa.
  */
-export function chatConversationsFile(root: string): string {
-  return join(projectStateDir(root), 'chats.json');
+/**
+ * Where this session keeps its state.
+ *
+ * With no folder open there is no project to hang it off, so it goes in one
+ * global place. Someone who chats without picking a directory still gets a
+ * history, artifacts and attachments — they simply are not about a project.
+ */
+export function chatStateDir(root?: string): string {
+  return root ? projectStateDir(root) : join(globalDir(), 'chat');
+}
+
+export function chatConversationsFile(root?: string): string {
+  return join(chatStateDir(root), 'chats.json');
 }

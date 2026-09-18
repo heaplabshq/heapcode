@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ICON_COPY, ICON_COPY_FAILED, ICON_DONE } from './icons.js';
 
 /**
  * Copy a reply, from a toolbar under it.
@@ -7,11 +8,13 @@ import { useEffect, useRef, useState } from 'react';
  * someone wants in a commit message, an issue or a document is the source, and
  * pasting rendered markup into any of those is worse than useless.
  *
- * The state is worth having rather than a silent success — a copy button that
- * does nothing visible is indistinguishable from one that failed, and
- * `navigator.clipboard` does fail: an insecure origin, a denied permission, a
- * webview with a policy of its own. A failure says so instead of pretending.
+ * An icon rather than the word, matching every other control in this shell —
+ * and the outcome is an icon too, so the button does not change width under
+ * the cursor that just clicked it. The accessible name carries the meaning,
+ * which is what a screen reader and a tooltip both read.
  */
+
+
 export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }): JSX.Element {
   const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
   const timer = useRef<ReturnType<typeof setTimeout>>();
@@ -31,16 +34,18 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
     timer.current = setTimeout(() => setState('idle'), 1_400);
   };
 
+  // The only thing saying what this is, now the label is a glyph. It changes
+  // with the outcome, or a screen reader announces "Copy" after a failure.
+  const name = state === 'failed' ? 'Could not copy' : state === 'done' ? 'Copied' : label;
+
   return (
     <button
       className="msg-action"
       onClick={() => void copy()}
-      // The label changes, so the accessible name has to change with it —
-      // otherwise a screen reader announces "Copy" after a failure.
-      aria-label={state === 'failed' ? 'Could not copy' : state === 'done' ? 'Copied' : label}
-      title={state === 'failed' ? 'Could not copy — the browser refused clipboard access' : label}
+      aria-label={name}
+      title={state === 'failed' ? 'Could not copy — the browser refused clipboard access' : name}
     >
-      {state === 'done' ? 'Copied' : state === 'failed' ? "Couldn't copy" : label}
+      {state === 'done' ? ICON_DONE : state === 'failed' ? ICON_COPY_FAILED : ICON_COPY}
     </button>
   );
 }

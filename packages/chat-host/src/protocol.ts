@@ -135,6 +135,12 @@ export interface ChatState {
   contextWindow?: number;
   profiles: Array<{ name: string; model: string; hasKey: boolean }>;
   daemon: 'up' | 'down';
+  /**
+   * Why this host has no model yet, present only while it has none — a
+   * standing condition, shown as a banner with a way into Settings. The rest
+   * of the page works; sending a message is what fails, with this sentence.
+   */
+  setup?: string;
   runId?: string;
   lan?: boolean;
 }

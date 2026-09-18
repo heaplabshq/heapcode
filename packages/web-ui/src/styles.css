@@ -422,7 +422,10 @@ body {
 /* Attachments sit above the words, at a size you can actually read — a
    60px thumbnail is fine while you are still composing, but once sent this is
    part of what you asked, so it gets room. */
-.msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+/* Attachments align with the person who sent them, the way the text bubble
+   above them does — a screenshot pulled to the left of a right-hand turn reads
+   as belonging to the reply below it. */
+.msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; justify-content: flex-end; }
 .msg-images img {
   max-width: min(260px, 100%); max-height: 220px;
   border-radius: var(--radius); border: 1px solid var(--border);
@@ -460,6 +463,9 @@ body {
    assert themselves when the pointer is over the message they act on. */
 .msg-actions { display: flex; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity 0.12s; }
 .msg-user:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+/* A control for a right-aligned message belongs on its right. The reply's
+   toolbar keeps the default, which puts it under the left edge of the reply. */
+.msg-user .msg-actions { justify-content: flex-end; }
 /* The reply's toolbar is always there, unlike the user turn's hover actions:
    it is the affordance for the reply rather than a correction to it, and a
    control nobody can see is one nobody uses. Dim until the message is under
@@ -467,15 +473,14 @@ body {
 .msg-actions-reply { opacity: 0.45; margin-top: 8px; }
 .msg-assistant:hover .msg-actions-reply, .msg-actions-reply:focus-within { opacity: 1; }
 .msg-action {
-  background: none; border: 0; cursor: pointer; padding: 0;
-  color: var(--text-dim); font: inherit; font-size: 12px;
+  /* Icon-only, so it lays out as a glyph rather than as a line of text. */
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 0; cursor: pointer; padding: 2px;
+  color: var(--text-dim); font: inherit; line-height: 0; border-radius: 4px;
 }
-.msg-action:hover { color: var(--text); }
-.edit-msg {
-  background: none; border: 0; cursor: pointer; padding: 0;
-  color: var(--text-dim); font: inherit; font-size: 12px;
-}
-.edit-msg:hover:not(:disabled) { color: var(--accent); text-decoration: underline; }
+.msg-action:hover { color: var(--text); background: var(--hover); }
+/* Restore is the destructive one of the pair — it puts files back — so it
+   says so on hover rather than reading as another neutral glyph. */
 .restore-msg:hover:not(:disabled) { color: var(--danger); }
 
 /* The bar over the composer while an earlier message is being edited — the
@@ -1071,6 +1076,26 @@ body {
 }
 .banner-error { color: var(--danger); }
 
+/* Toasts: things that happened, directly above the composer where they
+   happened. In flow rather than floating — the composer's height changes as
+   you type, and an absolutely-placed card above it either covers it or drifts
+   away from it. The cost is a small shift when one appears, which is cheaper
+   than a message sitting on top of the box you are typing in. */
+.toasts {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 0 var(--gutter) 8px;
+}
+.toast {
+  pointer-events: auto; cursor: pointer;
+  max-width: min(560px, 100%); text-align: left;
+  padding: 8px 12px; border-radius: var(--radius);
+  background: var(--bg-raised); border: 1px solid var(--border);
+  color: var(--text); font: inherit; font-size: 12.5px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.16);
+}
+.toast:hover { background: var(--hover); }
+.toast-error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+
 /* The LAN warning. Not dismissible on purpose: it describes what this page IS,
    not something that happened, and a security notice you can silence is one
    nobody reads twice. Kept to one line so it costs a strip, not a dialog. */
@@ -1081,6 +1106,16 @@ body {
   display: flex; align-items: baseline; gap: 6px;
 }
 .banner-warn strong { font-weight: 600; }
+/* The way out of a banner that describes something you can fix from here.
+   Inline in the strip rather than a line of text telling you where to click:
+   the first thing someone does with an empty app is look for the button. */
+.banner-action {
+  margin-left: auto; flex: none;
+  padding: 2px 10px; border-radius: 999px;
+  border: 1px solid currentColor; background: transparent;
+  color: inherit; font: inherit; font-size: 12px; cursor: pointer;
+}
+.banner-action:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -1177,6 +1212,11 @@ body {
 /* A step past hover, like the rail's open conversation — `--chip-bg` here is
    within two points of the panel's own background. */
 .file-row-active { background: var(--hover-strong); }
+/* Ignored by .gitignore. Greyed rather than absent, the way an editor shows
+   them: the agent can read these, so hiding them showed less of the folder
+   than the thing working in it could see. */
+.file-row-ignored .file-path,
+.file-row-ignored .tree-icon { opacity: 0.5; }
 .file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
 .tree-icon { color: var(--text-dim); width: 1ch; }
 /* Fixed width, so the two columns line up down the list rather than tracking

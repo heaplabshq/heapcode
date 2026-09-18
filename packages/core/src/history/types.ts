@@ -11,6 +11,15 @@ import type { TodoItem } from '../agent/todo.js';
  */
 export interface StoredMessage extends ChatMessage {
   display?: string;
+  /**
+   * Attachment ids for images sent with this turn — not the bytes.
+   *
+   * The bytes live one file each beside the conversation (host-side
+   * `AttachmentStore`), because this file is read whole on every load and a
+   * screenshot is a couple of megabytes of base64. They used to be noted and
+   * discarded, so a reload lost the picture the question was about.
+   */
+  images?: string[];
   /** Shadow-git commit of the workspace state just before this (user) turn ran. */
   checkpoint?: string;
   ui?: {

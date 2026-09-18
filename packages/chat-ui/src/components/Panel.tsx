@@ -172,7 +172,14 @@ function FileTree({
         <ul className="file-list">
           {entries.map((e) => (
             <li key={e.path}>
-              <button className="file-row" onClick={() => (e.directory ? load(e.path) : open(e.path))}>
+              <button
+                className={`file-row${e.ignored ? ' file-row-ignored' : ''}`}
+                // Marked, not hidden: the agent reads these, so a panel that
+                // dropped them showed less than the thing working in the
+                // folder could see.
+                title={e.ignored ? `${e.path} — ignored by .gitignore` : e.path}
+                onClick={() => (e.directory ? load(e.path) : open(e.path))}
+              >
                 <span className="tree-icon">{e.directory ? '▸' : '·'}</span>
                 <span className="file-path">{e.name}</span>
               </button>

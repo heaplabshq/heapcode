@@ -1,7 +1,16 @@
 import { startWebHost, type RunningWebHost, type WebHostOptions } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from './session.js';
 
-export type ChatHostOptions = Omit<WebHostOptions, 'createSession'> & {
+export type ChatHostOptions = Omit<WebHostOptions, 'createSession' | 'root'> & {
+  /**
+   * The folder to open on, or nothing.
+   *
+   * Optional here and required on `WebHostOptions`, because the two products
+   * differ: Heap Code is a tool you run inside a project, and Heap Chat is one
+   * you may just want to talk to. The shell itself never reads it — only the
+   * session does.
+   */
+  root?: string;
   /** Where personal memory lives; defaults to the global store. See ChatSessionDeps. */
   memoryFile?: string;
 };
@@ -20,9 +29,13 @@ export type ChatHostOptions = Omit<WebHostOptions, 'createSession'> & {
 export async function startChatHost(opts: ChatHostOptions): Promise<RunningWebHost> {
   return startWebHost({
     ...opts,
+    // Satisfies the shell's type and is never read by it: the session below
+    // takes `opts.root`, which may be undefined. `WebHostOptions` requires a
+    // root because its other product cannot work without one.
+    root: opts.root ?? '',
     createSession: (deps) =>
       new ChatSession({
-        root: deps.root,
+        root: opts.root,
         config: deps.config,
         secrets: deps.secrets,
         connect: deps.connect,

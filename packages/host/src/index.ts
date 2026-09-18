@@ -34,6 +34,7 @@ export * from './provider/resolve.js';
 export * from './config/secrets.js';
 export * from './config/store.js';
 export * from './history/store.js';
+export * from './agent/attachments.js';
 export * from './agent/mcpConfig.js';
 export * from './agent/workspaceTools.js';
 export * from './rag/repoMapIndexer.js';

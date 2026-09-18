@@ -25,6 +25,10 @@
       "types": "./src/components/CopyButton.tsx",
       "default": "./src/components/CopyButton.tsx"
     },
+    "./components/Toasts": {
+      "types": "./src/components/Toasts.tsx",
+      "default": "./src/components/Toasts.tsx"
+    },
     "./components/Sidebar": {
       "types": "./src/components/Sidebar.tsx",
       "default": "./src/components/Sidebar.tsx"

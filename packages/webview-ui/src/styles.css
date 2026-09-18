@@ -1803,7 +1803,9 @@ select.settings-input {
 .turn.assistant:hover .msg-actions-reply,
 .msg-actions-reply:focus-within { opacity: 1; }
 .msg-action {
-  background: none; border: 0; cursor: pointer; padding: 0;
-  color: var(--vscode-descriptionForeground); font: inherit; font-size: 12px;
+  /* Icon-only, so it lays out as a glyph rather than as a line of text. */
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 0; cursor: pointer; padding: 2px;
+  color: var(--vscode-descriptionForeground); font: inherit; line-height: 0; border-radius: 4px;
 }
 .msg-action:hover { color: var(--vscode-foreground); }

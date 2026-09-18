@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -38,24 +37,26 @@ export interface ChatCliOptions {
  * your documents, and defaulting to whatever directory the terminal happened
  * to be in would index a repo by accident on first run.
  *
+ * It opens on **no folder** instead. The previous default was the home
+ * directory, which is worse than the accident it was avoiding: `heapcode chat`
+ * with no argument began embedding everything the person owned. Opening on
+ * nothing is also the honest answer for someone who just wants to ask a
+ * question — the folder picker is there when they want one.
+ *
  * (Mounted inside `heapcode web` it does open on that folder — there the
  * folder was chosen deliberately. See webCli.ts.)
  */
 export async function runChat(opts: ChatCliOptions = {}): Promise<number> {
-  const root = canonicalize(opts.folder ? resolve(opts.folder) : homedir());
+  const root = opts.folder ? canonicalize(resolve(opts.folder)) : undefined;
   const host = opts.host ?? '127.0.0.1';
   const port = opts.port ?? DEFAULT_CHAT_PORT;
 
   const config = new ConfigStore(configFile());
   const secrets = new SecretsStore(secretsFile());
 
+  // Not a precondition — see webCli.ts. Settings is a page in the app this
+  // command serves, so the app has to open before it can be configured.
   const profile = await config.getActiveProfile();
-  if (!profile) {
-    process.stderr.write(
-      'No provider connection configured yet.\nRun `heapcode` once to set one up, or `heapcode connection add`.\n',
-    );
-    return 1;
-  }
 
   let running;
   try {
@@ -87,8 +88,12 @@ export async function runChat(opts: ChatCliOptions = {}): Promise<number> {
   }
 
   process.stdout.write(`\n  Heap Chat — read, search, ask and draft\n\n  ${running.url}\n\n`);
-  process.stdout.write(`  Folder: ${root}\n`);
-  process.stdout.write(`  Connection: ${profile.name} (${profile.model})\n\n`);
+  process.stdout.write(root ? `  Folder: ${root}\n` : `  No folder — pick one in the app to read your files.\n`);
+  process.stdout.write(
+    profile
+      ? `  Connection: ${profile.name} (${profile.model})\n\n`
+      : '  No model configured yet — open the page and add a connection in Settings.\n\n',
+  );
 
   if (!isLoopback(host)) {
     // Milder than `heapcode web`'s warning, and deliberately so: this host has

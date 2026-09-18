@@ -28,7 +28,15 @@ export function resolveInRoot(root: string, relPath: string): string {
   return full;
 }
 
-/** Directory listing, `.gitignore`-aware, directories first then alphabetical. */
+/**
+ * Directory listing: directories first, then alphabetical.
+ *
+ * Ignored entries are marked, not dropped. They used to be dropped, which made
+ * the panel show less of the workspace than the agent could see — `read_file`
+ * and `list_dir` never consulted gitignore — so a note someone had
+ * deliberately kept out of git was missing from the files list with nothing
+ * to explain it. Editors show them greyed for the same reason.
+ */
 export async function listDirectory(root: string, relPath: string): Promise<UiTreeEntry[]> {
   const dir = resolveInRoot(root, relPath || '.');
   const matcher = await loadIgnoreMatcher(root).catch(() => undefined);
@@ -43,8 +51,8 @@ export async function listDirectory(root: string, relPath: string): Promise<UiTr
     const childRel = relPath ? `${relPath}/${d.name}` : d.name;
     // `ignore` wants a trailing slash to match directory-only patterns
     // (`dist/`), and POSIX separators — which `childRel` already is.
-    if (matcher?.ignores(d.isDirectory() ? `${childRel}/` : childRel)) continue;
-    entries.push({ name: d.name, path: childRel, directory: d.isDirectory() });
+    const ignored = Boolean(matcher?.ignores(d.isDirectory() ? `${childRel}/` : childRel));
+    entries.push({ name: d.name, path: childRel, directory: d.isDirectory(), ...(ignored ? { ignored } : {}) });
   }
 
   entries.sort((a, b) =>

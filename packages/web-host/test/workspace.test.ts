@@ -71,11 +71,22 @@ describe('listDirectory', () => {
     expect(entries[0]!.directory).toBe(true);
   });
 
-  it('honours .gitignore and skips node_modules and .git', async () => {
+  it('marks what .gitignore matches rather than dropping it', async () => {
+    // Changed deliberately: these used to be absent, which made the panel show
+    // less of the folder than the agent could see — `read_file` and `list_dir`
+    // never consulted gitignore. Reported against a real repo, where one
+    // explicitly ignored note was missing with nothing to explain it.
+    const entries = await listDirectory(root, '');
+    const byName = new Map(entries.map((e) => [e.name, e]));
+    expect(byName.get('dist')?.ignored).toBe(true);
+    expect(byName.get('debug.log')?.ignored).toBe(true);
+    expect(byName.get('a.ts')?.ignored).toBeUndefined();
+  });
+
+  it('still drops node_modules and .git, which are noise rather than yours', async () => {
     const names = (await listDirectory(root, '')).map((e) => e.name);
-    expect(names).not.toContain('dist');
-    expect(names).not.toContain('debug.log');
     expect(names).not.toContain('node_modules');
+    expect(names).not.toContain('.git');
   });
 
   it('refuses to list outside the workspace', async () => {

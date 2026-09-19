@@ -293,6 +293,74 @@ describe('the CDP driver', () => {
     expect(press?.[2]).toMatchObject({ x: 20, y: 30 });
   });
 
+  /**
+   * The click counts a page reads (`event.detail`, dblclick) come from the
+   * `clickCount` on each press, not from pressing twice — a press without the
+   * count is just two plain clicks, which is what this existed to stop being.
+   */
+  it('sends a double click as two presses with rising clickCount', async () => {
+    const stub = stubChrome();
+    const session = new CdpSession(1);
+    await session.attach();
+
+    stub.sendCommand.mockImplementation(async (_target, method: string) => {
+      if (method === 'Accessibility.getFullAXTree') {
+        return {
+          nodes: [
+            { nodeId: '1', backendDOMNodeId: 7, role: { value: 'button' }, name: { value: 'Apply' }, childIds: [] },
+          ],
+        };
+      }
+      if (method === 'Page.getLayoutMetrics') {
+        return { cssVisualViewport: { clientWidth: 800, clientHeight: 600, pageY: 0 } };
+      }
+      if (method === 'DOM.getBoxModel') return { model: { content: [10, 20, 30, 20, 30, 40, 10, 40] } };
+      return {};
+    });
+
+    const driver = new CdpDriver(session);
+    const page = await driver.snapshot();
+    const result = await driver.click(page.controls[0]!.handle, page.generation, 'double');
+
+    expect(result.ok).toBe(true);
+    const counts = stub.sendCommand.mock.calls
+      .filter((call) => (call[2] as { type?: string })?.type === 'mousePressed')
+      .map((call) => (call[2] as { clickCount?: number }).clickCount);
+    expect(counts).toEqual([1, 2]);
+  });
+
+  it('sends a right click with the right button, and only one press', async () => {
+    const stub = stubChrome();
+    const session = new CdpSession(1);
+    await session.attach();
+
+    stub.sendCommand.mockImplementation(async (_target, method: string) => {
+      if (method === 'Accessibility.getFullAXTree') {
+        return {
+          nodes: [
+            { nodeId: '1', backendDOMNodeId: 7, role: { value: 'button' }, name: { value: 'Apply' }, childIds: [] },
+          ],
+        };
+      }
+      if (method === 'Page.getLayoutMetrics') {
+        return { cssVisualViewport: { clientWidth: 800, clientHeight: 600, pageY: 0 } };
+      }
+      if (method === 'DOM.getBoxModel') return { model: { content: [10, 20, 30, 20, 30, 40, 10, 40] } };
+      return {};
+    });
+
+    const driver = new CdpDriver(session);
+    const page = await driver.snapshot();
+    const result = await driver.click(page.controls[0]!.handle, page.generation, 'right');
+
+    expect(result.ok).toBe(true);
+    const presses = stub.sendCommand.mock.calls.filter(
+      (call) => (call[2] as { type?: string })?.type === 'mousePressed',
+    );
+    expect(presses).toHaveLength(1);
+    expect(presses[0]?.[2]).toMatchObject({ button: 'right', clickCount: 1 });
+  });
+
   it('refuses a handle it never issued', async () => {
     const stub = stubChrome();
     const session = new CdpSession(1);

@@ -102,17 +102,27 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   const prompt = promptFor(info);
   if (!prompt) return;
 
-  // Written first, so a panel opening for the first time in response to this
-  // very click finds it waiting rather than racing the port.
+  // Opened FIRST, and synchronously, because `sidePanel.open` may only be
+  // called while the user gesture that fired this listener is still in scope —
+  // and *any* `await` ends that scope. This call used to sit inside the `.then()`
+  // of the storage write below, so by the time it ran the gesture was gone and
+  // Chrome refused it. The refusal was caught and dropped, which is why a
+  // right-click with the panel closed looked like nothing happening at all:
+  // precisely the case the menu exists for.
+  if (tab?.id !== undefined) {
+    void chrome.sidePanel.open({ tabId: tab.id }).catch((error: unknown) => {
+      // An already-open panel rejects here too, which is ordinary; log rather
+      // than swallow, so the next failure of this kind is visible.
+      console.debug('heapbrowse: side panel open', error);
+    });
+  }
+
+  // Then the prompt. A panel opening in response to this very click has no port
+  // to receive the broadcast yet, so session storage is the channel that
+  // reaches it; the panel also watches that key for a write that lands after it
+  // has already mounted, which is the race this ordering opens and that watch
+  // closes.
   void chrome.storage.session.set({ [PENDING_PROMPT_KEY]: prompt }).then(() => {
-    if (tab?.id !== undefined) {
-      // The menu click is the user gesture `open` requires; there is no second
-      // chance at one later.
-      void chrome.sidePanel.open({ tabId: tab.id }).catch(() => {
-        // Already open, or a window that cannot host it. The storage write
-        // above still reaches the panel.
-      });
-    }
     broadcast({ type: 'prompt', text: prompt });
   });
 });
@@ -124,6 +134,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
  * which is what makes this work where `_execute_action` did not. Opened by
  * window rather than by tab, so the panel is not bound to whichever tab
  * happened to be in front when the key was pressed.
+ *
+ * Called without awaiting anything first, for the same reason as the menu
+ * above: the gesture does not survive an `await`. Chrome hands this listener
+ * the active tab, so the id is there in the ordinary case. The lookup in the
+ * fallback branch is a genuine `await` and can therefore be refused — it is
+ * kept only because a refused open is still better than not trying, and it is
+ * reached only when Chrome gave us no tab at all.
  */
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command !== 'open-panel') return;

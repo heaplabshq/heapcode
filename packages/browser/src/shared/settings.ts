@@ -1,5 +1,6 @@
 import { getPreset, providerPresets, type PresetId } from '@heapcode/core/providers';
 import type { ProviderProfileConfig } from '@heapcode/core/providers';
+import type { WebSearchConfig } from '@heapcode/core/agent';
 
 /**
  * Where heapbrowse's configuration lives, and why it lives there.
@@ -31,6 +32,8 @@ const apiKeyFor = (name: string) => `${API_KEY}.${name}`;
 const DEBUGGER_KEY = 'heapbrowse.useDebugger';
 const FILES_KEY = 'heapbrowse.files';
 const ONBOARDED_KEY = 'heapbrowse.onboarded';
+const WEB_SEARCH_KEY = 'heapbrowse.webSearch';
+const WEB_SEARCH_SECRET_KEY = 'heapbrowse.webSearchKey';
 
 /** The profile with no key attached — safe to log, safe to render. */
 export type StoredProfile = ProviderProfileConfig;
@@ -269,6 +272,41 @@ export async function loadOnboarded(): Promise<boolean> {
 
 export async function saveOnboarded(value: boolean): Promise<void> {
   await chrome.storage.local.set({ [ONBOARDED_KEY]: value });
+}
+
+/**
+ * Web search: which backend, and its key.
+ *
+ * The config is core's `WebSearchConfig` so it means the same thing in every
+ * host. The key deliberately does *not* use core's `WEB_SEARCH_SECRET_NAME`
+ * convention — that name is how the CLI's secrets.json and the editor's
+ * SecretStorage agree on one slot, and neither store exists here. This
+ * extension has exactly one place a key can live (`chrome.storage.local`,
+ * same as the provider key, same never-synced reasoning as the header of this
+ * file), and it gets its own unambiguous slot rather than borrowing a
+ * convention whose custody story does not apply.
+ *
+ * The tool is offered only when `isWebSearchEnabled` says so, so an unset
+ * config here means the model is never told the tool exists.
+ */
+export async function loadWebSearchConfig(): Promise<WebSearchConfig | undefined> {
+  const stored = await chrome.storage.local.get(WEB_SEARCH_KEY);
+  return stored[WEB_SEARCH_KEY] as WebSearchConfig | undefined;
+}
+
+export async function saveWebSearchConfig(config: WebSearchConfig): Promise<void> {
+  await chrome.storage.local.set({ [WEB_SEARCH_KEY]: config });
+}
+
+export async function loadWebSearchApiKey(): Promise<string | undefined> {
+  const stored = await chrome.storage.local.get(WEB_SEARCH_SECRET_KEY);
+  const key = stored[WEB_SEARCH_SECRET_KEY] as string | undefined;
+  return key && key.length > 0 ? key : undefined;
+}
+
+export async function saveWebSearchApiKey(key: string): Promise<void> {
+  if (key.length === 0) await chrome.storage.local.remove(WEB_SEARCH_SECRET_KEY);
+  else await chrome.storage.local.set({ [WEB_SEARCH_SECRET_KEY]: key });
 }
 
 /**

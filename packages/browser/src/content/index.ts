@@ -95,7 +95,13 @@ export type ContentRequest =
    */
   | { type: 'highlight'; handle: number; generation: number; label?: string }
   | { type: 'clearHighlight' }
-  | { type: 'click'; handle: number; generation: number }
+  | {
+      type: 'click';
+      handle: number;
+      generation: number;
+      /** The count and button a person would use — omitted is a plain click. */
+      variant?: 'double' | 'triple' | 'right';
+    }
   | { type: 'type'; handle: number; generation: number; text: string }
   | { type: 'select'; handle: number; generation: number; option: string }
   | { type: 'hover'; handle: number; generation: number }
@@ -330,7 +336,7 @@ async function handle(request: ContentRequest): Promise<ContentResponse> {
         const found = resolveTarget(registry, request.handle, request.generation);
         if (!found.ok) return { ok: false, error: found.error };
         clearHighlight();
-        const result = performClick(found.element);
+        const result = performClick(found.element, request.variant);
         return result.ok ? { ok: true, kind: 'acted', note: result.note } : { ok: false, error: result.error };
       }
       case 'type': {

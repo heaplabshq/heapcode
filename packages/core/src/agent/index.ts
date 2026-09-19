@@ -23,10 +23,15 @@
  * inert data a bundler drops.
  *
  * Node-coupled and never to be added here: `workspaceTools` (child_process),
- * `webSearch` (reaches child_process through workspaceTools), `mcp` (the MCP
- * SDK's stdio transport). `test/browserSafety.test.ts` enforces this against
- * the full transitive import graph, which is the only check that catches
- * coupling arriving through a relative import.
+ * `mcp` (the MCP SDK's stdio transport). `test/browserSafety.test.ts` enforces
+ * this against the full transitive import graph, which is the only check that
+ * catches coupling arriving through a relative import.
+ *
+ * `webSearch` used to be on that excluded list: it reached `child_process`
+ * through `workspaceTools` for one pure helper (`decodeHtmlEntities`). The
+ * helper now lives in `webText` with no imports at all, so the search layer —
+ * which a non-Node host (heapbrowse) needs as much as the terminal does — is
+ * browser-safe by construction, and the safety test keeps it that way.
  */
 
 export * from './loop.js';
@@ -42,3 +47,9 @@ export * from './prompts.js';
 export * from './subAgent.js';
 export * from './askUser.js';
 export * from './toolDefinitions.js';
+export * from './webSearch.js';
+export * from './webText.js';
+// Re-exported through the agent barrel so the browser has one import path:
+// `../net/addressGuard` itself stays internal to core's Node surface, and only
+// the pure half of the SSRF guard travels through here.
+export { BlockedUrlError, isBlockedAddress } from '../net/addressGuard.js';

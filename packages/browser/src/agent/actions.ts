@@ -98,6 +98,120 @@ export const GO_BACK: ToolDefinition = {
 };
 
 /**
+ * Forward history, not a new navigation.
+ *
+ * `go_back` without this was a one-way door on a search-and-follow run: the
+ * model reads a results page, follows a link, goes back — and then wants the
+ * next link, which needs forward again after it goes back a second time. The
+ * alternative it invented was re-navigating by URL, which loses the scroll
+ * position and the session state a real forward preserves.
+ */
+export const GO_FORWARD: ToolDefinition = {
+  name: 'go_forward',
+  description: 'Go forward to the page you came back from.',
+  parameters: { type: 'object', properties: {} },
+  permission: 'write',
+  untrustedOutput: true,
+};
+
+/**
+ * The same click a person makes when one click is not what the page wants.
+ *
+ * A file listing that opens folders on double-click, a word processor that
+ * selects a word, a table that opens a cell for editing — none of them answer
+ * a single `click`, and before these existed the model's only move was asking
+ * the user to do it, which is the exact class of hand-off this product exists
+ * to avoid.
+ *
+ * `triple` exists for the one gesture text editors and address bars use it
+ * for: selecting a whole paragraph or a whole value. It is rare enough that
+ * lumping it in with `double` would blur two different intents, and common
+ * enough that a model told only about double-click would try three separate
+ * clicks and select nothing.
+ */
+export const DOUBLE_CLICK: ToolDefinition = {
+  name: 'double_click',
+  description:
+    'Click twice quickly, where a person would double-click — opening a folder, editing a cell, ' +
+    'selecting a word. The user is shown what will be clicked and must approve it first.',
+  parameters: {
+    type: 'object',
+    properties: { handle: HANDLE },
+    required: ['handle'],
+  },
+  permission: 'write',
+  untrustedOutput: true,
+};
+
+export const TRIPLE_CLICK: ToolDefinition = {
+  name: 'triple_click',
+  description:
+    'Click three times quickly, which selects a whole paragraph or a whole value — a text editor, ' +
+    'a field with a URL in it, a document.',
+  parameters: {
+    type: 'object',
+    properties: { handle: HANDLE },
+    required: ['handle'],
+  },
+  permission: 'write',
+  untrustedOutput: true,
+};
+
+/**
+ * Right-click, scoped honestly.
+ *
+ * Only pages that draw their *own* context menu answer this — the native
+ * browser menu is opened by a trusted event and is unreachable from either
+ * driver. The description says so, because a model that right-clicks expecting
+ * a menu it can read will find nothing on the page and conclude the control
+ * does nothing. What this is for is the custom menus apps build: a document
+ * row with "Rename" and "Delete" in it, a canvas with its own tools.
+ */
+export const RIGHT_CLICK: ToolDefinition = {
+  name: 'right_click',
+  description:
+    'Click with the right button, where a person would right-click. Only works on pages that ' +
+    'open their own menu — the browser\'s own context menu cannot be operated, so if nothing ' +
+    'appears on the page, do not try again.',
+  parameters: {
+    type: 'object',
+    properties: { handle: HANDLE },
+    required: ['handle'],
+  },
+  permission: 'write',
+  untrustedOutput: true,
+};
+
+/**
+ * Resize the browser window.
+ *
+ * Some pages are genuinely different at other sizes — a responsive checkout
+ * that hides fields, a dashboard that lazy-loads panels per viewport, a page
+ * whose controls sit below the fold at every height this window happens to be.
+ * A model that could not resize could only tell the user "I cannot see it",
+ * which for a layout question is the whole task unasked.
+ *
+ * The window, not the viewport: viewport emulation belongs behind the
+ * debugger gate and is a follow-up if responsive-testing feedback asks for it.
+ */
+export const RESIZE_WINDOW: ToolDefinition = {
+  name: 'resize_window',
+  description:
+    'Resize the browser window to the given width and height in pixels, to see a page the way it ' +
+    'looks at another size.',
+  parameters: {
+    type: 'object',
+    properties: {
+      width: { type: 'number', description: 'The new width in pixels.' },
+      height: { type: 'number', description: 'The new height in pixels.' },
+    },
+    required: ['width', 'height'],
+  },
+  permission: 'write',
+  untrustedOutput: true,
+};
+
+/**
  * Press a key, which is not the same thing as typing.
  *
  * `type` puts text in a field and stops there. A search box that submits on
@@ -345,12 +459,17 @@ export const ATTACH_FILE: ToolDefinition = {
 
 export const MUTATING_TOOLS: ToolDefinition[] = [
   CLICK,
+  DOUBLE_CLICK,
+  TRIPLE_CLICK,
+  RIGHT_CLICK,
   TYPE,
   FILL_FORM,
   SELECT,
   PRESS_KEY,
   NAVIGATE,
   GO_BACK,
+  GO_FORWARD,
+  RESIZE_WINDOW,
   NEXT_PAGE,
   OPEN_TAB,
   CLOSE_TAB,

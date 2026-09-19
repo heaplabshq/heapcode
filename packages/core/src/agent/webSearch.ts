@@ -1,4 +1,4 @@
-import { decodeHtmlEntities } from './workspaceTools.js';
+import { decodeHtmlEntities } from './webText.js';
 
 /**
  * Web search for the agent, shared by every client.

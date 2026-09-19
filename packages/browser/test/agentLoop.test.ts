@@ -131,6 +131,9 @@ describe('core loop driving a browser', () => {
       [
         'ask_user',
         'extract_data',
+        // Read-only, so it rides the static belt: reading an address the
+        // model already has, or an API's raw reply, opens nothing.
+        'fetch_url',
         'finish',
         'get_elements',
         'get_page_text',

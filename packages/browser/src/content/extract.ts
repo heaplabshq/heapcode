@@ -1,6 +1,6 @@
 import type { Control, ControlRole, PageSnapshot, TableSummary } from '../shared/snapshot.js';
 import { accessibleName, nearestContext } from './accessibleName.js';
-import { isDisabled, isVisible, positionScore } from './visibility.js';
+import { isDisabled, isVisible, isVisuallyHiddenControl, positionScore } from './visibility.js';
 import type { HandleRegistry } from './registry.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
 import { moneyContext } from './money.js';
@@ -129,7 +129,9 @@ function extractControls(root: Document | Element, registry: HandleRegistry): Co
   for (const element of root.querySelectorAll(CONTROL_SELECTOR)) {
     const role = roleOf(element);
     if (!role) continue;
-    if (!isVisible(element)) continue;
+    // A control drawn by something else is still a control -- see
+    // isVisuallyHiddenControl, and the GitHub label picker in its comment.
+    if (!isVisible(element) && !isVisuallyHiddenControl(element)) continue;
 
     const name = accessibleName(element);
     const disabled = isDisabled(element);

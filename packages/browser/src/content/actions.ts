@@ -1,5 +1,6 @@
 import type { HandleRegistry } from './registry.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
+import { isVisuallyHiddenControl } from './visibility.js';
 
 /**
  * Actually doing things to the page.
@@ -100,6 +101,12 @@ function whyNotActionable(element: Element): string | undefined {
   if (element.closest('[hidden], [inert], [aria-hidden="true"]')) {
     return 'That element is hidden from users, so it cannot be clicked.';
   }
+
+  // A checkbox drawn by a styled label has no size of its own and is still
+  // perfectly clickable: `.click()` runs its activation behaviour whatever its
+  // box says. Refusing on size here would put back exactly the hole that kept
+  // these out of the snapshot in the first place.
+  if (isVisuallyHiddenControl(element)) return undefined;
 
   const rect = element.getBoundingClientRect();
   const hasLayout = rect.width !== 0 || rect.height !== 0 || rect.top !== 0 || rect.left !== 0;

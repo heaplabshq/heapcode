@@ -9,6 +9,7 @@ import {
   resolveTarget,
   type KeyPress,
 } from './actions.js';
+import { highlightTarget } from './visibility.js';
 import { scrollBy } from './scroll.js';
 import { openModal } from './modal.js';
 import type { Control, PageSnapshot } from '../shared/snapshot.js';
@@ -275,9 +276,13 @@ function highlight(element: Element, label?: string): void {
    * scroll event. It runs only while a confirmation is on screen, and it writes
    * nothing unless the rectangle actually changed.
    */
+  // A control drawn by a styled label has nothing to draw a ring around; the
+  // label is what the user sees and what their own click would hit.
+  const shown = highlightTarget(element);
+
   let last = '';
   const place = () => {
-    const rect = element.getBoundingClientRect();
+    const rect = shown.getBoundingClientRect();
     const key = `${rect.left},${rect.top},${rect.width},${rect.height}`;
     if (key !== last) {
       last = key;

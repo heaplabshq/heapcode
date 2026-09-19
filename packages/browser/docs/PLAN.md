@@ -332,6 +332,23 @@ Confirmed working manually on live sites (2026-08-28).
       a line to the install prompt for something the toolbar already does, and M7 owes a
       permission-minimisation pass rather than another permission.
 
+### After that
+
+A prompt comparison against a mature browser agent (`docs/BROWSER_PROMPT_PLAN.md`, local) found
+the gaps were half safety architecture and half tool surface. Both halves shipped together:
+
+- [x] The prompt gained what acting more freely needs: the engine's real taxonomy (refused /
+      always-confirmed / ordinary), privacy (no personal data in URL parameters, no profile of a
+      person assembled across pages, cookie banners declined toward sharing less), downloads only
+      on the user's own ask, copyright restraint, and the subtler half of injection — text that
+      claims authorization, manufactures urgency, or hides where a person would not see it
+- [x] `web_search` and `fetch_url`, which are core's own tools. Getting them here meant two
+      behaviour-preserving splits in core so the browser-safe barrel could carry them:
+      `agent/webText.ts` (the pure text helpers out of `workspaceTools`) and `net/addressGuard.ts`
+      (the pure address classification out of `safeFetch`). `browserSafety.test.ts` holds both
+- [x] `double_click`, `triple_click`, `right_click`, `go_forward`, `resize_window` — each one a
+      thing the model could previously only narrate not being able to do
+
 ---
 
 ## Backlog

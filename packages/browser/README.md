@@ -8,12 +8,22 @@ surface: **model-agnostic, BYOK, any OpenAI-compatible endpoint, local or cloud.
 - Milestones and status: [`docs/PLAN.md`](docs/PLAN.md)
 - What it borrows from heapcode, and why: [`docs/REUSE.md`](docs/REUSE.md)
 
-## Status: M0
+## Status: M7
 
-The chat pipe, end to end — panel → provider → streamed reply, with a working stop
-button and a connectivity diagnostic. **No page access yet**, by design: the snapshot
-layer is M1 and the agent loop is M2. The manifest requests no host permissions at all
-at this stage.
+Feature-complete for v1; the one item left in `docs/PLAN.md` is the Chrome Web Store
+submission. It reads the page you are on, answers questions grounded in it, extracts
+structured data from it, and operates it — click, type, fill a whole form in one
+confirmation, select, press keys, navigate, work across tabs, download a file the page is
+offering. Every mutating action is classified, and in the default mode shown to you
+against the real element on the page before it happens; `auto` lifts the asking and
+nothing else. Banking, brokerage, government, primary-email and password-manager origins
+cannot be acted on at all, whatever the mode. `web_search` and `fetch_url` are offered
+when a search backend is configured. Turning on the debugger escalation buys real trusted
+input events, the accessibility tree instead of a DOM walk, `drag`, and attaching one of
+your configured files to a file input.
+
+`host_permissions` is still empty: sites are granted one at a time, and `downloads` is
+optional.
 
 ## Build and load
 

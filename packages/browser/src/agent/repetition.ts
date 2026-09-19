@@ -140,3 +140,108 @@ function ordinal(n: number): string {
   if (n === 3) return 'third';
   return `${n}th`;
 }
+
+/**
+ * Noticing the circle inside a single turn, where the guard above cannot see.
+ *
+ * `RepetitionGuard` watches tool calls, so it needs the model to make one. The
+ * failure this exists for never gets that far: asked to tick a checkbox the
+ * snapshot had not offered (see content/visibility.ts), a model spent one
+ * unbroken turn deliberating -- "let me try clicking", "hmm, actually", "OK
+ * FINAL", "writing the call now" -- and then degenerated into the same two
+ * lines over and over, hundreds of times, without ever emitting the call it
+ * kept announcing.
+ *
+ * Nothing stopped it. Core's `finishReason === 'length'` nudge is the right
+ * recovery but it only fires when the provider cuts the reply off, and
+ * `maxTokens` is per-profile and usually unset, so there was no cut to wait
+ * for. The user pressed Stop. That is the hole: a run that is going nowhere
+ * should not depend on someone watching it.
+ *
+ * What counts as degenerate is deliberately narrow -- a chunk of text repeated
+ * back to back many times over. Circling in *substance* ("let me reconsider"
+ * for forty paragraphs) is a judgement call and this does not attempt it;
+ * verbatim repetition is not a judgement call, and it is what the real failure
+ * looked like once it had given up.
+ */
+
+/** How much of the tail to keep. Enough to hold several repeats of a long unit. */
+const TAIL = 4_000;
+/** The shortest repeating unit worth calling a loop. */
+const MIN_UNIT = 3;
+/** The longest. Past this, repetition is more likely to be a real list. */
+const MAX_UNIT = 400;
+/** How many back-to-back repeats before the run is stopped. */
+const REPEATS = 8;
+/** Only re-check every so often: the scan is over the tail, not over one delta. */
+const CHECK_EVERY = 300;
+
+export class SpiralWatch {
+  #tail = '';
+  #sinceCheck = 0;
+  #tripped = false;
+
+  /**
+   * Feed it whatever the model is saying, thinking included.
+   *
+   * Returns true exactly once, on the delta that confirms the loop, so the
+   * caller can stop the run without having to de-duplicate the report.
+   */
+  saw(text: string): boolean {
+    if (this.#tripped || !text) return false;
+    this.#tail = (this.#tail + text).slice(-TAIL);
+    this.#sinceCheck += text.length;
+    if (this.#sinceCheck < CHECK_EVERY) return false;
+    this.#sinceCheck = 0;
+    if (!looping(this.#tail)) return false;
+    this.#tripped = true;
+    return true;
+  }
+
+  /**
+   * A turn ended, or a tool ran.
+   *
+   * Either way the model has stopped saying whatever it was saying, so the
+   * tail is no longer evidence of anything. Without this, text from one turn
+   * and text from the next could form a repeat that neither one contains.
+   */
+  turned(): void {
+    this.#tail = '';
+    this.#sinceCheck = 0;
+  }
+
+  /** What to tell the user, in their terms rather than the model's. */
+  get reason(): string {
+    return (
+      'The model started repeating itself instead of acting, so the run was stopped. ' +
+      'This usually means it could not find a control it was looking for. Try asking again, ' +
+      'more specifically, or take that one step yourself and let it carry on.'
+    );
+  }
+}
+
+/**
+ * Whether the end of this text is one chunk repeated back to back.
+ *
+ * Compared on collapsed whitespace, because the loop that prompted this
+ * alternated one blank line with two and no person would call that a
+ * difference.
+ */
+function looping(text: string): boolean {
+  const tail = text.replace(/\s+/g, ' ').trimEnd();
+  for (let unit = MIN_UNIT; unit <= MAX_UNIT; unit++) {
+    if (tail.length < unit * REPEATS) return false;
+    const candidate = tail.slice(-unit);
+    // Whitespace-only units repeat in perfectly ordinary text.
+    if (!candidate.trim()) continue;
+    let repeats = 1;
+    while (
+      repeats < REPEATS &&
+      tail.slice(-unit * (repeats + 1), -unit * repeats) === candidate
+    ) {
+      repeats++;
+    }
+    if (repeats >= REPEATS) return true;
+  }
+  return false;
+}

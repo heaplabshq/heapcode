@@ -22,6 +22,7 @@ import {
 } from '../shared/settings.js';
 import { availableLabels, loadProfileEnabled, loadUserProfile } from '../shared/profile.js';
 import { DriverPool } from './driverPool.js';
+import { SpiralWatch } from './repetition.js';
 import { BrowserToolExecutor, describeSize } from './executor.js';
 import { READ_ONLY_TOOLS, SCREENSHOT, WEB_SEARCH } from './tools.js';
 import { BROWSER_AGENT_PROMPT } from './prompt.js';
@@ -220,6 +221,27 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   // user switched profiles while a run was in flight.
   const apiKey = await loadApiKey(profile.name);
   const provider = createProvider(profile, apiKey);
+
+  /*
+   * The run's own stop, alongside the user's.
+   *
+   * The user's Stop button owns `signal`; this is the same brake reachable
+   * from inside, for the case in `SpiralWatch` -- a model repeating itself
+   * forever without ever calling a tool, which nothing else here can end
+   * because ending it needs someone to be watching. Aborting rather than
+   * refusing a call: there is no call to refuse, which is the whole problem.
+   */
+  const brake = new AbortController();
+  const stopRun = (reason: string) => {
+    request.onBlocked(reason);
+    brake.abort();
+  };
+  if (signal.aborted) brake.abort();
+  else signal.addEventListener('abort', () => brake.abort(), { once: true });
+  const spiral = new SpiralWatch();
+  const watch = (text: string) => {
+    if (spiral.saw(text)) stopRun(spiral.reason);
+  };
 
   const [useDebugger, files, profileEnabled, savedProfile, searchConfig, searchKey] = await Promise.all([
     loadUseDebugger(),
@@ -496,11 +518,28 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
       // A refused origin is the one run error with a one-command fix, and the
       // extension's own origin is half of that command (shared/ollamaDiagnostic).
       onText: (text) => events.onText(withOriginFix(text, `chrome-extension://${chrome.runtime.id}`)),
-      onTextDelta: (text) => events.onTextDelta(text),
-      onTextEnd: () => events.onTextEnd(),
-      onReasoningDelta: (text) => events.onReasoningDelta(text),
-      onReasoningEnd: () => events.onReasoningEnd(),
-      onToolCall: (call) => events.onToolCall(call),
+      onTextDelta: (text) => {
+        events.onTextDelta(text);
+        watch(text);
+      },
+      onTextEnd: () => {
+        spiral.turned();
+        events.onTextEnd();
+      },
+      onReasoningDelta: (text) => {
+        events.onReasoningDelta(text);
+        watch(text);
+      },
+      onReasoningEnd: () => {
+        spiral.turned();
+        events.onReasoningEnd();
+      },
+      onToolCall: (call) => {
+        // It got somewhere. Whatever it said on the way there is not evidence
+        // of a loop any more.
+        spiral.turned();
+        events.onToolCall(call);
+      },
       onToolResult: (result) => events.onToolResult(result),
       onContextUsage: (used, window) => events.onContextUsage(used, window),
       onCompaction: (before, after) => events.onCompaction(before, after),
@@ -534,7 +573,7 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     contextWindow: resolveContextWindow(profile),
     temperature: profile.temperature,
     maxTokens: profile.maxTokens,
-    signal,
+    signal: brake.signal,
   }).finally(() => {
     void pool.release();
   });

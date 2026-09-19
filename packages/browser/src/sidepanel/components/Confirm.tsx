@@ -23,16 +23,24 @@ export function Confirm({
   onAnswer: (answer: ConfirmAnswer) => void;
 }) {
   const destructive = request.permission === 'destructive';
-  const verb =
-    request.tool === 'click'
-      ? 'Click'
-      : request.tool === 'type'
-        ? 'Type into'
-        : request.tool === 'select'
-          ? 'Choose in'
-          : request.tool === 'navigate'
-            ? 'Go to'
-            : 'Go back to';
+  // The verb is a prefix to the target, so it has to agree with it: every
+  // unknown name used to read "Go back to ...", which for a resize or a
+  // double-click is a question about something else entirely. The final fall
+  // back is the past-tense label, which is already one per tool by the rule of
+  // toolLabels.ts.
+  const verbs: Record<string, string> = {
+    click: 'Click',
+    double_click: 'Double-click',
+    triple_click: 'Triple-click',
+    right_click: 'Right-click',
+    type: 'Type into',
+    select: 'Choose in',
+    navigate: 'Go to',
+    go_back: 'Go back to',
+    go_forward: 'Go forward to',
+    resize_window: 'Resize the window to',
+  };
+  const verb = verbs[request.tool] ?? toolLabel(request.tool).past;
 
   return (
     <div

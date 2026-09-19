@@ -1,4 +1,11 @@
 import type { ToolCall, ToolResult } from '@heapcode/core/agent';
+import {
+  formatSearchResults,
+  isWebSearchEnabled,
+  webSearch,
+  WEB_SEARCH_DISABLED_NOTICE,
+  type WebSearchConfig,
+} from '@heapcode/core/agent';
 import { formatSnapshot, type Control, type PageSnapshot } from '../shared/snapshot.js';
 import { describeChanges } from '../shared/delta.js';
 import { currentTab, tabTarget, waitForLoad } from '../sidepanel/page.js';
@@ -16,6 +23,7 @@ import { parseKey, KNOWN_KEYS } from './keys.js';
 import { matchAll, PROFILE_FIELDS, type UserProfile } from '../shared/profile.js';
 import { namesSensitiveField } from '../shared/sensitive.js';
 import { canDownload } from '../shared/settings.js';
+import { fetchUrl } from './fetchUrl.js';
 import { mergeTable, sameHeaders, type Dataset } from '../shared/dataset.js';
 import { RepetitionGuard } from './repetition.js';
 import { findNextControl, nextIsExhausted, nextPageUrl } from './pagination.js';
@@ -73,8 +81,40 @@ export interface Classified {
 }
 
 /** Tools that change the page. Repetition means something different for these. */
+/** Floors from `#resizeWindow`, in one place so every caller clamps alike. */
+export const MIN_WINDOW_WIDTH = 400;
+export const MIN_WINDOW_HEIGHT = 300;
+
+/** The size a resize will actually produce, floors applied. */
+export function windowSize(width: number, height: number): { width: number; height: number } {
+  return {
+    width: Math.max(MIN_WINDOW_WIDTH, Math.round(width)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.round(height)),
+  };
+}
+
+/**
+ * The same size as text, for the confirm card and the activity line.
+ *
+ * Both of those render *before* `#resizeWindow` validates, so they are handed
+ * raw tool arguments and have to cope with arguments that are not numbers at
+ * all. `Math.max(400, Math.round(Number(undefined)))` is `NaN`, which put
+ * "resize the window to NaN×NaN" in front of the user on the very card they
+ * were being asked to approve.
+ */
+export function describeSize(width: unknown, height: unknown): string {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return 'a size it did not give';
+  const size = windowSize(w, h);
+  return `${size.width}×${size.height}`;
+}
+
 const MUTATING = new Set([
   'click',
+  'double_click',
+  'triple_click',
+  'right_click',
   'type',
   'fill_form',
   'autofill_form',
@@ -83,6 +123,8 @@ const MUTATING = new Set([
   'drag',
   'navigate',
   'go_back',
+  'go_forward',
+  'resize_window',
   'next_page',
   'open_tab',
   'close_tab',
@@ -187,6 +229,8 @@ export class BrowserToolExecutor {
    * anyone being told. See repetition.ts for the run this was written from.
    */
   #repetition = new RepetitionGuard();
+  /** Search backend config, read from storage when a web_search call lands. */
+  #webSearch: (() => Promise<{ config: WebSearchConfig; apiKey?: string } | undefined>) | undefined;
 
   constructor(
     intent: string,
@@ -197,6 +241,16 @@ export class BrowserToolExecutor {
       profile?: UserProfile;
       onView?: (dataUrl: string) => void;
       onData?: (dataset: Dataset) => void;
+      /**
+       * Search config + key, resolved at call time rather than at construction.
+       *
+       * The belt is gated per-run (run.ts reads the settings once and decides
+       * whether the tool exists at all), so this only matters mid-run for a
+       * user who reconfigures while a run is in flight — the cheap way to be
+       * correct in both directions is to read the storage when the call lands.
+       * Mirrors the extension's `webSearchSettings` resolver.
+       */
+      webSearch?: () => Promise<{ config: WebSearchConfig; apiKey?: string } | undefined>;
     } = {},
   ) {
     this.#intent = intent;
@@ -206,6 +260,7 @@ export class BrowserToolExecutor {
     this.#profile = options.profile ?? {};
     this.#onView = options.onView;
     this.#onData = options.onData;
+    this.#webSearch = options.webSearch;
   }
 
   /**
@@ -349,13 +404,40 @@ export class BrowserToolExecutor {
         case 'close_tab':
           return await this.#closeTab(call.args, ok, fail);
         case 'click':
+        case 'double_click':
+        case 'triple_click':
+        case 'right_click':
         case 'type':
         case 'select':
         case 'navigate':
         case 'go_back':
+        case 'go_forward':
           return await this.#act(call, ok, fail);
+        case 'resize_window':
+          return await this.#resizeWindow(call, ok, fail);
         case 'attach_file':
           return await this.#attachFile(call, ok, fail);
+        // Neither of the web tools touches a page, so neither goes through
+        // #act/#observe; both are read-permission and never classified.
+        case 'fetch_url':
+          return fetchUrl(String(call.args.url ?? '')).then(ok, (err: Error) => fail(err.message));
+        case 'web_search': {
+          const settings = await this.#webSearch?.();
+          if (!settings || !isWebSearchEnabled(settings.config, settings.apiKey)) {
+            return fail(WEB_SEARCH_DISABLED_NOTICE);
+          }
+          try {
+            const results = await webSearch(
+              settings.config,
+              settings.apiKey,
+              String(call.args.query ?? ''),
+              typeof call.args.max_results === 'number' ? call.args.max_results : undefined,
+            );
+            return ok(formatSearchResults(String(call.args.query ?? ''), results));
+          } catch (err) {
+            return fail(err instanceof Error ? err.message : String(err));
+          }
+        }
         default:
           return fail(`Unknown tool "${call.name}".`);
       }
@@ -377,22 +459,33 @@ export class BrowserToolExecutor {
     // Navigation only needs the tab, never permission to read what is on it.
     // Requiring the latter turned any redirect to an ungranted site into a trap
     // with no way back.
-    const leaving = call.name === 'navigate' || call.name === 'go_back';
+    const leaving =
+      call.name === 'navigate' || call.name === 'go_back' || call.name === 'go_forward';
     const target = leaving ? await this.#addressOnly() : await this.#pool.forActiveTab();
     if (!target.ok) return fail(target.reason);
 
-    if (call.name === 'go_back') {
+    if (call.name === 'go_back' || call.name === 'go_forward') {
       const before = this.#last;
-      // `chrome.tabs.goBack` rather than the content script: the script may not
-      // be in the page at all, which is exactly the case where going back
-      // matters most.
+      // `chrome.tabs.goBack`/`goForward` rather than the content script: the
+      // script may not be in the page at all, which is exactly the case where
+      // going back matters most.
       try {
-        await chrome.tabs.goBack(target.tabId);
+        if (call.name === 'go_back') await chrome.tabs.goBack(target.tabId);
+        else await chrome.tabs.goForward(target.tabId);
       } catch {
-        return fail('There is nothing to go back to in this tab.');
+        return fail(
+          call.name === 'go_back'
+            ? 'There is nothing to go back to in this tab.'
+            : 'There is nothing to go forward to in this tab.',
+        );
       }
       await waitForLoad(target.tabId, this.#loadTimeoutMs);
-      return this.#observe(before, target.tabId, 'Went back.', ok);
+      return this.#observe(
+        before,
+        target.tabId,
+        call.name === 'go_back' ? 'Went back.' : 'Went forward.',
+        ok,
+      );
     }
 
     if (call.name === 'navigate') {
@@ -440,15 +533,73 @@ export class BrowserToolExecutor {
     }
 
     const before = this.#last;
+    // The variants arrive as their own tool names rather than an argument, so
+    // the tool belt can describe each honestly and the transcript can name
+    // them separately; here they are all one click with a count and a button.
+    const variant =
+      call.name === 'double_click'
+        ? ('double' as const)
+        : call.name === 'triple_click'
+          ? ('triple' as const)
+          : call.name === 'right_click'
+            ? ('right' as const)
+            : undefined;
     const result =
-      call.name === 'click'
-        ? await driven.driver.click(handle, generation)
+      call.name === 'click' ||
+      call.name === 'double_click' ||
+      call.name === 'triple_click' ||
+      call.name === 'right_click'
+        ? await driven.driver.click(handle, generation, variant)
         : call.name === 'type'
           ? await driven.driver.type(handle, generation, String(call.args.text ?? ''))
           : await driven.driver.select(handle, generation, String(call.args.option ?? ''));
 
     if (!result.ok) return fail(result.error);
     return this.#observe(before, driven.tabId, result.note, ok);
+  }
+
+  /**
+   * Resize the browser window.
+   *
+   * The window, not the viewport: `chrome.windows.update` is real, visible and
+   * reversible, and works with no debugger attached. Viewport emulation
+   * without resizing anything is a testing tool rather than an action, and can
+   * follow behind the debugger gate if responsive-testing feedback asks.
+   *
+   * A floor on both dimensions, because a model asked for a "small" window
+   * would otherwise be able to reduce the UI the user is watching it in to a
+   * strip nothing fits in — including the confirmation it is about to be
+   * asked to read. `windowSize` applies that floor, and is what the confirm
+   * card renders too, so the user is shown the size that will actually happen.
+   */
+  async #resizeWindow(
+    call: ToolCall,
+    ok: (s: string) => ToolResult,
+    fail: (s: string) => ToolResult,
+  ): Promise<ToolResult> {
+    const width = Number(call.args.width);
+    const height = Number(call.args.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      return fail('resize_window needs a width and a height, in pixels.');
+    }
+
+    const target = await this.#addressOnly();
+    if (!target.ok) return fail(target.reason);
+    const tab = await chrome.tabs.get(target.tabId).catch(() => undefined);
+    if (!tab?.windowId) return fail('The tab has no window to resize.');
+
+    // `left`/`top` are left alone: a window grown rightward or downward stays
+    // where it is, and Chrome brings the growing edge back on screen when it
+    // would run past the display edge.
+    const size = windowSize(width, height);
+    await chrome.windows.update(tab.windowId, size);
+
+    return this.#observe(
+      this.#last,
+      target.tabId,
+      `Resized the window to ${size.width}×${size.height}.`,
+      ok,
+    );
   }
 
   /**
@@ -561,8 +712,16 @@ export class BrowserToolExecutor {
         url,
       };
     }
-    if (call.name === 'go_back' || call.name === 'close_tab') {
+    if (call.name === 'go_back' || call.name === 'go_forward' || call.name === 'close_tab') {
       return { classification: { permission: 'write' }, url };
+    }
+
+    if (call.name === 'resize_window') {
+      return {
+        classification: { permission: 'write' },
+        url,
+        describe: `resize the window to ${describeSize(call.args.width, call.args.height)}`,
+      };
     }
 
     if (call.name === 'download') {

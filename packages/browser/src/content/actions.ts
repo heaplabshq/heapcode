@@ -37,23 +37,24 @@ function bringIntoView(element: Element): void {
   }
 }
 
-function mouseEvent(type: string, target: Element): MouseEvent {
+function mouseEvent(type: string, target: Element, init: Partial<MouseEventInit> = {}): MouseEvent {
   const rect = target.getBoundingClientRect();
-  const init: MouseEventInit = {
+  const merged: MouseEventInit = {
     bubbles: true,
     cancelable: true,
     clientX: rect.left + rect.width / 2,
     clientY: rect.top + rect.height / 2,
     button: 0,
+    ...init,
   };
   try {
     // `view` matters to pages that read it, but the constructor rejects
     // anything it does not consider a real Window -- which includes the view
     // jsdom hands back under a test runner. Fidelity where it works, a
     // functioning event everywhere else.
-    return new MouseEvent(type, { ...init, view: target.ownerDocument.defaultView });
+    return new MouseEvent(type, { ...merged, view: target.ownerDocument.defaultView });
   } catch {
-    return new MouseEvent(type, init);
+    return new MouseEvent(type, merged);
   }
 }
 
@@ -108,26 +109,71 @@ function whyNotActionable(element: Element): string | undefined {
   return undefined;
 }
 
-/** The full sequence a real click produces, in order. */
-export function performClick(element: Element): ActionResult {
+/**
+ * The full sequence a real click produces, in order.
+ *
+ * `variant` is the count and button a person would use. A page reads
+ * `event.detail` and `event.button`, not how many calls produced the events,
+ * so two plain clicks do not make a double-click any more than typing a letter
+ * twice makes a word.
+ */
+export function performClick(element: Element, variant?: 'double' | 'triple' | 'right'): ActionResult {
   const blocked = whyNotActionable(element);
   if (blocked) return { ok: false, error: blocked };
 
   bringIntoView(element);
 
+  if (variant === 'right') {
+    // The browser's own context menu opens only for trusted input, so it never
+    // appears and nothing can operate it. What this reaches is the page's own
+    // menu, the kind apps build (a document row with Rename and Delete in it,
+    // a canvas with its own tools) -- which is what the tool says it is for.
+    element.dispatchEvent(pointerEvent('pointerover', element));
+    element.dispatchEvent(mouseEvent('mouseover', element));
+    element.dispatchEvent(pointerEvent('pointerdown', element));
+    element.dispatchEvent(mouseEvent('mousedown', element, { button: 2 }));
+    element.dispatchEvent(pointerEvent('pointerup', element));
+    element.dispatchEvent(mouseEvent('mouseup', element, { button: 2 }));
+    element.dispatchEvent(mouseEvent('contextmenu', element, { button: 2 }));
+    return { ok: true, note: 'Sent a right click; the page heard a contextmenu event.' };
+  }
+
   element.dispatchEvent(pointerEvent('pointerover', element));
   element.dispatchEvent(mouseEvent('mouseover', element));
-  element.dispatchEvent(pointerEvent('pointerdown', element));
-  element.dispatchEvent(mouseEvent('mousedown', element));
-  if (element instanceof HTMLElement) element.focus();
-  element.dispatchEvent(pointerEvent('pointerup', element));
-  element.dispatchEvent(mouseEvent('mouseup', element));
 
-  // The real click last. `.click()` rather than a synthesized MouseEvent so
-  // that default behaviour -- following a link, submitting a form -- still runs.
-  if (element instanceof HTMLElement) element.click();
-  else element.dispatchEvent(mouseEvent('click', element));
+  const rounds = variant === 'triple' ? 3 : variant === 'double' ? 2 : 1;
+  for (let round = 1; round <= rounds; round++) {
+    element.dispatchEvent(pointerEvent('pointerdown', element));
+    element.dispatchEvent(mouseEvent('mousedown', element));
+    if (element instanceof HTMLElement && round === 1) element.focus();
+    element.dispatchEvent(pointerEvent('pointerup', element));
+    element.dispatchEvent(mouseEvent('mouseup', element));
 
+    // The real click last. Round one uses `.click()` rather than a synthesized
+    // MouseEvent so that default behaviour -- following a link, submitting a
+    // form -- still runs, exactly once, the way the first click of a person's
+    // double-click does. Later rounds are synthesized: their `detail` is what
+    // the page reads, and letting a default action run twice is how a form
+    // gets submitted twice off one request.
+    if (round === 1 && element instanceof HTMLElement) element.click();
+    else element.dispatchEvent(mouseEvent('click', element, { detail: round }));
+
+    // Exactly one dblclick, on the second click of the burst — what a browser
+    // does for a rapid pair, and what it keeps doing through a third click. A
+    // dblclick on round 3 as well would make a triple-click run a page's
+    // "open this" handler twice off one request.
+    if (round === 2) element.dispatchEvent(mouseEvent('dblclick', element, { detail: round }));
+  }
+
+  if (variant === 'double') return { ok: true, note: 'Sent a double click (click, click, dblclick).' };
+  if (variant === 'triple') {
+    return {
+      ok: true,
+      note:
+        'Sent a triple click; page-side handlers saw detail 3. Note these were synthetic events, ' +
+        'so the browser\'s own paragraph selection did not run -- it happens only for trusted clicks.',
+    };
+  }
   return { ok: true, note: 'Dispatched a full click sequence.' };
 }
 

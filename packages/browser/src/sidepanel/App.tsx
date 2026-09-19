@@ -136,14 +136,30 @@ export function App() {
    * than being sent: selected text is page content, and page content must not
    * reach the model carrying the user's authority without the user having read
    * it first.
+   *
+   * Read once on mount *and* watched, because the worker now opens the panel
+   * before writing the prompt — it has to, since `sidePanel.open` does not
+   * survive an `await`. That ordering means the write can land either side of
+   * this mount, and only the watch catches the later half. Whichever arrives
+   * first clears the key, so the prompt is still taken exactly once.
    */
   useEffect(() => {
-    void chrome.storage.session.get(PENDING_PROMPT_KEY).then((stored) => {
-      const pending = stored[PENDING_PROMPT_KEY];
+    const take = (pending: unknown) => {
       if (typeof pending !== 'string' || !pending) return;
       setDraft(pending);
       void chrome.storage.session.remove(PENDING_PROMPT_KEY);
-    });
+    };
+
+    void chrome.storage.session.get(PENDING_PROMPT_KEY).then((stored) => take(stored[PENDING_PROMPT_KEY]));
+
+    const onChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area !== 'session') return;
+      // `newValue` is absent for the removal this very handler triggers, which
+      // is what stops it looping.
+      take(changes[PENDING_PROMPT_KEY]?.newValue);
+    };
+    chrome.storage.onChanged.addListener(onChanged);
+    return () => chrome.storage.onChanged.removeListener(onChanged);
   }, []);
 
   /**

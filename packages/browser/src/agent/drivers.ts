@@ -27,7 +27,16 @@ import { describeKey, keySpec, modifierMask, selectAllModifier, type KeyPress } 
 export interface PageDriver {
   readonly kind: 'cdp' | 'dom';
   snapshot(): Promise<PageSnapshot>;
-  click(handle: number, generation: number): Promise<Outcome>;
+  /**
+   * Click a control, with the count and button a person would use.
+   *
+   * `variant` omitted is a plain left click, so existing callers are
+   * unchanged; the variants exist because half the web answers a double-click
+   * or a page's own right-click menu, and neither was reachable by calling
+   * `click` more times — a page reads `event.detail` and `event.button`, not
+   * how many calls produced it.
+   */
+  click(handle: number, generation: number, variant?: 'double' | 'triple' | 'right'): Promise<Outcome>;
   type(handle: number, generation: number, text: string): Promise<Outcome>;
   select(handle: number, generation: number, option: string): Promise<Outcome>;
   /** Move the pointer onto an element, for menus and tooltips that open on it. */
@@ -171,8 +180,8 @@ export class DomDriver implements PageDriver {
     return { ok: true, note: response.note };
   }
 
-  click(handle: number, generation: number) {
-    return this.#act({ type: 'click', handle, generation });
+  click(handle: number, generation: number, variant?: 'double' | 'triple' | 'right') {
+    return this.#act({ type: 'click', handle, generation, variant });
   }
 
   type(handle: number, generation: number, text: string) {
@@ -426,7 +435,11 @@ export class CdpDriver implements PageDriver {
     };
   }
 
-  async click(handle: number, _generation?: number): Promise<Outcome> {
+  async click(
+    handle: number,
+    _generation?: number,
+    variant?: 'double' | 'triple' | 'right',
+  ): Promise<Outcome> {
     const target = await this.#resolve(handle);
     if (!('backendNodeId' in target)) return target;
 
@@ -438,17 +451,30 @@ export class CdpDriver implements PageDriver {
     // Real input, dispatched by the browser. `isTrusted` is true, so frameworks
     // and anti-bot layers that reject synthetic events accept these -- the one
     // failure the DOM path can detect but never fix.
-    const common = { x: point.x, y: point.y, button: 'left' as const, clickCount: 1 };
+    const button = variant === 'right' ? ('right' as const) : ('left' as const);
+    const count = variant === 'double' ? 2 : variant === 'triple' ? 3 : 1;
+    const common = { x: point.x, y: point.y, button };
     await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...common });
     // A beat between arriving and pressing. Hover-triggered menus and tooltips
     // need a frame or two to appear, and clicking into the gap hits whatever was
     // there before they did.
     await new Promise((resolve) => setTimeout(resolve, 100));
-    await this.#session.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...common });
-    await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...common });
+    // Each press carries its own clickCount — 1, then 2, then 3 — which is what
+    // the browser reads to fire dblclick and to report `event.detail`, so a
+    // double or triple click made this way is indistinguishable from a hand's.
+    for (let i = 1; i <= count; i++) {
+      const press = { ...common, clickCount: i };
+      await this.#session.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...press });
+      await this.#session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...press });
+    }
 
     this.#invalidate();
-    return { ok: true, note: 'Clicked with a real input event.' };
+    return {
+      ok: true,
+      note: variant
+        ? `Sent a ${variant} click with real input events.`
+        : 'Clicked with a real input event.',
+    };
   }
 
   async type(handle: number, _generation: number, text: string): Promise<Outcome> {

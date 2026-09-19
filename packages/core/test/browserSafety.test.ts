@@ -173,9 +173,13 @@ describe('browser-safe subpath exports', () => {
 
   it('keeps the Node-coupled agent modules out of the browser-safe closure', () => {
     const reachable = new Set(BROWSER_SAFE.flatMap((s) => walk(entryFor(s)).files));
+    // `webSearch` was on this list while it reached `workspaceTools` for one
+    // pure helper; the helper moved to `webText` and the search layer is now
+    // browser-safe by construction — heapbrowse imports it. If it ever drifts
+    // back toward Node, the "reaches no Node builtin" assertions above catch
+    // it before this list could.
     for (const forbidden of [
       'src/agent/workspaceTools.ts',
-      'src/agent/webSearch.ts',
       'src/agent/mcp.ts',
       'src/net/safeFetch.ts',
       'src/node/fs.ts',

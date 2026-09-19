@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { WEB_SEARCH_DISABLED_NOTICE } from '@heapcode/core/agent';
 import { BrowserToolExecutor } from '../src/agent/executor.js';
 import { READ_ONLY_TOOLS } from '../src/agent/tools.js';
 import { ALL_ACTION_TOOLS } from '../src/agent/actions.js';
@@ -242,6 +243,82 @@ describe('unknown tools', () => {
   });
 });
 
+describe('the click variants', () => {
+  it('escalate exactly as far as a plain click on the same control would', async () => {
+    // The classification is decided from what the element is, not which tool
+    // name reached it — `right_click` on "Place order" is the same commit as
+    // `click` on it, and must never be the easy way past a destructive verdict.
+    const orderPage = snapshot({
+      controls: [
+        { handle: 1, role: 'button', name: 'Place order', score: 90, context: '' },
+        { handle: 2, role: 'button', name: 'Change quantity', score: 80, context: '' },
+      ],
+    });
+    stubChrome([
+      { ok: true, kind: 'snapshot', snapshot: orderPage },
+      { ok: true, kind: 'snapshot', snapshot: orderPage },
+    ]);
+    const executor = new BrowserToolExecutor('x');
+    await executor.execute(call('read_page'));
+
+    for (const name of ['click', 'double_click', 'triple_click', 'right_click']) {
+      const verdict = await executor.classify(call(name, { handle: 1 }));
+      expect(verdict.classification.permission, name).toBe('destructive');
+    }
+
+    // And the same names on an ordinary control stay ordinary.
+    const benign = await executor.classify(call('right_click', { handle: 2 }));
+    expect(benign.classification.permission).toBe('write');
+  });
+});
+
+describe('resize_window', () => {
+  it('resizes the window the working tab is in, and clamps to a floor', async () => {
+    // A model asked for a "small" window could otherwise shrink the very UI
+    // the user is watching it in — including the next confirmation.
+    const windowsUpdate = vi.fn().mockResolvedValue({});
+    vi.stubGlobal('chrome', {
+      tabs: {
+        query: vi.fn().mockResolvedValue([{ id: 1, url: 'https://shop.example.com/laptops' }]),
+        get: vi.fn().mockResolvedValue({ id: 1, windowId: 5 }),
+        sendMessage: vi.fn().mockResolvedValue({ ok: true, kind: 'settled', settled: true, waitedMs: 5 }),
+      },
+      permissions: { contains: vi.fn().mockResolvedValue(true) },
+      scripting: { executeScript: vi.fn().mockResolvedValue([]) },
+      windows: { update: windowsUpdate },
+    });
+
+    const result = await new BrowserToolExecutor('x').execute(
+      call('resize_window', { width: 50, height: 20 }),
+    );
+
+    expect(windowsUpdate).toHaveBeenCalledWith(5, { width: 400, height: 300 });
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toMatch(/400×300/);
+  });
+
+  it('is an error the model can act on when the dimensions are missing', async () => {
+    stubChrome([]);
+    const result = await new BrowserToolExecutor('x').execute(call('resize_window', {}));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/width and a height/);
+  });
+
+  it('never puts NaN on the card the user is asked to approve', async () => {
+    // `classify` runs before the dimensions are validated, so it is handed raw
+    // arguments. `Math.round(Number(undefined))` is NaN, which read as
+    // "resize the window to NaN×NaN" on the confirmation itself.
+    stubChrome([]);
+    const executor = new BrowserToolExecutor('x');
+
+    const missing = await executor.classify(call('resize_window', {}));
+    expect(missing.describe).not.toMatch(/NaN/);
+
+    const given = await executor.classify(call('resize_window', { width: 1280, height: 800 }));
+    expect(given.describe).toMatch(/1280×800/);
+  });
+});
+
 describe('acting without having read', () => {
   it('is refused, because a handle number would be a guess', async () => {
     stubChrome([]);
@@ -414,5 +491,204 @@ describe('reading the same page twice', () => {
     const after = await executor.execute(call('get_page_text'));
 
     expect(after.content).toContain('Out of stock');
+  });
+});
+
+/**
+ * fetch_url, whose guard is the whole point.
+ *
+ * The address being fetched is model-chosen text, and the model sits beside
+ * the user's logged-in session — so the SSRF floor (http(s) only, literal-IP
+ * refused, the address it lands on re-checked) is not hardening, it is the
+ * reason the tool may exist at all. Each refusal below is the attack it closes.
+ *
+ * These stubs model a *browser's* fetch, which is the whole point: a browser
+ * following redirects itself and reporting where it landed in `res.url`. An
+ * earlier version of this suite stubbed a Node-style 302-with-Location, which
+ * `redirect: 'manual'` never produces in a page — so the tests passed while
+ * every redirecting URL failed as `HTTP 0` in the real extension.
+ */
+describe('fetch_url', () => {
+  /** Chrome is untouched by a fetch; the stub is here for afterEach symmetry. */
+  const page = (
+    body: string,
+    init: { status?: number; headers?: Record<string, string>; url?: string } = {},
+  ) => {
+    const res = new Response(body, { status: init.status ?? 200, headers: init.headers });
+    // `Response.url` is read-only and empty on a constructed response; a real
+    // one carries the address after every redirect the browser followed.
+    if (init.url) Object.defineProperty(res, 'url', { value: init.url });
+    return res;
+  };
+
+  function stubFetch(handler: (url: string, init?: RequestInit) => Promise<Response>) {
+    // `init` is recorded as well as passed on: `redirect` is part of the
+    // contract with the browser, so the tests assert on it.
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) =>
+      handler(String(input), init),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('refuses a link-local literal IP before any request is made', async () => {
+    const fetchMock = stubFetch(async () => page('metadata'));
+    const result = await new BrowserToolExecutor('x').execute(
+      call('fetch_url', { url: 'http://169.254.169.254/latest/meta-data' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/Refusing to fetch/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a loopback literal and anything that is not http(s)', async () => {
+    stubFetch(async () => page('nope'));
+    const executor = new BrowserToolExecutor('x');
+
+    const loopback = await executor.execute(call('fetch_url', { url: 'http://127.0.0.1:8888/search' }));
+    expect(loopback.isError).toBe(true);
+    expect(loopback.content).toMatch(/Refusing to fetch/);
+
+    const ftp = await executor.execute(call('fetch_url', { url: 'file:///etc/passwd' }));
+    expect(ftp.isError).toBe(true);
+    expect(ftp.content).toMatch(/Only http\(s\) URLs/);
+  });
+
+  it('refuses the body when a public URL redirected onto a private address', async () => {
+    // The browser followed the chain and landed on the metadata range. We
+    // cannot un-issue that request, but the model must not be handed what
+    // came back.
+    stubFetch(async () =>
+      page('ami-id\naws-secret', { url: 'http://169.254.169.254/latest/meta-data' }),
+    );
+    const result = await new BrowserToolExecutor('x').execute(
+      call('fetch_url', { url: 'https://public.example.com/redirect' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/Refusing to fetch/);
+    expect(result.content).not.toMatch(/aws-secret/);
+  });
+
+  it('follows a safe redirect and returns the final page as text', async () => {
+    // One call, as a browser makes it: `redirect: 'follow'`, landing reported.
+    const fetchMock = stubFetch(async () =>
+      page('Landed: <b>Rust 2.0</b> released', {
+        headers: { 'content-type': 'text/html' },
+        url: 'https://example.com/landed',
+      }),
+    );
+    const result = await new BrowserToolExecutor('x').execute(
+      call('fetch_url', { url: 'https://example.com/start' }),
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain('Landed: Rust 2.0 released');
+    expect(result.content).not.toContain('<b>');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ redirect: 'follow' });
+  });
+
+  it('never asks for redirect: manual, which a browser answers with an unreadable HTTP 0', async () => {
+    // The regression this file exists to hold: `manual` yields an opaque
+    // redirect (status 0, no headers), so a plain http -> https hop — which is
+    // most of the web — came back as `HTTP 0` instead of the page.
+    const fetchMock = stubFetch(async () => page('ok', { url: 'https://example.com/' }));
+    await new BrowserToolExecutor('x').execute(call('fetch_url', { url: 'http://example.com/' }));
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.redirect).not.toBe('manual');
+  });
+
+  it('reports the status of a page that answers with an error', async () => {
+    stubFetch(async () => page('missing', { status: 404 }));
+    const result = await new BrowserToolExecutor('x').execute(
+      call('fetch_url', { url: 'https://example.com/gone' }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/HTTP 404/);
+  });
+
+  it('names both real causes when the fetch fails, and steers to the tab', async () => {
+    // A CORS refusal and a dead host are the same TypeError to a browser; the
+    // model gets both possibilities plus the fallback no site can refuse.
+    stubFetch(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    const result = await new BrowserToolExecutor('x').execute(
+      call('fetch_url', { url: 'https://refuses-cors.example.com/' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/refuses to be read this way/);
+    expect(result.content).toMatch(/get_page_text/);
+  });
+});
+
+describe('web_search', () => {
+  it('answers with the disabled notice when no settings resolver was provided', async () => {
+    stubChrome([]);
+    const result = await new BrowserToolExecutor('x').execute(
+      call('web_search', { query: 'rust release notes' }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(WEB_SEARCH_DISABLED_NOTICE);
+  });
+
+  it('answers with the disabled notice when the settings exist but say disabled', async () => {
+    stubChrome([]);
+    const executor = new BrowserToolExecutor('x', {
+      webSearch: async () => ({ config: { provider: 'brave', enabled: false }, apiKey: 'k' }),
+    });
+    const result = await executor.execute(call('web_search', { query: 'rust' }));
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toBe(WEB_SEARCH_DISABLED_NOTICE);
+  });
+
+  it('searches the configured backend and formats the results', async () => {
+    // `custom` with a shape-matching body: core's normalizer keys on the JSON's
+    // own shape, so this is a real end-to-end webSearch() call, not a stub.
+    const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+      new Response(
+        JSON.stringify({
+          organic: [
+            { title: 'Rust 2.0 released', link: 'https://blog.rust-lang.org/2.0', snippet: 'Announcing Rust 2.0' },
+          ],
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const executor = new BrowserToolExecutor('x', {
+      webSearch: async () => ({ config: { provider: 'custom', baseUrl: 'https://search.example.com/api' } }),
+    });
+
+    const result = await executor.execute(call('web_search', { query: 'rust 2.0' }));
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain('Rust 2.0 released');
+    expect(result.content).toContain('https://blog.rust-lang.org/2.0');
+    // The model's query reached the backend as a parameter, not lost along the way.
+    const requested = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(requested.origin).toBe('https://search.example.com');
+  });
+
+  it('surfaces a backend failure as a tool error the model can act on', async () => {
+    vi.stubGlobal(
+      'fetch',
+      // Retry-After: 0 keeps core's retry backoff from sleeping in the test —
+      // the behavior under test is the failure surfacing, not the pacing.
+      vi.fn(async () => new Response('rate limited', { status: 429, headers: { 'retry-after': '0' } })),
+    );
+    const executor = new BrowserToolExecutor('x', {
+      webSearch: async () => ({ config: { provider: 'custom', baseUrl: 'https://search.example.com/api' } }),
+    });
+    const result = await executor.execute(call('web_search', { query: 'rust' }));
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/HTTP 429/);
   });
 });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { performClick, performSelect, performType } from '../src/content/actions.js';
 
 function load(html: string): Element {
@@ -45,6 +45,83 @@ describe('clicking', () => {
     });
     performClick(document.querySelector('button')!);
     expect(submitted).toBe(true);
+  });
+});
+
+/**
+ * The variants are not the plain click called more than once. A page reads
+ * `event.detail` and `event.button`, so two plain clicks are to a double-click
+ * what typing a letter twice is to a word -- asserted here because the failure
+ * is silent, same as the original sequence was.
+ */
+describe('clicking the way a person would', () => {
+  it('sends a double click as one burst: two clicks with rising detail, then dblclick', () => {
+    const row = load('<div class="folder">Documents</div>');
+    const clicks: number[] = [];
+    const dblclicks: number[] = [];
+    row.addEventListener('click', (e) => clicks.push((e as MouseEvent).detail));
+    row.addEventListener('dblclick', (e) => dblclicks.push((e as MouseEvent).detail));
+
+    const result = performClick(row, 'double');
+
+    expect(result.ok).toBe(true);
+    expect(clicks).toHaveLength(2);
+    expect(clicks.at(-1)).toBe(2);
+    expect(dblclicks).toEqual([2]);
+  });
+
+  it('runs default behaviour once on a double click, not once per round', () => {
+    // The first round uses `.click()` so links and submits still work; the
+    // later rounds are synthesized precisely so they cannot, and in a real
+    // Chrome a synthesized click never runs an element's activation behaviour.
+    // (jsdom is more permissive here, so what is asserted is the round count
+    // itself rather than its downstream effect.)
+    document.body.innerHTML = '<form><button type="submit">Send</button></form>';
+    const button = document.querySelector('button')!;
+    const click = vi.spyOn(button, 'click');
+
+    performClick(button, 'double');
+
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a triple click as three clicks, the last carrying detail 3', () => {
+    const field = load('<p>One whole paragraph of text.</p>');
+    const clicks: number[] = [];
+    const dblclicks: number[] = [];
+    field.addEventListener('click', (e) => clicks.push((e as MouseEvent).detail));
+    field.addEventListener('dblclick', (e) => dblclicks.push((e as MouseEvent).detail));
+
+    const result = performClick(field, 'triple');
+
+    expect(result.ok).toBe(true);
+    // Three clicks, and exactly one dblclick — on the second, the way a real
+    // browser pairs a rapid sequence and then keeps going. Firing it on the
+    // third as well would run a page's "open this" handler twice off one
+    // triple-click, which is a real double-action, not a fidelity nit.
+    expect(clicks).toHaveLength(3);
+    expect(clicks.at(-1)).toBe(3);
+    expect(dblclicks).toEqual([2]);
+    // The note is honest about what a synthesized triple click cannot do: the
+    // browser's own paragraph selection happens only for trusted input.
+    expect(result.ok && result.note).toMatch(/did not run/);
+  });
+
+  it('sends a right click as contextmenu, with no click event at all', () => {
+    const row = load('<div class="doc">Report.pdf</div>');
+    const seen: string[] = [];
+    let button = -1;
+    row.addEventListener('click', () => seen.push('click'));
+    row.addEventListener('contextmenu', (e) => {
+      seen.push('contextmenu');
+      button = (e as MouseEvent).button;
+    });
+
+    const result = performClick(row, 'right');
+
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual(['contextmenu']);
+    expect(button).toBe(2);
   });
 });
 

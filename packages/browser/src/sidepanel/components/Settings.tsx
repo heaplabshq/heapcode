@@ -26,6 +26,7 @@ import { hasHostPermission, requestHostPermission } from '../../shared/hostPermi
 import { Details } from './Details.js';
 import { Icon } from './Icon.js';
 import { ModelField } from './ModelField.js';
+import { WebSearchCard } from './WebSearchCard.js';
 
 /**
  * Provider setup, plus the connectivity check.
@@ -441,6 +442,11 @@ export function Settings({
           )}
         </div>
       </section>
+
+      {/* After "How it reads the page": web search is the other optional
+          capability, and its card is its own whole on-switch (see
+          WebSearchCard.tsx). */}
+      <WebSearchCard />
 
       <details className="settings-card disclosure-card">
         <summary className="settings-card-head disclosure-summary">

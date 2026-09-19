@@ -37,7 +37,7 @@ Jobs 1–2 are the MVP's centre. Job 3 is the differentiator and the thing that 
 Chrome MV3, side panel chat, OpenAI-compatible provider (BYOK), page understanding, the action set in §5, agent loop with verification, permission tiers with user confirmation, per-origin policy, audit log.
 
 ### Out of scope (v1)
-- **File uploads** — cannot be done from a content script (see §7.4). Deferred to Track X.
+- **File uploads from a content script** — impossible by design (see §7.4); `attach_file` ships behind the CDP opt-in instead.
 - Firefox/Safari ports, cross-tab orchestration, background/unattended runs, account sync, hosted inference.
 - Anything that would require us to hold an API key on the user's behalf.
 
@@ -90,18 +90,47 @@ table#results 24 rows x 4 cols: Model | RAM | Price | Rating
 | Tool | Class | Notes |
 |---|---|---|
 | `read_page()` | read | Full snapshot per §4 |
+| `get_page_text(find?)` | read | The page's prose, unranked and unbudgeted — for what a page *says* rather than what it offers |
 | `get_elements(filter?)` | read | Controls only, optionally filtered — cheaper than a full re-read |
 | `extract_data(schema)` | read | Structured pull (table/list → JSON rows) |
+| `screenshot()` | read | The page as an image; a last resort, and the only tool that costs what an image costs |
 | `scroll(direction, amount?)` | read | Also re-snapshots the newly visible region |
+| `hover(handle)` | read | For menus and tooltips that only exist under the pointer |
 | `wait(condition, timeout)` | read | For `selector appears` / `network idle` / `url changes` |
-| `click(handle)` | **write** | |
-| `type(handle, text)` | **write** | Fires real input/change events; never used for credentials (§6.4) |
+| `list_tabs()` / `switch_tab(tab)` | read | The run follows the tab it is working in, until it switches |
+| `fetch_url(url)` | read | A page by address, no tab. Literal-IP guard + per-hop redirect re-check — a browser cannot resolve DNS before fetching, so that is the floor (§6.5) |
+| `web_search(query)` | read | Offered only when a backend is configured |
+| `ask_user(question)` | read | A question the page cannot answer |
+| `hand_over(what)` | read | Logins, OTPs, CAPTCHAs — the user takes their own keyboard |
+| `click(handle)` | **write** | Escalates to `destructive` on a commit-looking target (§6.2) |
+| `double_click` / `triple_click` / `right_click(handle)` | **write** | Same classification as `click`. `right_click` reaches a page's *own* menu; Chrome's native menu is unreachable |
+| `type(handle, text)` | **write** | Fires real input/change events; credential fields are refused outright (§6.4) |
+| `fill_form(fields)` | **write** | One confirmation for the batch, classified as its worst field |
+| `autofill_form()` | **write** | Offered only when the user has saved details; values are filled locally after approval |
 | `select(handle, option)` | **write** | |
+| `press_key(key)` | **write** | Enter inside a form escalates, since it submits |
 | `navigate(url)` | **write** | Same-origin unprompted; cross-origin is a confirmation (§6.2) |
-| `go_back()` | **write** | |
+| `go_back()` / `go_forward()` | **write** | Both spend the navigation budget |
+| `next_page()` | **write** | Finds the pagination control itself, and classifies it as a click |
+| `open_tab(url)` / `close_tab(tab)` | **write** | `open_tab` spends navigation budget too — forty pages in forty tabs is still forty pages |
+| `resize_window(w, h)` | **write** | The window, not an emulated viewport. Real and reversible |
+| `drag(from, to)` | **write** | Debugger only: a synthesized drag is ignored by every implementation worth dragging in |
+| `download(handle\|url)` | **write** | http(s) only, to the user's usual downloads folder |
+| `attach_file(handle, file?)` | **write** | Debugger only (§7.4), and only files the user configured — never an arbitrary path |
 | `finish(summary)` | read | Structural termination — the run ends when the model *calls* this |
 
-`upload_file` is specified but **not implemented in v1** (§7.4).
+Four are offered conditionally, on the rule that a tool the model is told about
+and is then refused every time is worse than no tool: `web_search` needs a
+configured backend, `autofill_form` needs saved details, and `drag` and
+`attach_file` need the debugger. Read-only mode does not merely refuse the
+**write** half — it does not offer it.
+
+The class in this table is the floor, not the verdict. `classify` in
+`agent/executor.ts` escalates to `destructive` from what the target actually
+is — a commit-looking button, a checkout landmark, a cross-origin navigation,
+a handle that no longer resolves — and `agent/originPolicy.ts` then decides
+allow / ask / deny from that class, the origin and the user's mode (§6.2, §6.3).
+
 
 Tool contracts, JSON schemas, and the `finish` convention are inherited from `@heapcode/core`'s `ToolDefinition` shape rather than reinvented.
 
@@ -145,7 +174,10 @@ Two things the code-agent model does **not** cover and heapbrowse must add:
 - The agent never types into `type=password`, into fields whose accessible name matches a credential/OTP pattern, or into payment card fields — hard refusal at the executor, before the model's request is even shown as a prompt.
 - The user's own stored profile data (name, email, resume) is opt-in, stored locally, and injected only when a form field is matched to it — never dumped into the system prompt.
 
-### 6.5 Audit log
+### 6.5 Fetching by address
+`fetch_url` and `web_search` leave the page behind, so the page-action permission seam does not apply to them — they are `read`, and a read never reaches the confirm flow. What guards them instead is the address: http(s) only, literal private and link-local addresses refused, and every redirect hop re-checked before it is followed. The classification is core's (`net/addressGuard.ts`), shared with the other hosts; what a browser cannot do is core's other half, resolving DNS before the fetch, so a hostname that resolves into a private range is the acknowledged gap. Results are page content, wrapped untrusted like everything else.
+
+### 6.6 Audit log
 Every tool call, its arguments, the permission decision and who made it, the origin, and a snapshot hash — appended locally, viewable and exportable from the side panel. This is what makes "what did it just do?" answerable, and it reuses `@heapcode/core`'s `audit.ts`.
 
 ---
@@ -168,8 +200,8 @@ Consequence: closing the side panel ends the run. That is acceptable for v1 and 
 ### 7.3 Synthetic events don't always work
 A content-script `element.click()` produces an event with `isTrusted: false`. Most sites don't care; some frameworks and most anti-bot layers do. v1 dispatches a full, realistic event sequence (pointerdown → mousedown → focus → mouseup → click, plus `input`+`change` for typing). When an action verifies as a no-op, the loop reports it honestly rather than retrying blindly; CDP-backed real input is the documented escalation, off by default.
 
-### 7.4 File upload is blocked in v1
-`HTMLInputElement.files` is not settable from page context by design. Setting it requires `chrome.debugger` + `DOM.setFileInputFiles`. The brief's "fill this job application using my resume" example therefore ships as **fill everything, then hand the upload to the user** — the agent pauses, highlights the file input, and asks. Full automation moves to Track X behind the CDP opt-in.
+### 7.4 File upload needs the debugger
+`HTMLInputElement.files` is not settable from page context by design. Setting it requires `chrome.debugger` + `DOM.setFileInputFiles`. So the brief's "fill this job application using my resume" example has two shapes, and which one you get is the debugger toggle: with it, `attach_file` attaches one of the files the user configured — never a path the model names, since a model that could name paths could read the machine, and the page it is reading gets to influence what it asks for. Without it, the run does what it always did: **fill everything, then hand the upload to the user** — the agent pauses, highlights the file input, and asks.
 
 ### 7.5 Navigation destroys content scripts
 Any navigation invalidates the content script, the handle registry, and any in-flight action. The loop treats navigation as a hard state boundary: re-inject, wait for load, re-snapshot, then continue.

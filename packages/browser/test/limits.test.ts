@@ -38,6 +38,16 @@ describe('the ceilings', () => {
     expect(stopped.ok).toBe(false);
     if (!stopped.ok) expect(stopped.reason).toMatch(/limit/i);
   });
+
+  it('count go_forward as a navigation, like go_back', () => {
+    // A run talked into hopping between forty pages is the thing being
+    // bounded, and it can hop forward just as cheaply as back.
+    const budget = new RunBudget({ maxActions: 9, maxNavigations: 1, maxPerHost: 9 });
+    budget.spend('go_forward', 'a.example');
+    const second = budget.spend('go_forward', 'a.example');
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toMatch(/navigated/);
+  });
 });
 
 /**
@@ -49,6 +59,7 @@ describe('the ceilings', () => {
 function stubUngrantedPage() {
   const update = vi.fn().mockResolvedValue({});
   const goBack = vi.fn().mockResolvedValue(undefined);
+  const goForward = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal('chrome', {
     tabs: {
       query: vi
@@ -57,6 +68,7 @@ function stubUngrantedPage() {
       get: vi.fn().mockResolvedValue({ id: 1, status: 'complete' }),
       update,
       goBack,
+      goForward,
       sendMessage: vi
         .fn()
         .mockResolvedValue({ ok: true, kind: 'settled', settled: true, waitedMs: 5 }),
@@ -65,7 +77,7 @@ function stubUngrantedPage() {
     permissions: { contains: vi.fn().mockResolvedValue(false) },
     scripting: { executeScript: vi.fn().mockRejectedValue(new Error('no access')) },
   });
-  return { update, goBack };
+  return { update, goBack, goForward };
 }
 
 describe('leaving a page the extension cannot read', () => {
@@ -86,6 +98,12 @@ describe('leaving a page the extension cannot read', () => {
     const { goBack } = stubUngrantedPage();
     await new BrowserToolExecutor('x').execute(call('go_back'));
     expect(goBack).toHaveBeenCalledWith(1);
+  });
+
+  it('can go forward the same way, because a back-and-forth run needs both ends', async () => {
+    const { goForward } = stubUngrantedPage();
+    await new BrowserToolExecutor('x').execute(call('go_forward'));
+    expect(goForward).toHaveBeenCalledWith(1);
   });
 
   it('explains that the new page needs granting, rather than failing silently', async () => {

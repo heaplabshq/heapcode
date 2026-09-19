@@ -238,11 +238,6 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
   };
   if (signal.aborted) brake.abort();
   else signal.addEventListener('abort', () => brake.abort(), { once: true });
-  const spiral = new SpiralWatch();
-  const watch = (text: string) => {
-    if (spiral.saw(text)) stopRun(spiral.reason);
-  };
-
   const [useDebugger, files, profileEnabled, savedProfile, searchConfig, searchKey] = await Promise.all([
     loadUseDebugger(),
     loadFiles(),
@@ -413,6 +408,42 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
     return allowed;
   };
 
+  // Read-only mode does not merely refuse the mutating tools -- it does not
+  // offer them, so the model spends no turns proposing what it cannot do.
+  const offered =
+    mode === 'read-only'
+      ? [...READ_ONLY_TOOLS, SCREENSHOT, ...(webSearch ? [WEB_SEARCH] : [])]
+      : [
+          // Offered on both paths now. The debugger captures any tab it is
+          // attached to; without it Chrome will only photograph the tab in
+          // front, and the tool says so rather than returning the wrong page.
+          SCREENSHOT,
+          ...READ_ONLY_TOOLS,
+          // Offered only when it can actually work, on both paths: a search
+          // changes no page, and a question about the wider web stops a
+          // reading run exactly as often as an acting one.
+          ...(webSearch ? [WEB_SEARCH] : []),
+          ...MUTATING_TOOLS,
+          // Offered only when it can actually work. A tool the model is told
+          // about and then refused every time is worse than no tool: it spends
+          // turns proposing it and explaining the failure. A synthesized drag
+          // is ignored by every implementation worth dragging in, so it is in
+          // the same position as file attachment: real with the debugger, and
+          // absent without it.
+          ...(useDebugger ? [DRAG] : []),
+          // Offered only when there is something to fill from. A tool that
+          // always answers "nothing is saved" costs a turn to discover that.
+          ...(Object.keys(userProfile).length > 0 ? [AUTOFILL_FORM] : []),
+          ...(useDebugger && files.length > 0 ? [ATTACH_FILE] : []),
+        ];
+
+  // The watch needs the tool names: one of the two things it notices is the
+  // model naming a tool over and over without ever calling one.
+  const spiral = new SpiralWatch(offered.map((tool) => tool.name));
+  const watch = (text: string) => {
+    if (spiral.saw(text)) stopRun(spiral.reason);
+  };
+
   return runAgent({
     provider,
     // The connection's model. heapbrowse has one role — the page agent — so
@@ -427,34 +458,7 @@ async function withDriverPool(request: RunRequest): Promise<AgentOutcome> {
       `${BROWSER_AGENT_PROMPT}${savedDetails(availableLabels(userProfile))}` +
       (webSearch ? describeWebSearch() : '') +
       (request.workflow ? describeWorkflow(request.workflow) : ''),
-    // Read-only mode does not merely refuse the mutating tools -- it does not
-    // offer them, so the model spends no turns proposing what it cannot do.
-    tools:
-      mode === 'read-only'
-        ? [...READ_ONLY_TOOLS, SCREENSHOT, ...(webSearch ? [WEB_SEARCH] : [])]
-        : [
-            // Offered on both paths now. The debugger captures any tab it is
-            // attached to; without it Chrome will only photograph the tab in
-            // front, and the tool says so rather than returning the wrong page.
-            SCREENSHOT,
-            ...READ_ONLY_TOOLS,
-            // Offered only when it can actually work, on both paths: a search
-            // changes no page, and a question about the wider web stops a
-            // reading run exactly as often as an acting one.
-            ...(webSearch ? [WEB_SEARCH] : []),
-            ...MUTATING_TOOLS,
-            // Offered only when it can actually work. A tool the model is told
-            // about and then refused every time is worse than no tool: it spends
-            // turns proposing it and explaining the failure. A synthesized drag
-            // is ignored by every implementation worth dragging in, so it is in
-            // the same position as file attachment: real with the debugger, and
-            // absent without it.
-            ...(useDebugger ? [DRAG] : []),
-            // Offered only when there is something to fill from. A tool that
-            // always answers "nothing is saved" costs a turn to discover that.
-            ...(Object.keys(userProfile).length > 0 ? [AUTOFILL_FORM] : []),
-            ...(useDebugger && files.length > 0 ? [ATTACH_FILE] : []),
-          ],
+    tools: offered,
     nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
     execute: async (call) => {
       // The bar heapbrowse draws along the bottom of the page it is driving.

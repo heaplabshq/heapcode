@@ -47,6 +47,18 @@ describe('a turn that has degenerated', () => {
   it('says what happened in the user\'s terms, not the model\'s', () => {
     expect(new SpiralWatch().reason).toMatch(/repeating itself/i);
   });
+
+  /**
+   * The first version of this message added "this usually means it could not
+   * find a control it was looking for". True of the run it was written from,
+   * and wrong the very next time it fired -- that model was stuck on a page
+   * that genuinely did not carry the delivery dates it wanted, and the message
+   * sent the user looking for a missing button instead.
+   */
+  it('does not guess why', () => {
+    expect(new SpiralWatch().reason).not.toMatch(/control/i);
+    expect(new SpiralWatch().reason).toMatch(/ask again/i);
+  });
 });
 
 describe('a turn that is merely long', () => {
@@ -80,5 +92,83 @@ describe('a turn that is merely long', () => {
     stream(watch, REAL_TAIL.repeat(4));
     watch.turned();
     expect(stream(watch, REAL_TAIL.repeat(4))).toBe(false);
+  });
+});
+
+/**
+ * The half-hour before the repetition starts.
+ *
+ * The real run announced the call it was about to make a dozen times -- "let
+ * me try clicking [277]", "FINAL: get_elements", "writing the call now" --
+ * and only degenerated into two alternating lines at the very end. Catching
+ * the announcing is catching it earlier, and on a signal that is a fact about
+ * the turn rather than an opinion about its reasoning.
+ */
+const TOOLS = ['read_page', 'get_page_text', 'get_elements', 'extract_data', 'fetch_url', 'click', 'type', 'scroll'];
+
+/** Enough deliberation to be past the point where naming tools means anything. */
+function announcing(): string {
+  const lines = [
+    'Let me try get_page_text with find "Sept" to see if the dates render after all.',
+    'Hmm, actually the search page may not show them. Let me reconsider the approach entirely.',
+    'Alternative: get_elements with role link and filter "Collage Kit", then check each product.',
+    'Wait. Maybe I should use fetch_url on the product pages instead, which is one call each.',
+    'Hmm, but fetch_url has no session, so the delivery estimate may differ. Let me think again.',
+    'OK. Decision: get_elements first. Writing the call now. Actually, let me reconsider once more.',
+    'Let me do read_page and look at the truncated part. Hmm, that costs a turn. Ugh.',
+    'FINAL: extract_data on the results. No wait -- that gave name and price only last time.',
+  ];
+  let text = '';
+  while (text.length < 12_000) text += lines[(text.length / 97) % lines.length | 0] + '\n\n';
+  return text;
+}
+
+describe('a turn that keeps announcing without acting', () => {
+  it('is stopped, and says so without claiming to know why', () => {
+    const watch = new SpiralWatch(TOOLS);
+    expect(stream(watch, announcing())).toBe(true);
+    expect(watch.reason).toMatch(/without doing it/i);
+  });
+
+  it('is left alone when the model names a tool and then calls it', () => {
+    const watch = new SpiralWatch(TOOLS);
+    // Six turns of thinking about a tool, calling it, thinking about the next.
+    for (let i = 0; i < 6; i++) {
+      stream(
+        watch,
+        'The list is virtualised, so read_page will only hold what is rendered. ' +
+          'get_page_text with a find is the cheaper question here, and it is the one I want. ',
+      );
+      watch.turned();
+    }
+    expect(watch.saw('One more look with get_elements and I will have it.')).toBe(false);
+  });
+
+  /**
+   * "Click" is what a model says about a page, not about its tools, and half
+   * of every browsing turn contains it. Counting it would make the guard fire
+   * on the runs that are working.
+   */
+  it('does not count tool names that are also ordinary words', () => {
+    const watch = new SpiralWatch(TOOLS);
+    let prose = '';
+    for (let i = 0; prose.length < 12_000; i++) {
+      prose +=
+        `Result ${i}: I will click the filter, then click through to the item and type the ` +
+        `postcode ${i}0001 into the delivery box. Clicking row ${i} scrolled the panel rather ` +
+        `than selecting it, so the ${i}th attempt needs a different target. `;
+    }
+    expect(stream(watch, prose)).toBe(false);
+  });
+
+  it('needs a real span of text, not just the words', () => {
+    const watch = new SpiralWatch(TOOLS);
+    expect(
+      stream(
+        watch,
+        'Options: read_page, get_page_text, get_elements, extract_data, fetch_url, ' +
+          'read_page again, get_page_text again, get_elements again, extract_data again, fetch_url again.',
+      ),
+    ).toBe(false);
   });
 });

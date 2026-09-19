@@ -158,11 +158,23 @@ function ordinal(n: number): string {
  * for. The user pressed Stop. That is the hole: a run that is going nowhere
  * should not depend on someone watching it.
  *
- * What counts as degenerate is deliberately narrow -- a chunk of text repeated
- * back to back many times over. Circling in *substance* ("let me reconsider"
- * for forty paragraphs) is a judgement call and this does not attempt it;
- * verbatim repetition is not a judgement call, and it is what the real failure
- * looked like once it had given up.
+ * Two signals, both of them things a turn can be caught doing rather than
+ * judgements about whether its reasoning is any good.
+ *
+ * **Repeating itself.** A chunk of text repeated back to back many times over,
+ * which is what that run looked like once it had given up.
+ *
+ * **Announcing without acting.** The one before the repetition: pages of "let
+ * me click [277]", "FINAL: get_elements", "writing the call now", with no call
+ * ever emitted. Counted by how often the model names its own tools while
+ * saying nothing to the tools themselves, which is narrow enough not to fire
+ * on a model that thinks hard and then acts -- it names two or three tools,
+ * calls one, and the count starts again.
+ *
+ * Circling in *substance* -- forty paragraphs of genuine reconsideration that
+ * do reach a call -- is still not caught here, and deliberately so. That is a
+ * judgement about the quality of reasoning, and the tool-call guard above
+ * covers the version of it that reaches the tools.
  */
 
 /** How much of the tail to keep. Enough to hold several repeats of a long unit. */
@@ -176,48 +188,109 @@ const REPEATS = 8;
 /** Only re-check every so often: the scan is over the tail, not over one delta. */
 const CHECK_EVERY = 300;
 
+/** How much of a turn a model can spend announcing before the naming counts. */
+const ANNOUNCING_AFTER = 8_000;
+/** And how many times it can name a tool in that span without calling one. */
+const NAMED_AT = 10;
+
 export class SpiralWatch {
   #tail = '';
   #sinceCheck = 0;
-  #tripped = false;
+  #tripped?: 'repeating' | 'announcing';
+  /** Everything said since the last tool call, in characters. */
+  #saidThisTurn = 0;
+  #named = 0;
+  readonly #names: RegExp | undefined;
+
+  /**
+   * @param tools the names of the tools this run offers, for the second signal.
+   */
+  constructor(tools: readonly string[] = []) {
+    this.#names = namePattern(tools);
+  }
 
   /**
    * Feed it whatever the model is saying, thinking included.
    *
-   * Returns true exactly once, on the delta that confirms the loop, so the
-   * caller can stop the run without having to de-duplicate the report.
+   * Returns true exactly once, on the delta that confirms it, so the caller
+   * can stop the run without having to de-duplicate the report.
    */
   saw(text: string): boolean {
     if (this.#tripped || !text) return false;
     this.#tail = (this.#tail + text).slice(-TAIL);
+    this.#saidThisTurn += text.length;
+    if (this.#names) this.#named += (text.match(this.#names) ?? []).length;
     this.#sinceCheck += text.length;
     if (this.#sinceCheck < CHECK_EVERY) return false;
     this.#sinceCheck = 0;
-    if (!looping(this.#tail)) return false;
-    this.#tripped = true;
-    return true;
+
+    if (looping(this.#tail)) {
+      this.#tripped = 'repeating';
+      return true;
+    }
+    if (this.#saidThisTurn >= ANNOUNCING_AFTER && this.#named >= NAMED_AT) {
+      this.#tripped = 'announcing';
+      return true;
+    }
+    return false;
   }
 
   /**
    * A turn ended, or a tool ran.
    *
-   * Either way the model has stopped saying whatever it was saying, so the
-   * tail is no longer evidence of anything. Without this, text from one turn
-   * and text from the next could form a repeat that neither one contains.
+   * Either way the model has stopped saying whatever it was saying, so none of
+   * it is evidence any more. Without this, text from one turn and text from
+   * the next could form a repeat that neither one contains -- and a run that
+   * names a tool, calls it, and names the next one would look like a run that
+   * never calls anything.
    */
   turned(): void {
     this.#tail = '';
     this.#sinceCheck = 0;
+    this.#saidThisTurn = 0;
+    this.#named = 0;
   }
 
-  /** What to tell the user, in their terms rather than the model's. */
+  /**
+   * What to tell the user.
+   *
+   * It says what happened and stops there. The first version of this added
+   * "this usually means it could not find a control it was looking for" --
+   * true of the run it was written from, and wrong the very next time it
+   * fired, where the model was stuck on a page that genuinely did not carry
+   * the information it wanted. A stopped run that explains itself with a
+   * guessed cause sends someone looking for a problem they do not have.
+   */
   get reason(): string {
+    const what =
+      this.#tripped === 'announcing'
+        ? 'The model kept saying what it was about to do without doing it'
+        : 'The model started repeating itself instead of acting';
     return (
-      'The model started repeating itself instead of acting, so the run was stopped. ' +
-      'This usually means it could not find a control it was looking for. Try asking again, ' +
-      'more specifically, or take that one step yourself and let it carry on.'
+      `${what}, so the run was stopped: it had gone a long way without calling a tool, and was ` +
+      'not going to stop on its own. Ask again -- more specifically, or with the step it was ' +
+      'stuck on taken by hand -- and it can carry on from there.'
     );
   }
+}
+
+/**
+ * The tool names worth counting in prose.
+ *
+ * Only the ones a person would not say by accident. `get_page_text` in a
+ * sentence is the model talking about its tools; "click" is the model talking
+ * about a page, and half of every browsing turn contains it. So this keeps the
+ * names that carry an underscore and drops the single English words, which
+ * costs the signal nothing -- a model stuck announcing an action names the
+ * awkward tools as readily as the ordinary ones.
+ */
+function namePattern(tools: readonly string[]): RegExp | undefined {
+  const names = tools.filter((name) => name.includes('_')).map(escape);
+  return names.length ? new RegExp(`\\b(?:${names.join('|')})\\b`, 'g') : undefined;
+}
+
+function escape(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

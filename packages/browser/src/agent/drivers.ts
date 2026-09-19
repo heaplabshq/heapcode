@@ -243,6 +243,16 @@ interface LayoutMetrics {
   cssContentSize?: { height: number };
 }
 
+/**
+ * The roles Space activates when the control is focused.
+ *
+ * Deliberately short: these are the controls whose whole job is to toggle, and
+ * for which the keyboard is a first-class route rather than a workaround. A
+ * button is left off -- Space presses one, but a button with no box is far
+ * more likely to be furniture than a button drawn somewhere else.
+ */
+const KEY_ACTIVATED = new Set(['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio']);
+
 interface BoxModel {
   model?: { content: number[] };
 }
@@ -261,6 +271,16 @@ export class CdpDriver implements PageDriver {
   /** handle -> backend node id. Stable across reads, like the DOM registry. */
   #nodes = new Map<number, number>();
   #byNode = new Map<number, number>();
+  /**
+   * The accessibility role behind each handle.
+   *
+   * Only `click` reads it, and only to answer one question: is this a control
+   * that a keypress activates? A checkbox drawn by a styled label is a real
+   * input with a one-pixel box, and a mouse click at that pixel lands on
+   * whatever the page stacked on top of it. Space on the focused control is
+   * the same activation with none of the aim.
+   */
+  #roles = new Map<number, string>();
   #reads = 0;
   #next = 1;
   /** The origin the handles were taken on, checked before every mutation. */
@@ -317,6 +337,7 @@ export class CdpDriver implements PageDriver {
         const handle = this.#next++;
         this.#nodes.set(handle, backendNodeId);
         this.#byNode.set(backendNodeId, handle);
+        this.#roles.set(handle, String(node.role?.value ?? ''));
         return handle;
       },
     });
@@ -419,6 +440,20 @@ export class CdpDriver implements PageDriver {
 
   /** Centre of the element in viewport coordinates, scrolling it in first. */
   async #centre(backendNodeId: number): Promise<{ x: number; y: number } | undefined> {
+    const box = await this.#boxOf(backendNodeId);
+    return box && { x: box.x, y: box.y };
+  }
+
+  /**
+   * The same box, with its size kept.
+   *
+   * `click` needs the size as well as the middle, because a control one pixel
+   * across has a middle that means nothing: whatever the page stacked over it
+   * is what a mouse event at that point reaches.
+   */
+  async #boxOf(
+    backendNodeId: number,
+  ): Promise<{ x: number; y: number; width: number; height: number } | undefined> {
     try {
       await this.#session.send('DOM.scrollIntoViewIfNeeded', { backendNodeId });
     } catch (error) {
@@ -432,6 +467,37 @@ export class CdpDriver implements PageDriver {
     return {
       x: (quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4,
       y: (quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4,
+      width: Math.abs(quad[2]! - quad[0]!),
+      height: Math.abs(quad[5]! - quad[1]!),
+    };
+  }
+
+  /**
+   * Activate a focused control with a real Space, no aiming involved.
+   *
+   * The keyboard route to a checkbox, which is the route that works when the
+   * control has been made invisible and something else drawn in its place.
+   * Real key events, so the activation is as trusted as a mouse click -- this
+   * is a different way to press the same control, not a synthetic fallback.
+   */
+  async #activateByKey(backendNodeId: number): Promise<Outcome> {
+    await this.#session.send('DOM.focus', { backendNodeId }).catch(() => {
+      // A control that refuses focus cannot be activated this way; the key
+      // events below then go to whatever does have focus, so stop instead.
+      throw new Error('That control could not be focused, so it cannot be activated.');
+    });
+    const common = { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, nativeVirtualKeyCode: 32 };
+    await this.#session.send('Input.dispatchKeyEvent', {
+      ...common,
+      type: 'keyDown',
+      text: ' ',
+      unmodifiedText: ' ',
+    });
+    await this.#session.send('Input.dispatchKeyEvent', { ...common, type: 'keyUp' });
+    this.#invalidate();
+    return {
+      ok: true,
+      note: 'Pressed it with a real Space key: it has no clickable box of its own, which is how a checkbox drawn by a styled label is built.',
     };
   }
 
@@ -443,10 +509,18 @@ export class CdpDriver implements PageDriver {
     const target = await this.#resolve(handle);
     if (!('backendNodeId' in target)) return target;
 
-    const point = await this.#centre(target.backendNodeId);
-    if (!point) {
+    const box = await this.#boxOf(target.backendNodeId);
+    // A control with no box worth aiming at, that a keypress activates anyway.
+    // Only for a plain click: a double, triple or right click on a checkbox
+    // drawn by a label is not a gesture with a keyboard equivalent, and
+    // pretending otherwise would answer a request with a different action.
+    if (!variant && KEY_ACTIVATED.has(this.#roles.get(handle) ?? '')) {
+      if (!box || box.width < 2 || box.height < 2) return await this.#activateByKey(target.backendNodeId);
+    }
+    if (!box) {
       return { ok: false, error: 'That element has no position on screen, so it cannot be clicked.' };
     }
+    const point = { x: box.x, y: box.y };
 
     // Real input, dispatched by the browser. `isTrusted` is true, so frameworks
     // and anti-bot layers that reject synthetic events accept these -- the one

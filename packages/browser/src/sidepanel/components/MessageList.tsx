@@ -101,15 +101,31 @@ export function MessageList({
   onRun: (prompt: string) => void;
 }) {
   const end = useRef<HTMLDivElement>(null);
+  const asked = useRef(0);
 
   // Follow the stream, but only from the bottom — yanking the view down while
   // someone is reading back through the transcript is worse than not following.
+  //
+  // Sending is the exception, and it is not a small one. Reading a long answer
+  // leaves the transcript scrolled away from the bottom, which is exactly the
+  // moment the next question gets typed -- so the "only from the bottom" rule
+  // meant your own message was the one thing you could not see after sending
+  // it. The view stayed on the end of the previous answer until you scrolled
+  // down by hand, and then behaved normally, which reads as the panel having
+  // ignored you.
+  //
+  // Counted rather than compared against the last turn: a send appends two
+  // turns, the user's and the empty assistant one it streams into, so the
+  // newest turn at this point is never the user's.
   useEffect(() => {
     const container = end.current?.parentElement;
     if (!container) return;
+    const questions = turns.reduce((n, turn) => (turn.role === 'user' ? n + 1 : n), 0);
+    const justSent = questions > asked.current;
+    asked.current = questions;
     const nearBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight < 120;
-    if (nearBottom) end.current?.scrollIntoView({ block: 'end' });
+    if (justSent || nearBottom) end.current?.scrollIntoView({ block: 'end' });
   }, [turns]);
 
   if (turns.length === 0) {

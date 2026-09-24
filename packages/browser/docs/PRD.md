@@ -193,7 +193,7 @@ Chrome terminates an idle MV3 service worker after ~30 seconds. An agent run is 
 Consequence: closing the side panel ends the run. That is acceptable for v1 and should be *shown* in the UI, not discovered.
 
 ### 7.2 Provider access from an extension
-- Host permissions let the extension call any endpoint without CORS preflight pain — but **local Ollama still needs `OLLAMA_ORIGINS` to include `chrome-extension://<id>`**, which users will not guess. Ship a one-click diagnostic in setup. (`heapchat/src/llm/ollama-conn.js` already solved the equivalent problem.)
+- Host permissions let the extension call any endpoint without CORS preflight pain — but a self-hosted Ollama refuses any request carrying a `chrome-extension://<id>` Origin unless `OLLAMA_ORIGINS` lists it, which users will not guess. **The extension removes its own Origin on requests to the endpoints the user configured** (`declarativeNetRequestWithHostAccess`, `src/shared/originRules.ts`), so no server setting is needed; the connection diagnostic sends a chat-shaped request and falls back to the `OLLAMA_ORIGINS` fix only if that still fails.
 - MV3 forbids remote code execution — no `eval`, no CDN-loaded scripts. Everything bundles.
 - **The API key is not secret from the user's own machine**, and must never be shipped by us. BYOK only, stored in `chrome.storage.local`, never synced, never sent anywhere but the configured endpoint.
 

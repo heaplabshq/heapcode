@@ -25,6 +25,11 @@ your configured files to a file input.
 `host_permissions` is still empty: sites are granted one at a time, and `downloads` is
 optional.
 
+A local or LAN Ollama works without setting `OLLAMA_ORIGINS`: the extension removes its own
+Origin header on requests to the endpoints you configure — only its own requests, only to
+those addresses (`declarativeNetRequestWithHostAccess`, which adds nothing to the install
+prompt).
+
 ## Build and load
 
 ```sh

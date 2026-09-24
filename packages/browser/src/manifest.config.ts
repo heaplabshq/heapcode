@@ -143,7 +143,20 @@ export default defineManifest({
   // that reads or scripts a page checks `permissions.contains` for that origin
   // first, which activeTab does not satisfy. A declared permission with no
   // caller is a question to answer at review with no good answer.
-  permissions: ['sidePanel', 'storage', 'scripting', 'tabs', 'debugger', 'contextMenus'],
+  //
+  // `declarativeNetRequestWithHostAccess` removes this extension's own Origin
+  // header on requests to the model endpoints the user configured, so a
+  // self-hosted Ollama does not answer 403 (shared/originRules.ts). It adds no
+  // line to the install prompt, and it only acts on hosts already granted.
+  permissions: [
+    'sidePanel',
+    'storage',
+    'scripting',
+    'tabs',
+    'debugger',
+    'contextMenus',
+    'declarativeNetRequestWithHostAccess',
+  ],
   // `downloads` is the one line on the install prompt that could be removed,
   // and it is now: "Manage your downloads" was shown to every user at install
   // for a tool most of them will never invoke. Chrome allows this one to be

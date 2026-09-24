@@ -5,6 +5,7 @@ import {
   type PanelMessage,
   type WorkerMessage,
 } from '../shared/messages.js';
+import { watchOriginRules } from '../shared/originRules.js';
 
 /**
  * The service worker: a thin, stateless router.
@@ -27,6 +28,11 @@ import {
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error: unknown) => {
   console.error('heapbrowse: could not set side panel behavior', error);
 });
+
+// Our own requests to the configured model endpoints go out without an Origin,
+// so a self-hosted Ollama does not refuse them for coming from an extension.
+// Top level for the same reason as the line above: every worker start re-syncs.
+watchOriginRules();
 
 /**
  * Panels currently listening.

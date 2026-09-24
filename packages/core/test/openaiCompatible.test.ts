@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { OpenAICompatibleProvider } from '../src/providers/openaiCompatible.js';
-import { ProviderError, isAbortError } from '../src/providers/errors.js';
+import { ProviderError, isAbortError, isOriginRefusal } from '../src/providers/errors.js';
 import { startMockServer, type MockServer } from './mockServer.js';
 
 let server: MockServer;
@@ -75,6 +75,26 @@ describe('OpenAICompatibleProvider.streamChat', () => {
     // The wrong advice specifically, since a placeholder key is exactly what
     // people type into a box that looks required.
     await expect(run).rejects.not.toThrowError(/Check your API key/);
+  });
+
+  it('reads a silent 403 from a LAN address as a refused origin too', () => {
+    // Ollama on another machine on the network refuses a browser extension the
+    // same way, and was being reported as a bad key.
+    for (const url of [
+      'http://192.168.29.132:11434/v1/chat/completions',
+      'http://10.0.0.5:11434/v1',
+      'http://172.20.1.2:11434/v1',
+      'http://gpu-box.local:11434/v1',
+      'http://[fd12:3456::1]:11434/v1',
+    ]) {
+      expect(isOriginRefusal(403, url, ''), url).toBe(true);
+    }
+    // Public addresses and hosted names are not self-hosted by address alone.
+    for (const url of ['https://ollama.com/v1', 'http://8.8.8.8/v1', 'http://172.32.0.1/v1', 'http://192.169.0.1/v1']) {
+      expect(isOriginRefusal(403, url, ''), url).toBe(false);
+    }
+    // A LAN server that explains its 403 is still an auth answer.
+    expect(isOriginRefusal(403, 'http://192.168.29.132:11434/v1', 'invalid api key')).toBe(false);
   });
 
   it('still blames the key when a 403 explains itself', async () => {

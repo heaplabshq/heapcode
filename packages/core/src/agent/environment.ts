@@ -14,6 +14,26 @@ export interface GatherEnvironmentOptions {
   git?: (args: string[]) => Promise<{ stdout: string }>;
   /** Per-command ceiling for the default runner. Default 2s. */
   timeoutMs?: number;
+  /** The clock, injectable so a test can pin a date. Defaults to now. */
+  now?: Date;
+}
+
+/**
+ * Today, as the person's calendar has it.
+ *
+ * Deliberately not `toISOString().slice(0, 10)`, which is what this was and
+ * which answers in UTC. `AgentEnvironment.date` is documented as local to the
+ * user and the prompt renders it as "Today's date", so west of UTC every
+ * evening the agent was told tomorrow — and a model reasoning about a
+ * deadline, a changelog entry or "is this still current" has no way to notice.
+ *
+ * Built from the local getters rather than `Intl` with a locale that happens
+ * to format ISO-like: this has to be YYYY-MM-DD on every machine, and that is
+ * a promise about the string, not about an environment's ICU data.
+ */
+export function localDateString(now: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 /**
@@ -39,7 +59,7 @@ export async function gatherAgentEnvironment(
   const environment: AgentEnvironment = {
     cwd: root,
     platform: process.platform,
-    date: new Date().toISOString().slice(0, 10),
+    date: localDateString(opts.now ?? new Date()),
   };
   if (opts.modelId) environment.modelId = opts.modelId;
 

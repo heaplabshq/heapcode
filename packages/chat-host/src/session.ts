@@ -137,6 +137,7 @@ import type {
   ChatState,
 } from './protocol.js';
 import { chatSystemPrompt } from './prompt.js';
+import { withNow } from './now.js';
 import { CHAT_TOOL_NAMES, chatToolsFor, folderToolDefinitions, permissionFor } from './tools.js';
 
 /**
@@ -1066,7 +1067,13 @@ export class ChatSession implements HostSession {
           runId,
           profileName: profile.name,
           model: this.model,
-          task,
+          // The clock rides with the turn, not the system prompt: the prefix
+          // stays byte-identical so nothing re-prefills, and each turn is
+          // stamped with the time it was actually sent. `now.ts` has the
+          // whole argument. Only what is SENT is wrapped — `pendingDisplay`
+          // and `persistTurn` above keep the person's own words, so the
+          // transcript, the sidebar and chats.json never see this.
+          task: withNow(task),
           history,
           images,
           workspaceName: this.root ? basename(this.root) : '',

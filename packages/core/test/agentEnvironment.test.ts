@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gatherAgentEnvironment, summarizeStatus } from '../src/agent/environment.js';
+import { gatherAgentEnvironment, localDateString, summarizeStatus } from '../src/agent/environment.js';
 import { ENVIRONMENT_SECTION } from '../src/agent/promptSections.js';
 import { LEAN_TIER_CONTEXT_WINDOW, buildNativeAgentSystemPrompt, resolvePromptTier } from '../src/agent/prompts.js';
 
@@ -170,4 +170,53 @@ describe('gatherAgentEnvironment', () => {
     const env = await gatherAgentEnvironment('/repo', { modelId: 'qwen3:14b', git: fakeGit({}) });
     expect(env.modelId).toBe('qwen3:14b');
   });
+
+  it("dates the run by the person's calendar, not UTC", async () => {
+    // 02:30 UTC is still the previous evening in New York. The agent is told
+    // "Today's date", so answering in UTC hands it tomorrow every evening
+    // west of Greenwich — and nothing downstream can notice.
+    const env = await withZone('America/New_York', () =>
+      gatherAgentEnvironment('/repo', { git: fakeGit({}), now: new Date('2026-03-10T02:30:00Z') }),
+    );
+    expect(env.date).toBe('2026-03-09');
+  });
 });
+
+describe('localDateString', () => {
+  it('formats the local calendar day as YYYY-MM-DD, padded', () => {
+    expect(localDateString(new Date(2026, 0, 5, 9, 0, 0))).toBe('2026-01-05');
+    expect(localDateString(new Date(2026, 8, 7, 12, 0, 0))).toBe('2026-09-07');
+  });
+
+  it('reports the local day west of UTC, where the old ISO slice was wrong', async () => {
+    const d = new Date('2026-03-10T02:30:00Z');
+    expect(await withZone('America/New_York', () => localDateString(d))).toBe('2026-03-09');
+    // The bug this replaced, stated as the thing that must not come back.
+    expect(d.toISOString().slice(0, 10)).toBe('2026-03-10');
+  });
+
+  it('reports the local day east of UTC too', async () => {
+    const d = new Date('2026-03-09T20:30:00Z');
+    expect(await withZone('Asia/Kolkata', () => localDateString(d))).toBe('2026-03-10');
+  });
+});
+
+/**
+ * Run something with the process in a named zone.
+ *
+ * `Date`'s local getters read `process.env.TZ`, so pinning it is the only way
+ * to assert a local-vs-UTC difference that does not depend on where the test
+ * machine happens to be — on a CI box running UTC the two agree and the
+ * assertion would pass vacuously.
+ */
+async function withZone<T>(timeZone: string, fn: () => T | Promise<T>): Promise<T> {
+  const previous = process.env.TZ;
+  process.env.TZ = timeZone;
+  try {
+    return await fn();
+  } finally {
+    // Assigning undefined to process.env stores the string "undefined".
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}

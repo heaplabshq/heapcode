@@ -41,10 +41,11 @@ Two things this pass found that the automated checks could not:
   Cloud silently failed. Fixed with `optional_host_permissions` and a per-origin grant requested
   when the endpoint is configured — no broad install-time ask (PRD §7.6).
 - A local Ollama returns **403** to a `chrome-extension://` origin: it refuses server-side, not
-  merely by withholding CORS headers. So `OLLAMA_ORIGINS` is genuinely required and no browser
-  permission substitutes for it. Once the host grant is in place that 403 becomes readable, and
+  merely by withholding CORS headers. Once the host grant is in place that 403 becomes readable, and
   the diagnostic was reading it as "your API key is wrong" — now corrected to report a refused
-  origin with the right fix.
+  origin with the right fix. *Superseded 2026-09-24:* `OLLAMA_ORIGINS` turned out not to be the
+  only way. A `declarativeNetRequest` rule removes our own Origin on requests to the configured
+  endpoints, so it is no longer something the user has to set — see the Decisions log.
 
 ---
 
@@ -439,3 +440,5 @@ Park ideas here. Do not start.
 | 2026-08-27 | `get_page_text` added, separate from `read_page` | Watching Claude in Chrome answer a question about a sofa's dimensions, the winning move was "Reading page text" — one step. `read_page` is ranked and budgeted for *acting*, so the spec table holding the answer is exactly what it truncates. Different job, different tool |
 | 2026-08-27 | `ToolResult` may carry images (core change) | A `role: 'tool'` message is text-only in the OpenAI-compatible protocol, so the loop delivers them as the user turn that follows — the shape vision models accept |
 | 2026-08-27 | Typing goes character by character; a 100ms pause precedes the click | One `insertText` is a single event, and a search box that filters as you type sees nothing it recognises. Hover menus need a frame or two to appear before the press lands |
+| 2026-09-24 | The extension removes its own Origin header on requests to configured endpoints (`declarativeNetRequestWithHostAccess`); `OLLAMA_ORIGINS` is now a fallback, not a setup step | Reported: a LAN Ollama worked, then refused every chat after its machine restarted, because `launchctl setenv` does not survive a reboot — and "set an environment variable on the server" is not a step browser-extension users find. Page Assist removes the header the same way. Scoped to `initiatorDomains: [our id]` and each endpoint's exact origin, because Page Assist's broader rule broke unrelated sites talking to local services; web pages calling the same Ollama keep their Origin, so its drive-by protection is unchanged. The permission adds no install-prompt line |
+| 2026-09-24 | "Test connection" also sends a chat-shaped POST, and a silent 403 from a LAN address is a refused origin, not a bad key | The check was a GET, which Chrome sends without an Origin once the host is granted, so it passed while every chat — a POST, which always carries one — failed. And core recognised the refusal only on loopback, so a LAN Ollama was reported as an API-key problem |

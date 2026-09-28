@@ -60,7 +60,15 @@ beforeEach(async () => {
         return Promise.resolve();
       }),
     },
+    // The worker also keeps the endpoint header rules in step with the saved
+    // profiles (shared/originRules.ts); nothing here exercises that.
+    declarativeNetRequest: {
+      getDynamicRules: vi.fn().mockResolvedValue([]),
+      updateDynamicRules: vi.fn().mockResolvedValue(undefined),
+    },
     storage: {
+      local: { get: vi.fn().mockResolvedValue({}) },
+      onChanged: { addListener: vi.fn() },
       session: {
         set: vi.fn((values: Record<string, unknown>) => {
           setCalls.push(values);

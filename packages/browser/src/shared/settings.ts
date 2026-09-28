@@ -1,6 +1,7 @@
 import { getPreset, providerPresets, type PresetId } from '@heapcode/core/providers';
 import type { ProviderProfileConfig } from '@heapcode/core/providers';
 import type { WebSearchConfig } from '@heapcode/core/agent';
+import { PROFILES_STORAGE_KEY } from './originRules.js';
 
 /**
  * Where heapbrowse's configuration lives, and why it lives there.
@@ -24,7 +25,7 @@ import type { WebSearchConfig } from '@heapcode/core/agent';
  */
 
 const PROFILE_KEY = 'heapbrowse.profile';
-const PROFILES_KEY = 'heapbrowse.profiles';
+const PROFILES_KEY = PROFILES_STORAGE_KEY;
 const ACTIVE_KEY = 'heapbrowse.activeProfile';
 const API_KEY = 'heapbrowse.apiKey';
 /** Per-profile keys. The bare `API_KEY` above is the pre-profiles single key. */

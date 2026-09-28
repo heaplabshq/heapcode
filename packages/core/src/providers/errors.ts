@@ -98,8 +98,9 @@ export function isToolsUnsupported(message: string): boolean {
 export class ProviderBodyError extends ProviderError {}
 
 /**
- * A local server, by the address alone. Loopback only: a LAN address is
- * someone else's machine, where a 403 really can be an access control.
+ * A local server, by the address alone. Loopback only — this is also what
+ * decides whether a host binds safely, so it must not widen. For "could this be
+ * a self-hosted Ollama", see `isPrivateNetwork`.
  */
 export function isLoopback(url: string): boolean {
   try {
@@ -124,11 +125,39 @@ export function isLoopback(url: string): boolean {
  *
  * Read as a credential problem — which is what 401 and 403 mean everywhere
  * else — this sends the user to check an API key that Ollama never asked for
- * and does not implement. Hence the narrow test: loopback, 403, and a body
- * with nothing in it. A server rejecting a real credential says so.
+ * and does not implement. Hence the narrow test: a 403 with a body with
+ * nothing in it, from an address a hosted provider cannot have. A server
+ * rejecting a real credential says so.
+ *
+ * The address used to be loopback only, which missed the other common setup:
+ * Ollama on a second machine on the LAN (`OLLAMA_HOST=0.0.0.0`). It refuses
+ * the extension exactly the same way, and was being reported as a bad key.
  */
 export function isOriginRefusal(status: number, url: string, detail: string): boolean {
-  return status === 403 && !detail && isLoopback(url);
+  return status === 403 && !detail && (isLoopback(url) || isPrivateNetwork(url));
+}
+
+/**
+ * An address on the user's own network: RFC 1918, link-local, IPv6 unique
+ * local, or a `.local` mDNS name. Where a self-hosted server lives, and where
+ * no hosted provider does.
+ */
+export function isPrivateNetwork(url: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (hostname.endsWith('.local')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  // `URL` keeps IPv6 hosts bracketed.
+  const v6 = hostname.startsWith('[') ? hostname.slice(1, -1) : '';
+  return /^f[cd][0-9a-f]{2}:/.test(v6) || /^fe[89ab][0-9a-f]:/.test(v6);
 }
 
 /** Whether a message came from the branch above — see the browser host, which appends the fix. */

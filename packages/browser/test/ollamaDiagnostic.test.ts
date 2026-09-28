@@ -36,6 +36,40 @@ describe('endpoint diagnosis', () => {
     expect(result.kind).toBe('ok');
   });
 
+  it('catches an Ollama that lists models but refuses to chat', async () => {
+    // The reported case: with the host grant Chrome sends the GET without an
+    // Origin, so the model list comes back — and every POST, which always
+    // carries one, is refused. A green check followed by a 403 on the first
+    // message is exactly what this must not report as ok.
+    const result = await diagnose(
+      'http://192.168.29.132:11434/v1',
+      ORIGIN,
+      undefined,
+      fetchStub((_url, init) =>
+        init?.method === 'POST' ? new Response(null, { status: 403 }) : new Response('{"data":[{"id":"m"}]}', { status: 200 }),
+      ),
+      granted,
+    );
+    expect(result.kind).toBe('origin-blocked');
+    if (result.kind === 'origin-blocked') expect(result.fix).toContain('computer running Ollama (192.168.29.132)');
+  });
+
+  it('stays ok when the chat probe is merely rejected as a bad request', async () => {
+    // What a permitting Ollama says to the empty probe body. Not a problem.
+    const result = await diagnose(
+      'http://localhost:11434/v1',
+      ORIGIN,
+      undefined,
+      fetchStub((_url, init) =>
+        init?.method === 'POST'
+          ? new Response('{"error":{"message":"model is required"}}', { status: 400 })
+          : new Response('{"data":[{"id":"m"}]}', { status: 200 }),
+      ),
+      granted,
+    );
+    expect(result).toEqual({ kind: 'ok', models: ['m'] });
+  });
+
   it('distinguishes a refused origin from a dead endpoint', async () => {
     // Ollama is running but our origin is not in OLLAMA_ORIGINS: the normal
     // request is blocked by CORS and throws, while the no-cors request is
@@ -97,17 +131,19 @@ describe('endpoint diagnosis', () => {
     expect(seen).toBe('Bearer sk-test');
   });
 
-  it('probes the models endpoint of the configured base URL, trailing slash or not', async () => {
+  it('probes the models endpoint, then chat, of the configured base URL, trailing slash or not', async () => {
     const urls: string[] = [];
-    const record = fetchStub((url) => {
-      urls.push(url);
+    const record = fetchStub((url, init) => {
+      urls.push(`${init?.method ?? 'GET'} ${url}`);
       return new Response('{}', { status: 200 });
     });
     await diagnose('http://localhost:11434/v1/', ORIGIN, undefined, record, granted);
     await diagnose('http://localhost:11434/v1', ORIGIN, undefined, record, granted);
     expect(urls).toEqual([
-      'http://localhost:11434/v1/models',
-      'http://localhost:11434/v1/models',
+      'GET http://localhost:11434/v1/models',
+      'POST http://localhost:11434/v1/chat/completions',
+      'GET http://localhost:11434/v1/models',
+      'POST http://localhost:11434/v1/chat/completions',
     ]);
   });
 });
@@ -154,6 +190,22 @@ describe('a silent 403', () => {
     expect(result.kind).toBe('origin-blocked');
   });
 
+  it('is read as a refused origin on a LAN Ollama, key or not', async () => {
+    // Ollama on a second machine (OLLAMA_HOST=0.0.0.0) refuses the extension
+    // exactly like a local one — reported, and reproduced against a real one at
+    // 192.168.29.132. The fix has to be run over there, and says so.
+    for (const key of [undefined, 'ollama']) {
+      const result = await diagnose('http://192.168.29.132:11434/v1', ORIGIN, key, fetchStub(refused), granted);
+      expect(result.kind).toBe('origin-blocked');
+      if (result.kind === 'origin-blocked') expect(result.fix).toContain('computer running Ollama (192.168.29.132)');
+    }
+  });
+
+  it('does not tell a local Ollama to run the fix elsewhere', async () => {
+    const result = await diagnose('http://localhost:11434/v1', ORIGIN, undefined, fetchStub(refused), granted);
+    if (result.kind === 'origin-blocked') expect(result.fix).not.toContain('computer running Ollama');
+  });
+
   it('still blames the key when a hosted endpoint refuses one', async () => {
     // Not loopback and a key was sent: an endpoint that wants keys, refusing
     // one. Sending this user to edit OLLAMA_ORIGINS would be the same mistake
@@ -190,6 +242,13 @@ describe('the run-time error a refused origin produces', () => {
     expect(out).toContain(refusal);
     expect(out).toContain('launchctl setenv OLLAMA_ORIGINS');
     expect(out).toContain(ORIGIN);
+  });
+
+  it('points a LAN refusal at the machine Ollama runs on', () => {
+    const lan = refusal.replace('http://localhost:11434', 'http://192.168.29.132:11434');
+    const out = withOriginFix(lan, ORIGIN, 'MacIntel');
+    expect(out).toContain('on the computer running Ollama (192.168.29.132)');
+    expect(withOriginFix(refusal, ORIGIN, 'MacIntel')).not.toContain('computer running Ollama');
   });
 
   it('leaves every other error untouched', () => {

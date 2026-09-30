@@ -21,4 +21,18 @@ contextBridge.exposeInMainWorld('heapDesktop', {
     onData: (id, cb) => listen('heap:term-data', id, cb),
     onExit: (id, cb) => listen('heap:term-exit', id, cb),
   },
+  browser: {
+    /** A screenshot of the Browser view's page, by its webview's contents id. */
+    capture: (webContentsId) => ipcRenderer.invoke('heap:browser-capture', webContentsId),
+    /** A real click, key or text insertion into that webview. */
+    input: (webContentsId, action) => ipcRenderer.invoke('heap:browser-input', webContentsId, action),
+    /** Dev-server addresses the shells have printed, newest last. */
+    localUrls: () => ipcRenderer.invoke('heap:local-urls'),
+    onLocalUrls: (cb) => {
+      const handler = (_e, urls) => cb(urls);
+      ipcRenderer.on('heap:local-urls', handler);
+      ipcRenderer.send('heap:local-urls-watch');
+      return () => ipcRenderer.removeListener('heap:local-urls', handler);
+    },
+  },
 });

@@ -22,6 +22,8 @@ import { Settings } from '@heapcode/web-ui/components/Settings';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
 import { ChatTools } from '@heapcode/web-ui/components/ChatTools';
+import { desktopBridge } from '@heapcode/web-ui/desktop';
+import { answerBrowserRequest } from '@heapcode/web-ui/browserControl';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from '@heapcode/chat-host/protocol';
 import type {
   ChatAskUserParams,
@@ -201,6 +203,15 @@ export function App(): JSX.Element {
       setTranscript((t) => reduce(t, event, seq.current++));
     });
 
+    // The look-only browser_* tools (desktop app only): open the pane on the
+    // Browser view so the person sees what is being read, then ask the view.
+    client.onRequest(CHAT_METHODS.browser, async (raw) => {
+      const params = raw as Parameters<typeof answerBrowserRequest>[0];
+      setPanelTab('browser');
+      setPanelOpen(true);
+      return answerBrowserRequest(params, { actions: false });
+    });
+
     client.onRequest(CHAT_METHODS.askUser, async (raw) => {
       const params = raw as ChatAskUserParams;
       return new Promise<{ answer: string }>((resolve) => {
@@ -233,6 +244,7 @@ export function App(): JSX.Element {
           protocolVersion: CHAT_PROTOCOL_VERSION,
           client: { name: 'heapchat-web' },
           resumeRunId: runId.current,
+          capabilities: { browser: Boolean(desktopBridge()?.browser) },
         })
         .then((hello) => {
           setState(hello.state);
@@ -422,10 +434,10 @@ export function App(): JSX.Element {
 
         <main className="chat">
           <ChatTools
-            views={(['made', 'sources'] as const).map((id) => ({
+            views={(desktopBridge()?.browser ? (['made', 'sources', 'browser'] as const) : (['made', 'sources'] as const)).map((id) => ({
               id,
               ...CHAT_VIEWS[id],
-              badge: id === 'made' ? artifacts.length : (grounding?.sources.length ?? 0),
+              badge: id === 'made' ? artifacts.length : id === 'sources' ? (grounding?.sources.length ?? 0) : undefined,
             }))}
             more={[{ id: 'index', ...CHAT_VIEWS.index }]}
             active={panelOpen ? panelTab : undefined}

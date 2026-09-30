@@ -9,6 +9,7 @@ const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
 const { registerTerminal, killAllShells } = require('./terminal.cjs');
+const { guardWebviews } = require('./browser.cjs');
 
 app.setName('Heap Code');
 
@@ -107,6 +108,7 @@ ipcMain.handle('heap:keep-awake', (e, on) => {
 });
 ipcMain.on('heap:keep-awake-state', (e) => { e.returnValue = isAwake(); });
 registerTerminal(fromLocalHost);
+guardWebviews(() => origin, fromLocalHost);
 
 function createWindow() {
   const state = readState();
@@ -121,6 +123,8 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, 'preload.cjs'),
+      // For the Browser view; every attach is vetted in browser.cjs.
+      webviewTag: true,
     },
   });
   // No header bar: the page's own left rail is the top-left of the window, so on

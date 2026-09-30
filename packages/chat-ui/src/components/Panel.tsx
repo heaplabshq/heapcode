@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Empty } from '@heapcode/web-ui/components/Empty';
 import { Preview } from '@heapcode/web-ui/components/Preview';
+import { Browser } from '@heapcode/web-ui/components/Browser';
+import { desktopBridge } from '@heapcode/web-ui/desktop';
 import type {
   ChatArtifactMeta,
   ChatArtifactResult,
@@ -9,7 +11,7 @@ import type {
 } from '@heapcode/chat-host/protocol';
 import type { Grounding } from '@heapcode/chat-host';
 
-export type ChatPanelTab = 'made' | 'sources' | 'file' | 'index';
+export type ChatPanelTab = 'made' | 'sources' | 'file' | 'index' | 'browser';
 
 export interface ChatPanelProps {
   tab: ChatPanelTab;
@@ -79,6 +81,16 @@ export const CHAT_VIEWS: Record<ChatPanelTab, { label: string; icon: JSX.Element
       </svg>
     ),
   },
+  browser: {
+    label: 'Browser',
+    icon: (
+      <svg {...S}>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h18" />
+        <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
+      </svg>
+    ),
+  },
   index: {
     label: 'Index',
     icon: (
@@ -102,6 +114,19 @@ export const CHAT_VIEWS: Record<ChatPanelTab, { label: string; icon: JSX.Element
  */
 export function ChatPanel(props: ChatPanelProps): JSX.Element {
   const view = CHAT_VIEWS[props.tab];
+  const [browserOpened, setBrowserOpened] = useState(props.tab === 'browser');
+  useEffect(() => {
+    if (props.tab === 'browser') setBrowserOpened(true);
+  }, [props.tab]);
+  // No agent terminal here, so the only dev servers to offer are the ones the
+  // desktop app's shells printed.
+  const [localUrls, setLocalUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const browser = desktopBridge()?.browser;
+    if (!browser) return;
+    void browser.localUrls().then(setLocalUrls).catch(() => undefined);
+    return browser.onLocalUrls(setLocalUrls);
+  }, []);
   return (
     <aside className="panel" aria-label={view.label} style={props.width ? { width: props.width } : undefined}>
       <header className="panel-head">
@@ -125,6 +150,12 @@ export function ChatPanel(props: ChatPanelProps): JSX.Element {
         )}
         {props.tab === 'sources' && <Sources grounding={props.grounding} onOpenPath={props.onOpenPath} />}
         {props.tab === 'index' && <IndexState status={props.indexStatus} onReindex={props.onReindex} />}
+        {/* Kept mounted once opened — see the note in web-ui's Panel. */}
+        {(props.tab === 'browser' || browserOpened) && (
+          <div className={props.tab === 'browser' ? 'browser-slot' : 'browser-slot browser-slot-hidden'}>
+            <Browser localUrls={localUrls} />
+          </div>
+        )}
       </div>
     </aside>
   );

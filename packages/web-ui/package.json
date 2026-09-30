@@ -72,6 +72,18 @@
     "./components/ChatTools": {
       "types": "./src/components/ChatTools.tsx",
       "default": "./src/components/ChatTools.tsx"
+    },
+    "./components/Browser": {
+      "types": "./src/components/Browser.tsx",
+      "default": "./src/components/Browser.tsx"
+    },
+    "./desktop": {
+      "types": "./src/desktop.ts",
+      "default": "./src/desktop.ts"
+    },
+    "./browserControl": {
+      "types": "./src/browserControl.ts",
+      "default": "./src/browserControl.ts"
     }
   },
   "scripts": {

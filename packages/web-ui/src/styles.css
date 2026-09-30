@@ -1220,6 +1220,53 @@ body {
 /* The shell sizes itself to the pane, so the pane must not scroll or pad it. */
 .panel-body:has(> .term-view) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 
+/* The hidden Browser slot is positioned against the pane, not the page. */
+.panel-body { position: relative; }
+/* The Browser fills the pane the same way the shell does. */
+.panel-body:has(> .browser-slot:not(.browser-slot-hidden)) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ---- Browser view (desktop) ---- */
+.browser-slot { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+/* Kept alive while another view shows. Not display:none — a webview with no
+   box detaches its guest and loses the page. */
+.browser-slot-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  opacity: 0; pointer-events: none;
+}
+.browser { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.browser-bar {
+  display: flex; align-items: center; gap: 2px;
+  padding: 6px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.browser-btn { display: inline-flex; align-items: center; justify-content: center; padding: 5px; }
+.browser-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+.browser-address {
+  flex: 1 1 auto; min-width: 0; margin: 0 4px;
+  font: inherit; font-size: 12.5px; color: var(--text);
+  background: var(--hover); border: 1px solid transparent; border-radius: 7px; padding: 5px 10px;
+}
+.browser-address:focus { outline: none; background: var(--bg); border-color: var(--accent); }
+.browser-found { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.browser-chip {
+  font: inherit; font-size: 12px; font-family: var(--mono); cursor: pointer;
+  color: var(--text); background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+}
+.browser-chip:hover { border-color: var(--accent); color: var(--accent); }
+.browser-page { position: relative; flex: 1 1 auto; min-height: 0; display: flex; background: #fff; }
+.browser-webview { flex: 1 1 auto; border: 0; }
+.browser-start {
+  flex: 1 1 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 18px; background: var(--bg); color: var(--text-dim); font-size: 13px;
+}
+.browser-start p { margin: 0; }
+.browser-start-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.browser-failure {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  padding: 18px; background: var(--bg); font-size: 13px; color: var(--text-dim);
+}
+.browser-failure strong { color: var(--text); }
+
 /* ---- Terminal view (desktop): Shell | Agent ---- */
 .term-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .seg {

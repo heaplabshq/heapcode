@@ -5,6 +5,7 @@ import {
   type UiMcpSignInResult,
   UI_PROTOCOL_VERSION,
   type UiAskUserParams,
+  type UiBrowserParams,
   type UiConversationMeta,
   type UiEventParams,
   type UiHelloResult,
@@ -40,6 +41,9 @@ import {
   type UiWorkspacesResult,
 } from '@heapcode/web-host/protocol';
 import { MENU_VIEWS, PANEL_VIEWS, Panel, STRIP_VIEWS, type PanelTab } from './components/Panel.js';
+import { desktopBridge } from './desktop.js';
+import { localUrlsIn } from './localUrls.js';
+import { answerBrowserRequest } from './browserControl.js';
 import { terminalEntries } from './terminal.js';
 import { findCommand, type Command } from './commands.js';
 import { Palette } from './components/Palette.js';
@@ -384,6 +388,16 @@ export function App(): JSX.Element {
       });
     });
 
+    // The agent's browser_* tools (desktop app only). The pane is opened on the
+    // Browser view first — so the person watches what the agent is looking at,
+    // and so the <webview> exists to be asked.
+    rpc.onRequest(UI_METHODS.browser, async (raw) => {
+      const params = raw as UiBrowserParams;
+      setPanelOpen(true);
+      setPanelTab('browser');
+      return answerBrowserRequest(params, { actions: true });
+    });
+
     let cancelled = false;
     // Re-sent on every reconnect, not just the first: a resumed socket with a
     // stale view is worse than a visible reconnect.
@@ -393,6 +407,8 @@ export function App(): JSX.Element {
         .request<UiHelloResult>(UI_METHODS.hello, {
           protocolVersion: UI_PROTOCOL_VERSION,
           client: { name: 'heapcode-web-ui' },
+          // Only the desktop app has a Browser pane to lend the agent.
+          capabilities: { browser: Boolean(desktopBridge()?.browser) },
         })
         .then((hello) => {
           setError(undefined);
@@ -471,6 +487,23 @@ export function App(): JSX.Element {
   const selectViewRef = useRef(selectView);
   selectViewRef.current = selectView;
   const terminal = useMemo(() => terminalEntries(transcript.items), [transcript.items]);
+  /**
+   * Dev servers worth offering in the Browser view: what the desktop shells
+   * printed (tracked in the main process), plus what the agent's own commands
+   * printed — "I started it on :5173" should be one click away either way.
+   */
+  const [shellUrls, setShellUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const browser = desktopBridge()?.browser;
+    if (!browser) return;
+    void browser.localUrls().then(setShellUrls).catch(() => undefined);
+    return browser.onLocalUrls(setShellUrls);
+  }, []);
+  const localUrls = useMemo(() => {
+    const fromAgent = terminal.flatMap((t) => localUrlsIn(t.output ?? ''));
+    return [...new Set([...fromAgent, ...shellUrls])].filter((u) => !u.startsWith(location.origin));
+  }, [terminal, shellUrls]);
+
 
   /** Clicking a path in a tool chip opens it in the Files tab. */
   const openInFiles = useCallback((path: string) => {
@@ -1210,6 +1243,7 @@ export function App(): JSX.Element {
               width={panelWidth}
               tab={panelTab}
               root={state?.root}
+              localUrls={localUrls}
               onClose={() => setPanelOpen(false)}
               changes={changes}
               checkpoints={checkpoints}

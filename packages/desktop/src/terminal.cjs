@@ -17,6 +17,30 @@ let pty = null;
 try { pty = require('node-pty'); } catch { /* reported to the page as unavailable */ }
 
 const SCROLLBACK = 256 * 1024;
+
+/**
+ * Local addresses a shell has printed — `vite` saying "Local: http://localhost:5173/"
+ * — so the Browser view can offer them without anyone copying a URL. Newest
+ * last, capped, and shared by every shell: which folder started the dev server
+ * does not matter to the person wanting to open it.
+ */
+const LOCAL_URL = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d{2,5}(?:\/[^\s'"\x1b)]*)?/g;
+// Colour codes land in the middle of URLs often enough to matter.
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+let localUrls = [];
+const urlListeners = new Set();
+function noteUrls(data) {
+  const found = data.replace(ANSI, '').match(LOCAL_URL);
+  if (!found) return;
+  let changed = false;
+  for (const raw of found) {
+    const url = raw.replace('0.0.0.0', 'localhost').replace(/[.,;:]+$/, '');
+    if (localUrls.includes(url)) continue;
+    localUrls = [...localUrls, url].slice(-8);
+    changed = true;
+  }
+  if (changed) for (const fn of urlListeners) fn(localUrls);
+}
 /** cwd → { proc, buffer, exited } */
 const shells = new Map();
 
@@ -37,6 +61,7 @@ function start(cwd, cols, rows, send) {
   const entry = { proc, buffer: '', exited: false };
   proc.onData((data) => {
     entry.buffer = (entry.buffer + data).slice(-SCROLLBACK);
+    noteUrls(data);
     send('heap:term-data', cwd, data);
   });
   proc.onExit(({ exitCode }) => {
@@ -71,6 +96,23 @@ function registerTerminal(trusted) {
   });
   ipcMain.on('heap:term-resize', (e, id, cols, rows) => {
     if (trusted(e) && cols > 0 && rows > 0) { try { shells.get(id)?.proc.resize(cols, rows); } catch {} }
+  });
+  ipcMain.handle('heap:local-urls', (e) => (trusted(e) ? localUrls : []));
+  ipcMain.on('heap:local-urls-watch', (e) => {
+    if (!trusted(e)) return;
+    const send = sendTo(e.sender);
+    const fn = (urls) => send('heap:local-urls', urls);
+    urlListeners.add(fn);
+    const sender = e.sender;
+    // A reload re-subscribes; the old page's listener must not pile up. Only a
+    // real page load counts — the app's own pushState routing is not one.
+    const onNav = (details) => {
+      if (!details.isMainFrame || details.isSameDocument) return;
+      urlListeners.delete(fn);
+      sender.off('did-start-navigation', onNav);
+    };
+    sender.on('did-start-navigation', onNav);
+    sender.once('destroyed', () => urlListeners.delete(fn));
   });
   ipcMain.on('heap:term-kill', (e, id) => {
     if (trusted(e)) killShell(id);

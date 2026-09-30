@@ -15,9 +15,10 @@ import { Empty } from './Empty.js';
 import { Preview } from './Preview.js';
 import { IndexView } from './IndexView.js';
 import { Shell } from './Shell.js';
+import { Browser } from './Browser.js';
 import { desktopBridge } from '../desktop.js';
 
-export type PanelTab = 'changes' | 'files' | 'index' | 'terminal' | 'preview';
+export type PanelTab = 'changes' | 'files' | 'index' | 'terminal' | 'preview' | 'browser';
 
 export interface TerminalEntry {
   id: string;
@@ -47,6 +48,8 @@ export interface PanelProps {
   onRewind(hash: string): void;
   /** The workspace folder — where the desktop app's shell starts. */
   root?: string;
+  /** Dev-server addresses seen in terminal output, for the Browser view. */
+  localUrls?: string[];
   /** Set by the chat pane when the user clicks a path in a tool chip. */
   openPath?: string;
 
@@ -116,6 +119,15 @@ export const ICON_PREVIEW = (
   </svg>
 );
 
+/** A globe: somewhere on the web. */
+export const ICON_BROWSER = (
+  <svg {...S}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
+  </svg>
+);
+
 /**
  * Every view, with what the toolbar shows for it. The first three are icons
  * in the strip — the things a run produces and you check on; Files and Index
@@ -130,14 +142,22 @@ export const PANEL_VIEWS: Record<PanelTab, { label: string; icon: JSX.Element; s
   terminal: { label: 'Terminal', icon: ICON_TERMINAL, shortcut: `${MOD}J` },
   changes: { label: 'Changes', icon: ICON_CHANGES },
   preview: { label: 'Preview', icon: ICON_PREVIEW },
+  browser: { label: 'Browser', icon: ICON_BROWSER },
   files: { label: 'Files', icon: ICON_FILES, shortcut: `${SHIFT_MOD}F` },
   index: { label: 'Index', icon: ICON_INDEX },
 };
-export const STRIP_VIEWS: PanelTab[] = ['terminal', 'changes', 'preview'];
+/** Browser only where there is one to show — the desktop app. */
+export const STRIP_VIEWS: PanelTab[] = desktopBridge()?.browser
+  ? ['terminal', 'changes', 'preview', 'browser']
+  : ['terminal', 'changes', 'preview'];
 export const MENU_VIEWS: PanelTab[] = ['files', 'index'];
 
 export function Panel(props: PanelProps): JSX.Element {
   const view = PANEL_VIEWS[props.tab];
+  const [browserOpened, setBrowserOpened] = useState(props.tab === 'browser');
+  useEffect(() => {
+    if (props.tab === 'browser') setBrowserOpened(true);
+  }, [props.tab]);
   return (
     <section
       className="panel"
@@ -166,6 +186,13 @@ export function Panel(props: PanelProps): JSX.Element {
           />
         )}
         {props.tab === 'terminal' && <TerminalView entries={props.terminal} root={props.root} />}
+        {/* Kept mounted once opened, so glancing at Changes does not reload
+            the page you were on. Hidden rather than removed. */}
+        {(props.tab === 'browser' || browserOpened) && (
+          <div className={props.tab === 'browser' ? 'browser-slot' : 'browser-slot browser-slot-hidden'}>
+            <Browser localUrls={props.localUrls ?? []} />
+          </div>
+        )}
         {props.tab === 'preview' && (
           <Preview
             artifacts={props.artifacts}

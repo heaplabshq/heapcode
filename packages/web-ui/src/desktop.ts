@@ -10,6 +10,21 @@ export interface DesktopBridge {
   keepAwakeState?(): boolean;
   /** A real shell on a pty, run by the desktop app — see desktop/src/terminal.cjs. */
   terminal?: DesktopTerminal;
+  /**
+   * Present when the page may use <webview> — the desktop app vets each one
+   * (desktop/src/browser.cjs). Also the dev-server addresses its shells printed.
+   */
+  browser?: {
+    /** A JPEG data: URL of the webview whose contents id this is. */
+    capture(webContentsId: number): Promise<string>;
+    /** A real click, key or text insertion into that webview (desktop/src/browser.cjs). */
+    input(
+      webContentsId: number,
+      action: { kind: 'click'; x: number; y: number } | { kind: 'text'; text: string } | { kind: 'key'; key: string },
+    ): Promise<boolean>;
+    localUrls(): Promise<string[]>;
+    onLocalUrls(cb: (urls: string[]) => void): () => void;
+  };
 }
 
 export interface DesktopTerminal {

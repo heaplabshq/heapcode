@@ -1,3 +1,4 @@
+import { BROWSER_READ_TOOL_NAMES } from '@heapcode/web-host/browserTools';
 import { SEARCH_HISTORY_TOOL, sharedAgentTools, type ToolDefinition } from '@heapcode/core';
 import { CREATE_ARTIFACT_TOOL } from '@heapcode/web-host';
 
@@ -192,6 +193,10 @@ export type PermissionOutcome = 'grant' | 'ask' | 'deny';
  */
 export function permissionFor(name: string, isMcpTool: boolean, alreadyAllowed: boolean): PermissionOutcome {
   if (CHAT_TOOL_NAMES.has(name)) return 'grant';
+  // Looking at a local page in the desktop Browser pane — read-only, like the
+  // folder tools. Its acting tools (browser_click, …) are never offered here,
+  // and are refused by name below if one arrives anyway.
+  if (BROWSER_READ_TOOL_NAMES.has(name)) return 'grant';
   if (!isMcpTool) return 'deny';
   return alreadyAllowed ? 'grant' : 'ask';
 }

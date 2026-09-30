@@ -78,11 +78,18 @@ jobs:
         with:
           name: heapcode-cli-tarball
 
+      # heapbrowse is not on the Chrome Web Store yet, so the release page is
+      # where people get it: download the .zip, unzip, "Load unpacked".
+      - uses: actions/download-artifact@v8
+        with:
+          name: heapbrowse-extension
+
       - uses: softprops/action-gh-release@v3
         with:
           files: |
             heap-code.vsix
             *.tgz
+            heapbrowse-*.zip
           generate_release_notes: true
 
       # Publishes when the VSCE_PAT secret is configured (a PAT with the

@@ -572,6 +572,7 @@
     <div class="nav-links">
       <a href="#cli">CLI</a>
       <a href="#web">Web</a>
+      <a href="#chat">Chat</a>
       <a href="#spec">Spec sheet</a>
       <a href="#works-with">Works with</a>
       <a href="#features">Features</a>
@@ -581,8 +582,8 @@
 </nav>
 
 <div class="titleblock">
-  <span>DWG NO. <b>HC-0.7.0</b></span>
-  <span>CLI REV. <b>0.6.0</b></span>
+  <span>DWG NO. <b>HC-0.8.0</b></span>
+  <span>CLI REV. <b>0.7.0</b></span>
   <span>SCALE <b>LOCAL = CLOUD</b></span>
   <span>LICENSE <b>PolyForm Noncommercial 1.0</b></span>
   <span>TELEMETRY <b>ANONYMOUS, OPT-OUT</b></span>
@@ -605,7 +606,7 @@
           <a class="btn btn-ghost" href="#cli">Install the CLI →</a>
           <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">Source</a>
         </div>
-        <p class="fine">Extension v0.7.0 &middot; CLI v0.6.0 &middot; free for personal, internal &amp; noncommercial use</p>
+        <p class="fine">Extension v0.8.0 &middot; CLI v0.7.0 &middot; free for personal, internal &amp; noncommercial use</p>
       </div>
 
       <div class="diagram-card">
@@ -689,7 +690,7 @@
   </section>
 
   <section class="panel wrap" id="web">
-    <p class="eyebrow">New &mdash; the browser UI</p>
+    <p class="eyebrow">The browser UI</p>
     <div class="cli-grid">
       <div>
         <div class="terminal">
@@ -719,6 +720,36 @@
     </div>
   </section>
 
+  <section class="panel wrap" id="chat">
+    <p class="eyebrow">New &mdash; Heap Chat</p>
+    <div class="cli-grid">
+      <div>
+        <div class="terminal">
+          <div class="browser-bar">
+            <span class="browser-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="browser-url">127.0.0.1:7411/chat</span>
+          </div>
+          <div class="browser-body">
+            <div class="browser-row"><span class="who">you</span><span class="what">what did I pay for the boiler service last year?</span></div>
+            <div class="browser-chip">⏺ semantic_search <span class="path">boiler service invoice</span></div>
+            <div class="browser-chip">⏺ read_file <span class="path">Home/2025/invoice-0412.pdf</span></div>
+            <div class="browser-row"><span class="what">&pound;184.00, paid 12 April 2025 &mdash; from <b>invoice-0412.pdf</b>, line 9.</span></div>
+          </div>
+        </div>
+        <p class="fine">Ships in the CLI &middot; <b>heapcode chat [folder]</b> &middot; or at <b>/chat</b> under <b>heapcode web</b></p>
+      </div>
+      <div>
+        <ul class="cli-points">
+          <li><b>Your files, not your code.</b> Point it at a folder of PDFs, Word documents, spreadsheets and photos. It reads them, searches them, and answers from them &mdash; a scanned receipt is findable by what it says.</li>
+          <li><b>Every answer shows its source.</b> It says which file an answer came from, and a figure can be traced back to the line it was read from.</li>
+          <li><b>It never writes over your files.</b> A summary, a table or a report lands beside the conversation as a draft. Saving it into your folder is your call.</li>
+          <li><b>Same engine, its own product.</b> Its own tools, prompt, history and memory &mdash; sharing only the engine, the models you configured, and the index with Heap Code.</li>
+          <li><b>Connectors with sign-in.</b> MCP servers work here too, including hosted ones that need you to log in &mdash; and it asks before running one.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
   <section class="panel wrap" id="spec">
     <p class="eyebrow">Spec sheet</p>
     <table class="spec-table">
@@ -740,7 +771,7 @@
       </tr>
       <tr>
         <td>Surfaces</td>
-        <td>VS Code extension, a standalone terminal CLI (<span class="spec-yes">heapcode</span>), and a local browser UI (<span class="spec-yes">heapcode web</span>) &mdash; one shared engine, so behaviour matches.</td>
+        <td>VS Code extension, a standalone terminal CLI (<span class="spec-yes">heapcode</span>), and a local browser UI (<span class="spec-yes">heapcode web</span>) &mdash; one shared engine, so behaviour matches. Chat history, connections and project MCP servers are shared between them. Heap Chat (<span class="spec-yes">heapcode chat</span>) runs on the same engine.</td>
       </tr>
       <tr>
         <td>API key storage</td>
@@ -804,7 +835,7 @@
       </div>
       <div class="feature-item">
         <h4>MCP &amp; tool interop</h4>
-        <p>Register Model Context Protocol servers; other extensions' language-model tools show up in agent mode too.</p>
+        <p>Register Model Context Protocol servers, including hosted ones that need a sign-in; each one gets only the environment variables it needs, not your whole shell. Other extensions' language-model tools show up in agent mode too.</p>
       </div>
       <div class="feature-item">
         <h4>Safety guardrails</h4>
@@ -852,7 +883,7 @@
 
 <footer>
   <div class="wrap footer-row">
-    <span class="mono">HEAP CODE &middot; HC-0.7.0 &middot; CLI 0.6.0 &middot; POLYFORM-NC-1.0</span>
+    <span class="mono">HEAP CODE &middot; HC-0.8.0 &middot; CLI 0.7.0 &middot; POLYFORM-NC-1.0</span>
     <div class="cta-row" style="margin:0;">
       <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=heapcode.heap-code">Install from Marketplace →</a>
       <a class="btn btn-ghost" href="https://github.com/heaplabshq/heapcode">GitHub</a>

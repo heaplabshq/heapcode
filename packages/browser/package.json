@@ -1,6 +1,6 @@
 {
   "name": "@heapcode/browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "heapbrowse \u2014 AI browser agent: a side-panel assistant that reads the page you are on and can operate it for you.",
   "license": "PolyForm-Noncommercial-1.0.0",

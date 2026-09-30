@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.0
+
+- **`heapcode chat [folder]` — Heap Chat, a second product on the same engine.** A knowledge assistant over a folder of your own files: it reads PDFs, Word documents, spreadsheets and photos, answers from them, and says which file each answer stood on. It cannot change anything in that folder — when it writes, it produces an artifact beside the conversation that you choose whether to save. `heapcode web` mounts it at `/chat` on the same origin and token, with a switcher in the rail. Separate tool roster, prompt, history and memory; only the engine, the shell and the index are shared
+- **MCP sign-in for hosted connectors.** OAuth with discovery, dynamic registration and PKCE (RFC 9728, 7591, 8707); the CLI opens a loopback listener for the callback. A failed connector now says why — needs sign-in, bad URL, missing package — instead of a bare "not connected"
+- **Connectors no longer inherit your whole environment.** A stdio MCP server was spawned with all of `process.env` — every key and token in your shell — handed to third-party code usually fetched at startup by `npx -y`. It now gets an allowlist, plus whatever you declare it genuinely needs with the new `/mcp env`
+- **`search_history` — the agent can look back past what it remembers.** A long run folds its early turns into a summary, so "what was the token you were given at the start" used to be answered from a summary of a summary. The model can now search the full conversation, or an earlier one by id
+- **Tool results are kept across turns until the context window needs the room**, instead of being dropped on a fixed schedule — a follow-up about something a tool already returned no longer re-runs the tool
+- **Fixed: a second session could delete the first's conversations.** The store wrote a cached view back on save, so with the terminal and `heapcode web` open on one project, whichever saved last silently removed the other's chats. Writes now re-read and merge
+- **Stop works when it lands before the run has started.** A cancel that arrived a moment too early was dropped, and the run looped to its iteration cap while the UI showed it stopped
+- **"Today's date" is your local date, not UTC** — every evening west of UTC the agent was told it was tomorrow
+- **`heapcode web`** opens before anything is configured and says what is missing; models can be listed and picked before a daemon runs; the model list and file panel follow the connection or folder you switch to; the running turn's task list is pinned above the transcript and unpinned when it ends; every reply has a copy button; a pasted screenshot survives a reload; ignored files show greyed rather than vanishing; long unbroken output no longer pushes the page sideways
+
 ## 0.6.0
 
 - **`heapcode connection` and `heapcode model` replace `heapcode profile`.** A provider is a *connection* — an endpoint and its key — and a model serving a role is a separate thing: `heapcode connection <add|list|use|remove>` manages endpoints, `heapcode model <list|set|clear> <role> <connection> <model>` manages the one global role table. Setting embeddings once now sets it once, not again on every profile, and switching which endpoint you chat with no longer silently rewrites the other seven roles. `heapcode model set edit cloud gpt-4o` runs `edit` on a cloud model while chat stays local. Old configs migrate on first read

@@ -99,6 +99,17 @@ the terminal you launched it from:
 Closing the tab does not stop a run — the host owns run state, so reopening
 reattaches to whatever is still going.
 
+### Desktop app
+
+The same UI in a native window — no browser tab, no terminal to keep open:
+
+```bash
+pnpm build && pnpm desktop            # dev: runs packages/cli/dist under Electron
+pnpm --filter @heapcode/desktop dist  # installers → packages/desktop/release
+```
+
+It asks for a project folder on first launch (then remembers it; **File → Open Folder…** switches), starts the web host on a free loopback port as a child process, and stops it when you quit. `pnpm desktop /path/to/project` opens a specific folder.
+
 ## Repository layout
 
 ```
@@ -108,6 +119,7 @@ packages/vscode      VS Code extension (thin adapter over core)
 packages/cli         Terminal CLI over core — published as @heaplabs/heapcode-cli
 packages/web-host    Local server behind `heapcode web`: WS protocol, sessions, artifacts
 packages/web-ui      React SPA the web host serves
+packages/desktop     Electron shell: `heapcode web` in a native window
 packages/webview-ui  React chat UI
 docs/PRD.md          Product requirements (source of truth)
 docs/PLAN.md         VS Code extension milestone tracker + decisions log

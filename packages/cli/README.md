@@ -76,6 +76,8 @@ heapcode -p "<task>" [flags]      Headless: runs the full agent loop (tools, RAG
 heapcode connection <add|list|use NAME|remove NAME>   Provider endpoints (also in-session via /profile)
 heapcode model <list|set ROLE CONN MODEL|clear ROLE>  The global role table (also in-session via /roles)
 heapcode audit                                        Local usage/audit dashboard
+heapcode web [--port N] [--host H]                    The same agent in a browser tab, over the current directory
+heapcode chat [folder] [--port N]                     Heap Chat over a folder — read, search, ask and draft; writes new documents, never over yours
 ```
 
 ### Headless (`-p`) flags

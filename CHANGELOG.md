@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.0
+
+- **The extension shares with the rest of Heap Code instead of standing apart.** A local folder now uses the same conversation history the CLI, `heapcode web` and Heap Chat use for that project, so a chat started in the terminal is there in the editor. Connections configured with the CLI in `~/.heapcode/config.json` are read too — settings win on a name clash, and a fresh install takes the CLI's whole list rather than a localhost default asking you to set up what you already set up. The project's committed `.heapcode/mcp.json` is honoured, matching every other host. Keys stay in SecretStorage; a connection that came from the CLI reads the CLI's key. Every path falls back to today's behaviour when there is no CLI, no folder, or a virtual workspace
+- **Fixed: two sessions on one project could delete each other's conversations.** The history store wrote a cached view back on save, so whichever host saved last silently removed the other's chats. Writes now re-read and merge
+- **MCP sign-in for hosted connectors** — OAuth with discovery, dynamic registration and PKCE, answered on a loopback listener. A failed connector now says why rather than "not connected"
+- **Connectors no longer inherit your whole environment.** A stdio MCP server was handed all of `process.env`; it now gets an allowlist plus whatever you declare it needs, prompted from the extension
+- **`search_history`** — the agent can search the full conversation past what its summarised context still holds, or an earlier conversation by id
+- **Tool results are kept across turns until the context window needs the room**, rather than dropped on a fixed schedule
+- **Stop works when it lands before the run has registered**, and the agent's "today" is your local date rather than UTC
+- **A copy button under every reply**; a turn's toolbar and attachments sit on that turn's own side; a pasted screenshot survives a reload; long unbroken output no longer pushes the view sideways
+
+## heapbrowse 0.2.0
+
+- **Works with a self-hosted Ollama with no server setup.** Ollama refuses requests whose `Origin` it does not know, and heapbrowse's is `chrome-extension://…`, so the only fix was `OLLAMA_ORIGINS` on the Ollama machine — which on macOS is lost on reboot. heapbrowse now removes its own Origin on requests to each endpoint you configure, and only on requests it makes itself: a web page calling the same Ollama keeps its Origin, so Ollama's drive-by protection is unchanged. Adds the `declarativeNetRequestWithHostAccess` permission, which shows no install warning
+- **A refused origin on a LAN address is no longer reported as a bad API key**, and Test connection now sends a chat request too — it used to pass on a GET that never carried the Origin chat would be refused for
+- **Web search and `fetch_url`**, with a settings card for the search backend; `web_search` is offered only once one is configured. New page actions: `double_click`, `triple_click`, `right_click`, `go_forward`, `resize_window`
+- **Sees the checkbox a person sees.** Modern form controls are an invisible `<input>` with something styled drawn in its place; extraction dropped them as hidden, so on GitHub's label picker the only control offered was a link that navigated away. They are now offered when a person could work them, and the confirmation ring draws around the visible label
+- **A turn that has got stuck is stopped.** A model repeating the same text back to back, or announcing tool calls over and over without making one, now ends the turn the way the Stop button does, with a plain message about what happened
+- **The transcript scrolls to the message you just sent**, even when you were reading back through the previous answer
+
 ## 0.7.0
 
 - **Model roles are one global table, not fourteen fields on every profile.** A provider is now a *connection* — an endpoint, its key, its headers — and which model serves each role (chat / edit / apply / completion / agent / embeddings / rerank / context) is a separate assignment that can point at *any* connection. The settings screen shows one role table with a model box and a connection dropdown per row, states what an inheriting role currently resolves to, and lets a role point somewhere its connection was never "active" for. Switching what you chat with no longer drags the other seven roles along with it. Existing profiles migrate on first read; a role that inherited before still inherits, and `apply`/`embeddings` — which inherit nothing on purpose — are never handed a chat model by the migration

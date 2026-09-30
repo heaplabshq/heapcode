@@ -10,6 +10,8 @@ Three surfaces over one shared engine:
 | **Terminal CLI** | `npm install -g @heaplabs/heapcode-cli` — see [packages/cli/README.md](packages/cli/README.md) |
 | **Browser UI** | `heapcode web` in any workspace — see [Browser UI](#browser-ui) below |
 
+**Heap Chat** ships in the same CLI: `heapcode chat [folder]` is a knowledge assistant over a folder of your own files (PDFs, Word documents, spreadsheets, photos). It answers from them, says which file each answer stood on, and never writes over them. `heapcode web` also mounts it at `/chat`.
+
 There is also **[heapbrowse](packages/browser/README.md)** — a separate product on the same engine: a Chrome side-panel agent that reads the page you are on and can operate it for you. [browse.heaplabs.dev](https://browse.heaplabs.dev)
 
 ## Privacy first

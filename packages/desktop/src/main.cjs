@@ -3,11 +3,12 @@
 // one-time-token URL it prints, and shows that page in a BrowserWindow. All the
 // product lives in @heapcode/web-host + web-ui; this file only owns the window,
 // the workspace folder, and the child's lifetime.
-const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, powerSaveBlocker, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const path = require('node:path');
 const fs = require('node:fs');
+const { registerTerminal, killAllShells } = require('./terminal.cjs');
 
 app.setName('Heap Code');
 
@@ -92,6 +93,21 @@ const MAC_CHROME_CSS = `
   html .rail-collapse { position: fixed; left: 84px; top: 8px; z-index: 50; }
 `;
 
+// "Keep computer awake" in the ⋮ menu. prevent-app-suspension stops the system
+// sleeping but lets the display turn off; it dies with the process, which is
+// what "only for this session" promises.
+let awakeId = null;
+const isAwake = () => awakeId !== null && powerSaveBlocker.isStarted(awakeId);
+const fromLocalHost = (e) => Boolean(origin) && e.senderFrame && new URL(e.senderFrame.url).origin === origin;
+ipcMain.handle('heap:keep-awake', (e, on) => {
+  if (!fromLocalHost(e)) return isAwake();
+  if (on && !isAwake()) awakeId = powerSaveBlocker.start('prevent-app-suspension');
+  if (!on && isAwake()) { powerSaveBlocker.stop(awakeId); awakeId = null; }
+  return isAwake();
+});
+ipcMain.on('heap:keep-awake-state', (e) => { e.returnValue = isAwake(); });
+registerTerminal(fromLocalHost);
+
 function createWindow() {
   const state = readState();
   win = new BrowserWindow({
@@ -100,7 +116,12 @@ function createWindow() {
     backgroundColor: '#111111',
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 14 } } : {}),
     ...(state.bounds || {}),
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.cjs'),
+    },
   });
   // No header bar: the page's own left rail is the top-left of the window, so on
   // macOS it gives up a strip for the traffic lights and that strip drags the
@@ -181,5 +202,5 @@ if (!app.requestSingleInstanceLock()) {
     await openFolder(path.resolve(folder));
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', () => { quitting = true; if (server) { try { server.kill(); } catch {} } });
+  app.on('before-quit', () => { quitting = true; killAllShells(); if (server) { try { server.kill(); } catch {} } });
 }

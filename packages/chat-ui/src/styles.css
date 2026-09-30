@@ -49,11 +49,6 @@
 .prov-issues { margin: 0; padding: 0 12px 8px 30px; color: var(--warn); font-size: 12.5px; }
 .index-view { display: grid; gap: 10px; padding: 12px; justify-items: start; }
 
-/* An icon-only `chat-tool`. web-ui's has a label beside the glyph, so its
-   horizontal padding is sized for text; without one the button reads as
-   lopsided and too wide. Squared off here rather than changed there, because
-   Heap Code's button still has its label. */
-.chat-tool-icon { padding: 5px; gap: 5px; }
 
 /* ---- memory ---- */
 /* The rows themselves are `rows`/`row` from the shared sheet; these two only

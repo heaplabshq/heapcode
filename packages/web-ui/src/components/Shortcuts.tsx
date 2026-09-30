@@ -26,7 +26,9 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: '/', description: 'Focus the composer', group: 'Navigation' },
   { keys: 'Esc', description: 'Close whatever is open', group: 'Navigation' },
 
-  { keys: '⌘/Ctrl + B', description: 'Toggle the workspace panel', group: 'Workspace' },
+  { keys: '⌘/Ctrl + B', description: 'Show or hide the side panel', group: 'Workspace' },
+  { keys: '⌘/Ctrl + J', description: 'Terminal', group: 'Workspace' },
+  { keys: '⌘/Ctrl + Shift + F', description: 'Files', group: 'Workspace' },
   { keys: '⌘/Ctrl + Shift + N', description: 'New conversation', group: 'Workspace' },
   { keys: '⌘/Ctrl + \\', description: 'Collapse or expand the rail', group: 'Workspace' },
 ];

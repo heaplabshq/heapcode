@@ -7,6 +7,7 @@
   "author": "Heap Labs",
   "main": "src/main.cjs",
   "scripts": {
+    "postinstall": "node scripts/fix-pty.cjs",
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
@@ -21,13 +22,46 @@
   "build": {
     "appId": "dev.heaplabs.heapcode.desktop",
     "productName": "Heap Code",
-    "directories": { "output": "release" },
-    "files": ["src/**/*", "package.json"],
-    "extraResources": [
-      { "from": "../cli/dist", "to": "cli", "filter": ["**/*", "!**/*.map"] }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
     ],
-    "mac": { "category": "public.app-category.developer-tools", "target": ["dmg", "zip"] },
-    "win": { "target": ["nsis"] },
-    "linux": { "target": ["AppImage"], "category": "Development" }
+    "extraResources": [
+      {
+        "from": "../cli/dist",
+        "to": "cli",
+        "filter": [
+          "**/*",
+          "!**/*.map"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    },
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ]
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
   }
 }

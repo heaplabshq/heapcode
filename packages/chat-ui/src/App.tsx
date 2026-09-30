@@ -21,6 +21,7 @@ import { ProductToggle } from '@heapcode/web-ui/components/ProductToggle';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
+import { ChatTools } from '@heapcode/web-ui/components/ChatTools';
 import { CHAT_METHODS, CHAT_PROTOCOL_VERSION } from '@heapcode/chat-host/protocol';
 import type {
   ChatAskUserParams,
@@ -38,14 +39,13 @@ import type {
   ChatArtifactMeta,
   ChatArtifactResult,
   ChatArtifactsResult,
-  ChatFileTreeResult,
   ChatReadFileResult,
   ChatSendMessageResult,
   ChatSettings,
   ChatState,
 } from '@heapcode/chat-host/protocol';
 import { GroundingBadge } from './components/GroundingBadge.js';
-import { ChatPanel, type ChatPanelTab } from './components/Panel.js';
+import { CHAT_VIEWS, ChatPanel, type ChatPanelTab } from './components/Panel.js';
 import { MemoryPanel } from './components/MemoryPanel.js';
 
 /**
@@ -121,7 +121,7 @@ export function App(): JSX.Element {
    * to re-state on every reload.
    */
   const [panelOpen, setPanelOpen] = useState(() => localStorage.getItem('heapchat.panel') === 'open');
-  const [panelTab, setPanelTab] = useState<ChatPanelTab>('files');
+  const [panelTab, setPanelTab] = useState<ChatPanelTab>('made');
   const { width: panelWidth, startDrag: startPanelDrag } = usePanelWidth('heapchat.panelWidth');
 
   // One effect rather than a write at each place that opens the panel —
@@ -134,10 +134,30 @@ export function App(): JSX.Element {
   const [selectedArtifact, setSelectedArtifact] = useState<string>();
   const [openPath, setOpenPath] = useState<string>();
 
+  /** A toolbar icon opens the panel on its view, or closes it if already there. */
+  const selectView = useCallback(
+    (tab: ChatPanelTab) => {
+      const closing = panelOpen && panelTab === tab;
+      setPanelOpen(!closing);
+      if (!closing) setPanelTab(tab);
+    },
+    [panelOpen, panelTab],
+  );
+  /** A path clicked in a tool chip or a source row: read it in the panel. */
+  const openFile = useCallback((path: string) => {
+    setOpenPath(path);
+    setPanelTab('file');
+    setPanelOpen(true);
+  }, []);
+
   const seq = useRef(0);
   const runId = useRef<string>();
 
   const client = useMemo(() => new RpcClient(RPC_URL, setStatus), []);
+  const loadFile = useCallback(
+    (path: string) => client.request<ChatReadFileResult>(CHAT_METHODS.readFile, { path }),
+    [client],
+  );
 
   const refreshConversations = useCallback(() => {
     client
@@ -401,23 +421,16 @@ export function App(): JSX.Element {
         />
 
         <main className="chat">
-          <div className="chat-tools">
-            {/* Icon only, and the artifact glyph rather than a panel outline:
-                what the panel is mostly for here is the documents this has
-                made, and "Made" is the tab a person comes back to. The count
-                sits on it so an artifact does not need the panel open to be
-                noticed. */}
-            <button
-              className={`chat-tool chat-tool-icon ${panelOpen ? 'chat-tool-on' : ''}`}
-              onClick={() => setPanelOpen((v) => !v)}
-              aria-pressed={panelOpen}
-              aria-label={panelOpen ? 'Hide the panel' : 'Show the panel'}
-              title={panelOpen ? 'Hide the panel' : 'Files, what has been made, and where answers came from'}
-            >
-              <IconArtifact />
-              {artifacts.length > 0 && <span className="chat-tool-badge">{artifacts.length}</span>}
-            </button>
-          </div>
+          <ChatTools
+            views={(['made', 'sources'] as const).map((id) => ({
+              id,
+              ...CHAT_VIEWS[id],
+              badge: id === 'made' ? artifacts.length : (grounding?.sources.length ?? 0),
+            }))}
+            more={[{ id: 'index', ...CHAT_VIEWS.index }]}
+            active={panelOpen ? panelTab : undefined}
+            onSelect={(id) => selectView(id as ChatPanelTab)}
+          />
 
           {state?.lan && (
             <div className="banner banner-warn" role="alert">
@@ -460,11 +473,7 @@ export function App(): JSX.Element {
             onEdit={startEdit}
             // A path in a tool chip opens in the panel, the same gesture Heap
             // Code has — here it reads a document rather than showing a diff.
-            onOpenPath={(path) => {
-              setOpenPath(path);
-              setPanelTab('files');
-              setPanelOpen(true);
-            }}
+            onOpenPath={openFile}
             // What it can actually do, rather than the narrowest thing it
             // does. "Ask about the files in X" described a file Q&A tool; the
             // roster is read + web search + memory + producing documents, and
@@ -635,11 +644,10 @@ export function App(): JSX.Element {
               key={state?.folder}
               width={panelWidth}
               tab={panelTab}
-              onTab={setPanelTab}
               onClose={() => setPanelOpen(false)}
-              loadTree={(path) => client.request<ChatFileTreeResult>(CHAT_METHODS.fileTree, { path })}
-              loadFile={(path) => client.request<ChatReadFileResult>(CHAT_METHODS.readFile, { path })}
+              loadFile={loadFile}
               openPath={openPath}
+              onOpenPath={openFile}
               artifacts={artifacts}
               selectedArtifact={selectedArtifact}
               onSelectArtifact={setSelectedArtifact}
@@ -714,27 +722,6 @@ export function App(): JSX.Element {
         />
       ) : null}
     </div>
-  );
-}
-
-/** A document with lines on it — the same glyph the rail uses for Artifacts. */
-function IconArtifact(): JSX.Element {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-      <path d="M14 3v5h5" />
-      <path d="M9 13h6M9 17h4" />
-    </svg>
   );
 }
 

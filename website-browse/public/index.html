@@ -145,6 +145,10 @@
       <td>Chrome calls this &ldquo;read your browsing history&rdquo;. What it actually buys is the address of the tab you are on, so the panel can tell you which site is in scope and offer to allow it. Reading the page itself still needs the per-site grant, which is separate and yours to give.</td>
     </tr>
     <tr>
+      <th>Talking to your own model</th>
+      <td>Chrome calls this &ldquo;declarativeNetRequestWithHostAccess&rdquo;, and it adds nothing to the install prompt. It lets heapbrowse leave out its own extension address when it calls the model endpoint you configured, which is what a self-hosted Ollama refuses &mdash; so it works without any setting on the Ollama machine. It applies only to heapbrowse&rsquo;s own requests to that one address: a web page calling the same Ollama is treated exactly as before.</td>
+    </tr>
+    <tr>
       <th>Saving files</th>
       <td><strong>Not asked for at install.</strong> Turn it on in Settings if you want heapbrowse to save a file a page links to, and Chrome will ask you then. Most people never need it, so most people are never asked.</td>
     </tr>
@@ -163,6 +167,8 @@
     <li>No account. No sign-up. No heapbrowse subscription.</li>
     <li>Several endpoints side by side as profiles, each with its own key.</li>
     <li>Switch model without leaving the conversation.</li>
+    <li>Ollama on your own machine or elsewhere on your network works as installed &mdash; no <code>OLLAMA_ORIGINS</code> to set.</li>
+    <li>Web search, once you pick a search provider in Settings &mdash; off until then.</li>
   </ul>
 </section>
 

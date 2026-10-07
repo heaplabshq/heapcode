@@ -93,6 +93,11 @@ export const CHAT_METHODS = {
   // host → browser (requests)
   askUser: 'chat/askUser',
   permission: 'chat/permission',
+  /**
+   * The look-only browser_* tools, answered by the desktop app's Browser view.
+   * Same params and result as Heap Code's `ui/browser` (web-host protocol).
+   */
+  browser: 'chat/browser',
 
   // host → browser (notifications)
   event: 'chat/event',
@@ -108,6 +113,8 @@ export interface ChatHelloParams {
   protocolVersion: number;
   client?: { name: string; version?: string };
   resumeRunId?: string;
+  /** Set by the desktop app, whose Browser view can answer `chat/browser`. */
+  capabilities?: { browser?: boolean };
 }
 
 export interface ChatHelloResult {

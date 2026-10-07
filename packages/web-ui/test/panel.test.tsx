@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * The Changes tab, and the workspace button that opens it.
+ * The Changes view, and the toolbar that opens the panel's views.
  *
  * Both were reshaped for the same reason: a real session accumulates a dozen
  * checkpoints, and the old layout let them bury the changed files — the thing
@@ -30,7 +30,6 @@ function checkpoints(n: number): UiCheckpoint[] {
 function panelProps(over: Partial<PanelProps> = {}): PanelProps {
   return {
     tab: 'changes',
-    onTab: vi.fn(),
     onClose: vi.fn(),
     changes: FILES,
     checkpoints: [],
@@ -104,26 +103,65 @@ describe('the Changes tab', () => {
   });
 });
 
-describe('the workspace button', () => {
-  it('badges the changed-file count without the panel being open', () => {
-    render(<ChatTools panelOpen={false} changeCount={3} onTogglePanel={vi.fn()} />);
+describe('the toolbar', () => {
+  const views = [
+    { id: 'terminal', label: 'Terminal', icon: <svg />, badge: false },
+    { id: 'changes', label: 'Changes', icon: <svg />, badge: 3 },
+  ];
+  const more = [{ id: 'files', label: 'Files', icon: <svg />, shortcut: '⇧⌘F' }];
+
+  it('badges a view without the panel being open', () => {
+    render(<ChatTools views={views} onSelect={vi.fn()} />);
     expect(screen.getByText('3')).toBeTruthy();
   });
 
   it('says nothing when there is nothing to say', () => {
-    const { container } = render(<ChatTools panelOpen={false} changeCount={0} onTogglePanel={vi.fn()} />);
+    const { container } = render(<ChatTools views={[{ ...views[1]!, badge: 0 }]} onSelect={vi.fn()} />);
     expect(container.querySelector('.chat-tool-badge')).toBeNull();
   });
 
-  it('toggles, and reports its state to assistive tech', () => {
-    const onTogglePanel = vi.fn();
-    const { rerender } = render(<ChatTools panelOpen={false} changeCount={0} onTogglePanel={onTogglePanel} />);
-    const button = screen.getByRole('button');
-    expect(button.getAttribute('aria-pressed')).toBe('false');
-    fireEvent.click(button);
-    expect(onTogglePanel).toHaveBeenCalled();
+  it('shows a dot, not a count, for something still running', () => {
+    const { container } = render(<ChatTools views={[{ ...views[0]!, badge: true }]} onSelect={vi.fn()} />);
+    expect(container.querySelector('.chat-tool-dot')).not.toBeNull();
+  });
 
-    rerender(<ChatTools panelOpen changeCount={0} onTogglePanel={onTogglePanel} />);
-    expect(screen.getByRole('button').getAttribute('aria-pressed')).toBe('true');
+  it('selects a view, and marks the open one pressed', () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(<ChatTools views={views} onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Changes' }));
+    expect(onSelect).toHaveBeenCalledWith('changes');
+    expect(screen.getByRole('button', { name: 'Changes' }).getAttribute('aria-pressed')).toBe('false');
+
+    rerender(<ChatTools views={views} active="changes" onSelect={onSelect} />);
+    expect(screen.getByRole('button', { name: 'Changes' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('puts the rest behind ⋮, with their shortcuts', () => {
+    const onSelect = vi.fn();
+    render(<ChatTools views={views} more={more} onSelect={onSelect} />);
+    expect(screen.queryByRole('menu')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.getByText('⇧⌘F')).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: /Files/ }));
+    expect(onSelect).toHaveBeenCalledWith('files');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('offers keep-awake only inside the desktop app', () => {
+    render(<ChatTools views={views} more={more} onSelect={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+    expect(screen.queryByText('Keep computer awake')).toBeNull();
+    cleanup();
+
+    const keepAwake = vi.fn(() => Promise.resolve(true));
+    (globalThis as { heapDesktop?: unknown }).heapDesktop = { keepAwake, keepAwakeState: () => false };
+    try {
+      render(<ChatTools views={views} more={more} onSelect={vi.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: 'More' }));
+      fireEvent.click(screen.getByRole('menuitemcheckbox'));
+      expect(keepAwake).toHaveBeenCalledWith(true);
+    } finally {
+      delete (globalThis as { heapDesktop?: unknown }).heapDesktop;
+    }
   });
 });

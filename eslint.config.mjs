@@ -11,6 +11,14 @@ export default tseslint.config(
     },
   },
   {
+    // `.cjs` files are CommonJS on purpose (Electron's main process and preload), so
+    // `require()` is the import syntax there, not a style lapse.
+    files: ['**/*.cjs'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
     // Guardrail #3: core must stay IDE-agnostic.
     files: ['packages/core/**/*.ts'],
     rules: {

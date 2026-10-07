@@ -1,28 +1,27 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Empty } from '@heapcode/web-ui/components/Empty';
 import { Preview } from '@heapcode/web-ui/components/Preview';
+import { Browser } from '@heapcode/web-ui/components/Browser';
+import { desktopBridge } from '@heapcode/web-ui/desktop';
 import type {
   ChatArtifactMeta,
   ChatArtifactResult,
-  ChatFileTreeResult,
   ChatIndexStatus,
   ChatReadFileResult,
-  ChatTreeEntry,
 } from '@heapcode/chat-host/protocol';
 import type { Grounding } from '@heapcode/chat-host';
 
-export type ChatPanelTab = 'files' | 'made' | 'sources' | 'index';
+export type ChatPanelTab = 'made' | 'sources' | 'file' | 'index' | 'browser';
 
 export interface ChatPanelProps {
   tab: ChatPanelTab;
-  onTab(tab: ChatPanelTab): void;
   onClose(): void;
   /** Dragged width in px; undefined falls back to the stylesheet default. */
   width?: number;
-  loadTree(path: string): Promise<ChatFileTreeResult>;
   loadFile(path: string): Promise<ChatReadFileResult>;
-  /** A path clicked in a tool chip or a source row opens here. */
+  /** A path clicked in a tool chip or a source row; shown by the `file` view. */
   openPath?: string;
+  onOpenPath(path: string): void;
   artifacts: ChatArtifactMeta[];
   selectedArtifact?: string;
   onSelectArtifact(id: string): void;
@@ -33,49 +32,113 @@ export interface ChatPanelProps {
   onReindex(): void;
 }
 
+const S = {
+  width: 15,
+  height: 15,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.7,
+  strokeLinecap: 'round' as const,
+  strokeLinejoin: 'round' as const,
+};
+
 /**
- * The right-hand panel, in the shape Heap Code's has and with its classes —
- * but four tabs of its own, because this product has different things to
- * show.
+ * Every view, with what the toolbar shows for it.
+ *
+ * No folder browser. This product reads a folder rather than working in it,
+ * so browsing its tree was a second file manager with nothing to do in it —
+ * what a person actually opens is a file the answer pointed at, and that
+ * arrives by clicking it (`file`). Index is status, not content, so it sits
+ * behind ⋮.
+ */
+export const CHAT_VIEWS: Record<ChatPanelTab, { label: string; icon: JSX.Element }> = {
+  made: {
+    label: 'Made',
+    icon: (
+      <svg {...S}>
+        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+        <path d="M14 3v5h5" />
+        <path d="M9 13h6M9 17h4" />
+      </svg>
+    ),
+  },
+  sources: {
+    label: 'Sources',
+    icon: (
+      <svg {...S}>
+        <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10a2 2 0 0 1 2 2v14a1.5 1.5 0 0 0-1.5-1.5h-5A1.5 1.5 0 0 1 4 17z" />
+        <path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H14a2 2 0 0 0-2 2v14a1.5 1.5 0 0 1 1.5-1.5h5a1.5 1.5 0 0 0 1.5-1.5z" />
+      </svg>
+    ),
+  },
+  file: {
+    label: 'File',
+    icon: (
+      <svg {...S}>
+        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+        <path d="M14 3v5h5" />
+      </svg>
+    ),
+  },
+  browser: {
+    label: 'Browser',
+    icon: (
+      <svg {...S}>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h18" />
+        <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
+      </svg>
+    ),
+  },
+  index: {
+    label: 'Index',
+    icon: (
+      <svg {...S}>
+        <path d="m12 3 9 4.5-9 4.5-9-4.5z" />
+        <path d="m3 12.5 9 4.5 9-4.5" />
+        <path d="m3 17 9 4.5 9-4.5" />
+      </svg>
+    ),
+  },
+};
+
+/**
+ * The right-hand panel, with Heap Code's classes but views of its own.
  *
  * Not `web-ui`'s `Panel`: that one is built around changes, diffs,
  * checkpoints, a terminal and a repo map, and this product has none of those
  * by design — nothing here edits the folder, so there is nothing to diff and
- * nothing to revert. What it has instead is the folder itself, what the
- * assistant made from it, and where the last answer came from.
+ * nothing to revert. What it has instead is what the assistant made, and
+ * where the last answer came from.
  */
 export function ChatPanel(props: ChatPanelProps): JSX.Element {
-  const tabs: Array<{ id: ChatPanelTab; label: string; count?: number }> = [
-    { id: 'files', label: 'Files' },
-    { id: 'made', label: 'Made', count: props.artifacts.length || undefined },
-    { id: 'sources', label: 'Sources', count: props.grounding?.sources.length || undefined },
-    { id: 'index', label: 'Index' },
-  ];
-
+  const view = CHAT_VIEWS[props.tab];
+  const [browserOpened, setBrowserOpened] = useState(props.tab === 'browser');
+  useEffect(() => {
+    if (props.tab === 'browser') setBrowserOpened(true);
+  }, [props.tab]);
+  // No agent terminal here, so the only dev servers to offer are the ones the
+  // desktop app's shells printed.
+  const [localUrls, setLocalUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const browser = desktopBridge()?.browser;
+    if (!browser) return;
+    void browser.localUrls().then(setLocalUrls).catch(() => undefined);
+    return browser.onLocalUrls(setLocalUrls);
+  }, []);
   return (
-    <aside className="panel" aria-label="Folder" style={props.width ? { width: props.width } : undefined}>
-      <div className="panel-tabs" role="tablist">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={props.tab === t.id}
-            className={props.tab === t.id ? 'panel-tab panel-tab-active' : 'panel-tab'}
-            onClick={() => props.onTab(t.id)}
-          >
-            {t.label}
-            {t.count ? <span className="panel-tab-count">{t.count}</span> : null}
-          </button>
-        ))}
+    <aside className="panel" aria-label={view.label} style={props.width ? { width: props.width } : undefined}>
+      <header className="panel-head">
+        <span className="panel-head-icon">{view.icon}</span>
+        <h2 className="panel-title">{view.label}</h2>
         <button className="icon-btn panel-close" onClick={props.onClose} aria-label="Close panel">
-          ×
+          ✕
         </button>
-      </div>
+      </header>
 
       <div className="panel-body">
-        {props.tab === 'files' && (
-          <FileTree loadTree={props.loadTree} loadFile={props.loadFile} openPath={props.openPath} />
-        )}
+        {props.tab === 'file' && <FileView loadFile={props.loadFile} path={props.openPath} />}
         {props.tab === 'made' && (
           <Preview
             artifacts={props.artifacts}
@@ -85,112 +148,58 @@ export function ChatPanel(props: ChatPanelProps): JSX.Element {
             onSave={props.onSaveArtifact}
           />
         )}
-        {props.tab === 'sources' && <Sources grounding={props.grounding} />}
+        {props.tab === 'sources' && <Sources grounding={props.grounding} onOpenPath={props.onOpenPath} />}
         {props.tab === 'index' && <IndexState status={props.indexStatus} onReindex={props.onReindex} />}
+        {/* Kept mounted once opened — see the note in web-ui's Panel. */}
+        {(props.tab === 'browser' || browserOpened) && (
+          <div className={props.tab === 'browser' ? 'browser-slot' : 'browser-slot browser-slot-hidden'}>
+            <Browser localUrls={localUrls} />
+          </div>
+        )}
       </div>
     </aside>
   );
 }
 
 /**
- * Browsing the folder, and reading a file in it.
+ * Reading one file the conversation pointed at.
  *
  * A PDF or a .docx opens as the text the assistant sees, not as its bytes —
  * the host converts it on the way out. A file with nothing readable says so
  * rather than showing an empty pane, because "no text layer" and "empty file"
  * are different facts about a scan.
  */
-function FileTree({
-  loadTree,
-  loadFile,
-  openPath,
-}: Pick<ChatPanelProps, 'loadTree' | 'loadFile' | 'openPath'>): JSX.Element {
-  const [dir, setDir] = useState('');
-  const [entries, setEntries] = useState<ChatTreeEntry[]>();
+function FileView({ loadFile, path }: { loadFile: ChatPanelProps['loadFile']; path?: string }): JSX.Element {
   const [file, setFile] = useState<ChatReadFileResult>();
   const [error, setError] = useState<string>();
 
-  const load = useCallback(
-    (path: string) => {
-      setDir(path);
-      setFile(undefined);
-      // Undefined until a listing lands, so "loading" and "genuinely empty"
-      // stay different states.
-      setEntries(undefined);
-      setError(undefined);
-      void loadTree(path)
-        .then((r) => setEntries(r.entries))
-        .catch((e: Error) => setError(e.message));
-    },
-    [loadTree],
-  );
-
-  const open = useCallback(
-    (path: string) => {
-      setError(undefined);
-      void loadFile(path)
-        .then(setFile)
-        .catch((e: Error) => setError(e.message));
-    },
-    [loadFile],
-  );
-
-  useEffect(() => load(''), [load]);
   useEffect(() => {
-    if (openPath) open(openPath);
-  }, [openPath, open]);
+    setFile(undefined);
+    setError(undefined);
+    if (!path) return;
+    let live = true;
+    void loadFile(path)
+      .then((f) => live && setFile(f))
+      .catch((e: Error) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
+  }, [path, loadFile]);
 
-  if (file) {
-    return (
-      <div className="file-view">
-        <div className="file-view-head">
-          <button className="btn btn-ghost" onClick={() => setFile(undefined)}>
-            ← Back
-          </button>
-          <code>{file.path}</code>
-        </div>
-        {file.note ? <p className="hint">{file.note}</p> : <pre className="file-body">{file.content}</pre>}
-      </div>
-    );
-  }
-
+  if (!path) return <Empty>Click a file in an answer or in Sources to read it here.</Empty>;
   return (
-    <div className="tree">
-      <div className="tree-head">
-        <button
-          className="btn btn-ghost tree-up"
-          disabled={!dir}
-          aria-label="Parent folder"
-          onClick={() => load(dir.split('/').slice(0, -1).join('/'))}
-        >
-          ↑
-        </button>
-        <code>{dir || '/'}</code>
+    <div className="file-view">
+      <div className="file-view-head">
+        <code>{path}</code>
       </div>
-      {error && <p className="panel-error">{error}</p>}
-      {entries !== undefined && (
-        <ul className="file-list">
-          {entries.map((e) => (
-            <li key={e.path}>
-              <button
-                className={`file-row${e.ignored ? ' file-row-ignored' : ''}`}
-                // Marked, not hidden: the agent reads these, so a panel that
-                // dropped them showed less than the thing working in the
-                // folder could see.
-                title={e.ignored ? `${e.path} — ignored by .gitignore` : e.path}
-                onClick={() => (e.directory ? load(e.path) : open(e.path))}
-              >
-                <span className="tree-icon">{e.directory ? '▸' : '·'}</span>
-                <span className="file-path">{e.name}</span>
-              </button>
-            </li>
-          ))}
-          {entries.length === 0 && (
-            <li>
-              <Empty>Nothing here.</Empty>
-            </li>
-          )}
-        </ul>
+      {error ? (
+        <p className="panel-error">{error}</p>
+      ) : !file ? (
+        <p className="hint">Loading…</p>
+      ) : file.note ? (
+        <p className="hint">{file.note}</p>
+      ) : (
+        <pre className="file-body">{file.content}</pre>
       )}
     </div>
   );
@@ -203,7 +212,7 @@ function FileTree({
  * number sits next to the line it was found in, in the file it was found in,
  * which is the claim the whole feature exists to make precisely.
  */
-function Sources({ grounding }: { grounding?: Grounding }): JSX.Element {
+function Sources({ grounding, onOpenPath }: { grounding?: Grounding; onOpenPath(path: string): void }): JSX.Element {
   if (!grounding) {
     return <Empty>No answer yet. Ask something, and what it was based on shows up here.</Empty>;
   }
@@ -222,10 +231,10 @@ function Sources({ grounding }: { grounding?: Grounding }): JSX.Element {
       <ul className="file-list">
         {sources.map((s) => (
           <li key={s}>
-            <span className="file-row">
+            <button className="file-row" onClick={() => onOpenPath(s)} title={`Read ${s}`}>
               <span className="tree-icon">·</span>
               <span className="file-path">{s}</span>
-            </span>
+            </button>
           </li>
         ))}
         {sources.length === 0 && (

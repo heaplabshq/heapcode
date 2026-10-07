@@ -68,6 +68,22 @@
     "./components/Preview": {
       "types": "./src/components/Preview.tsx",
       "default": "./src/components/Preview.tsx"
+    },
+    "./components/ChatTools": {
+      "types": "./src/components/ChatTools.tsx",
+      "default": "./src/components/ChatTools.tsx"
+    },
+    "./components/Browser": {
+      "types": "./src/components/Browser.tsx",
+      "default": "./src/components/Browser.tsx"
+    },
+    "./desktop": {
+      "types": "./src/desktop.ts",
+      "default": "./src/desktop.ts"
+    },
+    "./browserControl": {
+      "types": "./src/browserControl.ts",
+      "default": "./src/browserControl.ts"
     }
   },
   "scripts": {
@@ -77,6 +93,8 @@
   },
   "dependencies": {
     "@heapcode/web-host": "workspace:*",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "dompurify": "^3.1.6",
     "highlight.js": "^11.10.0",
     "marked": "^14.1.0",

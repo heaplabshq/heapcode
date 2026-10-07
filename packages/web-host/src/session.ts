@@ -52,6 +52,7 @@ import {
   type StoredMessage,
   type ToolCall,
   type ToolExecuteParams,
+  type ToolDefinition,
   type ToolResult,
 } from '@heapcode/core';
 import {
@@ -83,6 +84,7 @@ import {
   UI_PROTOCOL_VERSION,
   type UiAskUserParams,
   type UiAskUserResult,
+  type UiBrowserResult,
   type UiCancelParams,
   type UiConversationMeta,
   type UiEventParams,
@@ -161,6 +163,13 @@ import { connectionModels, probeConnection } from './models.js';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
 import { listFolders, type WorkspaceStore } from './workspaces.js';
+import {
+  BROWSER_TOOL_NAMES,
+  classifyBrowserAction,
+  describeBrowserAction,
+  browserTools,
+  runBrowserTool,
+} from './browserTools.js';
 import {
   ARTIFACT_KINDS,
   ArtifactStore,
@@ -313,6 +322,16 @@ export class WebSession {
 
   /** The browser currently attached, if any. Null between tabs. */
   private ui?: RpcPeer;
+  /** The attached client said (at hello) it can answer `ui/browser` — the desktop app. */
+  private clientHasBrowser = false;
+  /**
+   * The last browser_snapshot's numbered elements and the page they were on —
+   * so a permission card can say *Click button "Delete project"* rather than
+   * "click element 12". What the card names is what the model saw; the page
+   * re-checks the element when the action runs and reports what it hit.
+   */
+  private browserRefs = new Map<string, string>();
+  private browserPage?: string;
   private mode: PermissionMode;
 
   private activeRunId?: string;
@@ -647,6 +666,9 @@ export class WebSession {
       // still hand the browser a page, because Settings is on it.
       await this.open();
       const params = (raw ?? {}) as UiHelloParams;
+      // Per attach, not sticky: a desktop window reconnecting after a plain
+      // tab took over must not leave the tab being offered tools it cannot run.
+      if (this.ui === ui) this.clientHasBrowser = params.capabilities?.browser === true;
       const replay =
         params.resumeRunId && this.buffers.has(params.resumeRunId)
           ? this.buffers.get(params.resumeRunId)
@@ -815,7 +837,7 @@ export class WebSession {
     const workspaceName = basename(this.root);
     const persona = applyModeToPersona(getPersona(this.personaId), this.mode);
     const tools = filterToolsForPersona(
-      [...session.tools, DELEGATE_TASK_TOOL, CREATE_ARTIFACT_TOOL, ...session.mcpManager.getToolDefinitions()],
+      [...session.tools, DELEGATE_TASK_TOOL, CREATE_ARTIFACT_TOOL, ...this.browserToolDefinitions(profile), ...session.mcpManager.getToolDefinitions()],
       persona,
     );
     const nativeToolCalls = this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls;
@@ -1644,7 +1666,10 @@ export class WebSession {
 
   /** Called when a browser disconnects. The run deliberately keeps going. */
   detach(ui: RpcPeer): void {
-    if (this.ui === ui) this.ui = undefined;
+    if (this.ui === ui) {
+      this.ui = undefined;
+      this.clientHasBrowser = false;
+    }
   }
 
   async state(): Promise<UiState> {
@@ -1768,7 +1793,7 @@ export class WebSession {
     // CREATE_ARTIFACT_TOOL is added HERE, by this host only — the CLI and the
     // extension never see it, because neither can render one (artifacts.ts).
     const offeredTools = filterToolsForPersona(
-      [...session.tools, DELEGATE_TASK_TOOL, CREATE_ARTIFACT_TOOL, ...session.mcpManager.getToolDefinitions()],
+      [...session.tools, DELEGATE_TASK_TOOL, CREATE_ARTIFACT_TOOL, ...this.browserToolDefinitions(profile), ...session.mcpManager.getToolDefinitions()],
       persona,
     );
 
@@ -2092,6 +2117,13 @@ export class WebSession {
       // Sub-agent delegation resolves to an informative error server-side; a
       // generic denial here would hide from the model WHY it can't delegate.
       if (call.name === 'delegate_task' && !this.subAgents) return { granted: true };
+      if (BROWSER_TOOL_NAMES.has(call.name)) {
+        const target = this.browserRefs.get(String((call.args as { ref?: unknown }).ref ?? ''));
+        const cls = classifyBrowserAction(call, target);
+        const tool = { name: call.name, description: '', parameters: {}, permission: cls };
+        const granted = await this.permissions!.request(call, tool, describeBrowserAction(call, target, this.browserPage));
+        return { granted };
+      }
       const tool = { name: call.name, description: '', parameters: {}, permission };
       const description = session.executor.describe(call);
       const granted = await this.permissions!.request(call, tool, description);
@@ -2267,6 +2299,7 @@ export class WebSession {
     }
 
     if (call.name === CREATE_ARTIFACT_TOOL.name) return this.createArtifact(call);
+    if (BROWSER_TOOL_NAMES.has(call.name)) return this.browserTool(call, signal);
 
     if (session.mcpManager.isMcpTool(call.name)) {
       // MCP stays host-side, as in the other hosts.
@@ -2320,6 +2353,33 @@ export class WebSession {
     } catch (err) {
       return fail(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  /** The browser_* tools for this run: only with a desktop client, screenshots only for a vision model. */
+  private browserToolDefinitions(profile: ProviderProfileConfig): ToolDefinition[] {
+    return browserTools({ clientHasBrowser: this.clientHasBrowser, vision: resolveCapabilities(profile).vision });
+  }
+
+  /**
+   * `browser_*` — asks the desktop app's Browser view (browserTools.ts).
+   *
+   * The local-only rule is enforced here, on both sides of the round trip:
+   * the URL the model asked for before navigating, and the URL the view
+   * reports it is actually on before anything it read is returned — a local
+   * page can redirect somewhere that is not, and the person can navigate the
+   * pane anywhere between two tool calls.
+   */
+  private async browserTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
+    const ui = this.ui;
+    return runBrowserTool(call, {
+      available: Boolean(ui) && this.clientHasBrowser,
+      request: (params) => ui!.request<UiBrowserResult>(UI_METHODS.browser, { ...params, runId: this.activeRunId ?? '' }, signal),
+      onResult: (action, res) => {
+        this.browserPage = res.url;
+        if (action === 'open') this.browserRefs.clear();
+        if (action === 'snapshot') this.browserRefs = new Map(Object.entries(res.refs ?? {}));
+      },
+    });
   }
 
   private async askUser(call: ToolCall, signal?: AbortSignal): Promise<string> {

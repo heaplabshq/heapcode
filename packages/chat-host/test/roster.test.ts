@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { agentToolDefinitions } from '@heapcode/host';
 import { CHAT_TOOL_NAMES, chatToolDefinitions, permissionFor } from '../src/tools.js';
+import { browserTools } from '@heapcode/web-host/browserTools';
 
 /**
  * The guardrail this file exists for is docs/CHAT_MODE_PLAN.md §Guardrails 2:
@@ -100,6 +101,31 @@ describe('what runs without asking', () => {
     // that reached this host off-roster is refused rather than queried.
     expect(permissionFor('write_file', false, false)).toBe('deny');
     expect(permissionFor('run_command', false, true)).toBe('deny');
+  });
+});
+
+describe('the desktop Browser pane', () => {
+  it('may look at a local page without asking — reading, like the folder tools', () => {
+    for (const name of ['browser_open', 'browser_snapshot', 'browser_console', 'browser_screenshot']) {
+      expect(permissionFor(name, false, false), name).toBe('grant');
+    }
+  });
+
+  it('never acts on one, whatever was allowed before', () => {
+    for (const name of ['browser_click', 'browser_type', 'browser_select', 'browser_press']) {
+      expect(permissionFor(name, false, true), name).toBe('deny');
+    }
+  });
+
+  it('is offered only the look-only tools', () => {
+    const names = browserTools({ clientHasBrowser: true, vision: true, actions: false }).map((t) => t.name);
+    expect(names.sort()).toEqual(['browser_console', 'browser_open', 'browser_screenshot', 'browser_snapshot']);
+  });
+
+  it('is not told about clicking, so it does not offer to', () => {
+    for (const tool of browserTools({ clientHasBrowser: true, vision: true, actions: false })) {
+      expect(tool.description, tool.name).not.toMatch(/browser_(click|type|select|press)/);
+    }
   });
 });
 

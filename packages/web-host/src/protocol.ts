@@ -108,6 +108,8 @@ export const UI_METHODS = {
   // host → browser (requests — the host waits for an answer)
   permissionRequest: 'ui/permissionRequest',
   askUser: 'ui/askUser',
+  /** The agent's browser_* tools, answered by the desktop app's Browser view. */
+  browser: 'ui/browser',
   /** The one gate before a review is posted publicly to GitHub. */
   reviewConfirm: 'ui/reviewConfirm',
 
@@ -137,6 +139,12 @@ export interface UiHelloParams {
    * run state, the tab does not.
    */
   resumeRunId?: string;
+  /**
+   * What this client can do beyond rendering. `browser` is set by the desktop
+   * app, whose Browser view can answer `ui/browser` — a plain tab cannot, so
+   * the browser_* tools are only offered to a run while one is attached.
+   */
+  capabilities?: { browser?: boolean };
 }
 
 export interface UiHelloResult {
@@ -592,6 +600,47 @@ export interface UiAskUserParams {
 
 export interface UiAskUserResult {
   answer: string;
+}
+
+/** `ui/browser` — host→browser request, backing the browser_* tools. */
+export interface UiBrowserParams {
+  runId: string;
+  callId: string;
+  action: 'open' | 'snapshot' | 'screenshot' | 'console' | 'click' | 'type' | 'select' | 'press';
+  /** For `open`. Already checked against the local-only policy by the host. */
+  url?: string;
+  /** For click/type/select: an element number from the last snapshot. */
+  ref?: string;
+  /** For `type`: the text. */
+  text?: string;
+  /** For `type`: replace what is in the field rather than adding to it. */
+  clear?: boolean;
+  /** For `type`: press Enter afterwards. */
+  submit?: boolean;
+  /** For `select`: the option's visible text or value. */
+  option?: string;
+  /** For `press`: a key name, e.g. Enter, Escape, Shift+Tab. */
+  key?: string;
+}
+
+export interface UiBrowserResult {
+  /** Where the view is now — checked again by the host before anything is returned. */
+  url: string;
+  title?: string;
+  /** `open`: why the page failed to load, if it did. */
+  loadError?: string;
+  /** `snapshot`: the page as text. */
+  text?: string;
+  /** `screenshot`: a data: URL. */
+  image?: string;
+  /** `snapshot`: element number → what it is ('button "Save"'), for permission cards. */
+  refs?: Record<string, string>;
+  /** Actions: the element actually acted on, as the page describes it now. */
+  acted?: string;
+  /** Actions: console errors that appeared while the action ran. */
+  newErrors?: string[];
+  /** `console`: what the page logged, oldest first. */
+  console?: Array<{ level: 'error' | 'warning' | 'info'; message: string; source?: string }>;
 }
 
 export type UiStateChangedParams = Partial<UiState>;

@@ -335,15 +335,18 @@ body {
    button would sit on top of the reading column the moment the window is
    narrow enough for the gutter to collapse. */
 .chat-tools {
-  display: flex; justify-content: flex-end;
+  display: flex; justify-content: flex-end; align-items: center; gap: 2px;
   padding: 6px 10px 0; flex: 0 0 auto;
 }
 .chat-tool {
+  position: relative;
   display: inline-flex; align-items: center; gap: 7px;
   background: none; border: 1px solid transparent; border-radius: 7px;
   cursor: pointer; color: var(--text-dim); font: inherit; font-size: 12.5px;
   padding: 4px 9px;
 }
+/* Icon-only: squared off, since there is no label to size the padding for. */
+.chat-tool-icon { padding: 6px; gap: 5px; }
 .chat-tool:hover { background: var(--hover); color: var(--text); }
 .chat-tool-on { background: var(--hover-strong); color: var(--text); border-color: var(--border); }
 .chat-tool-badge {
@@ -351,6 +354,56 @@ body {
   color: var(--accent); background: var(--bg); border: 1px solid var(--border);
   border-radius: 999px; padding: 0 6px;
 }
+/* On an icon-only button the count rides the corner, so every icon in the
+   strip stays the same width whether or not it has something to say. */
+.chat-tool-icon .chat-tool-badge {
+  position: absolute; top: -4px; right: -5px;
+  min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; line-height: 1; font-weight: 600;
+  color: var(--accent-text); background: var(--accent); border: 2px solid var(--bg);
+}
+/* "Something is running" — a dot, since a count of one running command says
+   nothing a dot does not. */
+.chat-tool-dot {
+  position: absolute; top: 4px; right: 4px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+
+/* ---- the ⋮ menu ---- */
+.tool-menu-wrap { position: relative; }
+.tool-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  min-width: 250px; padding: 6px;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 10px 30px rgb(0 0 0 / 0.16);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.tool-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: none; border: 0; border-radius: 7px; cursor: pointer; text-align: left;
+  color: var(--text); font: inherit; font-size: 13.5px; padding: 7px 9px;
+}
+.tool-menu-item:hover, .tool-menu-item:focus-visible { background: var(--hover); outline: none; }
+.tool-menu-item-on { background: var(--hover-strong); }
+.tool-menu-icon { display: inline-flex; flex: 0 0 15px; color: var(--text-dim); }
+.tool-menu-label { flex: 1 1 auto; }
+.tool-menu-kbd { font: inherit; font-size: 12px; color: var(--text-dim); letter-spacing: 0.04em; }
+.tool-menu-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+.tool-menu-text { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; }
+.tool-menu-sub { font-size: 12px; color: var(--text-dim); }
+
+.switch {
+  flex: 0 0 auto; position: relative; width: 32px; height: 18px; border-radius: 999px;
+  background: var(--border-strong); transition: background 140ms ease;
+}
+.switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 0.2); transition: transform 140ms ease;
+}
+.switch-on { background: var(--accent); }
+.switch-on .switch-knob { transform: translateX(14px); }
+@media (prefers-reduced-motion: reduce) { .switch, .switch-knob { transition: none; } }
 
 .chat {
   flex: 1 1 auto;
@@ -1153,35 +1206,94 @@ body {
    gives its pane one. The active tab is marked by an accent rule along the
    bottom border rather than by a filled chip: five filled chips in a row read
    as five buttons, and only one of them is a state. */
-.panel-tabs {
-  display: flex; align-items: stretch; gap: 2px;
-  padding: 0 8px; border-bottom: 1px solid var(--border);
-  background: var(--bg-raised);
-  flex: 0 0 auto;
+/* The panel's head: which view this is, and a way to close it. The views
+   themselves are chosen from the icons above the chat, not from tabs here. */
+.panel-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 8px 8px 14px; border-bottom: 1px solid var(--border);
+  background: var(--bg-raised); flex: 0 0 auto;
 }
-.panel-tab {
-  position: relative;
-  display: inline-flex; align-items: center; gap: 6px;
-  background: none; border: 0; cursor: pointer;
-  color: var(--text-dim); padding: 10px 9px; border-radius: 0;
-  font: inherit; font-size: 12.5px;
-}
-.panel-tab-icon { display: inline-flex; flex: 0 0 15px; color: var(--text-dim); }
-.panel-tab:hover .panel-tab-icon, .panel-tab-active .panel-tab-icon { color: currentColor; }
-.panel-tab:hover { background: var(--hover); color: var(--text); }
-.panel-tab-active { color: var(--text); font-weight: 600; }
-.panel-tab-active::after {
-  content: ''; position: absolute; left: 6px; right: 6px; bottom: -1px;
-  height: 2px; border-radius: 2px 2px 0 0; background: var(--accent);
-}
-.panel-tab-count {
-  font-size: 10.5px; font-variant-numeric: tabular-nums;
-  color: var(--text-dim); background: var(--chip-bg);
-  border: 1px solid var(--border); border-radius: 999px; padding: 0 5px;
-}
-.panel-tab-active .panel-tab-count { color: var(--accent); border-color: currentColor; }
+.panel-head-icon { display: inline-flex; flex: 0 0 15px; color: var(--text-dim); }
+.panel-title { font-size: 13px; font-weight: 600; margin: 0; }
 .panel-close { margin-left: auto; align-self: center; }
 .panel-body { flex: 1 1 auto; overflow-y: auto; padding: 14px; min-height: 0; }
+/* The shell sizes itself to the pane, so the pane must not scroll or pad it. */
+.panel-body:has(> .term-view) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+/* The hidden Browser slot is positioned against the pane, not the page. */
+.panel-body { position: relative; }
+/* The Browser fills the pane the same way the shell does. */
+.panel-body:has(> .browser-slot:not(.browser-slot-hidden)) { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+/* ---- Browser view (desktop) ---- */
+.browser-slot { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+/* Kept alive while another view shows. Not display:none — a webview with no
+   box detaches its guest and loses the page. */
+.browser-slot-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  opacity: 0; pointer-events: none;
+}
+.browser { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.browser-bar {
+  display: flex; align-items: center; gap: 2px;
+  padding: 6px 8px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+}
+.browser-btn { display: inline-flex; align-items: center; justify-content: center; padding: 5px; }
+.browser-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+.browser-address {
+  flex: 1 1 auto; min-width: 0; margin: 0 4px;
+  font: inherit; font-size: 12.5px; color: var(--text);
+  background: var(--hover); border: 1px solid transparent; border-radius: 7px; padding: 5px 10px;
+}
+.browser-address:focus { outline: none; background: var(--bg); border-color: var(--accent); }
+.browser-found { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.browser-chip {
+  font: inherit; font-size: 12px; font-family: var(--mono); cursor: pointer;
+  color: var(--text); background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+}
+.browser-chip:hover { border-color: var(--accent); color: var(--accent); }
+.browser-page { position: relative; flex: 1 1 auto; min-height: 0; display: flex; background: #fff; }
+.browser-webview { flex: 1 1 auto; border: 0; }
+.browser-start {
+  flex: 1 1 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 18px; background: var(--bg); color: var(--text-dim); font-size: 13px;
+}
+.browser-start p { margin: 0; }
+.browser-start-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.browser-failure {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  padding: 18px; background: var(--bg); font-size: 13px; color: var(--text-dim);
+}
+.browser-failure strong { color: var(--text); }
+
+/* ---- Terminal view (desktop): Shell | Agent ---- */
+.term-view { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.seg {
+  display: inline-flex; gap: 2px; align-self: flex-start;
+  margin: 10px 12px; padding: 2px; border-radius: 8px; background: var(--hover);
+}
+.seg button {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 0; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: 12.5px; color: var(--text-dim); padding: 4px 10px;
+}
+.seg button:hover { color: var(--text); }
+.seg .seg-on { background: var(--bg-raised); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
+.seg-count { font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.seg-dot { position: static; }
+.term-pane { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.term-pane[hidden] { display: none; }
+.term-pane-scroll { overflow-y: auto; padding: 0 14px 14px; display: block; }
+.shell { position: relative; flex: 1 1 auto; min-height: 0; display: flex; background: var(--code-bg); border-top: 1px solid var(--border); }
+.shell-host { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 8px 0 0 10px; }
+.shell-host .xterm { height: 100%; }
+.shell-exited {
+  position: absolute; left: 12px; right: 12px; bottom: 12px;
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12.5px; color: var(--text-dim);
+}
 .panel-error { color: var(--danger); font-size: 12.5px; margin: 6px 0; }
 
 /* Placeholder rows. The shimmer is a slow one — a fast pulse next to a

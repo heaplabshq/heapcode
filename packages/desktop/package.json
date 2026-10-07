@@ -1,0 +1,67 @@
+{
+  "name": "@heapcode/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Heap Code desktop — the `heapcode web` UI in a native Electron window.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "Heap Labs",
+  "main": "src/main.cjs",
+  "scripts": {
+    "postinstall": "node scripts/fix-pty.cjs",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "dev.heaplabs.heapcode.desktop",
+    "productName": "Heap Code",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../cli/dist",
+        "to": "cli",
+        "filter": [
+          "**/*",
+          "!**/*.map"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development"
+    },
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ]
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  }
+}

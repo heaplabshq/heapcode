@@ -11,6 +11,10 @@
     "./protocol": {
       "types": "./src/protocol.ts",
       "default": "./src/protocol.ts"
+    },
+    "./browserTools": {
+      "types": "./src/browserTools.ts",
+      "default": "./src/browserTools.ts"
     }
   },
   "scripts": {

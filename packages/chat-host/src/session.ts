@@ -139,6 +139,8 @@ import type {
 import { chatSystemPrompt } from './prompt.js';
 import { withNow } from './now.js';
 import { CHAT_TOOL_NAMES, chatToolsFor, folderToolDefinitions, permissionFor } from './tools.js';
+import { BROWSER_READ_TOOL_NAMES, browserTools, runBrowserTool } from '@heapcode/web-host/browserTools';
+import type { UiBrowserResult } from '@heapcode/web-host/protocol';
 
 /**
  * The three outcomes of trying to read a path as a document.
@@ -271,6 +273,8 @@ export class ChatSession implements HostSession {
   /** Why this session has no model, while it has none. Travels in `state.setup`. */
   private setupNeeded?: string;
   private ui?: RpcPeer;
+  /** The attached client can answer `chat/browser` — the desktop app. */
+  private clientHasBrowser = false;
 
   private activeRunId?: string;
   private abort?: AbortController;
@@ -562,6 +566,7 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.hello, async (raw): Promise<ChatHelloResult> => {
       const params = raw as ChatHelloParams;
+      if (this.ui === ui) this.clientHasBrowser = params.capabilities?.browser === true;
       // Connect on hello, not at construction: a configuration error should
       // reach the page as a message rather than crash the launch. `open`, not
       // `start` — with no model the page still has to render, because
@@ -885,7 +890,10 @@ export class ChatSession implements HostSession {
   }
 
   detach(ui: RpcPeer): void {
-    if (this.ui === ui) this.ui = undefined;
+    if (this.ui === ui) {
+      this.ui = undefined;
+      this.clientHasBrowser = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1085,7 +1093,12 @@ export class ChatSession implements HostSession {
           // The roster this session actually has: without a folder the four
           // file tools are not offered, so the model is not reaching for
           // something that cannot work and explaining the failure.
-          tools: [...chatToolsFor(Boolean(this.root)), ...(this.mcp?.getToolDefinitions() ?? [])],
+          tools: [
+            ...chatToolsFor(Boolean(this.root)),
+            // Look, never touch: the desktop Browser pane's read tools only.
+            ...browserTools({ clientHasBrowser: this.clientHasBrowser, vision: resolveCapabilities(profile).vision, actions: false }),
+            ...(this.mcp?.getToolDefinitions() ?? []),
+          ],
           // Composed per run rather than cached: a fact remembered during this
           // conversation should be in scope for the next question in it.
           systemPrompt: chatSystemPrompt(Boolean(this.root)) + memorySection(await this.memory.list().catch(() => [])),
@@ -1294,6 +1307,17 @@ export class ChatSession implements HostSession {
    * bug that sends the wrong roster — gets an error string, not execution.
    */
   private async executeTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
+    // Before the roster check: these are not on the static roster because
+    // they exist only while the desktop app is attached. Read tools only — a
+    // browser_click that reached here falls through to the refusal below.
+    if (BROWSER_READ_TOOL_NAMES.has(call.name)) {
+      const ui = this.ui;
+      return runBrowserTool(call, {
+        available: Boolean(ui) && this.clientHasBrowser,
+        request: (params) =>
+          ui!.request<UiBrowserResult>(CHAT_METHODS.browser, { ...params, runId: this.activeRunId ?? '' }, signal),
+      });
+    }
     if (!CHAT_TOOL_NAMES.has(call.name) && !this.mcp?.isMcpTool(call.name)) {
       return {
         id: call.id,

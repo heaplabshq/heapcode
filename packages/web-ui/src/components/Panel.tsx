@@ -14,8 +14,11 @@ import { DiffView } from './DiffView.js';
 import { Empty } from './Empty.js';
 import { Preview } from './Preview.js';
 import { IndexView } from './IndexView.js';
+import { Shell } from './Shell.js';
+import { Browser } from './Browser.js';
+import { desktopBridge } from '../desktop.js';
 
-export type PanelTab = 'changes' | 'files' | 'index' | 'terminal' | 'preview';
+export type PanelTab = 'changes' | 'files' | 'index' | 'terminal' | 'preview' | 'browser';
 
 export interface TerminalEntry {
   id: string;
@@ -27,7 +30,6 @@ export interface TerminalEntry {
 
 export interface PanelProps {
   tab: PanelTab;
-  onTab(tab: PanelTab): void;
   onClose(): void;
   /** Dragged width in px; undefined falls back to the stylesheet default. */
   width?: number;
@@ -44,6 +46,10 @@ export interface PanelProps {
   onRevertAll(): void;
   onKeepAll(): void;
   onRewind(hash: string): void;
+  /** The workspace folder — where the desktop app's shell starts. */
+  root?: string;
+  /** Dev-server addresses seen in terminal output, for the Browser view. */
+  localUrls?: string[];
   /** Set by the chat pane when the user clicks a path in a tool chip. */
   openPath?: string;
 
@@ -63,9 +69,9 @@ export interface PanelProps {
 }
 
 /*
- * Tab icons, inline and stroked from `currentColor` — the same 24-unit grid
- * and weight the rail uses, so a tab and a nav row are recognisably the same
- * kind of control.
+ * View icons, inline and stroked from `currentColor` — the same 24-unit grid
+ * and weight the rail uses, so a toolbar icon and a nav row are recognisably
+ * the same kind of control.
  */
 const S = {
   width: 15,
@@ -78,36 +84,34 @@ const S = {
   strokeLinejoin: 'round' as const,
 };
 
-/** A file with a plus and a minus in it: what changed. */
-const ICON_CHANGES = (
+/** A box with a plus over a minus: what changed. */
+export const ICON_CHANGES = (
   <svg {...S}>
-    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-    <path d="M14 3v5h5" />
-    <path d="M9 13h4M11 11v4" />
-    <path d="M9 18h4" />
+    <rect x="4" y="3" width="16" height="18" rx="2" />
+    <path d="M9 9h6M12 6v6M9 16h6" />
   </svg>
 );
-const ICON_FILES = (
+export const ICON_FILES = (
   <svg {...S}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
   </svg>
 );
 /** Stacked layers: the index is the repository, flattened. */
-const ICON_INDEX = (
+export const ICON_INDEX = (
   <svg {...S}>
     <path d="m12 3 9 4.5-9 4.5-9-4.5z" />
     <path d="m3 12.5 9 4.5 9-4.5" />
     <path d="m3 17 9 4.5 9-4.5" />
   </svg>
 );
-const ICON_TERMINAL = (
+/** A bare prompt, the way a terminal toggle looks everywhere else. */
+export const ICON_TERMINAL = (
   <svg {...S}>
-    <rect x="3" y="4" width="18" height="16" rx="2" />
-    <path d="m7 9 3 3-3 3M13 15h4" />
+    <path d="m5 7 5 5-5 5M12 17h7" />
   </svg>
 );
 /** A window with something rendered in it. */
-const ICON_PREVIEW = (
+export const ICON_PREVIEW = (
   <svg {...S}>
     <rect x="3" y="4" width="18" height="16" rx="2" />
     <path d="M3 9h18" />
@@ -115,45 +119,58 @@ const ICON_PREVIEW = (
   </svg>
 );
 
-/** The tab strip, in the order the work tends to flow. */
-const TABS: { id: PanelTab; label: string; icon: JSX.Element }[] = [
-  { id: 'changes', label: 'Changes', icon: ICON_CHANGES },
-  { id: 'files', label: 'Files', icon: ICON_FILES },
-  { id: 'index', label: 'Index', icon: ICON_INDEX },
-  { id: 'terminal', label: 'Terminal', icon: ICON_TERMINAL },
-  { id: 'preview', label: 'Preview', icon: ICON_PREVIEW },
-];
+/** A globe: somewhere on the web. */
+export const ICON_BROWSER = (
+  <svg {...S}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
+  </svg>
+);
+
+/**
+ * Every view, with what the toolbar shows for it. The first three are icons
+ * in the strip — the things a run produces and you check on; Files and Index
+ * sit behind ⋮, since a file is usually reached by clicking its path in the
+ * chat rather than by browsing.
+ */
+const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+const MOD = MAC ? '⌘' : 'Ctrl+';
+const SHIFT_MOD = MAC ? '⇧⌘' : 'Ctrl+Shift+';
+
+export const PANEL_VIEWS: Record<PanelTab, { label: string; icon: JSX.Element; shortcut?: string }> = {
+  terminal: { label: 'Terminal', icon: ICON_TERMINAL, shortcut: `${MOD}J` },
+  changes: { label: 'Changes', icon: ICON_CHANGES },
+  preview: { label: 'Preview', icon: ICON_PREVIEW },
+  browser: { label: 'Browser', icon: ICON_BROWSER },
+  files: { label: 'Files', icon: ICON_FILES, shortcut: `${SHIFT_MOD}F` },
+  index: { label: 'Index', icon: ICON_INDEX },
+};
+/** Browser only where there is one to show — the desktop app. */
+export const STRIP_VIEWS: PanelTab[] = desktopBridge()?.browser
+  ? ['terminal', 'changes', 'preview', 'browser']
+  : ['terminal', 'changes', 'preview'];
+export const MENU_VIEWS: PanelTab[] = ['files', 'index'];
 
 export function Panel(props: PanelProps): JSX.Element {
+  const view = PANEL_VIEWS[props.tab];
+  const [browserOpened, setBrowserOpened] = useState(props.tab === 'browser');
+  useEffect(() => {
+    if (props.tab === 'browser') setBrowserOpened(true);
+  }, [props.tab]);
   return (
     <section
       className="panel"
-      aria-label="Workspace"
+      aria-label={view.label}
       style={props.width ? { width: props.width } : undefined}
     >
-      <div className="panel-tabs" role="tablist">
-        {TABS.map(({ id, label, icon }) => {
-          // The count is a badge rather than "(4)" in the label, so the tab
-          // name stays the same width whether or not there is anything in it.
-          const count = id === 'changes' ? props.changes.length : id === 'preview' ? props.artifacts.length : 0;
-          return (
-            <button
-              key={id}
-              role="tab"
-              aria-selected={props.tab === id}
-              className={props.tab === id ? 'panel-tab panel-tab-active' : 'panel-tab'}
-              onClick={() => props.onTab(id)}
-            >
-              <span className="panel-tab-icon">{icon}</span>
-              {label}
-              {count > 0 && <span className="panel-tab-count">{count}</span>}
-            </button>
-          );
-        })}
+      <header className="panel-head">
+        <span className="panel-head-icon">{view.icon}</span>
+        <h2 className="panel-title">{view.label}</h2>
         <button className="icon-btn panel-close" onClick={props.onClose} aria-label="Close panel">
           ✕
         </button>
-      </div>
+      </header>
 
       <div className="panel-body">
         {props.tab === 'changes' && <Changes {...props} />}
@@ -168,7 +185,14 @@ export function Panel(props: PanelProps): JSX.Element {
             onOpenPath={props.onOpenPath}
           />
         )}
-        {props.tab === 'terminal' && <Terminal entries={props.terminal} />}
+        {props.tab === 'terminal' && <TerminalView entries={props.terminal} root={props.root} />}
+        {/* Kept mounted once opened, so glancing at Changes does not reload
+            the page you were on. Hidden rather than removed. */}
+        {(props.tab === 'browser' || browserOpened) && (
+          <div className={props.tab === 'browser' ? 'browser-slot' : 'browser-slot browser-slot-hidden'}>
+            <Browser localUrls={props.localUrls ?? []} />
+          </div>
+        )}
         {props.tab === 'preview' && (
           <Preview
             artifacts={props.artifacts}
@@ -493,7 +517,45 @@ function Skeleton({ lines }: { lines: number }): JSX.Element {
  * Read-only in v1 — the agent runs commands and the user watches. An
  * interactive terminal is a separate decision (§12 Q4), not a small addition.
  */
-function Terminal({ entries }: { entries: TerminalEntry[] }): JSX.Element {
+/**
+ * The Terminal view. In the desktop app it is two things — a shell you type
+ * into, and the log of what the agent ran — because they answer different
+ * questions ("let me run something" and "what did it just do?"), and folding
+ * the agent's commands into your shell would make each harder to read. In a
+ * browser tab there is no shell to offer, so it is only the log.
+ */
+function TerminalView({ entries, root }: { entries: TerminalEntry[]; root?: string }): JSX.Element {
+  const shell = desktopBridge()?.terminal;
+  const [mode, setMode] = useState<'shell' | 'agent'>('shell');
+  if (!shell) return <AgentLog entries={entries} />;
+  const running = entries.some((e) => !e.done);
+  return (
+    <div className="term-view">
+      <div className="seg" role="tablist" aria-label="Terminal">
+        <button role="tab" aria-selected={mode === 'shell'} className={mode === 'shell' ? 'seg-on' : ''} onClick={() => setMode('shell')}>
+          Shell
+        </button>
+        <button role="tab" aria-selected={mode === 'agent'} className={mode === 'agent' ? 'seg-on' : ''} onClick={() => setMode('agent')}>
+          Agent
+          {entries.length > 0 && <span className="seg-count">{entries.length}</span>}
+          {running && <span className="chat-tool-dot seg-dot" aria-label="running" />}
+        </button>
+      </div>
+      {/* Kept mounted while on Agent, so flipping back does not detach and
+          replay the shell — only hidden. */}
+      <div className="term-pane" hidden={mode !== 'shell'}>
+        <Shell cwd={root} bridge={shell} />
+      </div>
+      {mode === 'agent' && (
+        <div className="term-pane term-pane-scroll">
+          <AgentLog entries={entries} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentLog({ entries }: { entries: TerminalEntry[] }): JSX.Element {
   if (entries.length === 0) {
     return <Empty>No commands yet. Anything the agent runs appears here, with its output.</Empty>;
   }

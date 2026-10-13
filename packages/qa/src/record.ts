@@ -55,6 +55,11 @@ export class Recording {
     return this.recorded.length;
   }
 
+  /** The steps so far, and the values typed so far — for spotting a known reusable step mid-recording. */
+  peek(): { steps: Step[]; inputs: Record<string, string> } {
+    return { steps: this.recorded.map((r) => r.step), inputs: { ...this.inputs } };
+  }
+
   /** Where recording began. Always the first step. */
   start(url: string, at = Date.now()): Step {
     this.currentUrl = url;

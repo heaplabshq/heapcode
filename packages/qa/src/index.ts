@@ -50,4 +50,5 @@ export {
 export { initWorkspace } from './init.js';
 export { serializeFlow } from './serialize.js';
 export { Recording, flowId, camelName, constName, stepTarget, type RecordingResult, type RecordedStep, type SavedFingerprints } from './record.js';
-export { flowPath, fingerprintsPath, writeFlow, readFingerprints, saveSecrets } from './store.js';
+export { flowPath, stepPath, fingerprintsPath, writeFlow, readFingerprints, saveSecrets, type FlowKind } from './store.js';
+export { extractSteps, findUses, applyUses, inputsUsed, sameElement, parseRange, type Extracted, type UseMatch } from './teach.js';

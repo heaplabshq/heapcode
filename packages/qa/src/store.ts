@@ -1,10 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Flow } from './flow.js';
 import type { SavedFingerprints } from './record.js';
 import { serializeFlow } from './serialize.js';
 import { parseEnvFile } from './template.js';
-import { DEFAULT_SECRETS_FILE, FLOWS_DIR } from './workspace.js';
+import { DEFAULT_SECRETS_FILE, FLOWS_DIR, STEPS_DIR } from './workspace.js';
 
 /** Writing what the recorder (and later the AI writer and healer) produce into the opened folder. */
 
@@ -17,15 +17,30 @@ export function fingerprintsPath(dir: string, id: string): string {
   return join(dir, FLOWS_DIR, `${id}.fingerprints.json`);
 }
 
-export function writeFlow(dir: string, id: string, flow: Flow, fingerprints?: SavedFingerprints): string {
-  const path = flowPath(dir, id);
+/** `flows` for a test, `steps` for a reusable step — the same files either way. */
+export type FlowKind = 'flow' | 'step';
+
+function folder(kind: FlowKind): string {
+  return kind === 'flow' ? FLOWS_DIR : STEPS_DIR;
+}
+
+export function stepPath(dir: string, id: string): string {
+  return join(dir, STEPS_DIR, `${id}.yaml`);
+}
+
+export function writeFlow(dir: string, id: string, flow: Flow, fingerprints?: SavedFingerprints, kind: FlowKind = 'flow'): string {
+  mkdirSync(join(dir, folder(kind)), { recursive: true });
+  const path = join(dir, folder(kind), `${id}.yaml`);
   writeFileSync(path, serializeFlow(flow));
-  if (fingerprints && fingerprints.steps.length) writeFileSync(fingerprintsPath(dir, id), `${JSON.stringify(fingerprints, null, 2)}\n`);
+  const fpPath = join(dir, folder(kind), `${id}.fingerprints.json`);
+  if (fingerprints && fingerprints.steps.length) writeFileSync(fpPath, `${JSON.stringify(fingerprints, null, 2)}\n`);
+  // A flow that lost all its element steps to a `use:` has nothing left to heal.
+  else if (fingerprints && existsSync(fpPath)) rmSync(fpPath);
   return path;
 }
 
-export function readFingerprints(dir: string, id: string): SavedFingerprints | undefined {
-  const path = fingerprintsPath(dir, id);
+export function readFingerprints(dir: string, id: string, kind: FlowKind = 'flow'): SavedFingerprints | undefined {
+  const path = join(dir, folder(kind), `${id}.fingerprints.json`);
   if (!existsSync(path)) return undefined;
   try {
     const data = JSON.parse(readFileSync(path, 'utf8')) as SavedFingerprints;

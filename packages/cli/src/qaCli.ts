@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { relative, resolve } from 'node:path';
@@ -6,6 +6,13 @@ import {
   FLOWS_DIR,
   Recording,
   Templates,
+  applyUses,
+  extractSteps,
+  findUses,
+  parseRange,
+  readFingerprints,
+  type Flow,
+  type UseMatch,
   createRunDir,
   flowId,
   isAllowedTarget,
@@ -45,6 +52,10 @@ export async function runQa(argv: string[]): Promise<number> {
       return qaRun(rest);
     case 'record':
       return qaRecord(rest);
+    case 'extract':
+      return qaExtract(rest);
+    case 'reuse':
+      return qaReuse(rest);
     case 'check':
       return qaCheck(rest);
     case 'init':
@@ -71,6 +82,10 @@ Usage:
   heapcode qa init [folder] [--base-url URL]   Start a test folder: heapqa.yaml, flows/, steps/, .gitignore
   heapcode qa check [--dir D]                  Check every flow and step file for mistakes, without a browser
   heapcode qa record [address] [flags]         Click through your app in a browser; Heap QA writes the flow, then plays it back once
+  heapcode qa extract <flow> <from-to> --as NAME [--everywhere]
+                                               Make steps from-to of a flow a reusable step (steps/NAME.yaml) used in its place;
+                                               --everywhere uses it in every other flow that repeats those steps too
+  heapcode qa reuse <step> [flow…]             Use an existing reusable step in every flow (or the ones named) that repeats its steps
   heapcode qa run [flow…] [flags]              Play flows back (all of them, or the ones named) and save the results
   heapcode qa install                          Download Heap QA's own Chromium — only needed with no Chrome or Edge installed
 
@@ -102,10 +117,12 @@ interface Flags {
   trace: boolean;
   browser?: 'chrome' | 'msedge' | 'chromium';
   name?: string;
+  as?: string;
+  everywhere: boolean;
 }
 
 function parseFlags(args: string[]): Flags | string {
-  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true };
+  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     const value = (): string | undefined => args[++i];
@@ -134,6 +151,15 @@ function parseFlags(args: string[]): Flags | string {
         flags.name = v;
         break;
       }
+      case '--as': {
+        const v = value();
+        if (!v) return '--as takes a name for the reusable step, e.g. --as "log in"';
+        flags.as = v;
+        break;
+      }
+      case '--everywhere':
+        flags.everywhere = true;
+        break;
       case '--headed':
         flags.headed = true;
         break;
@@ -295,8 +321,18 @@ async function qaRecord(args: string[]): Promise<number> {
   }
 
   const recording = new Recording(baseUrl);
+  const hinted = new Set<string>();
   const say = (step: ReturnType<Recording['add']>): void => {
-    if (step) console.log(`  + ${recording.stepCount}  ${stepLabel(step)}`);
+    if (!step) return;
+    console.log(`  + ${recording.stepCount}  ${stepLabel(step)}`);
+    // A known reusable step, just done by hand: say so now, offer it at the end.
+    const { steps, inputs } = recording.peek();
+    for (const m of findUses(steps, ws.steps, inputs)) {
+      const key = `${m.use}@${m.from}`;
+      if (hinted.has(key)) continue;
+      hinted.add(key);
+      console.log(`    ↳ steps ${m.from}–${m.to} are your reusable step \`${m.use}\` — you'll be offered it when you finish`);
+    }
   };
   let finish: () => void = () => {};
   const finished = new Promise<void>((resolve) => (finish = resolve));
@@ -341,7 +377,20 @@ async function qaRecord(args: string[]): Promise<number> {
   try {
     const suggested = title.trim().toLowerCase() || 'recording';
     const name = flags.name ?? ((await rl?.question(`\nName this flow [${suggested}]: `))?.trim() || suggested);
-    const { flow, fingerprints, secrets } = recording.finish(name);
+    const finished = recording.finish(name);
+    const { secrets } = finished;
+    let { flow, fingerprints } = finished;
+    const known = findUses(flow.steps, ws.steps, flow.inputs);
+    const accepted: UseMatch[] = [];
+    for (const m of known) {
+      const answer = rl ? (await rl.question(`Steps ${m.from}–${m.to} are your reusable step \`${m.use}\`. Use it instead? [Y/n]: `)).trim().toLowerCase() : 'n';
+      if (answer === '' || answer === 'y' || answer === 'yes') {
+        accepted.push(m);
+        for (const [ours, theirs] of m.secrets) console.log(`  Note: \`${m.use}\` types secret ${theirs} where you typed ${ours}.`);
+      }
+    }
+    if (accepted.length) ({ flow, fingerprints } = applyUses(flow, fingerprints, accepted));
+    else if (known.length && !rl) console.log(`Steps ${known.map((m) => `${m.from}–${m.to} (${m.use})`).join(', ')} repeat reusable steps; edit the flow to \`use:\` them.`);
     mkdirSync(join(ws.dir, FLOWS_DIR), { recursive: true });
     const id = flowId(name, ws.flows.keys());
     const file = writeFlow(ws.dir, id, flow, fingerprints);
@@ -388,6 +437,96 @@ async function qaRecord(args: string[]): Promise<number> {
   } finally {
     rl?.close();
   }
+}
+
+function qaExtract(args: string[]): number {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const [flowName, rangeText] = flags.positional;
+  if (!flowName || !rangeText || !flags.as) return usage('Usage: heapcode qa extract <flow> <from-to> --as NAME');
+  const range = parseRange(rangeText);
+  if (!range) return usage(`"${rangeText}" is not a step range — e.g. 2-4.`);
+  const ws = loadWorkspace(flags.dir);
+  if (ws.errors.length) return fail(`Fix these first:\n${formatErrors(ws.errors)}`);
+  const { flows, unknown } = selectFlows(ws, [flowName]);
+  if (unknown.length || !flows[0]) return fail(`No flow named ${flowName}. Flows: ${[...ws.flows.keys()].join(', ') || 'none'}.`);
+  const [flowKey, flow] = flows[0];
+
+  const id = flowId(flags.as, []);
+  if (ws.steps.has(id)) return fail(`steps/${id}.yaml already exists. Pick another name, or \`use: ${id}\` in the flow yourself.`);
+
+  let extracted;
+  try {
+    extracted = extractSteps(flow, readFingerprints(ws.dir, flowKey), range[0], range[1], id, flags.as);
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+  // Rewriting a file drops its comments; say so rather than lose them quietly.
+  const hadComments = (key: string): boolean => /^\s*#/m.test(readFileSync(join(ws.dir, FLOWS_DIR, `${key}.yaml`), 'utf8'));
+  const flowComments = hadComments(flowKey);
+  const stepFile = writeFlow(ws.dir, id, extracted.step, extracted.stepFingerprints, 'step');
+  writeFlow(ws.dir, flowKey, extracted.flow, extracted.flowFingerprints);
+  console.log(`Created ${shown(stepFile)} (${extracted.step.steps.length} steps${Object.keys(extracted.step.inputs).length ? `, inputs: ${Object.keys(extracted.step.inputs).join(', ')}` : ''}).`);
+  console.log(`${flowKey}: steps ${range[0]}–${range[1]} are now \`use: ${id}\`.${flowComments ? ' (Comments in that file were not kept.)' : ''}`);
+
+  // Every other flow that repeats those steps.
+  const others = reuseIn(ws, id, extracted.step, [...ws.flows.keys()].filter((k) => k !== flowKey), flags.everywhere);
+  if (others && !flags.everywhere) console.log(`To use it there too: heapcode qa reuse ${id}${flags.dir === process.cwd() ? '' : ` --dir ${shown(flags.dir)}`}`);
+
+  const after = loadWorkspace(flags.dir);
+  if (after.errors.length) {
+    console.error(`The folder now has problems:\n${formatErrors(after.errors)}`);
+    return 2;
+  }
+  return 0;
+}
+
+function qaReuse(args: string[]): number {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const [stepName, ...flowNames] = flags.positional;
+  if (!stepName) return usage('Usage: heapcode qa reuse <step> [flow…]');
+  const ws = loadWorkspace(flags.dir);
+  if (ws.errors.length) return fail(`Fix these first:\n${formatErrors(ws.errors)}`);
+  const step = ws.steps.get(stepName);
+  if (!step) return fail(`No reusable step ${stepName}. Steps: ${[...ws.steps.keys()].join(', ') || 'none'}.`);
+  const { flows, unknown } = selectFlows(ws, flowNames);
+  if (unknown.length) return fail(`No flow named ${unknown.join(', ')}.`);
+  const changed = reuseIn(ws, stepName, step, flows.map(([k]) => k), true);
+  if (!changed) console.log(`No flow repeats the steps of ${stepName}.`);
+  const after = loadWorkspace(flags.dir);
+  if (after.errors.length) {
+    console.error(`The folder now has problems:\n${formatErrors(after.errors)}`);
+    return 2;
+  }
+  return 0;
+}
+
+/**
+ * Find `step`'s steps repeated in the named flows; rewrite them to `use:` it
+ * when `apply`, else just say where. Returns how many flows repeat it.
+ */
+function reuseIn(ws: ReturnType<typeof loadWorkspace>, id: string, step: Flow, keys: string[], apply: boolean): number {
+  const library = new Map([[id, step]]);
+  let count = 0;
+  for (const key of keys) {
+    const flow = ws.flows.get(key);
+    if (!flow) continue;
+    const matches = findUses(flow.steps, library, flow.inputs);
+    if (!matches.length) continue;
+    count += 1;
+    const where = matches.map((m) => `${m.from}–${m.to}`).join(', ');
+    if (!apply) {
+      console.log(`  ${key} repeats it (steps ${where}).`);
+      continue;
+    }
+    const comments = /^\s*#/m.test(readFileSync(join(ws.dir, FLOWS_DIR, `${key}.yaml`), 'utf8'));
+    const applied = applyUses(flow, readFingerprints(ws.dir, key), matches);
+    writeFlow(ws.dir, key, applied.flow, applied.fingerprints);
+    console.log(`${key}: steps ${where} are now \`use: ${id}\`.${comments ? ' (Comments in that file were not kept.)' : ''}`);
+    for (const m of matches) for (const [ours, theirs] of m.secrets) console.log(`  Note: it now types secret ${theirs} where it typed ${ours}.`);
+  }
+  return count;
 }
 
 function stepLine(step: StepResult): string {

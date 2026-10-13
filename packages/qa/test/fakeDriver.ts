@@ -1,4 +1,4 @@
-import type { DomTree } from '@heapcode/page';
+import type { DomTree } from '@heapcode/page/tree';
 import type { ConsoleLine, Driver, FailedRequest, PageInfo, Probe, Target } from '../src/driver.js';
 
 /** An element as the fake page knows it: just the things probes match on. */
@@ -80,8 +80,12 @@ export class FakeDriver implements Driver {
   async screenshot(): Promise<Uint8Array> {
     return new Uint8Array();
   }
+  /** Console lines the next drain returns. */
+  console: ConsoleLine[] = [];
   drainConsole(): ConsoleLine[] {
-    return [];
+    const out = this.console;
+    this.console = [];
+    return out;
   }
   drainFailedRequests(): FailedRequest[] {
     return [];

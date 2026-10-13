@@ -87,7 +87,11 @@ const ctx = await esbuild.context({
   // bundle carries and by neither of Heap Code's surfaces. Loaded with a
   // guarded dynamic import (chat-host/src/extractors.ts), so absent they turn
   // into "not reading PDFs" in the UI rather than a crash.
-  external: ['fsevents', 'bufferutil', 'utf-8-validate', 'pdf-parse', 'mammoth', 'exifr'],
+  //
+  // playwright-core: Heap QA's browser engine. It finds its own files and
+  // browser downloads by path at runtime, which bundling breaks, and only
+  // `heapcode qa` needs it — loaded by dynamic import in qa-playwright.
+  external: ['fsevents', 'bufferutil', 'utf-8-validate', 'pdf-parse', 'mammoth', 'exifr', 'playwright-core'],
   // react-devtools-core: Ink's optional DEV-mode devtools hook statically
   // imports it; esbuild's ESM output hoists that import to top-level
   // regardless of the runtime DEV-env-var guard around it, so `external`

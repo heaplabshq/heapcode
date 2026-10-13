@@ -1,4 +1,4 @@
-import { testIdOf, type DomNode, type DomTree, type Rect } from './inspect.js';
+import { testIdOf, type DomNode, type DomTree, type Rect } from './tree.js';
 
 /**
  * Everything worth remembering about one element, so it can be found again

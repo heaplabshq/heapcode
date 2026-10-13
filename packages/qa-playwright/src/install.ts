@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
+// A namespace import, not `{ createRequire }`: the CLI's bundle banner already
+// declares a top-level `createRequire`, and a second one is a syntax error.
+import * as nodeModule from 'node:module';
 import { dirname, join } from 'node:path';
 
 /**
@@ -10,7 +12,7 @@ import { dirname, join } from 'node:path';
  * because the driver uses the browser they already have.
  */
 export function installChromium(onOutput: (line: string) => void = () => {}): Promise<void> {
-  const require = createRequire(import.meta.url);
+  const require = nodeModule.createRequire(import.meta.url);
   const cli = join(dirname(require.resolve('playwright-core/package.json')), 'cli.js');
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, 'install', 'chromium'], { stdio: ['ignore', 'pipe', 'pipe'] });

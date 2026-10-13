@@ -1,4 +1,4 @@
-import type { DomTree } from '@heapcode/page';
+import type { DomTree } from '@heapcode/page/tree';
 import { LADDER, type Locator, type Strategy } from './flow.js';
 
 /**
@@ -31,6 +31,13 @@ export interface Driver {
   drainConsole(): ConsoleLine[];
   drainFailedRequests(): FailedRequest[];
   close(): Promise<void>;
+  /**
+   * Optional: record a trace of the flow (Playwright's trace viewer). `stop`
+   * with a path keeps it there; without one, throws it away — a passing run's
+   * trace is not worth the disk.
+   */
+  startTrace?(): Promise<void>;
+  stopTrace?(path: string | undefined): Promise<void>;
 }
 
 export interface PageInfo {

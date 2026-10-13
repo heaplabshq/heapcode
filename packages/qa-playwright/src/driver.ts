@@ -1,4 +1,4 @@
-import { TEST_ID_ATTRS, type DomTree } from '@heapcode/page';
+import { TEST_ID_ATTRS, type DomTree } from '@heapcode/page/tree';
 import {
   DEFAULT_TIMEOUT,
   isAllowedTarget,
@@ -10,7 +10,7 @@ import {
   type Probe,
   type Target,
 } from '@heapcode/qa';
-import { chromium, type Browser, type BrowserContext, type ElementHandle, type Locator, type Page } from 'playwright-core';
+import type { Browser, BrowserContext, ElementHandle, Locator, Page } from 'playwright-core';
 import { INSPECT_BUNDLE } from './inspectBundle.generated.js';
 
 export interface LaunchOptions {
@@ -58,6 +58,10 @@ export class PlaywrightDriver implements Driver {
     private readonly targets: readonly string[],
   ) {
     page.on('console', (msg) => {
+      // The browser asks every site for /favicon.ico by itself; a 404 there is
+      // not the app's doing, and counting it fails nearly every app's
+      // "no console errors" check.
+      if (isFavicon(msg.location().url)) return;
       const type = msg.type();
       const level = type === 'error' ? 'error' : type === 'warning' ? 'warning' : 'info';
       const loc = msg.location();
@@ -66,10 +70,11 @@ export class PlaywrightDriver implements Driver {
     // An uncaught exception is the page's most serious console error.
     page.on('pageerror', (err) => this.consoleLines.push({ level: 'error', message: `Uncaught ${err.name}: ${err.message}` }));
     page.on('requestfailed', (req) => {
+      if (isFavicon(req.url())) return;
       this.failed.push({ url: req.url(), method: req.method(), error: req.failure()?.errorText ?? 'failed' });
     });
     page.on('response', (res) => {
-      if (res.status() >= 400) this.failed.push({ url: res.url(), method: res.request().method(), status: res.status() });
+      if (res.status() >= 400 && !isFavicon(res.url())) this.failed.push({ url: res.url(), method: res.request().method(), status: res.status() });
     });
   }
 
@@ -157,6 +162,14 @@ export class PlaywrightDriver implements Driver {
     return out;
   }
 
+  async startTrace(): Promise<void> {
+    await this.context.tracing.start({ screenshots: true, snapshots: true });
+  }
+
+  async stopTrace(path: string | undefined): Promise<void> {
+    await this.context.tracing.stop(path ? { path } : {});
+  }
+
   async close(): Promise<void> {
     await this.context.close().catch(() => {});
     await this.browser.close().catch(() => {});
@@ -182,11 +195,11 @@ export class PlaywrightDriver implements Driver {
     }
   }
 
-  private async withTarget<T>(target: Target, act: (t: Locator | ElementHandle<Element>) => Promise<T>): Promise<T> {
+  private async withTarget<T>(target: Target, act: (t: Locator | ElementHandle) => Promise<T>): Promise<T> {
     if ('probe' in target) return act(this.locator(target.probe).nth(target.index));
     await this.ensureInspector();
     const handle = await this.page.evaluateHandle(
-      (id) => (globalThis as unknown as { __heapqa: { element(id: number): Element | null } }).__heapqa.element(id),
+      (id) => (globalThis as unknown as { __heapqa: { element(id: number): unknown } }).__heapqa.element(id),
       target.nodeId,
     );
     const element = handle.asElement();
@@ -195,7 +208,7 @@ export class PlaywrightDriver implements Driver {
       throw new Error(`Node ${target.nodeId} is no longer on the page — inspect it again.`);
     }
     try {
-      return await act(element as ElementHandle<Element>);
+      return await act(element);
     } finally {
       await element.dispose();
     }
@@ -209,6 +222,15 @@ export class PlaywrightDriver implements Driver {
 }
 
 async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless: boolean): Promise<Browser> {
+  // Loaded on first launch, not at import: the CLI carries Heap QA in the same
+  // bundle as everything else, and playwright-core is an optional dependency
+  // there — a static import would make every `heapcode` command need it.
+  let chromium: typeof import('playwright-core').chromium;
+  try {
+    ({ chromium } = await import('playwright-core'));
+  } catch {
+    throw new Error('Heap QA needs the playwright-core package, which is not installed. Reinstall Heap Code, or run `npm install -g playwright-core`.');
+  }
   if (channel !== 'chromium') {
     try {
       return await chromium.launch({ channel, headless });
@@ -220,6 +242,14 @@ async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless
     return await chromium.launch({ headless });
   } catch (err) {
     throw new BrowserMissingError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+function isFavicon(url: string): boolean {
+  try {
+    return new URL(url).pathname === '/favicon.ico';
+  } catch {
+    return false;
   }
 }
 

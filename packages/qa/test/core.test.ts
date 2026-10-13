@@ -25,6 +25,10 @@ describe('Templates', () => {
     const filled = t.fill('pw={{secret:PW}}');
     expect(filled).toEqual({ value: 'pw=hunter2', shown: 'pw=«secret:PW»' });
     expect(t.redact('error: wrong password hunter2')).toBe('error: wrong password «secret:PW»');
+    // …including inside an address a form submitted it to.
+    const spaced = new Templates({ inputs: {}, secret: () => 'a b&c', env: {}, runId: 'r' });
+    spaced.fill('{{secret:S}}');
+    expect(spaced.redact('/x?pw=a%20b%26c and /y?pw=a+b%26c')).toBe('/x?pw=«secret:S» and /y?pw=«secret:S»');
   });
 
   it('explains what is missing', () => {

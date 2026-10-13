@@ -162,6 +162,9 @@ importers:
       pdf-parse:
         specifier: ^2.4.5
         version: 2.4.5
+      playwright-core:
+        specifier: ~1.63.0
+        version: 1.63.0
     devDependencies:
       '@heapcode/chat-host':
         specifier: workspace:*
@@ -172,6 +175,12 @@ importers:
       '@heapcode/host':
         specifier: workspace:*
         version: link:../host
+      '@heapcode/qa':
+        specifier: workspace:*
+        version: link:../qa
+      '@heapcode/qa-playwright':
+        specifier: workspace:*
+        version: link:../qa-playwright
       '@heapcode/repomap':
         specifier: workspace:*
         version: link:../repomap

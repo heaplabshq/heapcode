@@ -1,7 +1,8 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { fingerprintOf, findSimilar } from '@heapcode/page';
+import { fingerprintOf } from '@heapcode/page/fingerprint';
+import { findSimilar } from '@heapcode/page/similarity';
 import { locate } from '@heapcode/qa';
 import { BrowserMissingError, PlaywrightDriver } from '../src/driver.js';
 
@@ -49,9 +50,9 @@ beforeAll(async () => {
 afterAll(async () => {
   await driver?.close();
   await new Promise((r) => server.close(r));
-});
+}, 60_000);
 
-describe('PlaywrightDriver', () => {
+describe('PlaywrightDriver', { timeout: 30_000 }, () => {
   it('has a browser to test with (or explains why not)', () => {
     if (!driver) console.warn(`Skipping browser tests: ${missing}`);
     expect(driver || missing).toBeTruthy();
@@ -88,8 +89,11 @@ describe('PlaywrightDriver', () => {
     driver.drainFailedRequests();
     const broke = await locate(driver, { role: 'button', name: 'Break' });
     if (!broke.found) throw new Error('break');
+    // Listen before clicking: on a fast machine the 404 is back before a
+    // listener added afterwards would be.
+    const responded = driver.page.waitForResponse((r) => r.url().endsWith('/missing'));
     await driver.click(broke.target);
-    await driver.page.waitForResponse((r) => r.url().endsWith('/missing'));
+    await responded;
     expect(driver.drainConsole().some((l) => l.level === 'error' && l.message === 'boom')).toBe(true);
     expect(driver.drainFailedRequests()).toContainEqual(expect.objectContaining({ status: 404, method: 'GET' }));
   });

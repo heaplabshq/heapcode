@@ -22,6 +22,10 @@
       "types": "./src/inspect.ts",
       "default": "./src/inspect.ts"
     },
+    "./tree": {
+      "types": "./src/tree.ts",
+      "default": "./src/tree.ts"
+    },
     "./fingerprint": {
       "types": "./src/fingerprint.ts",
       "default": "./src/fingerprint.ts"

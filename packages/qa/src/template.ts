@@ -10,7 +10,12 @@
  */
 
 export interface TemplateContext {
-  inputs: Record<string, string>;
+  /**
+   * `{{name}}` values. A string is itself a template; a `Filled` was already
+   * filled by a calling flow (`use: … with:`), so a secret passed down stays
+   * hidden in the step that receives it.
+   */
+  inputs: Record<string, string | Filled>;
   /** Looks up a secret; undefined when it is not set. */
   secret: (name: string) => string | undefined;
   env: Record<string, string | undefined>;
@@ -29,10 +34,20 @@ export class TemplateError extends Error {}
 const PATTERN = /\{\{\s*([^}]+?)\s*\}\}|\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g;
 
 export class Templates {
-  /** Every secret value used so far, for `redact`. */
-  private readonly used = new Map<string, string>();
+  /** Every secret value used so far, for `redact` — shared with `withInputs` children. */
+  private readonly used: Map<string, string>;
 
-  constructor(private readonly ctx: TemplateContext) {}
+  constructor(
+    private readonly ctx: TemplateContext,
+    used?: Map<string, string>,
+  ) {
+    this.used = used ?? new Map();
+  }
+
+  /** The same secrets, env and run id, with a reusable step's own inputs. */
+  withInputs(inputs: Record<string, string | Filled>): Templates {
+    return new Templates({ ...this.ctx, inputs }, this.used);
+  }
 
   fill(text: string): Filled {
     let shown = '';
@@ -64,7 +79,8 @@ export class Templates {
         shown += this.ctx.runId;
       } else if (e in this.ctx.inputs) {
         // An input may itself use templates (`email: qa+{{runId}}@x.test`).
-        const inner = this.fill(this.ctx.inputs[e]!);
+        const input = this.ctx.inputs[e]!;
+        const inner = typeof input === 'string' ? this.fill(input) : input;
         value += inner.value;
         shown += inner.shown;
       } else {
@@ -81,7 +97,9 @@ export class Templates {
     let out = text;
     // Longest first, so a secret that contains another is replaced whole.
     for (const [secret, name] of [...this.used].sort((a, b) => b[0].length - a[0].length)) {
-      out = out.split(secret).join(`«secret:${name}»`);
+      // A secret submitted by a form comes back inside addresses, encoded.
+      const forms = new Set([secret, encodeURIComponent(secret), encodeURIComponent(secret).replace(/%20/g, '+')]);
+      for (const form of forms) out = out.split(form).join(`«secret:${name}»`);
     }
     return out;
   }

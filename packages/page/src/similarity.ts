@@ -1,5 +1,5 @@
 import { fingerprintOf, type Fingerprint } from './fingerprint.js';
-import type { DomTree } from './inspect.js';
+import type { DomTree } from './tree.js';
 
 /**
  * Find the element on a changed page that is most like a saved one.

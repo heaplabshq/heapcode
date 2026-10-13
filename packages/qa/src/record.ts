@@ -77,6 +77,19 @@ export class Recording {
     return this.push({ kind: 'goto', url: this.relative(url), intent: `open ${this.relative(url)}` });
   }
 
+  /** A navigation someone asked for (the AI's `goto`), recorded whatever came before it. */
+  goto(url: string, at = Date.now()): Step {
+    this.currentUrl = url;
+    this.lastActionAt = at;
+    return this.push({ kind: 'goto', url: this.relative(url), intent: `open ${this.relative(url)}` });
+  }
+
+  /** Typing a secret the run already has a name for (`{{secret:NAME}}` in the AI's text). */
+  typeSecret(target: RecordedTarget, name: string, value: string): Step {
+    this.secrets[name] = value;
+    return this.push({ kind: 'type', target: locator(target), text: `{{secret:${name}}}`, clear: true, intent: `enter the ${(target.field ?? 'value').toLowerCase()}` }, target.fingerprint);
+  }
+
   add(event: RecordedEvent, at = Date.now()): Step | undefined {
     switch (event.kind) {
       case 'done':
@@ -159,6 +172,10 @@ export class Recording {
     const used = new Set<string>();
     for (const { step } of this.recorded) if (step.kind === 'type') for (const m of step.text.matchAll(/\{\{(\w+)\}\}/g)) used.add(m[1]!);
     const inputs = Object.fromEntries(Object.entries(this.inputs).filter(([k]) => used.has(k)));
+    // Text that shows a typed value is data, not a fixed part of the page: a
+    // check of it follows the input, and it is no way to find an element.
+    const values = Object.entries(inputs).filter(([, v]) => v.length >= 3).sort((a, b) => b[1].length - a[1].length);
+    if (values.length) for (const r of this.recorded) r.step = followInputs(r.step, values);
     const fingerprints: SavedFingerprints = { version: 1, steps: [] };
     this.recorded.forEach(({ step, fingerprint }, i) => {
       const target = stepTarget(step);
@@ -166,6 +183,27 @@ export class Recording {
     });
     return { flow: { name, inputs, steps: this.recorded.map((r) => r.step) }, fingerprints, secrets: { ...this.secrets } };
   }
+}
+
+function followInputs(step: Step, values: [string, string][]): Step {
+  const template = (text: string): string => values.reduce((t, [name, value]) => t.split(value).join(`{{${name}}}`), text);
+  const shows = (text: string | undefined): boolean => text !== undefined && values.some(([, v]) => text.includes(v));
+  const clean = (l: Locator): Locator => {
+    const out = { ...l };
+    if (shows(out.text)) delete out.text;
+    if (shows(out.name)) {
+      delete out.name;
+      delete out.role;
+    }
+    // Never strip a locator bare: a dynamic one beats none.
+    return Object.keys(out).some((k) => k !== 'nth') ? out : l;
+  };
+  if (step.kind !== 'expect') return 'target' in step && step.target ? ({ ...step, target: clean(step.target) } as Step) : step;
+  const e = step.expect;
+  if (e.kind === 'text') {
+    return { ...step, expect: { ...e, target: clean(e.target), ...(e.equals !== undefined ? { equals: template(e.equals) } : {}), ...(e.contains !== undefined ? { contains: template(e.contains) } : {}) } };
+  }
+  return 'target' in e ? { ...step, expect: { ...e, target: clean(e.target) } as typeof e } : step;
 }
 
 function locator(target: RecordedTarget): Locator {

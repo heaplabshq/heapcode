@@ -1,4 +1,4 @@
-import type { RecordedEvent } from '@heapcode/page/recording';
+import type { RecordedEvent, RecordedTarget } from '@heapcode/page/recording';
 import type { DomTree } from '@heapcode/page/tree';
 import { LADDER, type Locator, type Strategy } from './flow.js';
 
@@ -44,6 +44,17 @@ export interface Driver {
    * function that stops watching.
    */
   record?(listener: RecordListener): Promise<() => Promise<void>>;
+  /**
+   * Optional: every way to find node `nodeId` of the last `inspect` again, as
+   * the recorder would write it. What lets an AI-driven run become a flow.
+   */
+  describe?(nodeId: number): Promise<RecordedTarget | undefined>;
+  /**
+   * Optional: wait for what the last action set off — a navigation, a load —
+   * to finish, so a page read right after it is the new page. Replay does not
+   * need it (every lookup retries); something that reads the page once does.
+   */
+  settle?(): Promise<void>;
 }
 
 export interface RecordListener {

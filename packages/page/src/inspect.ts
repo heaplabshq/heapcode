@@ -74,8 +74,9 @@ function describe(element: Element, id: number, parent: number | null, where: { 
     visible: where.frame ? frameVisible(element) : isVisible(element),
   };
   const role = roleOf(element);
-  if (role) {
-    node.role = role;
+  if (role) node.role = role;
+  // Fields with no role (password, date, file…) still have a label a person reads.
+  if (role || node.tag === 'input' || node.tag === 'select' || node.tag === 'textarea') {
     const name = accessibleName(element);
     if (name) node.name = name;
   }

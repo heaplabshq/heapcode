@@ -6,7 +6,11 @@ import {
   FLOWS_DIR,
   Recording,
   Templates,
+  applyDescription,
   applyUses,
+  describeFlow,
+  runAiTask,
+  writeDraft,
   extractSteps,
   findUses,
   parseRange,
@@ -34,6 +38,8 @@ import {
   type StepResult,
 } from '@heapcode/qa';
 import { BrowserMissingError, PlaywrightDriver, installChromium } from '@heapcode/qa-playwright';
+import { createProvider, resolveCapabilities } from '@heapcode/core';
+import { ConfigStore, SecretsStore, configFile, profileContextWindow, secretsFile } from '@heapcode/host';
 
 /**
  * `heapcode qa …` — Heap QA from the terminal.
@@ -54,6 +60,8 @@ export async function runQa(argv: string[]): Promise<number> {
       return qaRecord(rest);
     case 'extract':
       return qaExtract(rest);
+    case 'do':
+      return qaDo(rest);
     case 'reuse':
       return qaReuse(rest);
     case 'check':
@@ -82,6 +90,8 @@ Usage:
   heapcode qa init [folder] [--base-url URL]   Start a test folder: heapqa.yaml, flows/, steps/, .gitignore
   heapcode qa check [--dir D]                  Check every flow and step file for mistakes, without a browser
   heapcode qa record [address] [flags]         Click through your app in a browser; Heap QA writes the flow, then plays it back once
+  heapcode qa do "<task>" [--url PATH] [flags]  Let the AI do a task in your app; what worked becomes a flow that replays without it
+                                               (uses your agent model — see \`heapcode model\`)
   heapcode qa extract <flow> <from-to> --as NAME [--everywhere]
                                                Make steps from-to of a flow a reusable step (steps/NAME.yaml) used in its place;
                                                --everywhere uses it in every other flow that repeats those steps too
@@ -99,6 +109,11 @@ Run flags:
 
 Record flags: --dir, --base-url, --browser as above, and
   --name NAME        What to call the flow (asked for when not given)
+
+Do flags: --dir, --base-url, --browser, --headed, --name as above, and
+  --url PATH         Where to start (default /)
+  --yes              Approve actions that commit something (Delete, Pay, Submit…) without asking.
+                     Only for apps and data you can afford to lose.
 
 Results go to <folder>/results/<run>/: run.json, a screenshot per step, and a
 trace of each failed flow (open with \`npx playwright show-trace <file>\`).
@@ -119,10 +134,12 @@ interface Flags {
   name?: string;
   as?: string;
   everywhere: boolean;
+  url?: string;
+  yes: boolean;
 }
 
 function parseFlags(args: string[]): Flags | string {
-  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false };
+  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     const value = (): string | undefined => args[++i];
@@ -159,6 +176,15 @@ function parseFlags(args: string[]): Flags | string {
       }
       case '--everywhere':
         flags.everywhere = true;
+        break;
+      case '--url': {
+        const v = value();
+        if (!v) return '--url takes where to start, e.g. /login';
+        flags.url = v;
+        break;
+      }
+      case '--yes':
+        flags.yes = true;
         break;
       case '--headed':
         flags.headed = true;
@@ -434,6 +460,133 @@ async function qaRecord(args: string[]): Promise<number> {
     } finally {
       await replay.close();
     }
+  } finally {
+    rl?.close();
+  }
+}
+
+async function qaDo(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const task = flags.positional.join(' ').trim();
+  if (!task) return usage('Usage: heapcode qa do "<what to do in the app>" [--url /start]');
+  if (!existsSync(flags.dir)) return fail(`${flags.dir} does not exist. Start a test folder with \`heapcode qa init\`.`);
+  const ws = loadWorkspace(flags.dir);
+  const configErrors = ws.errors.filter((e) => e.file === 'heapqa.yaml');
+  if (configErrors.length) return fail(formatErrors(configErrors));
+
+  // The agent role, as Heap Code's agent uses it — one setting for both.
+  const config = new ConfigStore(configFile());
+  const profile = await config.resolve('agent');
+  if (!profile?.model) {
+    return fail('No model is set up. Add a connection with `heapcode connection add`, then `heapcode model set agent <connection> <model>`.');
+  }
+  const apiKey = await new SecretsStore(secretsFile()).getApiKey(profile.name);
+  const provider = createProvider(profile, apiKey);
+  const capabilities = resolveCapabilities(profile);
+  const contextWindow = (await provider.contextLengthFor?.(profile.model).catch(() => undefined)) ?? profileContextWindow(profile);
+
+  const runId = newRunId();
+  const templates = new Templates({ inputs: {}, secret: ws.secret, env: process.env, runId });
+  let baseUrl: string | undefined;
+  try {
+    const raw = flags.baseUrl ?? ws.config.baseUrl;
+    baseUrl = raw === undefined ? undefined : templates.fill(raw).value;
+    resolveUrl(flags.url ?? '/', baseUrl);
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+  const launch = (headless: boolean): Promise<PlaywrightDriver> =>
+    PlaywrightDriver.launch({ channel: flags.browser ?? ws.config.browser.channel, headless, timeout: ws.config.timeout, targets: ws.config.targets });
+  let driver: PlaywrightDriver;
+  try {
+    driver = await launch(!flags.headed);
+  } catch (err) {
+    rl?.close();
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+
+  console.log(`${profile.model} is doing: ${task}\n`);
+  const abort = new AbortController();
+  const onSigint = (): void => abort.abort();
+  process.once('SIGINT', onSigint);
+  let result;
+  try {
+    result = await runAiTask({
+      driver,
+      provider,
+      model: profile.model,
+      nativeToolCalls: capabilities.nativeToolCalls,
+      contextWindow,
+      ...(profile.maxTokens ? { maxTokens: profile.maxTokens } : {}),
+      task,
+      startUrl: flags.url ?? '/',
+      baseUrl,
+      secretNames: ws.secretNames,
+      templates,
+      confirm: async (what) => {
+        if (flags.yes) return true;
+        if (!rl) {
+          console.log(`  ✗ needs approval, refused (no terminal to ask in; --yes approves): ${what}`);
+          return false;
+        }
+        const answer = (await rl.question(`  ? ${what} — this looks like it commits something. Allow? [y/N]: `)).trim().toLowerCase();
+        return answer === 'y' || answer === 'yes';
+      },
+      events: { onAction: (line) => console.log(`  • ${line}`) },
+      signal: abort.signal,
+    });
+  } catch (err) {
+    rl?.close();
+    process.off('SIGINT', onSigint);
+    await driver.close();
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+  process.off('SIGINT', onSigint);
+  await driver.close();
+
+  const usable = result.recording.flow.steps.filter((s) => s.kind !== 'goto').length;
+  console.log(`\n${result.summary || `(the run ended: ${result.outcome})`}`);
+  if (result.outcome !== 'done' || usable === 0) {
+    rl?.close();
+    console.log(result.outcome === 'stopped' ? 'Stopped — no flow saved.' : 'The task was not completed, so no flow was saved.');
+    return 1;
+  }
+
+  try {
+    let flow = result.recording.flow;
+    const described = await describeFlow(provider, profile.model, task, flow);
+    if (described) flow = applyDescription(flow, described);
+    const name = flags.name ?? described?.name ?? task.toLowerCase().slice(0, 60);
+    flow = { ...flow, name };
+    const id = flowId(name, ws.flows.keys());
+    const hasChecks = flow.steps.some((s) => s.kind === 'expect');
+
+    console.log('\nPlaying it back without the AI…');
+    const replay = await launch(true);
+    try {
+      const played = await runFlow(id, flow, {
+        driver: replay,
+        library: ws.steps,
+        templates: templates.withInputs(flow.inputs),
+        baseUrl,
+        timeout: ws.config.timeout,
+        screenshots: 'none',
+      });
+      if (played.status !== 'passed') {
+        const draft = writeDraft(ws.dir, id, flow);
+        console.log(`✗ It did not replay — ${played.error}\nSaved as a draft to look at: ${shown(draft)} (not run by \`heapcode qa run\`).`);
+        return 1;
+      }
+    } finally {
+      await replay.close();
+    }
+    const file = writeFlow(ws.dir, id, flow, result.recording.fingerprints);
+    console.log(`✓ Saved ${shown(file)} — ${flow.steps.length} steps, and it replays.${hasChecks ? '' : ' It has no checks yet; add an `expect` so it can fail when the app is wrong.'}`);
+    return 0;
   } finally {
     rl?.close();
   }

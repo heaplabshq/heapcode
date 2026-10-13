@@ -4,7 +4,7 @@ import type { Flow } from './flow.js';
 import type { SavedFingerprints } from './record.js';
 import { serializeFlow } from './serialize.js';
 import { parseEnvFile } from './template.js';
-import { DEFAULT_SECRETS_FILE, FLOWS_DIR, STEPS_DIR } from './workspace.js';
+import { DEFAULT_SECRETS_FILE, DRAFTS_DIR, FLOWS_DIR, STEPS_DIR } from './workspace.js';
 
 /** Writing what the recorder (and later the AI writer and healer) produce into the opened folder. */
 
@@ -22,6 +22,14 @@ export type FlowKind = 'flow' | 'step';
 
 function folder(kind: FlowKind): string {
   return kind === 'flow' ? FLOWS_DIR : STEPS_DIR;
+}
+
+/** Where an AI-written flow goes when it did not replay: not in flows/, so `run` never picks it up. */
+export function writeDraft(dir: string, id: string, flow: Flow): string {
+  mkdirSync(join(dir, DRAFTS_DIR), { recursive: true });
+  const path = join(dir, DRAFTS_DIR, `${id}.yaml`);
+  writeFileSync(path, serializeFlow(flow));
+  return path;
 }
 
 export function stepPath(dir: string, id: string): string {

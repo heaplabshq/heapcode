@@ -66,3 +66,24 @@ export function testIdOf(node: DomNode): { attr: string; value: string } | undef
   }
   return undefined;
 }
+
+/** Roles a test acts on, as opposed to ones that only structure the page. */
+export const INTERACTIVE_ROLES = new Set([
+  'button',
+  'link',
+  'textbox',
+  'searchbox',
+  'checkbox',
+  'radio',
+  'combobox',
+  'listbox',
+  'option',
+  'slider',
+  'spinbutton',
+  'switch',
+  'tab',
+  'menuitem',
+  'menuitemcheckbox',
+  'menuitemradio',
+  'treeitem',
+]);

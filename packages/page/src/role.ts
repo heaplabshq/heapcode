@@ -106,23 +106,4 @@ function inputRole(input: HTMLInputElement): string | undefined {
   }
 }
 
-/** Roles a test acts on, as opposed to ones that only structure the page. */
-export const INTERACTIVE_ROLES = new Set([
-  'button',
-  'link',
-  'textbox',
-  'searchbox',
-  'checkbox',
-  'radio',
-  'combobox',
-  'listbox',
-  'option',
-  'slider',
-  'spinbutton',
-  'switch',
-  'tab',
-  'menuitem',
-  'menuitemcheckbox',
-  'menuitemradio',
-  'treeitem',
-]);
+export { INTERACTIVE_ROLES } from './tree.js';

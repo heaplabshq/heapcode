@@ -16,6 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@heapcode/core": "workspace:*",
     "@heapcode/page": "workspace:*",
     "@heapcode/web-host": "workspace:*",
     "yaml": "^2.5.1"

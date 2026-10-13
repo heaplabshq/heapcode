@@ -1,3 +1,4 @@
+import type { RecordedTarget } from '@heapcode/page/recording';
 import { TEST_ID_ATTRS, type DomTree } from '@heapcode/page/tree';
 import {
   DEFAULT_TIMEOUT,
@@ -174,6 +175,22 @@ export class PlaywrightDriver implements Driver {
 
   async stopTrace(path: string | undefined): Promise<void> {
     await this.context.tracing.stop(path ? { path } : {});
+  }
+
+  async settle(): Promise<void> {
+    // A click's navigation starts a moment after the click returns; give it
+    // that moment, then wait for whatever it started to load.
+    await new Promise((r) => setTimeout(r, 200));
+    await this.page.waitForLoadState('load').catch(() => {});
+  }
+
+  async describe(nodeId: number): Promise<RecordedTarget | undefined> {
+    await this.ensureInspector();
+    const target = await this.page.evaluate(
+      (id) => (globalThis as unknown as { __heapqa: { describe(id: number): unknown } }).__heapqa.describe(id),
+      nodeId,
+    );
+    return (target ?? undefined) as RecordedTarget | undefined;
   }
 
   async record(listener: RecordListener): Promise<() => Promise<void>> {

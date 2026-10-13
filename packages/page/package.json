@@ -37,6 +37,10 @@
     "./recording": {
       "types": "./src/recording.ts",
       "default": "./src/recording.ts"
+    },
+    "./outline": {
+      "types": "./src/outline.ts",
+      "default": "./src/outline.ts"
     }
   },
   "scripts": {

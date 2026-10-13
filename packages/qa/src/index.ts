@@ -23,6 +23,7 @@ export {
   FLOWS_DIR,
   STEPS_DIR,
   RESULTS_DIR,
+  DRAFTS_DIR,
   DEFAULT_SECRETS_FILE,
   type Workspace,
 } from './workspace.js';
@@ -50,5 +51,6 @@ export {
 export { initWorkspace } from './init.js';
 export { serializeFlow } from './serialize.js';
 export { Recording, flowId, camelName, constName, stepTarget, type RecordingResult, type RecordedStep, type SavedFingerprints } from './record.js';
-export { flowPath, stepPath, fingerprintsPath, writeFlow, readFingerprints, saveSecrets, type FlowKind } from './store.js';
+export { flowPath, stepPath, fingerprintsPath, writeFlow, writeDraft, readFingerprints, saveSecrets, type FlowKind } from './store.js';
 export { extractSteps, findUses, applyUses, inputsUsed, sameElement, parseRange, type Extracted, type UseMatch } from './teach.js';
+export { runAiTask, describeFlow, applyDescription, qaSystemPrompt, QA_TOOLS, type AiTaskOptions, type AiTaskResult } from './agent.js';

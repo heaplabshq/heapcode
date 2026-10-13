@@ -1,4 +1,6 @@
 import { inspect, type DomTree, type InspectOptions } from './inspect.js';
+import { describeTarget } from './recorder.js';
+import type { RecordedTarget } from './recording.js';
 
 /**
  * What a driver injects into the page under test: `window.__heapqa`.
@@ -12,6 +14,11 @@ export interface HeapQaPageApi {
   inspect(options?: InspectOptions): DomTree;
   /** The live element behind a node id from the last `inspect`, if still attached. */
   element(id: number): Element | null;
+  /**
+   * Every way to find that element again, as the recorder would have written
+   * it — so a step the AI took records exactly like a step a person took.
+   */
+  describe(id: number): RecordedTarget | null;
 }
 
 let last: Element[] = [];
@@ -26,6 +33,10 @@ const api: HeapQaPageApi = {
   element(id) {
     const el = last[id];
     return el && el.isConnected ? el : null;
+  },
+  describe(id) {
+    const el = api.element(id);
+    return el ? describeTarget(el) : null;
   },
 };
 

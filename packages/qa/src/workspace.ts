@@ -27,6 +27,8 @@ export interface Workspace {
   steps: Map<string, Flow>;
   /** `{{secret:NAME}}` lookup: the environment first, then the secrets file. */
   secret: (name: string) => string | undefined;
+  /** Names defined in the secrets file — what an AI run may type as placeholders. Never values. */
+  secretNames: string[];
   errors: ParseError[];
 }
 
@@ -34,6 +36,8 @@ export const CONFIG_FILE = 'heapqa.yaml';
 export const FLOWS_DIR = 'flows';
 export const STEPS_DIR = 'steps';
 export const RESULTS_DIR = 'results';
+/** AI-written flows that did not replay — kept for a person to look at, never run. */
+export const DRAFTS_DIR = 'drafts';
 /** Read for secrets when heapqa.yaml names no `secretsFile`. */
 export const DEFAULT_SECRETS_FILE = '.env.test';
 
@@ -61,6 +65,7 @@ export function loadWorkspace(dir: string, env: Record<string, string | undefine
     flows,
     steps,
     secret: (name) => env[name] ?? fileSecrets[name],
+    secretNames: Object.keys(fileSecrets),
     errors,
   };
 }

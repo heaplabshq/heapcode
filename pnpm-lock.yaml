@@ -307,6 +307,9 @@ importers:
 
   packages/qa:
     dependencies:
+      '@heapcode/core':
+        specifier: workspace:*
+        version: link:../core
       '@heapcode/page':
         specifier: workspace:*
         version: link:../page
@@ -339,6 +342,9 @@ importers:
         specifier: ~1.63.0
         version: 1.63.0
     devDependencies:
+      '@heapcode/core':
+        specifier: workspace:*
+        version: link:../core
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.43

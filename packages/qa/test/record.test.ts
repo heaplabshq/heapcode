@@ -88,3 +88,18 @@ describe('saveSecrets', () => {
     expect(env).toEqual({ PASSWORD: 'old', TOKEN: 'a b#"c', PIN: "it's" });
   });
 });
+
+describe('typed values in later text', () => {
+  it('makes a check follow the input and stops finding elements by data', () => {
+    const r = new Recording();
+    r.start('http://localhost/');
+    r.add({ kind: 'fill', target: field('Email'), value: 'ai@example.test', sensitive: false });
+    r.add({ kind: 'expect-text', target: { locator: { text: 'Signed in as ai@example.test', css: '#who' }, describe: 'x' }, text: 'Signed in as ai@example.test' });
+    r.add({ kind: 'click', target: { locator: { role: 'link', name: 'ai@example.test' }, describe: 'x' } });
+    const { flow } = r.finish('f');
+    expect(flow.steps[2]).toMatchObject({ kind: 'expect', expect: { kind: 'text', target: { css: '#who' }, equals: 'Signed in as {{email}}' } });
+    expect((flow.steps[2] as { expect: { target: object } }).expect.target).not.toHaveProperty('text');
+    // Only strategy it had: kept rather than leaving nothing.
+    expect(flow.steps[3]).toMatchObject({ kind: 'click', target: { role: 'link', name: 'ai@example.test' } });
+  });
+});

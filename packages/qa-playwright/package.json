@@ -1,0 +1,30 @@
+{
+  "name": "@heapcode/qa-playwright",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Heap QA's web driver: the Driver interface on Playwright. The only Heap QA package that depends on a browser engine.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build:inspect": "node scripts/buildInspect.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@heapcode/page": "workspace:*",
+    "@heapcode/qa": "workspace:*",
+    "playwright-core": "~1.63.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "esbuild": "^0.23.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "@heapcode/page",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reading a web page the way a person would: names, visibility, the full DOM tree, element fingerprints. DOM-only — no Chrome, Electron or Node APIs.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./accessibleName": {
+      "types": "./src/accessibleName.ts",
+      "default": "./src/accessibleName.ts"
+    },
+    "./visibility": {
+      "types": "./src/visibility.ts",
+      "default": "./src/visibility.ts"
+    },
+    "./inspect": {
+      "types": "./src/inspect.ts",
+      "default": "./src/inspect.ts"
+    },
+    "./fingerprint": {
+      "types": "./src/fingerprint.ts",
+      "default": "./src/fingerprint.ts"
+    },
+    "./similarity": {
+      "types": "./src/similarity.ts",
+      "default": "./src/similarity.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

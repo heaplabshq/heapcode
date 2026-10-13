@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    // For type-checking @heapcode/page, whose tree and fingerprint types sit
+    // beside the code that runs in the page. This package itself runs in Node.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src", "test"]
+}

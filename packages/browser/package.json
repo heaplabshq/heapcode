@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@heapcode/core": "workspace:*",
+    "@heapcode/page": "workspace:*",
     "@heapcode/web-ui": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

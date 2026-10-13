@@ -1,8 +1,19 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { relative, resolve } from 'node:path';
 import {
+  FLOWS_DIR,
+  Recording,
   Templates,
   createRunDir,
+  flowId,
+  isAllowedTarget,
+  notAllowedMessage,
+  resolveUrl,
+  saveSecrets,
+  stepLabel,
+  writeFlow,
   formatErrors,
   initWorkspace,
   loadWorkspace,
@@ -32,6 +43,8 @@ export async function runQa(argv: string[]): Promise<number> {
   switch (sub) {
     case 'run':
       return qaRun(rest);
+    case 'record':
+      return qaRecord(rest);
     case 'check':
       return qaCheck(rest);
     case 'init':
@@ -57,6 +70,7 @@ function printQaHelp(): void {
 Usage:
   heapcode qa init [folder] [--base-url URL]   Start a test folder: heapqa.yaml, flows/, steps/, .gitignore
   heapcode qa check [--dir D]                  Check every flow and step file for mistakes, without a browser
+  heapcode qa record [address] [flags]         Click through your app in a browser; Heap QA writes the flow, then plays it back once
   heapcode qa run [flow…] [flags]              Play flows back (all of them, or the ones named) and save the results
   heapcode qa install                          Download Heap QA's own Chromium — only needed with no Chrome or Edge installed
 
@@ -67,6 +81,9 @@ Run flags:
   --browser NAME     chrome (default), msedge or chromium
   --json             Print the run summary as JSON instead of text
   --no-trace         Do not save traces of failed flows
+
+Record flags: --dir, --base-url, --browser as above, and
+  --name NAME        What to call the flow (asked for when not given)
 
 Results go to <folder>/results/<run>/: run.json, a screenshot per step, and a
 trace of each failed flow (open with \`npx playwright show-trace <file>\`).
@@ -84,6 +101,7 @@ interface Flags {
   json: boolean;
   trace: boolean;
   browser?: 'chrome' | 'msedge' | 'chromium';
+  name?: string;
 }
 
 function parseFlags(args: string[]): Flags | string {
@@ -108,6 +126,12 @@ function parseFlags(args: string[]): Flags | string {
         const v = value();
         if (v !== 'chrome' && v !== 'msedge' && v !== 'chromium') return '--browser is chrome, msedge or chromium.';
         flags.browser = v;
+        break;
+      }
+      case '--name': {
+        const v = value();
+        if (!v) return '--name takes a name for the flow.';
+        flags.name = v;
         break;
       }
       case '--headed':
@@ -234,6 +258,136 @@ async function qaRun(args: string[]): Promise<number> {
     for (const f of summary.flows) if (f.trace) console.log(`Trace (${f.id}): npx playwright show-trace ${shown(resolve(runDir, f.trace))}`);
   }
   return summary.failed ? 1 : 0;
+}
+
+async function qaRecord(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  if (!existsSync(flags.dir)) return fail(`${flags.dir} does not exist. Start a test folder with \`heapcode qa init\`.`);
+  const ws = loadWorkspace(flags.dir);
+  // A broken flow elsewhere does not stop a new one being recorded; broken settings do.
+  const configErrors = ws.errors.filter((e) => e.file === 'heapqa.yaml');
+  if (configErrors.length) return fail(formatErrors(configErrors));
+
+  const baseTemplates = new Templates({ inputs: {}, secret: ws.secret, env: process.env, runId: newRunId() });
+  let baseUrl: string | undefined;
+  let start: string;
+  try {
+    const raw = flags.baseUrl ?? ws.config.baseUrl;
+    baseUrl = raw === undefined ? undefined : baseTemplates.fill(raw).value;
+    start = resolveUrl(flags.positional[0] ?? '/', baseUrl);
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+  if (!isAllowedTarget(start, ws.config.targets)) return fail(notAllowedMessage(start));
+
+  let driver: PlaywrightDriver;
+  try {
+    driver = await PlaywrightDriver.launch({
+      channel: flags.browser ?? ws.config.browser.channel,
+      headless: false,
+      timeout: ws.config.timeout,
+      targets: ws.config.targets,
+      exitOnSigint: false,
+    });
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+
+  const recording = new Recording(baseUrl);
+  const say = (step: ReturnType<Recording['add']>): void => {
+    if (step) console.log(`  + ${recording.stepCount}  ${stepLabel(step)}`);
+  };
+  let finish: () => void = () => {};
+  const finished = new Promise<void>((resolve) => (finish = resolve));
+  const onSigint = (): void => finish();
+  process.once('SIGINT', onSigint);
+
+  let stop: () => Promise<void> = async () => {};
+  let title = '';
+  try {
+    stop = await driver.record({
+      event: (event) => {
+        if (event.kind === 'done') finish();
+        else say(recording.add(event));
+        return recording.stepCount;
+      },
+      navigated: (url) => say(recording.navigated(url)),
+      closed: () => finish(),
+    });
+    say(recording.start(start));
+    title = (await driver.open(start)).title;
+  } catch (err) {
+    process.off('SIGINT', onSigint);
+    await driver.close();
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+  console.log(
+    '\nRecording in the browser window. Use the page as a person would; the bar at the bottom right adds checks.\n' +
+      'Finish with Done on that bar, by closing the window, or with Ctrl+C here.\n',
+  );
+  await finished;
+  process.off('SIGINT', onSigint);
+  await stop();
+  await driver.close();
+
+  if (recording.stepCount <= 1) {
+    console.log('Nothing was recorded — no flow saved.');
+    return 0;
+  }
+
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+  try {
+    const suggested = title.trim().toLowerCase() || 'recording';
+    const name = flags.name ?? ((await rl?.question(`\nName this flow [${suggested}]: `))?.trim() || suggested);
+    const { flow, fingerprints, secrets } = recording.finish(name);
+    mkdirSync(join(ws.dir, FLOWS_DIR), { recursive: true });
+    const id = flowId(name, ws.flows.keys());
+    const file = writeFlow(ws.dir, id, flow, fingerprints);
+    console.log(`Saved ${shown(file)} — ${flow.steps.length} steps.`);
+
+    const secretNames = Object.keys(secrets);
+    if (secretNames.length) {
+      const secretsFile = ws.config.secretsFile ?? '.env.test';
+      const answer = rl ? (await rl.question(`Save the typed ${secretNames.join(', ')} to ${secretsFile} so the flow can replay? (it stays out of git) [Y/n]: `)).trim().toLowerCase() : 'n';
+      if (answer === '' || answer === 'y' || answer === 'yes') {
+        const added = saveSecrets(ws.dir, secrets, secretsFile);
+        if (added.length) console.log(`Added ${added.join(', ')} to ${secretsFile}.`);
+      } else {
+        console.log(`Not saved. Before running this flow, set ${secretNames.join(', ')} in ${secretsFile} or the environment.`);
+      }
+    }
+
+    // Prove it: play it back once, with nobody at the keyboard.
+    console.log('\nPlaying it back once…');
+    const replay = await PlaywrightDriver.launch({
+      channel: flags.browser ?? ws.config.browser.channel,
+      headless: true,
+      timeout: ws.config.timeout,
+      targets: ws.config.targets,
+    });
+    try {
+      const result = await runFlow(id, flow, {
+        driver: replay,
+        library: ws.steps,
+        templates: new Templates({ inputs: flow.inputs, secret: (n) => ws.secret(n) ?? secrets[n], env: process.env, runId: newRunId() }),
+        baseUrl,
+        timeout: ws.config.timeout,
+        screenshots: 'none',
+      });
+      if (result.status === 'passed') {
+        console.log(`✓ It plays back. Run it any time with \`heapcode qa run ${id}\`.`);
+        return 0;
+      }
+      console.log(`✗ Playback failed — ${result.error}\nThe flow is saved; edit ${shown(file)} or record it again.`);
+      return 1;
+    } finally {
+      await replay.close();
+    }
+  } finally {
+    rl?.close();
+  }
 }
 
 function stepLine(step: StepResult): string {

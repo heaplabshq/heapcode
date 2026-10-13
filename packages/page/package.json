@@ -33,6 +33,10 @@
     "./similarity": {
       "types": "./src/similarity.ts",
       "default": "./src/similarity.ts"
+    },
+    "./recording": {
+      "types": "./src/recording.ts",
+      "default": "./src/recording.ts"
     }
   },
   "scripts": {

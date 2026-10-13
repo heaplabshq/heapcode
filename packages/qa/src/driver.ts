@@ -1,3 +1,4 @@
+import type { RecordedEvent } from '@heapcode/page/recording';
 import type { DomTree } from '@heapcode/page/tree';
 import { LADDER, type Locator, type Strategy } from './flow.js';
 
@@ -38,6 +39,20 @@ export interface Driver {
    */
   startTrace?(): Promise<void>;
   stopTrace?(path: string | undefined): Promise<void>;
+  /**
+   * Optional: watch a person use the page (call before `open`). Resolves to a
+   * function that stops watching.
+   */
+  record?(listener: RecordListener): Promise<() => Promise<void>>;
+}
+
+export interface RecordListener {
+  /** An action in the page. Returns the total steps so far, for the page's toolbar. */
+  event(event: RecordedEvent): number;
+  /** The main page went to a new address. */
+  navigated(url: string): void;
+  /** The person closed the browser window. */
+  closed(): void;
 }
 
 export interface PageInfo {

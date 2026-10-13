@@ -6,3 +6,5 @@ export { testIdOf, TEST_ID_ATTRS, type DomNode, type DomTree, type Rect } from '
 export { fingerprintOf, textOf, pathOf, neighborTextOf, type Fingerprint } from './fingerprint.js';
 export { findSimilar, score, textSimilarity, type Match, type MatchResult, type FindOptions } from './similarity.js';
 export type { HeapQaPageApi } from './browserEntry.js';
+export { Recorder, describeTarget, actionableTarget, cssPath, isStableId, isSensitive, isTextField } from './recorder.js';
+export type { RecordedEvent, RecordedLocator, RecordedTarget, Sink } from './recording.js';

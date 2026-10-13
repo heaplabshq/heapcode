@@ -8,10 +8,11 @@ import {
   type FailedRequest,
   type PageInfo,
   type Probe,
+  type RecordListener,
   type Target,
 } from '@heapcode/qa';
 import type { Browser, BrowserContext, ElementHandle, Locator, Page } from 'playwright-core';
-import { INSPECT_BUNDLE } from './inspectBundle.generated.js';
+import { INSPECT_BUNDLE, RECORDER_BUNDLE } from './inspectBundle.generated.js';
 
 export interface LaunchOptions {
   /**
@@ -26,6 +27,11 @@ export interface LaunchOptions {
   /** Non-local origins the driver may open — `heapqa.yaml`'s `targets`. */
   targets?: readonly string[];
   viewport?: { width: number; height: number };
+  /**
+   * Let Playwright close the browser and exit on Ctrl+C (its default). The
+   * recorder turns this off: there, Ctrl+C means "finish and save".
+   */
+  exitOnSigint?: boolean;
 }
 
 export class BrowserMissingError extends Error {
@@ -79,7 +85,7 @@ export class PlaywrightDriver implements Driver {
   }
 
   static async launch(options: LaunchOptions = {}): Promise<PlaywrightDriver> {
-    const browser = await launchBrowser(options.channel ?? 'chrome', options.headless ?? true);
+    const browser = await launchBrowser(options.channel ?? 'chrome', options.headless ?? true, options.exitOnSigint ?? true);
     const context = await browser.newContext({ viewport: options.viewport ?? { width: 1280, height: 800 } });
     context.setDefaultTimeout(options.timeout ?? DEFAULT_TIMEOUT);
     await context.addInitScript({ content: INSPECT_BUNDLE });
@@ -170,6 +176,33 @@ export class PlaywrightDriver implements Driver {
     await this.context.tracing.stop(path ? { path } : {});
   }
 
+  async record(listener: RecordListener): Promise<() => Promise<void>> {
+    let total = 0;
+    let stopped = false;
+    // A binding survives navigations, and the init script re-installs the
+    // recorder on every page, so recording follows the person across the site.
+    await this.context.exposeBinding('__heapqaRecord', (_source, event: { kind: string }) => {
+      if (stopped) return total;
+      if (event.kind === 'count') return total;
+      total = listener.event(event as Parameters<RecordListener['event']>[0]);
+      return total;
+    });
+    await this.context.addInitScript({ content: RECORDER_BUNDLE });
+    const onNavigate = (frame: import('playwright-core').Frame): void => {
+      if (!stopped && frame === this.page.mainFrame()) listener.navigated(frame.url());
+    };
+    const onClose = (): void => {
+      if (!stopped) listener.closed();
+    };
+    this.page.on('framenavigated', onNavigate);
+    this.page.on('close', onClose);
+    return async () => {
+      stopped = true;
+      this.page.off('framenavigated', onNavigate);
+      this.page.off('close', onClose);
+    };
+  }
+
   async close(): Promise<void> {
     await this.context.close().catch(() => {});
     await this.browser.close().catch(() => {});
@@ -221,7 +254,7 @@ export class PlaywrightDriver implements Driver {
   }
 }
 
-async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless: boolean): Promise<Browser> {
+async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless: boolean, handleSIGINT: boolean): Promise<Browser> {
   // Loaded on first launch, not at import: the CLI carries Heap QA in the same
   // bundle as everything else, and playwright-core is an optional dependency
   // there — a static import would make every `heapcode` command need it.
@@ -233,13 +266,13 @@ async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless
   }
   if (channel !== 'chromium') {
     try {
-      return await chromium.launch({ channel, headless });
+      return await chromium.launch({ channel, headless, handleSIGINT });
     } catch {
       // Not installed — fall back to Playwright's own build below.
     }
   }
   try {
-    return await chromium.launch({ headless });
+    return await chromium.launch({ headless, handleSIGINT });
   } catch (err) {
     throw new BrowserMissingError(err instanceof Error ? err.message : String(err));
   }

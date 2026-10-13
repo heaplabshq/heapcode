@@ -14,6 +14,7 @@ export {
   type FailedRequest,
   type Attempt,
   type Located,
+  type RecordListener,
 } from './driver.js';
 export {
   loadWorkspace,
@@ -29,6 +30,7 @@ export {
   runFlow,
   resolveUrl,
   describeLocator,
+  stepLabel,
   until,
   type RunOptions,
   type FlowResult,
@@ -46,3 +48,6 @@ export {
   type SavedStep,
 } from './results.js';
 export { initWorkspace } from './init.js';
+export { serializeFlow } from './serialize.js';
+export { Recording, flowId, camelName, constName, stepTarget, type RecordingResult, type RecordedStep, type SavedFingerprints } from './record.js';
+export { flowPath, fingerprintsPath, writeFlow, readFingerprints, saveSecrets } from './store.js';

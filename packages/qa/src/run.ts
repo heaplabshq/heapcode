@@ -353,9 +353,18 @@ export function describeLocator(l: Locator): string {
   return `\`${l.css}\``;
 }
 
-/** The step in words. Never throws: a label is needed even for a step whose template is broken. */
-function safeLabel(step: Step, templates: Templates): string {
+/**
+ * The step in words. With templates, values are filled in (secrets shown as
+ * «secret:NAME»); without, they are shown as written. Never throws: a label is
+ * needed even for a step whose template is broken.
+ */
+export function stepLabel(step: Step, templates?: Templates): string {
+  return safeLabel(step, templates);
+}
+
+function safeLabel(step: Step, templates: Templates | undefined): string {
   const shown = (text: string): string => {
+    if (!templates) return text;
     try {
       return templates.fill(text).shown;
     } catch {

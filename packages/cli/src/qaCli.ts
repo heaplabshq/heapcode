@@ -1,11 +1,17 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { readdirSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import {
   FLOWS_DIR,
   Recording,
   Templates,
+  applyHeals,
+  createHealer,
+  saveRefreshed,
+  type HealProposal,
+  type Healer,
   applyDescription,
   applyUses,
   describeFlow,
@@ -17,6 +23,7 @@ import {
   readFingerprints,
   type Flow,
   type UseMatch,
+  describeLocator,
   createRunDir,
   flowId,
   isAllowedTarget,
@@ -62,6 +69,8 @@ export async function runQa(argv: string[]): Promise<number> {
       return qaExtract(rest);
     case 'do':
       return qaDo(rest);
+    case 'heals':
+      return qaHeals(rest);
     case 'reuse':
       return qaReuse(rest);
     case 'check':
@@ -97,6 +106,7 @@ Usage:
                                                --everywhere uses it in every other flow that repeats those steps too
   heapcode qa reuse <step> [flow…]             Use an existing reusable step in every flow (or the ones named) that repeats its steps
   heapcode qa run [flow…] [flags]              Play flows back (all of them, or the ones named) and save the results
+  heapcode qa heals [--run ID] [--accept]      Show the fixes healing proposed in the last run (or run ID); --accept writes them into the files
   heapcode qa install                          Download Heap QA's own Chromium — only needed with no Chrome or Edge installed
 
 Run flags:
@@ -106,6 +116,15 @@ Run flags:
   --browser NAME     chrome (default), msedge or chromium
   --json             Print the run summary as JSON instead of text
   --no-trace         Do not save traces of failed flows
+  --accept-heals     Write the fixes healing found into the flow files after the run
+  --no-heal          Fail a step whose element is missing, without trying to find it again
+
+When a step's element has moved or changed, the run looks for it again: by
+similarity to how it last looked (no model), then — with \`heal: ai\`, the default
+in heapqa.yaml — by asking your agent model to look at the page. A healed step
+passes and its fix is proposed, never written into the file without --accept-heals
+or \`heapcode qa heals --accept\`. If the element is truly gone, the step fails
+as a bug.
 
 Record flags: --dir, --base-url, --browser as above, and
   --name NAME        What to call the flow (asked for when not given)
@@ -136,10 +155,14 @@ interface Flags {
   everywhere: boolean;
   url?: string;
   yes: boolean;
+  acceptHeals: boolean;
+  heal: boolean;
+  run?: string;
+  accept: boolean;
 }
 
 function parseFlags(args: string[]): Flags | string {
-  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false };
+  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false, acceptHeals: false, heal: true, accept: false };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     const value = (): string | undefined => args[++i];
@@ -186,6 +209,21 @@ function parseFlags(args: string[]): Flags | string {
       case '--yes':
         flags.yes = true;
         break;
+      case '--accept-heals':
+        flags.acceptHeals = true;
+        break;
+      case '--no-heal':
+        flags.heal = false;
+        break;
+      case '--accept':
+        flags.accept = true;
+        break;
+      case '--run': {
+        const v = value();
+        if (!v) return '--run takes a run id (a folder name in results/).';
+        flags.run = v;
+        break;
+      }
       case '--headed':
         flags.headed = true;
         break;
@@ -271,6 +309,18 @@ async function qaRun(args: string[]): Promise<number> {
     return fail(err instanceof BrowserMissingError || err instanceof Error ? err.message : String(err));
   }
 
+  // Healing: similarity always (unless off); the agent model only with `heal: ai` and a model set up.
+  let healer: Healer | undefined;
+  const mode = flags.heal ? ws.config.heal : 'off';
+  if (mode !== 'off') {
+    const model = mode === 'ai' ? await agentModel() : undefined;
+    healer = createHealer(
+      model
+        ? { agent: { provider: model.provider, model: model.model, nativeToolCalls: model.nativeToolCalls, contextWindow: model.contextWindow, templates: baseTemplates } }
+        : {},
+    );
+  }
+
   const runDir = createRunDir(ws.dir, runId);
   const started = Date.now();
   const summary: RunSummary = { runId, startedAt: new Date(started).toISOString(), durationMs: 0, dir: runDir, ...(baseUrl ? { baseUrl } : {}), passed: 0, failed: 0, flows: [] };
@@ -289,7 +339,12 @@ async function qaRun(args: string[]): Promise<number> {
         screenshots: 'every-step',
         ...(flags.trace ? { tracePath: tracePathFor(runDir, id) } : {}),
         onStep: (step) => say(stepLine(step)),
+        ...(healer ? { healer } : {}),
+        fingerprints: (source) => readFingerprints(ws.dir, source.id, source.kind),
+        refreshFingerprints: true,
       });
+      // How the elements looked when this flow last passed — what healing compares with next time.
+      if (result.status === 'passed') saveRefreshed(ws.dir, result.refreshed);
       summary.flows.push(saveFlow(runDir, result));
       if (result.status === 'passed') summary.passed += 1;
       else summary.failed += 1;
@@ -309,7 +364,68 @@ async function qaRun(args: string[]): Promise<number> {
     console.log(`Results: ${shown(file)}`);
     for (const f of summary.flows) if (f.trace) console.log(`Trace (${f.id}): npx playwright show-trace ${shown(resolve(runDir, f.trace))}`);
   }
+  const heals = summary.flows.flatMap((f) => f.heals);
+  if (heals.length) {
+    if (flags.acceptHeals) {
+      reportApplied(applyHeals(ws.dir, heals), flags.json);
+    } else if (!flags.json) {
+      console.log(`\n${heals.length} step${heals.length === 1 ? ' was' : 's were'} healed. The files still have the old locators.`);
+      console.log(`Review: heapcode qa heals${flags.dir === process.cwd() ? '' : ` --dir ${shown(flags.dir)}`}    Accept: add --accept`);
+    }
+  }
   return summary.failed ? 1 : 0;
+}
+
+/** The agent role's model, ready to call — or undefined when none is set up. */
+async function agentModel(): Promise<{ provider: ReturnType<typeof createProvider>; model: string; nativeToolCalls: boolean; contextWindow: number; maxTokens?: number } | undefined> {
+  const config = new ConfigStore(configFile());
+  const profile = await config.resolve('agent').catch(() => undefined);
+  if (!profile?.model) return undefined;
+  const apiKey = await new SecretsStore(secretsFile()).getApiKey(profile.name);
+  const provider = createProvider(profile, apiKey);
+  const contextWindow = (await provider.contextLengthFor?.(profile.model).catch(() => undefined)) ?? profileContextWindow(profile);
+  return {
+    provider,
+    model: profile.model,
+    nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
+    contextWindow,
+    ...(profile.maxTokens ? { maxTokens: profile.maxTokens } : {}),
+  };
+}
+
+function describeHeal(h: HealProposal): string {
+  const how = h.via === 'similarity' ? `similarity ${Math.round((h.score ?? 0) * 100)}%` : `the AI${h.reason ? ` — ${h.reason}` : ''}`;
+  return `${h.source.kind === 'flow' ? 'flows' : 'steps'}/${h.source.id}.yaml step ${h.step}: ${describeLocator(h.previous)} → ${describeLocator(h.locator)}  (${how})`;
+}
+
+function reportApplied(applied: ReturnType<typeof applyHeals>, json: boolean): void {
+  if (json) return;
+  for (const a of applied) console.log(`${a.applied ? '✓ updated' : '· skipped'} ${describeHeal(a.proposal)}${a.reason ? ` — ${a.reason}` : ''}${a.commentsLost ? ' (its comments were not kept)' : ''}`);
+}
+
+async function qaHeals(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const resultsDir = join(flags.dir, 'results');
+  const runs = existsSync(resultsDir) ? readdirSync(resultsDir).filter((d) => existsSync(join(resultsDir, d, 'run.json'))).sort() : [];
+  const runId = flags.run ?? runs.at(-1);
+  if (!runId) return fail('No runs yet — `heapcode qa run` first.');
+  const file = join(resultsDir, runId, 'run.json');
+  if (!existsSync(file)) return fail(`No run ${runId} in results/.`);
+  const summary = JSON.parse(readFileSync(file, 'utf8')) as RunSummary;
+  const heals = summary.flows.flatMap((f) => f.heals ?? []);
+  if (!heals.length) {
+    console.log(`Run ${runId} healed nothing.`);
+    return 0;
+  }
+  if (flags.accept) {
+    reportApplied(applyHeals(flags.dir, heals), false);
+    return 0;
+  }
+  console.log(`Run ${runId} healed ${heals.length} step${heals.length === 1 ? '' : 's'}:`);
+  for (const h of heals) console.log(`  ${describeHeal(h)}`);
+  console.log(`\nAccept: heapcode qa heals${flags.run ? ` --run ${runId}` : ''}${flags.dir === process.cwd() ? '' : ` --dir ${shown(flags.dir)}`} --accept`);
+  return 0;
 }
 
 async function qaRecord(args: string[]): Promise<number> {
@@ -476,15 +592,11 @@ async function qaDo(args: string[]): Promise<number> {
   if (configErrors.length) return fail(formatErrors(configErrors));
 
   // The agent role, as Heap Code's agent uses it — one setting for both.
-  const config = new ConfigStore(configFile());
-  const profile = await config.resolve('agent');
-  if (!profile?.model) {
+  const model = await agentModel();
+  if (!model) {
     return fail('No model is set up. Add a connection with `heapcode connection add`, then `heapcode model set agent <connection> <model>`.');
   }
-  const apiKey = await new SecretsStore(secretsFile()).getApiKey(profile.name);
-  const provider = createProvider(profile, apiKey);
-  const capabilities = resolveCapabilities(profile);
-  const contextWindow = (await provider.contextLengthFor?.(profile.model).catch(() => undefined)) ?? profileContextWindow(profile);
+  const { provider, contextWindow } = model;
 
   const runId = newRunId();
   const templates = new Templates({ inputs: {}, secret: ws.secret, env: process.env, runId });
@@ -509,7 +621,7 @@ async function qaDo(args: string[]): Promise<number> {
     return fail(err instanceof Error ? err.message : String(err));
   }
 
-  console.log(`${profile.model} is doing: ${task}\n`);
+  console.log(`${model.model} is doing: ${task}\n`);
   const abort = new AbortController();
   const onSigint = (): void => abort.abort();
   process.once('SIGINT', onSigint);
@@ -518,10 +630,10 @@ async function qaDo(args: string[]): Promise<number> {
     result = await runAiTask({
       driver,
       provider,
-      model: profile.model,
-      nativeToolCalls: capabilities.nativeToolCalls,
+      model: model.model,
+      nativeToolCalls: model.nativeToolCalls,
       contextWindow,
-      ...(profile.maxTokens ? { maxTokens: profile.maxTokens } : {}),
+      ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
       task,
       startUrl: flags.url ?? '/',
       baseUrl,
@@ -558,7 +670,7 @@ async function qaDo(args: string[]): Promise<number> {
 
   try {
     let flow = result.recording.flow;
-    const described = await describeFlow(provider, profile.model, task, flow);
+    const described = await describeFlow(provider, model.model, task, flow);
     if (described) flow = applyDescription(flow, described);
     const name = flags.name ?? described?.name ?? task.toLowerCase().slice(0, 60);
     flow = { ...flow, name };
@@ -692,7 +804,9 @@ function stepLine(step: StepResult): string {
   const note = [errors ? `${errors} console error${errors === 1 ? '' : 's'}` : '', step.failedRequests.length ? `${step.failedRequests.length} failed request${step.failedRequests.length === 1 ? '' : 's'}` : '']
     .filter(Boolean)
     .join(', ');
-  const head = `${indent}${mark} ${step.path}  ${step.label}${timing}${note ? `  (${note})` : ''}`;
+  const healed = step.healed ? `  ⚕ healed by ${step.healed.via === 'similarity' ? `similarity ${Math.round((step.healed.score ?? 0) * 100)}%` : 'the AI'}` : '';
+  const bug = step.bug ? '  ⚠ likely an app bug' : '';
+  const head = `${indent}${mark} ${step.path}  ${step.label}${timing}${note ? `  (${note})` : ''}${healed}${bug}`;
   return step.status === 'failed' && step.error && step.kind !== 'use' ? `${head}\n${indent}    ${step.error}` : head;
 }
 

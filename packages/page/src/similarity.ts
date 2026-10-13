@@ -1,5 +1,5 @@
 import { fingerprintOf, type Fingerprint } from './fingerprint.js';
-import type { DomTree } from './tree.js';
+import { TEST_ID_ATTRS, type DomTree } from './tree.js';
 
 /**
  * Find the element on a changed page that is most like a saved one.
@@ -40,7 +40,9 @@ interface Weighted {
 const PROPERTIES: Weighted[] = [
   // A test id is a promise from the app's authors that this is the element,
   // so it outweighs a reworded label — unlike Similo's sites, which had none.
-  { weight: 6, similarity: (s, c) => (s.testId === undefined ? undefined : equal(s.testId, c.testId)) },
+  // A *different* test id says it is another element; *no* test id says
+  // nothing (refactors drop them), so it is left out rather than scored 0.
+  { weight: 6, similarity: (s, c) => (s.testId === undefined || c.testId === undefined ? undefined : equal(s.testId, c.testId)) },
   { weight: 1.5, similarity: (s, c) => (s.id === undefined ? undefined : equal(s.id, c.id)) },
   { weight: 1.5, similarity: (s, c) => equal(s.tag, c.tag) },
   { weight: 1.5, similarity: (s, c) => (s.name === undefined ? undefined : textSimilarity(s.name, c.name)) },
@@ -64,7 +66,13 @@ export interface FindOptions {
 }
 
 export function findSimilar(saved: Fingerprint, tree: DomTree, options: FindOptions = {}): MatchResult {
-  const ids = options.candidates ?? tree.nodes.filter((n) => n.visible).map((n) => n.id);
+  let ids = options.candidates ?? tree.nodes.filter((n) => n.visible).map((n) => n.id);
+  // Elements still carrying the saved test id are the only contenders: the
+  // app's authors said which element this is, whatever its words became.
+  if (saved.testId) {
+    const same = ids.filter((id) => Object.entries(tree.nodes[id]!.attrs).some(([k, v]) => TEST_ID_ATTRS.includes(k) && v === saved.testId));
+    if (same.length) ids = same;
+  }
   const ranked: Match[] = [];
   for (const id of ids) ranked.push({ nodeId: id, score: score(saved, fingerprintOf(tree, id)) });
   ranked.sort((a, b) => b.score - a.score);

@@ -49,6 +49,8 @@ export interface Driver {
    * the recorder would write it. What lets an AI-driven run become a flow.
    */
   describe?(nodeId: number): Promise<RecordedTarget | undefined>;
+  /** Optional: the same for any target — how a passing run refreshes its fingerprints. */
+  describeTarget?(target: Target): Promise<RecordedTarget | undefined>;
   /**
    * Optional: wait for what the last action set off — a navigation, a load —
    * to finish, so a page read right after it is the new page. Replay does not

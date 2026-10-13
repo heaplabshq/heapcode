@@ -78,7 +78,7 @@ describe('parseFlow', () => {
 describe('parseConfig', () => {
   it('defaults everything when the file is missing', () => {
     const result = parseConfig(undefined);
-    expect(result).toEqual({ ok: true, value: { targets: [], browser: {}, timeout: 10_000 } });
+    expect(result).toEqual({ ok: true, value: { targets: [], browser: {}, timeout: 10_000, heal: 'ai' } });
   });
 
   it('reads targets and browser settings and rejects bad ones', () => {

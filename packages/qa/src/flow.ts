@@ -119,6 +119,12 @@ export interface QaConfig {
   };
   /** Per-step timeout in ms. Default 10 000. */
   timeout: number;
+  /**
+   * When a step's element cannot be found: `ai` (default) tries a similarity
+   * match, then asks the agent model; `similarity` never calls a model; `off`
+   * just fails.
+   */
+  heal: 'ai' | 'similarity' | 'off';
 }
 
 export const DEFAULT_TIMEOUT = 10_000;

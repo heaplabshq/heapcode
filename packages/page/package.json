@@ -41,6 +41,10 @@
     "./outline": {
       "types": "./src/outline.ts",
       "default": "./src/outline.ts"
+    },
+    "./domTools": {
+      "types": "./src/domTools.ts",
+      "default": "./src/domTools.ts"
     }
   },
   "scripts": {

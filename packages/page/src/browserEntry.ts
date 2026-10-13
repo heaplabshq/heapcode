@@ -19,6 +19,8 @@ export interface HeapQaPageApi {
    * it — so a step the AI took records exactly like a step a person took.
    */
   describe(id: number): RecordedTarget | null;
+  /** The same for an element the driver already holds (found by a locator). */
+  describeElement(el: Element): RecordedTarget;
 }
 
 let last: Element[] = [];
@@ -37,6 +39,9 @@ const api: HeapQaPageApi = {
   describe(id) {
     const el = api.element(id);
     return el ? describeTarget(el) : null;
+  },
+  describeElement(el) {
+    return describeTarget(el);
   },
 };
 

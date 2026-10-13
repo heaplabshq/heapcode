@@ -37,6 +37,10 @@ baseUrl: ${baseUrl}
 #   channel: chrome      # chrome | msedge | chromium
 #   headless: true
 # timeout: 10000         # how long a step may wait, in ms
+
+# When a step's element has moved or changed: ai (similarity first, then the
+# agent model looks), similarity (never calls a model), or off.
+# heal: ai
 `,
   );
   write(

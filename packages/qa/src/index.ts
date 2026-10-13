@@ -37,6 +37,9 @@ export {
   type FlowResult,
   type StepResult,
   type StepStatus,
+  type StepSource,
+  type HealProposal,
+  type FingerprintRefresh,
 } from './run.js';
 export {
   newRunId,
@@ -50,7 +53,8 @@ export {
 } from './results.js';
 export { initWorkspace } from './init.js';
 export { serializeFlow } from './serialize.js';
-export { Recording, flowId, camelName, constName, stepTarget, type RecordingResult, type RecordedStep, type SavedFingerprints } from './record.js';
-export { flowPath, stepPath, fingerprintsPath, writeFlow, writeDraft, readFingerprints, saveSecrets, type FlowKind } from './store.js';
+export { Recording, flowId, camelName, constName, stepTarget, withTarget, type HealHistory, type RecordingResult, type RecordedStep, type SavedFingerprints } from './record.js';
+export { applyHeals, saveRefreshed, type AppliedHeal, flowPath, stepPath, fingerprintsPath, writeFlow, writeDraft, readFingerprints, saveSecrets, type FlowKind } from './store.js';
 export { extractSteps, findUses, applyUses, inputsUsed, sameElement, parseRange, type Extracted, type UseMatch } from './teach.js';
 export { runAiTask, describeFlow, applyDescription, qaSystemPrompt, QA_TOOLS, type AiTaskOptions, type AiTaskResult } from './agent.js';
+export { createHealer, type Healer, type HealerOptions, type HealOutcome, type HealRequest } from './heal.js';

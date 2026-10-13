@@ -124,7 +124,7 @@ describe('workspace', () => {
     mkdirSync(dir, { recursive: true });
     const runDir = createRunDir(dir, '2026-10-14_00-00-00');
     const saved = saveFlow(runDir, {
-      id: 'home', name: 'home', status: 'passed', startedAt: '', durationMs: 1,
+      id: 'home', name: 'home', status: 'passed', startedAt: '', durationMs: 1, heals: [], refreshed: [],
       steps: [{ path: '1', depth: 0, kind: 'goto', label: 'go', status: 'passed', durationMs: 1, console: [], failedRequests: [], screenshot: new Uint8Array([1, 2]) }],
     });
     expect(saved.steps[0]!.screenshot).toBe(join('screenshots', 'home', '1.png'));

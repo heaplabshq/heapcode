@@ -46,7 +46,7 @@ export function loadWorkspace(dir: string, env: Record<string, string | undefine
   const configPath = join(dir, CONFIG_FILE);
   const configText = existsSync(configPath) ? readFileSync(configPath, 'utf8') : undefined;
   const parsedConfig = parseConfig(configText, CONFIG_FILE);
-  let config: QaConfig = { targets: [], browser: {}, timeout: 10_000 };
+  let config: QaConfig = { targets: [], browser: {}, timeout: 10_000, heal: 'ai' };
   if (parsedConfig.ok) config = parsedConfig.value;
   else errors.push(...parsedConfig.errors);
 

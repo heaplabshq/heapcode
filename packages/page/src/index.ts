@@ -10,3 +10,4 @@ export { Recorder, describeTarget, actionableTarget, cssPath, isStableId, isSens
 export type { RecordedEvent, RecordedLocator, RecordedTarget, Sink } from './recording.js';
 export { formatOutline, isActionable, type OutlineOptions } from './outline.js';
 export { INTERACTIVE_ROLES } from './tree.js';
+export { domOutline, domSearch, domSubtree, domAround, domCandidates, describeFingerprint, nodeLine } from './domTools.js';

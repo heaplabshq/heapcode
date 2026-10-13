@@ -1,5 +1,8 @@
-import { describeAttempts, locate, probesOf, type Attempt, type ConsoleLine, type Driver, type FailedRequest, type Located } from './driver.js';
+import type { Fingerprint } from '@heapcode/page/fingerprint';
+import { describeAttempts, locate, probesOf, type Attempt, type ConsoleLine, type Driver, type FailedRequest, type Target } from './driver.js';
 import type { Expectation, Flow, Locator, Step } from './flow.js';
+import type { HealOutcome, Healer } from './heal.js';
+import type { SavedFingerprints } from './record.js';
 import type { Filled, Templates } from './template.js';
 
 /**
@@ -9,9 +12,41 @@ import type { Filled, Templates } from './template.js';
  * report needs: which strategy found each element, what the console said and
  * which requests failed during the step, and a screenshot.
  *
- * Healing (Q5) will sit where `locate` fails; until then a missing element is
- * a failure, reported with what each strategy found.
+ * When every strategy of a step's locator fails, a `Healer` (if given) looks
+ * for the element again — see heal.ts. A healed step carries on with the
+ * element found and records a *proposal* for the new locator; the flow file
+ * is never changed by a run. A passing run also refreshes each element's
+ * fingerprint, so healing compares against the app as it last worked.
  */
+
+/** Which file a step came from: the flow itself, or a reusable step it used. */
+export interface StepSource {
+  kind: 'flow' | 'step';
+  id: string;
+}
+
+/** A healed step's new locator, for a person to accept into the file. */
+export interface HealProposal {
+  source: StepSource;
+  /** 1-based position of the step in its file. */
+  step: number;
+  /** Where in this run: "3", "2.4". */
+  path: string;
+  previous: Locator;
+  locator: Locator;
+  fingerprint?: Fingerprint;
+  via: 'similarity' | 'agent';
+  score?: number;
+  reason?: string;
+}
+
+/** An element as it looked in a passing run, to save as its fingerprint. */
+export interface FingerprintRefresh {
+  source: StepSource;
+  step: number;
+  locator: Locator;
+  fingerprint: Fingerprint;
+}
 
 export type StepStatus = 'passed' | 'failed' | 'skipped';
 
@@ -29,6 +64,10 @@ export interface StepResult {
   line?: number;
   /** Which strategy found the element, when the step had one. */
   strategy?: string;
+  /** Found by healing, not by its locator. */
+  healed?: { via: 'similarity' | 'agent'; score?: number; reason?: string; locator: Locator };
+  /** Healing looked and decided the element is gone — a bug in the app, not drift. */
+  bug?: boolean;
   attempts?: Attempt[];
   error?: string;
   console: ConsoleLine[];
@@ -50,6 +89,10 @@ export interface FlowResult {
   error?: string;
   /** Path of the saved trace, when the flow failed and the driver can trace. */
   trace?: string;
+  /** Locators healing found, proposed for the files. */
+  heals: HealProposal[];
+  /** Fingerprints from this run — worth saving only if it passed. */
+  refreshed: FingerprintRefresh[];
 }
 
 export interface RunOptions {
@@ -65,6 +108,12 @@ export interface RunOptions {
   /** Where to save a trace if the flow fails; undefined discards it. */
   tracePath?: string;
   onStep?: (result: StepResult) => void;
+  /** Looks for an element whose locator stopped working. Without one, that step fails. */
+  healer?: Healer;
+  /** Saved fingerprints of the flow and of the reusable steps it uses. */
+  fingerprints?: (source: StepSource) => SavedFingerprints | undefined;
+  /** Record each element's fingerprint as the run finds it. Default false. */
+  refreshFingerprints?: boolean;
 }
 
 export async function runFlow(id: string, flow: Flow, options: RunOptions): Promise<FlowResult> {
@@ -75,12 +124,12 @@ export async function runFlow(id: string, flow: Flow, options: RunOptions): Prom
   if (traced) await options.driver.startTrace!();
 
   const baseUrl = options.baseUrl ?? (flow.baseUrl ? options.templates.fill(flow.baseUrl).value : undefined);
-  const ctx: Ctx = { ...options, baseUrl, steps, consoleSoFar, failed: false };
+  const ctx: Ctx = { ...options, baseUrl, steps, consoleSoFar, failed: false, heals: [], refreshed: [] };
   // Drop anything left over from a previous flow on the same page.
   options.driver.drainConsole();
   options.driver.drainFailedRequests();
 
-  await runSteps(flow.steps, options.templates, ctx, '', 0);
+  await runSteps(flow.steps, options.templates, ctx, '', 0, { kind: 'flow', id });
 
   const failedStep = steps.find((s) => s.status === 'failed');
   let trace: string | undefined;
@@ -99,6 +148,8 @@ export async function runFlow(id: string, flow: Flow, options: RunOptions): Prom
     steps,
     ...(failedStep ? { error: `Step ${failedStep.path} (${failedStep.label}): ${failedStep.error}` } : {}),
     ...(trace ? { trace } : {}),
+    heals: ctx.heals,
+    refreshed: failedStep ? [] : ctx.refreshed,
   };
 }
 
@@ -107,9 +158,11 @@ interface Ctx extends RunOptions {
   steps: StepResult[];
   consoleSoFar: ConsoleLine[];
   failed: boolean;
+  heals: HealProposal[];
+  refreshed: FingerprintRefresh[];
 }
 
-async function runSteps(list: Step[], templates: Templates, ctx: Ctx, prefix: string, depth: number): Promise<void> {
+async function runSteps(list: Step[], templates: Templates, ctx: Ctx, prefix: string, depth: number, source: StepSource): Promise<void> {
   for (let i = 0; i < list.length; i += 1) {
     const step = list[i]!;
     const path = `${prefix}${i + 1}`;
@@ -121,7 +174,7 @@ async function runSteps(list: Step[], templates: Templates, ctx: Ctx, prefix: st
       await runUse(step, templates, ctx, path, depth);
       continue;
     }
-    await runOne(step, templates, ctx, path, depth);
+    await runOne(step, templates, ctx, path, depth, { source, index: i });
   }
 }
 
@@ -148,12 +201,18 @@ async function runUse(step: Extract<Step, { kind: 'use' }>, templates: Templates
   }
   const row: StepResult = { ...base, status: 'passed', durationMs: 0, ...(step.intent ? { intent: step.intent } : {}) };
   record(ctx, row);
-  await runSteps(target.steps, child, ctx, `${path}.`, depth + 1);
+  await runSteps(target.steps, child, ctx, `${path}.`, depth + 1, { kind: 'step', id: step.use });
   row.durationMs = Date.now() - started;
   if (ctx.steps.some((s) => s.path.startsWith(`${path}.`) && s.status === 'failed')) row.status = 'failed';
 }
 
-async function runOne(step: Exclude<Step, { kind: 'use' }>, templates: Templates, ctx: Ctx, path: string, depth: number): Promise<void> {
+interface Place {
+  source: StepSource;
+  /** 0-based, in its file. */
+  index: number;
+}
+
+async function runOne(step: Exclude<Step, { kind: 'use' }>, templates: Templates, ctx: Ctx, path: string, depth: number, place: Place): Promise<void> {
   const started = Date.now();
   const result: StepResult = {
     path,
@@ -168,7 +227,7 @@ async function runOne(step: Exclude<Step, { kind: 'use' }>, templates: Templates
     failedRequests: [],
   };
   try {
-    await perform(step, templates, ctx, result);
+    await perform(step, templates, ctx, result, place);
   } catch (err) {
     result.status = 'failed';
     result.error = templates.redact(message(err));
@@ -192,15 +251,73 @@ async function runOne(step: Exclude<Step, { kind: 'use' }>, templates: Templates
   record(ctx, result);
 }
 
-async function perform(step: Exclude<Step, { kind: 'use' }>, templates: Templates, ctx: Ctx, result: StepResult): Promise<void> {
+type Find = (locator: Locator, isCheck?: boolean) => Promise<Target>;
+
+/** How long a missing element is waited for before the free similarity match is tried. */
+const EARLY_HEAL_MS = 3000;
+
+async function perform(step: Exclude<Step, { kind: 'use' }>, templates: Templates, ctx: Ctx, result: StepResult, place: Place): Promise<void> {
   const { driver } = ctx;
-  const find = async (locator: Locator): Promise<Extract<Located, { found: true }>> => {
-    const located = await until(() => locate(driver, locator), (l) => l.found, ctx.timeout);
+  /**
+   * The element for `locator`: by its strategies, waiting for the page; else
+   * by healing; else a failure that says what each strategy found.
+   */
+  const find: Find = async (locator, isCheck = false) => {
+    const healRequest = (attempts: Attempt[], similarityOnly: boolean) => {
+      const fingerprint = savedFingerprint(ctx, place, locator);
+      return { locator, ...(step.intent ? { intent: step.intent } : {}), ...(fingerprint ? { fingerprint } : {}), attempts, isCheck, similarityOnly };
+    };
+    // Waiting the whole timeout for an element that was renamed makes every
+    // healed step cost that timeout. So after a short wait the free
+    // similarity match gets a try; only past the full timeout does a model.
+    const early = Math.min(ctx.timeout, EARLY_HEAL_MS);
+    let located = await until(() => locate(driver, locator), (l) => l.found, early);
+    if (!located.found && ctx.healer && early < ctx.timeout) {
+      const quick = await ctx.healer.heal(driver, healRequest(located.attempts, true));
+      if (quick.found) return healedWith(quick, locator);
+      located = await until(() => locate(driver, locator), (l) => l.found, ctx.timeout - early);
+    }
     result.attempts = located.attempts;
-    if (!located.found) throw new Error(`Could not find ${describeLocator(locator)} (${describeAttempts(located.attempts)}).`);
-    result.strategy = located.strategy;
-    return located;
+    if (located.found) {
+      result.strategy = located.strategy;
+      // Before acting: a click may take the page, and the element, away.
+      if (ctx.refreshFingerprints && driver.describeTarget) {
+        const now = await driver.describeTarget(located.target).catch(() => undefined);
+        if (now?.fingerprint) ctx.refreshed.push({ source: place.source, step: place.index + 1, locator, fingerprint: now.fingerprint });
+      }
+      return located.target;
+    }
+    const notFound = `Could not find ${describeLocator(locator)} (${describeAttempts(located.attempts)})`;
+    if (!ctx.healer) throw new Error(`${notFound}.`);
+    const outcome = await ctx.healer.heal(driver, healRequest(located.attempts, false));
+    if (!outcome.found) {
+      if (outcome.missing) {
+        result.bug = true;
+        throw new Error(`${notFound}, and it is not on the page any more: ${templates.redact(outcome.reason)}`);
+      }
+      throw new Error(`${notFound}; healing: ${templates.redact(outcome.reason)}.`);
+    }
+    return healedWith(outcome, locator);
   };
+
+  function healedWith(outcome: Extract<HealOutcome, { found: true }>, locator: Locator): Target {
+    const healed = {
+      via: outcome.via,
+      ...(outcome.score !== undefined ? { score: outcome.score } : {}),
+      ...(outcome.reason ? { reason: templates.redact(outcome.reason) } : {}),
+      locator: { ...outcome.target.locator },
+    };
+    result.healed = healed;
+    ctx.heals.push({
+      source: place.source,
+      step: place.index + 1,
+      path: result.path,
+      previous: locator,
+      ...healed,
+      ...(outcome.target.fingerprint ? { fingerprint: outcome.target.fingerprint } : {}),
+    });
+    return { nodeId: outcome.nodeId };
+  }
 
   switch (step.kind) {
     case 'goto': {
@@ -209,40 +326,44 @@ async function perform(step: Exclude<Step, { kind: 'use' }>, templates: Template
       return;
     }
     case 'click':
-      await driver.click((await find(step.target)).target);
+      await driver.click(await find(step.target));
       return;
     case 'type':
-      await driver.type((await find(step.target)).target, templates.fill(step.text).value, { clear: step.clear });
+      await driver.type(await find(step.target), templates.fill(step.text).value, { clear: step.clear });
       return;
     case 'select':
-      await driver.select((await find(step.target)).target, templates.fill(step.option).value);
+      await driver.select(await find(step.target), templates.fill(step.option).value);
       return;
     case 'press':
-      await driver.press(step.key, step.target ? (await find(step.target)).target : undefined);
+      await driver.press(step.key, step.target ? await find(step.target) : undefined);
       return;
     case 'wait':
       await sleep(step.ms);
       return;
     case 'expect':
-      await check(step.expect, templates, ctx, result);
+      await check(step.expect, templates, ctx, result, find);
       return;
   }
 }
 
-async function check(expectation: Expectation, templates: Templates, ctx: Ctx, result: StepResult): Promise<void> {
+/** The fingerprint saved for this step — only if the file's locator is still the one it was saved for. */
+function savedFingerprint(ctx: Ctx, place: Place, locator: Locator): Fingerprint | undefined {
+  const saved = ctx.fingerprints?.(place.source)?.steps.find((f) => f.step === place.index + 1);
+  return saved && JSON.stringify(saved.locator) === JSON.stringify(locator) ? saved.fingerprint : undefined;
+}
+
+async function check(expectation: Expectation, templates: Templates, ctx: Ctx, result: StepResult, find: Find): Promise<void> {
   const { driver } = ctx;
   switch (expectation.kind) {
     case 'visible': {
-      const ok = await until(
-        async () => {
-          const l = await locate(driver, expectation.target);
-          result.attempts = l.attempts;
-          return l.found && (await driver.isVisible(l.target));
-        },
-        Boolean,
-        ctx.timeout,
-      );
-      if (!ok) throw new Error(`Expected ${describeLocator(expectation.target)} to be visible, but it ${result.attempts?.some((a) => a.count > 0) ? 'is hidden or ambiguous' : 'is not on the page'} (${describeAttempts(result.attempts ?? [])}).`);
+      let target: Target;
+      try {
+        target = await find(expectation.target, true);
+      } catch (err) {
+        throw new Error(`Expected ${describeLocator(expectation.target)} to be visible, but it ${result.attempts?.some((a) => a.count > 0) ? 'is ambiguous' : 'is not on the page'} (${message(err)})`);
+      }
+      const ok = await until(() => driver.isVisible(target), Boolean, ctx.timeout);
+      if (!ok) throw new Error(`Expected ${describeLocator(expectation.target)} to be visible, but it is hidden.`);
       return;
     }
     case 'hidden': {
@@ -263,12 +384,10 @@ async function check(expectation: Expectation, templates: Templates, ctx: Ctx, r
         contains: expectation.contains === undefined ? undefined : templates.fill(expectation.contains),
       };
       let last = '';
+      const target = await find(expectation.target, true);
       const ok = await until(
         async () => {
-          const l = await locate(driver, expectation.target);
-          result.attempts = l.attempts;
-          if (!l.found) return false;
-          last = await driver.textOf(l.target);
+          last = await driver.textOf(target);
           return (want.equals === undefined || last === want.equals.value) && (want.contains === undefined || last.includes(want.contains.value));
         },
         Boolean,

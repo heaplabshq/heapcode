@@ -177,6 +177,13 @@ export class PlaywrightDriver implements Driver {
     await this.context.tracing.stop(path ? { path } : {});
   }
 
+  async describeTarget(target: Target): Promise<RecordedTarget | undefined> {
+    if ('nodeId' in target) return this.describe(target.nodeId);
+    await this.ensureInspector();
+    const found = this.locator(target.probe).nth(target.index);
+    return (await found.evaluate((el) => (globalThis as unknown as { __heapqa: { describeElement(el: unknown): unknown } }).__heapqa.describeElement(el))) as RecordedTarget;
+  }
+
   async settle(): Promise<void> {
     // A click's navigation starts a moment after the click returns; give it
     // that moment, then wait for whatever it started to load.

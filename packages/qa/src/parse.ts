@@ -302,7 +302,7 @@ function parseExpect(r: Reader, node: Node | null): Expectation | undefined {
 
 /** Parse `heapqa.yaml`. A missing file is fine — every setting has a default. */
 export function parseConfig(text: string | undefined, file = 'heapqa.yaml'): ParseResult<QaConfig> {
-  const config: QaConfig = { targets: [], browser: {}, timeout: DEFAULT_TIMEOUT };
+  const config: QaConfig = { targets: [], browser: {}, timeout: DEFAULT_TIMEOUT, heal: 'ai' };
   if (text === undefined || text.trim() === '') return { ok: true, value: config };
   const lines = new LineCounter();
   const doc = parseDocument(text, { lineCounter: lines, prettyErrors: false });
@@ -336,6 +336,12 @@ export function parseConfig(text: string | undefined, file = 'heapqa.yaml'): Par
         if (s !== undefined) config.secretsFile = s;
         break;
       }
+      case 'heal': {
+        const v = r.string(value, 'heal');
+        if (v === 'ai' || v === 'similarity' || v === 'off') config.heal = v;
+        else if (v !== undefined) r.fail(value, '`heal` is ai, similarity or off.');
+        break;
+      }
       case 'timeout': {
         const n = r.number(value, 'timeout (milliseconds)');
         if (n !== undefined) config.timeout = n;
@@ -359,7 +365,7 @@ export function parseConfig(text: string | undefined, file = 'heapqa.yaml'): Par
         break;
       }
       default:
-        r.fail(keyNode, `Unknown setting \`${key}\`. heapqa.yaml has baseUrl, targets, secretsFile, timeout and browser.`);
+        r.fail(keyNode, `Unknown setting \`${key}\`. heapqa.yaml has baseUrl, targets, secretsFile, timeout, heal and browser.`);
     }
   }
   return r.errors.length ? { ok: false, errors: r.errors } : { ok: true, value: config };

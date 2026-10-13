@@ -23,7 +23,7 @@ export interface SavedStep extends Omit<StepResult, 'screenshot'> {
   screenshot?: string;
 }
 
-export interface SavedFlow extends Omit<FlowResult, 'steps' | 'trace'> {
+export interface SavedFlow extends Omit<FlowResult, 'steps' | 'trace' | 'refreshed'> {
   steps: SavedStep[];
   trace?: string;
 }
@@ -67,7 +67,8 @@ export function saveFlow(runDir: string, flow: FlowResult): SavedFlow {
     writeFileSync(file, screenshot);
     return { ...rest, screenshot: relative(runDir, file) };
   });
-  const { trace, ...rest } = flow;
+  // Refreshed fingerprints go to the flow's fingerprints file, not the report.
+  const { trace, refreshed: _refreshed, ...rest } = flow;
   return { ...rest, steps, ...(trace ? { trace: relative(runDir, trace) } : {}) };
 }
 

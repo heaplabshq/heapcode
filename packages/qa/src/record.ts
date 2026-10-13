@@ -36,7 +36,15 @@ export interface RecordingResult {
 /** `flows/<id>.fingerprints.json`: each element step's element as it was recorded. */
 export interface SavedFingerprints {
   version: 1;
-  steps: { step: number; locator: Locator; fingerprint: Fingerprint }[];
+  steps: { step: number; locator: Locator; fingerprint: Fingerprint; heals?: HealHistory[] }[];
+}
+
+/** One accepted heal of a step: when, how, and what its locator was before and after. */
+export interface HealHistory {
+  at: string;
+  via: 'similarity' | 'agent';
+  from: Locator;
+  to: Locator;
 }
 
 /** A navigation this soon after an action is taken to be caused by it. */
@@ -222,6 +230,22 @@ export function stepTarget(step: Step): Locator | undefined {
       return 'target' in step.expect ? step.expect.target : undefined;
     default:
       return undefined;
+  }
+}
+
+/** The step with its element locator replaced (the one `stepTarget` returns). */
+export function withTarget(step: Step, locator: Locator): Step {
+  switch (step.kind) {
+    case 'click':
+    case 'type':
+    case 'select':
+      return { ...step, target: locator };
+    case 'press':
+      return step.target ? { ...step, target: locator } : step;
+    case 'expect':
+      return 'target' in step.expect ? { ...step, expect: { ...step.expect, target: locator } as typeof step.expect } : step;
+    default:
+      return step;
   }
 }
 

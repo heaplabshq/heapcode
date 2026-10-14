@@ -97,6 +97,8 @@ export interface UiProfileDraft {
   promptDetail?: string;
   maxTokens?: number | null;
   temperature?: number | null;
+  /** Seconds in the editor; the profile stores ms. */
+  timeoutSecs?: number | null;
   /** `<role>Model` / `<role>Profile`; '' clears back to the inherited value. */
   roles?: Record<string, string>;
 }
@@ -640,6 +642,7 @@ function NumberField({
   placeholder,
   onChange,
   step = 1,
+  zero = false,
 }: {
   label: string;
   hint?: string;
@@ -648,6 +651,8 @@ function NumberField({
   onChange(v: number | null): void;
   /** 0.1 for temperature; whole numbers everywhere else. */
   step?: number;
+  /** 0 is a value here (a timeout of 0 waits forever), not the same as empty — as it is for a token count. */
+  zero?: boolean;
 }): JSX.Element {
   return (
     <Field label={label} hint={hint}>
@@ -666,7 +671,9 @@ function NumberField({
           if (!Number.isFinite(n) || n < 0) return onChange(null);
           // Fractional values are meaningful for temperature and nonsense for
           // token counts, so the step decides whether to round.
-          onChange(step < 1 ? n : Math.floor(n) || null);
+          if (step < 1) return onChange(n);
+          const whole = Math.floor(n);
+          onChange(whole === 0 && !zero ? null : whole);
         }}
       />
     </Field>
@@ -752,6 +759,7 @@ function ProfileRow({
     promptDetail: profile.promptTier ?? '',
     maxTokens: profile.maxTokens ?? null,
     temperature: profile.temperature ?? null,
+    timeoutSecs: profile.timeoutMs === undefined ? null : profile.timeoutMs / 1000,
   });
 
   return (
@@ -880,6 +888,14 @@ function ProfileRow({
               placeholder="provider default"
               onChange={(temperature) => setDraft({ ...draft, temperature })}
               step={0.1}
+            />
+            <NumberField
+              label="Response timeout (seconds)"
+              hint="How long to wait for the model to start replying before giving up — a long reply that has started is never cut off. Raise it for slow or local models on big tasks; 0 waits as long as it takes. Empty is 300."
+              value={draft.timeoutSecs}
+              placeholder="300"
+              zero
+              onChange={(timeoutSecs) => setDraft({ ...draft, timeoutSecs })}
             />
           </div>
 
@@ -1546,9 +1562,11 @@ function RoleRow({
  * model.
  */
 function toSaveParams(draft: UiProfileDraft): UiSaveProfileParams['profile'] {
-  const { promptDetail, ...rest } = draft;
+  const { promptDetail, timeoutSecs, ...rest } = draft;
   return {
     ...rest,
+    // Only when the editor had the field: a draft without it says nothing about the timeout.
+    ...(timeoutSecs !== undefined ? { timeoutMs: timeoutSecs === null ? null : Math.round(timeoutSecs * 1000) } : {}),
     // '' is the editor's default, which the host stores as the absence of the
     // field rather than as a written-out 'full' — `null` is how a patch says
     // "clear it", the same as the numeric overrides.

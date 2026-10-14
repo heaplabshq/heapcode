@@ -562,3 +562,42 @@ describe('prompt detail', () => {
     expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ promptTier: null });
   });
 });
+
+/**
+ * The response timeout was settable only as `timeoutMs` in config.json — the
+ * error a slow model hits even told people to raise it, with nowhere in the
+ * app to do so. Seconds in the box, milliseconds in the profile.
+ */
+describe('response timeout', () => {
+  function openProfile(over: Partial<SettingsProps> = {}): void {
+    render(<Settings {...props({ ...over })} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Providers' }));
+    fireEvent.click(screen.getAllByText('Edit')[0]!);
+  }
+  const box = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>(/Response timeout/);
+
+  it('is empty when the profile keeps the default, and sends null for it', () => {
+    const onSaveProfile = vi.fn();
+    openProfile({ onSaveProfile });
+    expect(box().value).toBe('');
+    fireEvent.click(screen.getByText('Save changes'));
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ timeoutMs: null });
+  });
+
+  it('shows the stored value in seconds and saves what is typed as milliseconds', () => {
+    const onSaveProfile = vi.fn();
+    openProfile({ settings: { ...SETTINGS, profiles: [{ ...SETTINGS.profiles[0]!, timeoutMs: 120_000 }] }, onSaveProfile });
+    expect(box().value).toBe('120');
+    fireEvent.change(box(), { target: { value: '900' } });
+    fireEvent.click(screen.getByText('Save changes'));
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ timeoutMs: 900_000 });
+  });
+
+  it('takes 0 for waiting as long as it takes', () => {
+    const onSaveProfile = vi.fn();
+    openProfile({ onSaveProfile });
+    fireEvent.change(box(), { target: { value: '0' } });
+    fireEvent.click(screen.getByText('Save changes'));
+    expect(onSaveProfile.mock.calls[0]![0]).toMatchObject({ timeoutMs: 0 });
+  });
+});

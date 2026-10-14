@@ -1185,6 +1185,7 @@ export class WebSession {
           // resolved where it matters — the run, the meter, the breakdown.
           effectiveContextWindow: profileContextWindow(p),
           maxTokens: p.maxTokens,
+          timeoutMs: p.timeoutMs,
           promptTier: p.promptTier,
         })),
       );
@@ -2526,6 +2527,13 @@ export function mergeProfile(
   if (patch.contextWindow !== undefined) next.contextWindow = patch.contextWindow ?? undefined;
   if (patch.maxTokens !== undefined) next.maxTokens = patch.maxTokens ?? undefined;
   if (patch.temperature !== undefined) next.temperature = patch.temperature ?? undefined;
+  if (patch.timeoutMs !== undefined) {
+    // Checked here, the one place every product's save goes through.
+    if (patch.timeoutMs !== null && (!Number.isInteger(patch.timeoutMs) || patch.timeoutMs < 0)) {
+      throw new Error('The response timeout must be a whole number of seconds, or 0 to wait as long as it takes.');
+    }
+    next.timeoutMs = patch.timeoutMs ?? undefined;
+  }
   return next;
 }
 

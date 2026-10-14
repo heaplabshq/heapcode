@@ -38,6 +38,7 @@ export async function sharedSettings(config: ConfigStore, secrets: SecretsStore,
       contextWindow: p.contextWindow,
       effectiveContextWindow: profileContextWindow(p),
       maxTokens: p.maxTokens,
+      timeoutMs: p.timeoutMs,
       promptTier: p.promptTier,
     })),
   );

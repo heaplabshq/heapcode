@@ -109,3 +109,17 @@ describe('AI healing is time-boxed', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 });
+
+describe('renderPrComment', () => {
+  it('gives a verdict, a row per flow, folded failures and heals, and where the report is', async () => {
+    const { renderPrComment } = await import('../src/report.js');
+    const md = renderPrComment(summary(), { runUrl: 'https://github.com/o/r/actions/runs/9' });
+    expect(md.split('\n')[0]).toBe('### ✗ Heap QA: 1 of 2 flows failed');
+    expect(md).toContain('| ✗ | checkout <works> | 2.3s |');
+    expect(md).toContain('<details><summary>✗ <b>checkout &lt;works&gt;</b> — step 2: click button &quot;Pay&quot;</summary>');
+    expect(md).toContain('_Likely cause (a guess by m, not a finding):_ The payment form never loaded');
+    expect(md).toContain('`steps/log-in.yaml` step 4: button &quot;Log in&quot; → button &quot;Log in now&quot; (similarity 84%)');
+    expect(md).toContain('heapcode qa heals --run 2026-10-14_00-00-00 --accept');
+    expect(md).toContain('the **heapqa-results** artifact of [this run](https://github.com/o/r/actions/runs/9)');
+  });
+});

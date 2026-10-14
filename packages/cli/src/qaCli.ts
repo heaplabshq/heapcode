@@ -7,6 +7,7 @@ import {
   FLOWS_DIR,
   type Finding,
   renderFixBrief,
+  renderPrComment,
   writeReports,
   applyHeals,
   type HealProposal,
@@ -38,6 +39,10 @@ import {
   aiTask,
   exploreSite,
   findRun,
+  ciRunUrl,
+  findPullRequest,
+  postPrComment,
+  writeGithubWorkflow,
   launchDriver,
   prepare,
   replayOnce,
@@ -76,6 +81,10 @@ export async function runQa(argv: string[]): Promise<number> {
       return qaFix(rest);
     case 'explore':
       return qaExplore(rest);
+    case 'comment':
+      return qaComment(rest);
+    case 'github':
+      return qaGithub(rest);
     case 'reuse':
       return qaReuse(rest);
     case 'check':
@@ -117,6 +126,10 @@ Usage:
   heapcode qa fix <flow> [--run ID] [--repo DIR]
                                                Hand a failed flow to Heap Code with the evidence; with --repo, start it there
                                                (edits allowed, commands still need approval)
+  heapcode qa comment [--run ID] [--pr N] [--yes]
+                                               Post the last run's results as one comment on this branch's pull request
+                                               (updated on later runs; asks first unless --yes, as CI needs)
+  heapcode qa github [--dir D]                 Write .github/workflows/heapqa.yml: run the flows on every pull request and comment
   heapcode qa install                          Download Heap QA's own Chromium — only needed with no Chrome or Edge installed
 
 Run flags:
@@ -184,6 +197,7 @@ interface Flags {
   repo?: string;
   pages?: number;
   depth?: number;
+  pr?: number;
   allowCommits: boolean;
   forms: boolean;
   buttons: boolean;
@@ -255,6 +269,12 @@ function parseFlags(args: string[]): Flags | string {
         if (!Number.isInteger(n) || n < 0) return `${arg} takes a whole number.`;
         if (arg === '--pages') flags.pages = n;
         else flags.depth = n;
+        break;
+      }
+      case '--pr': {
+        const n = Number(value());
+        if (!Number.isInteger(n) || n < 1) return '--pr takes a pull request number.';
+        flags.pr = n;
         break;
       }
       case '--allow-commits':
@@ -475,6 +495,50 @@ async function qaExplore(args: string[]): Promise<number> {
   }
   if (flags.open) openFile(report);
   return high ? 1 : 0;
+}
+
+async function qaComment(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const found = findRun(flags.dir, flags.run);
+  if (typeof found === 'string') return fail(found);
+  // gh works on the checkout the command runs in — the app's repository.
+  const cwd = process.cwd();
+  const pr = await findPullRequest(cwd, flags.pr);
+  if (typeof pr === 'string') return fail(pr);
+  const body = renderPrComment(found.summary, { runUrl: ciRunUrl() });
+  if (!flags.yes) {
+    const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    if (!interactive) return fail('Posting to a pull request needs a yes: run this in a terminal, or pass --yes (as CI does).');
+    console.log(`${body}\n`);
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = (await rl.question(`Post this to pull request #${pr.number} (${pr.title})? [y/N]: `)).trim().toLowerCase();
+    rl.close();
+    if (answer !== 'y' && answer !== 'yes') {
+      console.log('Not posted.');
+      return 0;
+    }
+  }
+  const posted = await postPrComment({ cwd, pr, body });
+  if (typeof posted === 'string') return fail(posted);
+  console.log(`${posted.updated ? 'Updated' : 'Posted'} the Heap QA comment on #${pr.number}${posted.url ? `: ${posted.url}` : ''}.`);
+  return 0;
+}
+
+function qaGithub(args: string[]): number {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  if (!existsSync(join(flags.dir, 'heapqa.yaml'))) return fail(`${shown(flags.dir)} has no heapqa.yaml — start a test folder with \`heapcode qa init\` first.`);
+  const ws = loadWorkspace(flags.dir);
+  const repoRoot = process.cwd();
+  if (!existsSync(join(repoRoot, '.git'))) return fail('Run this at the top of your app\'s git repository: the workflow goes in its .github/workflows/.');
+  const { file, created } = writeGithubWorkflow(repoRoot, ws.dir, ws.config.baseUrl ? { baseUrl: ws.config.baseUrl } : {});
+  if (!created) {
+    console.log(`${shown(file)} already exists — left as it is.`);
+    return 0;
+  }
+  console.log(`Wrote ${shown(file)}.\nBefore committing it: edit the "Start the app" step for your app, and add the test passwords your flows use as repository secrets.`);
+  return 0;
 }
 
 function qaReport(args: string[]): number {

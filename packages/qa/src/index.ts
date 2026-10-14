@@ -62,6 +62,6 @@ export { applyHeals, saveRefreshed, type AppliedHeal, flowPath, stepPath, finger
 export { extractSteps, findUses, applyUses, inputsUsed, sameElement, parseRange, type Extracted, type UseMatch } from './teach.js';
 export { runAiTask, describeFlow, applyDescription, qaSystemPrompt, QA_TOOLS, type AiTaskOptions, type AiTaskResult } from './agent.js';
 export { createHealer, type Healer, type HealerOptions, type HealOutcome, type HealRequest } from './heal.js';
-export { renderHtmlReport, renderJunit, renderMarkdown, renderFixBrief, renderExploreReport, type ExploreReportInput } from './report.js';
+export { renderHtmlReport, renderJunit, renderMarkdown, renderFixBrief, renderExploreReport, renderPrComment, type ExploreReportInput } from './report.js';
 export { diagnose, failureEvidence } from './diagnose.js';
 export { explore, type ExploreOptions, type ExploreResult, type Finding, type FindingKind } from './explore.js';

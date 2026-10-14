@@ -275,3 +275,51 @@ ${input.skipped.length ? `<details class="flow"><summary><span class="flow-name"
 </html>
 `;
 }
+
+const mdCell = (s: string): string => s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+
+/**
+ * The pull-request comment: a one-line verdict, a row per flow, each failure
+ * with its step, error and (labelled) guess folded under it, healed steps
+ * waiting to be accepted, and where the full report is.
+ */
+export function renderPrComment(summary: RunSummary, options: { runUrl?: string } = {}): string {
+  const total = summary.passed + summary.failed;
+  const heals = summary.flows.flatMap((f) => f.heals ?? []);
+  const lines = [
+    `### ${summary.failed ? `✗ Heap QA: ${summary.failed} of ${total} flow${total === 1 ? '' : 's'} failed` : `✓ Heap QA: all ${total} flow${total === 1 ? '' : 's'} passed`}`,
+    '',
+    `${summary.baseUrl ? `Against \`${summary.baseUrl}\` · ` : ''}${ms(summary.durationMs)}${heals.length ? ` · ${heals.length} step${heals.length === 1 ? '' : 's'} healed` : ''}`,
+    '',
+    '| | Flow | Time |',
+    '|---|---|---|',
+    ...summary.flows.map((f) => `| ${f.status === 'passed' ? '✓' : '✗'} | ${mdCell(f.name)} | ${ms(f.durationMs)} |`),
+  ];
+  for (const f of summary.flows.filter((x) => x.status === 'failed')) {
+    const step = f.steps.find((s) => s.status === 'failed');
+    lines.push(
+      '',
+      `<details><summary>✗ <b>${esc(f.name)}</b> — ${esc(step ? `step ${step.path}: ${step.label}` : 'failed')}</summary>`,
+      '',
+      `${esc(step?.error ?? f.error ?? 'failed')}`,
+      ...(step?.bug ? ['', 'Healing looked for the element and found it gone from the page — likely an app bug.'] : []),
+      ...(f.diagnosis ? ['', `_Likely cause (a guess by ${esc(f.diagnosis.model)}, not a finding):_ ${esc(f.diagnosis.text)}`] : []),
+      '',
+      '</details>',
+    );
+  }
+  if (heals.length) {
+    lines.push(
+      '',
+      `<details><summary>${heals.length} step${heals.length === 1 ? '' : 's'} healed — the flow files still have the old locators</summary>`,
+      '',
+      ...heals.map((h) => `- \`${h.source.kind === 'flow' ? 'flows' : 'steps'}/${h.source.id}.yaml\` step ${h.step}: ${esc(describeLocator(h.previous))} → ${esc(describeLocator(h.locator))} (${h.via === 'similarity' ? `similarity ${Math.round((h.score ?? 0) * 100)}%` : 'AI'})`),
+      '',
+      `Accept locally with \`heapcode qa heals --run ${summary.runId} --accept\` (download the results first).`,
+      '',
+      '</details>',
+    );
+  }
+  lines.push('', options.runUrl ? `Full report, screenshots and traces: the **heapqa-results** artifact of [this run](${options.runUrl}).` : `Full report: \`results/${summary.runId}/report.html\`.`);
+  return `${lines.join('\n')}\n`;
+}

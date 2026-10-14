@@ -322,7 +322,8 @@ export function App(): JSX.Element {
           <div className="qa-toolbar">
             {state && (
               <WorkspacePicker
-                current={state.folder ?? state.root}
+                // The project, not its test folder: that is "heapqa" in every project.
+                current={state.root}
                 busy={busy}
                 loadWorkspaces={() => client.request<UiWorkspacesResult>(QA_METHODS.workspaces)}
                 browse={(path) => client.request<UiBrowseFoldersResult>(QA_METHODS.browseFolders, { path })}

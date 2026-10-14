@@ -132,7 +132,7 @@ export class QaSession implements HostSession {
     ui.onRequest(QA_METHODS.workspaces, async () => {
       const recent = (await this.deps.workspaces?.list()) ?? [];
       return {
-        current: this.folder ?? this.root,
+        current: this.root,
         recent: recent.some((r) => r.path === this.root) ? recent : [{ path: this.root, name: basename(this.root) || this.root, lastOpened: Date.now() }, ...recent],
         home: homedir(),
       };

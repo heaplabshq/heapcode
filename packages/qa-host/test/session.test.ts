@@ -121,6 +121,7 @@ describe('QaSession', { timeout: 60_000 }, () => {
 
     const listed = await call<{ current: string; recent: { path: string }[] }>(QA_METHODS.workspaces);
     expect(listed.current).toBe(first);
+    // The project is what the picker names, even when its tests live in heapqa/ inside it.
     expect(listed.recent[0]!.path).toBe(first);
     const browsed = await call<{ path: string; entries: unknown[] }>(QA_METHODS.browseFolders, { path: second });
     expect(browsed.path).toBe(second);
@@ -129,6 +130,8 @@ describe('QaSession', { timeout: 60_000 }, () => {
     expect(next.root).toBe(second);
     expect(next.folder).toBe(join(second, 'heapqa'));
     expect(recorded).toEqual([second]);
+    // Named by the project, not its heapqa/ test folder — which is called that in every project.
+    expect((await call<{ current: string }>(QA_METHODS.workspaces)).current).toBe(second);
     await expect(call(QA_METHODS.setRoot, { path: join(second, 'nope') })).rejects.toThrow(/Not a folder/);
 
     // Settings change from the page, and the page sees them.

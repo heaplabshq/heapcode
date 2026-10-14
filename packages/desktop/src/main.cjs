@@ -58,7 +58,8 @@ async function startServer(folder) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI_ENTRY, 'web', '--port', String(port)], {
       cwd: folder,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      // HEAPCODE_WINDOW_CHROME: the pages lay themselves out for this window's title bar (web-ui styles.css).
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...(process.platform === 'darwin' ? { HEAPCODE_WINDOW_CHROME: 'mac' } : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     server = child;
@@ -83,16 +84,8 @@ async function startServer(folder) {
   });
 }
 
-const MAC_CHROME_CSS = `
-  html .rail { padding-top: 6px !important; }
-  /* The rail's header row becomes the title-bar row: traffic lights on the left
-     (native), switcher on the right, the rest drags the window. */
-  html .rail-top { height: 28px; margin-bottom: 10px; padding: 0 2px 0 0; justify-content: flex-end; -webkit-app-region: drag; }
-  html .rail-logo, html .rail-brand { display: none; }
-  html .rail-top > * { -webkit-app-region: no-drag; }
-  /* Pinned beside the lights so it stays put when the rail collapses to 56px. */
-  html .rail-collapse { position: fixed; left: 84px; top: 8px; z-index: 50; }
-`;
+// The macOS title-bar layout lives in web-ui's styles.css under html[data-chrome="mac"],
+// applied from the first frame; it used to be injected here on dom-ready, after a paint.
 
 // "Keep computer awake" in the ⋮ menu. prevent-app-suspension stops the system
 // sleeping but lets the display turn off; it dies with the process, which is
@@ -131,7 +124,6 @@ function createWindow() {
   // macOS it gives up a strip for the traffic lights and that strip drags the
   // window. Injected rather than added to web-ui, which is also a plain website.
   if (process.platform === 'darwin') {
-    win.webContents.on('dom-ready', () => { win?.webContents.insertCSS(MAC_CHROME_CSS).catch(() => {}); });
   }
   win.on('close', () => { if (!win.isMaximized()) writeState({ ...readState(), bounds: win.getBounds() }); });
   win.on('closed', () => { win = null; });

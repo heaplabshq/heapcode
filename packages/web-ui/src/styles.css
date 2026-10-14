@@ -2178,3 +2178,17 @@ body {
   white-space: nowrap;
   border: 0;
 }
+
+/* ---- the desktop app's title bar (macOS) ----
+   The window has no title bar of its own: the rail's header row becomes it —
+   traffic lights on the left (native), the product switcher on the right, the
+   rest drags the window. Switched on by data-chrome="mac", which the host
+   stamps on <html> when the desktop app launched it, so it is in force from
+   the first frame. (Injected after load, every switch between products
+   painted the plain layout once and then jumped.) */
+html[data-chrome="mac"] .rail { padding-top: 6px; }
+html[data-chrome="mac"] .rail-top { height: 28px; margin-bottom: 10px; padding: 0 2px 0 0; justify-content: flex-end; -webkit-app-region: drag; }
+html[data-chrome="mac"] .rail-logo, html[data-chrome="mac"] .rail-brand { display: none; }
+html[data-chrome="mac"] .rail-top > * { -webkit-app-region: no-drag; }
+/* Pinned beside the lights so it stays put when the rail collapses to 56px. */
+html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; z-index: 50; }

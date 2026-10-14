@@ -96,7 +96,7 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string>();
   const [confirm, setConfirm] = useState<{ description: string; decide(allow: boolean): void }>();
   const [headed, setHeaded] = useState(() => remembered('heapqa.headed') === 'true');
-  const [railCollapsed, setRailCollapsed] = useState(() => remembered('heapqa.rail') === 'collapsed');
+  const [railCollapsed, setRailCollapsed] = useState(() => (remembered('heap.rail') ?? remembered('heapqa.rail')) === 'collapsed');
   /** The Settings page open, or undefined when the dialog is closed. */
   const [settingsOpen, setSettingsOpen] = useState<string>();
   const [uiSettings, setUiSettings] = useState<UiSettings>();
@@ -297,7 +297,7 @@ export function App(): JSX.Element {
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
-              remember('heapqa.rail', v ? 'expanded' : 'collapsed');
+              remember('heap.rail', v ? 'expanded' : 'collapsed');
               return !v;
             })
           }

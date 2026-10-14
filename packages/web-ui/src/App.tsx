@@ -167,7 +167,7 @@ export function App(): JSX.Element {
   // Remembered, because it is a preference about screen width, and re-making
   // that choice on every reload is the kind of small friction that adds up.
   const [railCollapsed, setRailCollapsed] = useState(
-    () => localStorage.getItem('heapcode.rail') === 'collapsed',
+    () => (localStorage.getItem('heap.rail') ?? localStorage.getItem('heapcode.rail')) === 'collapsed',
   );
   const [permission, setPermission] = useState<PendingPermission>();
   const [ask, setAsk] = useState<PendingAsk>();
@@ -611,7 +611,7 @@ export function App(): JSX.Element {
         } else if (key === '\\') {
           e.preventDefault();
           setRailCollapsed((v) => {
-            localStorage.setItem('heapcode.rail', v ? 'expanded' : 'collapsed');
+            localStorage.setItem('heap.rail', v ? 'expanded' : 'collapsed');
             return !v;
           });
         } else if (e.shiftKey && key === 'n') {
@@ -1067,7 +1067,7 @@ export function App(): JSX.Element {
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
-              localStorage.setItem('heapcode.rail', v ? 'expanded' : 'collapsed');
+              localStorage.setItem('heap.rail', v ? 'expanded' : 'collapsed');
               return !v;
             })
           }

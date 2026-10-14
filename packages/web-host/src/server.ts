@@ -151,6 +151,11 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
   /** That URL with the mount prefix removed, so the SPA is served from its own root. */
   const stripMount = (m: MountedProduct, pathname: string): string => pathname.slice(m.path.length) || '/';
   /** Which products are served here, for each page's switcher: `chat,qa`. */
+  // The desktop app draws its own title bar into the page (macOS: traffic
+  // lights over the rail). Stamped on <html> so the page is laid out for it
+  // from its first frame — styles injected after load made every switch
+  // between products paint once the plain way, then jump.
+  const windowChrome: Record<string, string> = process.env.HEAPCODE_WINDOW_CHROME === 'mac' ? { chrome: 'mac' } : {};
   const products = mounts.map((m) => m.path.replace(/^\//, '')).join(',');
 
   const http = createServer((req, res) => {
@@ -291,13 +296,13 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       // the root with its socket at /rpc, and mounted it sits under a prefix —
       // hardcoding one of those breaks the other, which is exactly what a
       // first attempt at this did.
-      const attrs = { 'rpc-path': `${pageMount.path}/rpc`, 'sibling': 'code', products };
+      const attrs = { 'rpc-path': `${pageMount.path}/rpc`, 'sibling': 'code', products, ...windowChrome };
       if (await serveStatic(pageMount.staticDir, stripMount(pageMount, url.pathname), res, attrs)) return;
     }
 
     // The page is told whether the other product is there, so the switcher is
     // absent rather than broken when it is not.
-    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': opts.mount ? 'true' : 'false', products })))
+    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': opts.mount ? 'true' : 'false', products, ...windowChrome })))
       return;
 
     res.writeHead(404, { 'content-type': 'text/plain' });

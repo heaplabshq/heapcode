@@ -116,7 +116,7 @@ export function App(): JSX.Element {
   const [seedImages, setSeedImages] = useState<string[]>();
   const [grounding, setGrounding] = useState<ChatGroundingParams['grounding']>();
   const [railCollapsed, setRailCollapsed] = useState(
-    () => localStorage.getItem('heapchat.rail') === 'collapsed',
+    () => (localStorage.getItem('heap.rail') ?? localStorage.getItem('heapchat.rail')) === 'collapsed',
   );
   const [runStartedAt, setRunStartedAt] = useState<number>();
   /**
@@ -417,7 +417,7 @@ export function App(): JSX.Element {
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
-              localStorage.setItem('heapchat.rail', v ? 'expanded' : 'collapsed');
+              localStorage.setItem('heap.rail', v ? 'expanded' : 'collapsed');
               return !v;
             })
           }

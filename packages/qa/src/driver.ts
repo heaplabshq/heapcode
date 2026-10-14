@@ -74,6 +74,11 @@ export interface Driver {
    * last `inspect`) — what a vision model looks at to pick an element.
    */
   markedScreenshot?(nodeIds: number[]): Promise<Uint8Array>;
+  /**
+   * Optional: stream what the browser shows, as JPEG frames (base64), so a
+   * page can show the run live. Resolves to a function that stops it.
+   */
+  screencast?(onFrame: (jpegBase64: string) => void): Promise<() => Promise<void>>;
   /** Optional: the window size; undefined restores the driver's default. */
   viewport?(size?: { width: number; height: number }): Promise<void>;
 }

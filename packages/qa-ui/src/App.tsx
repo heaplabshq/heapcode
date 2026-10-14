@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { RpcClient } from '@heapcode/web-ui/rpc';
 import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
 import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/ProductToggle';
+import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
+import { MessageList } from '@heapcode/web-ui/components/MessageList';
+import { Composer } from '@heapcode/web-ui/components/Composer';
+import { emptyTranscript, reduce, settle, withNotice, withUserMessage, type Transcript } from '@heapcode/web-ui/transcript';
 import {
   QA_METHODS,
   QA_PROTOCOL_VERSION,
@@ -11,16 +15,20 @@ import {
   type QaRecordStopResult,
   type QaRunDetail,
   type QaState,
+  type UiBrowseFoldersResult,
+  type UiWorkspacesResult,
 } from '@heapcode/qa-host/protocol';
 
 /**
- * Heap QA's page, inside `heapcode web` (and so inside the desktop app).
+ * Heap QA's page, inside `heapcode web` and the desktop app.
  *
- * The shell is Heap Code's — rail, buttons, banners, the stylesheet — used,
- * not imitated, like Heap Chat. What is this product's: the tests list, live
- * progress of a run, the report, recording, exploring and AI-written tests.
- * All of the work happens in the host (`@heapcode/qa-host`), the same code
- * the `heapcode qa` command runs; this page starts it and shows it.
+ * Laid out like the test runners people already trust (Cypress, Playwright's
+ * UI mode): what is happening on the left — the step log, or the AI's
+ * transcript — and the browser itself on the right, live, so nothing runs out
+ * of sight. A finished step shows its screenshot when clicked. The AI's work
+ * uses Heap Code's own transcript and composer, so it reads the same here as
+ * there. All the work is in the host (`@heapcode/qa-host`), the same code the
+ * `heapcode qa` command runs.
  */
 
 const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
@@ -29,40 +37,68 @@ const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.h
 const HAS_CODE = document.documentElement.dataset.sibling === 'code';
 const HAS_CHAT = servedProducts().includes('chat');
 
-type View = { name: 'tests' } | { name: 'live' } | { name: 'detail'; runId: string } | { name: 'record' } | { name: 'explore' } | { name: 'ask' };
+type View = 'tests' | 'run' | 'record' | 'explore' | 'ask' | { detail: string };
 
-interface LiveLine {
+interface LogRow {
   key: string;
   mark: string;
-  tone: 'ok' | 'bad' | 'warn' | 'dim';
+  tone: 'ok' | 'bad' | 'warn' | 'dim' | 'head';
   text: string;
   depth: number;
   note?: string;
+  /** A screenshot of this moment, to show on the right when clicked. */
+  shot?: string;
 }
 
-interface Live {
+interface Job {
   kind: 'run' | 'explore' | 'record' | 'do';
   title: string;
   runId?: string;
-  lines: LiveLine[];
-  /** Set when the job ended: a one-line result. */
+  rows: LogRow[];
   done?: string;
+  failed?: boolean;
+}
+
+interface Pinned {
+  shot: string;
+  label: string;
+}
+
+function remembered(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function remember(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Remembering is a convenience only.
+  }
 }
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
   const [state, setState] = useState<QaState>();
-  const [view, setView] = useState<View>({ name: 'tests' });
-  const [live, setLive] = useState<Live>();
+  const [view, setView] = useState<View>('tests');
+  const [job, setJob] = useState<Job>();
+  const [ai, setAi] = useState<Transcript>(emptyTranscript);
+  const [heal, setHeal] = useState<Transcript>(emptyTranscript);
+  const [frame, setFrame] = useState<string>();
+  const [pinned, setPinned] = useState<Pinned>();
   const [error, setError] = useState<string>();
   const [confirm, setConfirm] = useState<{ description: string; decide(allow: boolean): void }>();
-  const [railCollapsed, setRailCollapsed] = useState(() => localStorage.getItem('heapqa.rail') === 'collapsed');
+  const [headed, setHeaded] = useState(() => remembered('heapqa.headed') === 'true');
+  const [railCollapsed, setRailCollapsed] = useState(() => remembered('heapqa.rail') === 'collapsed');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const client = useMemo(() => new RpcClient(RPC_URL, setStatus), []);
   const seq = useRef(0);
 
-  const addLine = useCallback((line: Omit<LiveLine, 'key'>) => {
-    setLive((l) => (l ? { ...l, lines: [...l.lines, { ...line, key: `l${seq.current++}` }] } : l));
+  const addRow = useCallback((row: Omit<LogRow, 'key'>) => {
+    setJob((j) => (j ? { ...j, rows: [...j.rows, { ...row, key: `r${seq.current++}` }] } : j));
   }, []);
 
   useEffect(() => {
@@ -70,8 +106,15 @@ export function App(): JSX.Element {
     client.onNotification(QA_METHODS.event, (raw) => {
       const e = raw as QaEvent;
       switch (e.type) {
+        case 'frame':
+          setFrame(`data:image/jpeg;base64,${e.data}`);
+          break;
+        case 'agent':
+          if (e.job === 'do') setAi((t) => reduce(t, e.event, seq.current++));
+          else setHeal((t) => reduce(t, e.event, seq.current++));
+          break;
         case 'flowStart':
-          addLine({ mark: '▸', tone: 'dim', text: e.name, depth: 0 });
+          addRow({ mark: '', tone: 'head', text: e.name, depth: 0 });
           break;
         case 'step': {
           const s = e.step;
@@ -80,52 +123,60 @@ export function App(): JSX.Element {
           const note = [
             s.healed ? `healed by ${s.healed.via === 'similarity' ? `similarity ${Math.round((s.healed.score ?? 0) * 100)}%` : 'the AI'}` : '',
             s.bug ? 'likely an app bug' : '',
-            s.status === 'failed' && s.kind !== 'use' ? s.error ?? '' : '',
+            s.status === 'failed' && s.kind !== 'use' ? (s.error ?? '') : '',
           ]
             .filter(Boolean)
             .join(' — ');
-          addLine({ mark, tone, text: `${s.path}  ${s.label}`, depth: s.depth + 1, ...(note ? { note } : {}) });
+          addRow({ mark, tone, text: `${s.path}  ${s.label}`, depth: s.depth + 1, ...(note ? { note } : {}), ...(e.shot ? { shot: e.shot } : {}) });
           break;
         }
         case 'healStart':
-          addLine({ mark: '…', tone: 'warn', text: `${e.what} has moved or gone — ${e.model} is looking for it (up to 90s)`, depth: 2 });
+          addRow({ mark: '…', tone: 'warn', text: `${e.what} has moved or gone — ${e.model} is looking for it (up to 90s)`, depth: 2 });
           break;
         case 'diagnosis':
-          addLine({ mark: '?', tone: 'dim', text: `Likely cause (a guess): ${e.text}`, depth: 1 });
+          addRow({ mark: '?', tone: 'dim', text: `Likely cause (a guess): ${e.text}`, depth: 1 });
           break;
         case 'flowEnd':
-          addLine({ mark: e.status === 'passed' ? '✓' : '✗', tone: e.status === 'passed' ? 'ok' : 'bad', text: e.status === 'passed' ? `passed in ${secs(e.durationMs)}` : `failed — ${e.error ?? ''}`, depth: 1 });
+          addRow({ mark: e.status === 'passed' ? '✓' : '✗', tone: e.status === 'passed' ? 'ok' : 'bad', text: e.status === 'passed' ? `passed in ${secs(e.durationMs)}` : `failed — ${e.error ?? ''}`, depth: 1 });
           break;
         case 'runEnd':
-          setLive((l) => l && { ...l, runId: e.runId, done: `${e.failed ? '✗' : '✓'} ${e.passed}/${e.passed + e.failed} passed${e.healed ? ` · ${e.healed} healed` : ''}` });
+          setJob((j) => j && { ...j, runId: e.runId, failed: e.failed > 0, done: `${e.failed ? '✗' : '✓'} ${e.passed}/${e.passed + e.failed} passed${e.healed ? ` · ${e.healed} healed` : ''}` });
           break;
         case 'page':
-          addLine({ mark: `${e.index}.`, tone: 'dim', text: pathOf(e.url), depth: 0 });
+          addRow({ mark: `${e.index}.`, tone: 'head', text: pathOf(e.url), depth: 0 });
           break;
         case 'finding':
-          addLine({ mark: e.severity === 'high' ? '✗' : e.severity === 'medium' ? '!' : '·', tone: e.severity === 'high' ? 'bad' : e.severity === 'medium' ? 'warn' : 'dim', text: e.title, depth: 1 });
+          addRow({ mark: e.severity === 'high' ? '✗' : e.severity === 'medium' ? '!' : '·', tone: e.severity === 'high' ? 'bad' : e.severity === 'medium' ? 'warn' : 'dim', text: e.title, depth: 1 });
           break;
         case 'exploreEnd':
-          setLive((l) => l && { ...l, runId: e.runId, done: e.findings ? `${e.findings} finding${e.findings === 1 ? '' : 's'} (${e.high} high) on ${e.pages} pages` : `Nothing plainly wrong on ${e.pages} pages` });
+          setJob((j) => j && { ...j, runId: e.runId, failed: e.high > 0, done: e.findings ? `${e.findings} finding${e.findings === 1 ? '' : 's'} (${e.high} high) on ${e.pages} pages` : `Nothing plainly wrong on ${e.pages} pages` });
           break;
         case 'recordStep':
-          addLine({ mark: '+', tone: 'ok', text: `${e.count}  ${e.label}`, depth: 0 });
+          addRow({ mark: '+', tone: 'ok', text: `${e.count}  ${e.label}`, depth: 0 });
           break;
         case 'recordHint':
-          addLine({ mark: '↳', tone: 'dim', text: e.text, depth: 1 });
+          addRow({ mark: '↳', tone: 'dim', text: e.text, depth: 1 });
           break;
         case 'recordFinished':
-          setLive((l) => l && { ...l, done: 'finished' });
+          setJob((j) => j && { ...j, done: 'finished' });
           break;
         case 'action':
-          addLine({ mark: '•', tone: 'ok', text: e.line, depth: 0 });
+          // The AI's actions already show as tool calls in its transcript.
           break;
         case 'doEnd':
-          setLive((l) => l && { ...l, done: e.saved ? `✓ Saved ${e.saved} — it replays without the AI.` : e.draft ? `✗ It did not replay (${e.error}). Kept as a draft: ${e.draft}` : (e.notSaved ?? 'Ended.'), lines: [...l.lines, { key: `l${seq.current++}`, mark: '', tone: 'dim', text: e.summary, depth: 0 }] });
+          setAi((t) =>
+            withNotice(
+              settle(t),
+              e.saved ? `Saved ${e.saved} — it replays without the AI.` : e.draft ? `It did not replay (${e.error}). Kept as a draft: ${e.draft}` : (e.notSaved ?? 'Ended.'),
+              !e.saved,
+            ),
+          );
+          setJob((j) => j && { ...j, done: e.saved ? 'saved' : 'not saved', failed: !e.saved });
           break;
         case 'error':
           setError(e.message);
-          setLive((l) => l && { ...l, done: `Stopped: ${e.message}` });
+          setAi((t) => settle(t));
+          setJob((j) => j && { ...j, done: `Stopped: ${e.message}`, failed: true });
           break;
       }
     });
@@ -152,7 +203,7 @@ export function App(): JSX.Element {
     };
     client.connect();
     return () => client.close();
-  }, [client, addLine]);
+  }, [client, addRow]);
 
   const call = useCallback(
     async <T,>(method: string, params?: unknown): Promise<T | undefined> => {
@@ -167,24 +218,39 @@ export function App(): JSX.Element {
     [client],
   );
 
-  const startRun = async (flows: string[], title: string): Promise<void> => {
-    setLive({ kind: 'run', title, lines: [] });
-    setView({ name: 'live' });
-    const r = await call<{ runId: string }>(QA_METHODS.run, { flows });
-    if (!r) setLive(undefined);
+  /** A fresh job on the workbench: clears the log, the live view and any pinned step. */
+  const begin = (kind: Job['kind'], title: string, to: View): void => {
+    setJob({ kind, title, rows: [] });
+    setFrame(undefined);
+    setPinned(undefined);
+    setHeal(emptyTranscript);
+    setView(to);
   };
 
+  const startRun = async (flows: string[], title: string): Promise<void> => {
+    begin('run', title, 'run');
+    if (!(await call(QA_METHODS.run, { flows, headed }))) setJob(undefined);
+  };
+
+  // A pinned step belongs to the run it came from: leaving that view lets go of it.
+  useEffect(() => {
+    if (view !== 'run') setPinned(undefined);
+  }, [view]);
+
   const busy = Boolean(state?.busy);
-  const runs = state?.runs ?? [];
-  const conversations = runs.slice(0, 30).map((r) => ({
+  const conversations = (state?.runs ?? []).slice(0, 30).map((r) => ({
     id: r.id,
     title:
       r.kind === 'run'
         ? `${r.failed ? '✗' : '✓'} ${r.passed}/${(r.passed ?? 0) + (r.failed ?? 0)} passed${r.healed ? ` · ${r.healed} healed` : ''}`
         : `Explore · ${r.findings ? r.findings.high + r.findings.medium + r.findings.low : 0} findings`,
     updatedAt: Date.parse(r.startedAt) || 0,
-    active: view.name === 'detail' && view.runId === r.id,
+    active: typeof view === 'object' && view.detail === r.id,
   }));
+  const is = (v: string): boolean => view === v;
+  const live = (kind: Job['kind'], hint?: string): JSX.Element => (
+    <LivePanel frame={frame} pinned={pinned} onUnpin={() => setPinned(undefined)} busy={busy && job?.kind === kind} headed={kind === 'record' || headed} {...(hint ? { hint } : {})} />
+  );
 
   return (
     <div className="app">
@@ -195,31 +261,79 @@ export function App(): JSX.Element {
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
-              localStorage.setItem('heapqa.rail', v ? 'expanded' : 'collapsed');
+              remember('heapqa.rail', v ? 'expanded' : 'collapsed');
               return !v;
             })
           }
           conversations={conversations}
-          onOpen={(id) => setView({ name: 'detail', runId: id })}
-          onNew={() => setView({ name: 'record' })}
+          onOpen={(id) => setView({ detail: id })}
+          onNew={() => setView('record')}
           busy={false}
           state={{ model: state?.model, profile: state?.profile }}
           status={status}
           onOpenSettings={() => setSettingsOpen(true)}
           extraNav={
             <>
-              <RailRow label="Tests" collapsed={railCollapsed} active={view.name === 'tests'} onClick={() => setView({ name: 'tests' })} icon={<IconList />} />
-              <RailRow label="Explore" collapsed={railCollapsed} active={view.name === 'explore'} onClick={() => setView({ name: 'explore' })} icon={<IconCompass />} />
-              <RailRow label="Ask AI" collapsed={railCollapsed} active={view.name === 'ask'} onClick={() => setView({ name: 'ask' })} icon={<IconSpark />} />
-              {live && <RailRow label={busy ? 'Running…' : 'Last job'} collapsed={railCollapsed} active={view.name === 'live'} onClick={() => setView({ name: 'live' })} icon={<IconPulse />} />}
+              <RailRow label="Tests" collapsed={railCollapsed} active={is('tests')} onClick={() => setView('tests')} icon={<IconList />} />
+              <RailRow label="Ask AI" collapsed={railCollapsed} active={is('ask')} onClick={() => setView('ask')} icon={<IconSpark />} />
+              <RailRow label="Explore" collapsed={railCollapsed} active={is('explore')} onClick={() => setView('explore')} icon={<IconCompass />} />
+              {job?.kind === 'run' && <RailRow label={busy ? 'Running…' : 'Last run'} collapsed={railCollapsed} active={is('run')} onClick={() => setView('run')} icon={<IconPulse />} />}
             </>
           }
         />
-        <main className="chat qa-main">
+        <main className="qa-main">
+          <header className="qa-top">
+            {state && (
+              <WorkspacePicker
+                current={state.folder ?? state.root}
+                busy={busy}
+                loadWorkspaces={() => client.request<UiWorkspacesResult>(QA_METHODS.workspaces)}
+                browse={(path) => client.request<UiBrowseFoldersResult>(QA_METHODS.browseFolders, { path })}
+                onPick={async (path) => {
+                  // Thrown, not swallowed: the picker shows the failure where it was asked.
+                  const next = await client.request<QaState>(QA_METHODS.setRoot, { path });
+                  setState(next);
+                  setView('tests');
+                }}
+              />
+            )}
+            {state?.baseUrl && (
+              <span className="qa-chip" title="Where the tests point — baseUrl in heapqa.yaml">
+                {state.baseUrl}
+              </span>
+            )}
+            <span className="qa-top-spacer" />
+            <label className="qa-switch" title="Open a real browser window while tests run, explore, or the AI works. Off runs it hidden — the live view here shows it either way. Recording always opens a window.">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={headed}
+                onChange={() =>
+                  setHeaded((h) => {
+                    remember('heapqa.headed', String(!h));
+                    return !h;
+                  })
+                }
+              />
+              <span className="qa-switch-track" aria-hidden="true" />
+              <span>Show browser window</span>
+            </label>
+            {state?.busy && (
+              <span className="qa-busy">
+                <span className="qa-dot" aria-hidden="true" />
+                <span className="qa-busy-label">{state.busy.label}</span>
+                {state.busy.kind !== 'record' && (
+                  <button className="btn btn-danger" onClick={() => void call(QA_METHODS.stop)}>
+                    Stop
+                  </button>
+                )}
+              </span>
+            )}
+          </header>
           {state?.lan && (
             <div className="banner banner-warn" role="alert">
               <strong>Reached over the network.</strong>
-              <span>Recording and AI runs open a browser on the computer running Heap QA, not on this device.</span>
+              <span>Browser windows open on the computer running Heap QA, not on this device — the live view still shows them here.</span>
             </div>
           )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
@@ -231,41 +345,60 @@ export function App(): JSX.Element {
               </button>
             </div>
           )}
-          {state?.busy && view.name !== 'live' && view.name !== 'record' && (
-            <div className="banner">
-              <span>{state.busy.label}</span>
-              <button type="button" className="banner-action" onClick={() => setView(state.busy?.kind === 'record' ? { name: 'record' } : { name: 'live' })}>
-                Show
-              </button>
-            </div>
-          )}
-          <div className="qa-scroll">
-            {!state ? (
-              <p className="qa-muted">Connecting…</p>
-            ) : !state.folder ? (
-              <Setup state={state} onInit={() => void call(QA_METHODS.init)} />
-            ) : view.name === 'tests' ? (
-              <Tests state={state} busy={busy} onRun={startRun} onView={(runId) => setView({ name: 'detail', runId })} call={call} />
-            ) : view.name === 'live' ? (
-              <LiveView live={live} busy={busy} onStop={() => void call(QA_METHODS.stop)} onOpen={(runId) => setView({ name: 'detail', runId })} />
-            ) : view.name === 'detail' ? (
-              <Detail runId={view.runId} call={call} />
-            ) : view.name === 'record' ? (
-              <Record state={state} live={live} setLive={setLive} call={call} onDone={() => setView({ name: 'tests' })} />
-            ) : view.name === 'explore' ? (
-              <Explore busy={busy} {...(state.model ? { model: state.model } : {})} onStart={async (start, allowCommits, ai) => {
-                setLive({ kind: 'explore', title: `Exploring ${start || '/'}`, lines: [] });
-                setView({ name: 'live' });
-                if (!(await call(QA_METHODS.explore, { start, allowCommits, ai }))) setLive(undefined);
-              }} />
-            ) : (
-              <Ask state={state} busy={busy} onStart={async (task, start) => {
-                setLive({ kind: 'do', title: task, lines: [] });
-                setView({ name: 'live' });
-                if (!(await call(QA_METHODS.do, { task, start }))) setLive(undefined);
-              }} />
-            )}
-          </div>
+
+          {!state ? (
+            <p className="qa-empty">Connecting…</p>
+          ) : !state.folder ? (
+            <Setup state={state} onInit={() => void call(QA_METHODS.init)} />
+          ) : is('tests') ? (
+            <Tests state={state} busy={busy} onRun={startRun} onView={(id) => setView({ detail: id })} call={call} />
+          ) : is('run') ? (
+            <Workbench left={<RunLog job={job} heal={heal} pinned={pinned} onPin={setPinned} onOpenReport={(id) => setView({ detail: id })} />} live={live('run')} />
+          ) : is('record') ? (
+            <Workbench
+              left={<Record state={state} job={job} begin={() => begin('record', 'Recording', 'record')} call={call} onDone={() => setView('tests')} />}
+              live={live('record', 'Use the browser window that opened — this mirrors it.')}
+            />
+          ) : is('explore') ? (
+            <Workbench
+              left={
+                <Explore
+                  state={state}
+                  busy={busy}
+                  job={job?.kind === 'explore' ? job : undefined}
+                  onOpenReport={(id) => setView({ detail: id })}
+                  onReset={() => setJob(undefined)}
+                  onStart={async (start, allowCommits, aiLook) => {
+                    begin('explore', `Exploring ${start || '/'}`, 'explore');
+                    if (!(await call(QA_METHODS.explore, { start, allowCommits, ai: aiLook, headed }))) setJob(undefined);
+                  }}
+                />
+              }
+              live={live('explore')}
+            />
+          ) : is('ask') ? (
+            <Workbench
+              left={
+                <Ask
+                  state={state}
+                  busy={busy}
+                  transcript={ai}
+                  onSend={async (task, start) => {
+                    begin('do', task, 'ask');
+                    setAi((t) => withUserMessage(settle(t), task));
+                    if (!(await call(QA_METHODS.do, { task, start, headed }))) {
+                      setJob(undefined);
+                      setAi((t) => settle(t));
+                    }
+                  }}
+                  onStop={() => void call(QA_METHODS.stop)}
+                />
+              }
+              live={live('do')}
+            />
+          ) : typeof view === 'object' ? (
+            <Detail runId={view.detail} call={call} />
+          ) : null}
         </main>
       </div>
       {confirm && (
@@ -294,33 +427,76 @@ export function App(): JSX.Element {
 
 type Call = <T>(method: string, params?: unknown) => Promise<T | undefined>;
 
+/** What is happening on the left, the browser on the right. */
+function Workbench({ left, live }: { left: ReactNode; live: ReactNode }): JSX.Element {
+  return (
+    <div className="qa-bench">
+      <section className="qa-bench-left">{left}</section>
+      <section className="qa-bench-right">{live}</section>
+    </div>
+  );
+}
+
+function LivePanel({ frame, pinned, onUnpin, busy, headed, hint }: { frame?: string; pinned?: Pinned; onUnpin(): void; busy: boolean; headed: boolean; hint?: string }): JSX.Element {
+  const src = pinned?.shot ?? frame;
+  return (
+    <div className="qa-live">
+      <div className="qa-live-bar">
+        {pinned ? (
+          <>
+            <span className="qa-live-tag qa-live-tag-pinned">Step</span>
+            <span className="qa-live-title">{pinned.label}</span>
+            <button className="btn btn-quiet" onClick={onUnpin}>
+              Back to live
+            </button>
+          </>
+        ) : (
+          <>
+            <span className={`qa-live-tag ${busy ? 'qa-live-tag-on' : ''}`}>{busy ? 'Live' : 'Browser'}</span>
+            <span className="qa-live-title">{busy ? (hint ?? (headed ? 'Also open in its own window' : 'Running hidden — this is what it sees')) : src ? 'The last thing it showed' : ''}</span>
+          </>
+        )}
+      </div>
+      <div className="qa-live-view">
+        {src ? (
+          <img src={src} alt={pinned ? `The page after: ${pinned.label}` : 'The browser'} />
+        ) : (
+          <p className="qa-live-empty">The browser shows here while a test runs, while you record or explore, and while the AI works — so you can see exactly what it does.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Setup({ state, onInit }: { state: QaState; onInit(): void }): JSX.Element {
   return (
-    <section className="qa-section">
-      <h1 className="qa-title">Test your app with Heap QA</h1>
-      <p>Heap QA keeps tests as readable files in a test folder: settings, flows and reusable steps. There is none in {state.folderName} yet.</p>
-      <p className="qa-muted">It will be made at {state.suggestedFolder}, with an example test and a .gitignore for results and test passwords.</p>
-      <button className="btn btn-primary" onClick={onInit}>
-        Set up a test folder
-      </button>
-    </section>
+    <div className="qa-page">
+      <section className="qa-hero">
+        <h1 className="qa-title">Test your app with Heap QA</h1>
+        <p>Heap QA keeps tests as readable files in a test folder: settings, tests and reusable steps. {state.folderName} has none yet.</p>
+        <p className="qa-muted">Pick another folder above, or make one at {state.suggestedFolder} — with an example test and a .gitignore for results and test passwords.</p>
+        <button className="btn btn-primary" onClick={onInit}>
+          Set up a test folder here
+        </button>
+      </section>
+    </div>
   );
 }
 
 function Tests({ state, busy, onRun, onView, call }: { state: QaState; busy: boolean; onRun(flows: string[], title: string): void; onView(runId: string): void; call: Call }): JSX.Element {
-  const [source, setSource] = useState<{ id: string; file: string; text: string }>();
+  const [source, setSource] = useState<{ file: string; text: string }>();
+  const blocked = busy || state.errors.length > 0;
   return (
-    <section className="qa-section">
+    <div className="qa-page">
       <div className="qa-head">
         <div>
           <h1 className="qa-title">Tests</h1>
           <p className="qa-muted">
-            {state.flows.length} flow{state.flows.length === 1 ? '' : 's'} in {state.folder}
-            {state.baseUrl ? ` · against ${state.baseUrl}` : ''}
-            {state.steps.length ? ` · reusable steps: ${state.steps.join(', ')}` : ''}
+            {state.flows.length} test{state.flows.length === 1 ? '' : 's'}
+            {state.steps.length ? ` · reusable steps: ${state.steps.join(', ')}` : ''} · {state.folder}
           </p>
         </div>
-        <button className="btn btn-primary" disabled={busy || !state.flows.length || state.errors.length > 0} onClick={() => onRun([], `Running ${state.flows.length} flows`)}>
+        <button className="btn btn-primary" disabled={blocked || !state.flows.length} onClick={() => onRun([], `Running ${state.flows.length} tests`)}>
           Run all
         </button>
       </div>
@@ -337,40 +513,50 @@ function Tests({ state, busy, onRun, onView, call }: { state: QaState; busy: boo
       {state.flows.length === 0 ? (
         <p className="qa-muted">No tests yet. Record one with New test, or have the AI write one with Ask AI.</p>
       ) : (
-        <ul className="qa-list">
-          {state.flows.map((f) => (
-            <li key={f.id} className="qa-row">
-              <span className={`qa-status ${f.last ? `qa-${f.last.status}` : ''}`} aria-label={f.last ? f.last.status : 'not run yet'}>
-                {f.last ? (f.last.status === 'passed' ? '✓' : '✗') : '·'}
-              </span>
-              <span className="qa-row-main">
-                <span className="qa-row-name">{f.name}</span>
-                <span className="qa-muted qa-row-sub">
-                  {f.file} · {f.steps} step{f.steps === 1 ? '' : 's'}
-                </span>
-              </span>
-              <span className="qa-row-actions">
-                {f.last && (
-                  <button className="btn btn-quiet" onClick={() => onView(f.last!.runId)}>
-                    Last run
+        <table className="qa-table">
+          <thead>
+            <tr>
+              <th aria-label="Last result" />
+              <th>Test</th>
+              <th className="qa-file">File</th>
+              <th className="qa-num">Steps</th>
+              <th aria-label="Actions" />
+            </tr>
+          </thead>
+          <tbody>
+            {state.flows.map((f) => (
+              <tr key={f.id}>
+                <td>
+                  <span className={`qa-status ${f.last ? `qa-${f.last.status}` : ''}`} title={f.last ? `${f.last.status} in the last run` : 'not run yet'}>
+                    {f.last ? (f.last.status === 'passed' ? '✓' : '✗') : '·'}
+                  </span>
+                </td>
+                <td className="qa-name">{f.name}</td>
+                <td className="qa-muted qa-file">{f.file}</td>
+                <td className="qa-num">{f.steps}</td>
+                <td className="qa-actions">
+                  {f.last && (
+                    <button className="btn btn-quiet" onClick={() => onView(f.last!.runId)}>
+                      Last report
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-quiet"
+                    onClick={async () => {
+                      const r = await call<{ file: string; text: string }>(QA_METHODS.flowSource, { id: f.id });
+                      if (r) setSource(r);
+                    }}
+                  >
+                    View
                   </button>
-                )}
-                <button
-                  className="btn btn-quiet"
-                  onClick={async () => {
-                    const r = await call<{ file: string; text: string }>(QA_METHODS.flowSource, { id: f.id });
-                    if (r) setSource({ id: f.id, ...r });
-                  }}
-                >
-                  View
-                </button>
-                <button className="btn" disabled={busy || state.errors.length > 0} onClick={() => onRun([f.id], `Running ${f.name}`)}>
-                  Run
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
+                  <button className="btn" disabled={blocked} onClick={() => onRun([f.id], `Running ${f.name}`)}>
+                    Run
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
       {source && (
         <div className="qa-source">
@@ -383,53 +569,70 @@ function Tests({ state, busy, onRun, onView, call }: { state: QaState; busy: boo
           <pre>{source.text}</pre>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
-function LiveView({ live, busy, onStop, onOpen }: { live?: Live; busy: boolean; onStop(): void; onOpen(runId: string): void }): JSX.Element {
-  const end = useRef<HTMLDivElement>(null);
+function RunLog({ job, heal, pinned, onPin, onOpenReport }: { job?: Job; heal: Transcript; pinned?: Pinned; onPin(p: Pinned): void; onOpenReport(runId: string): void }): JSX.Element {
+  if (!job) return <p className="qa-empty">Nothing has run yet — run a test from Tests.</p>;
+  return (
+    <div className="qa-log-wrap">
+      <div className="qa-log-head">
+        <h2 className="qa-subtitle">{job.done ? job.title.replace(/^Running /, 'Ran ') : job.title}</h2>
+        {job.done && job.runId && (
+          <button className="btn btn-primary" onClick={() => onOpenReport(job.runId!)}>
+            Open report
+          </button>
+        )}
+      </div>
+      <Log rows={job.rows} pinned={pinned} onPin={onPin} />
+      {heal.items.length > 0 && (
+        <details className="qa-heal" open>
+          <summary>What the AI did while healing</summary>
+          <MessageList transcript={heal} />
+        </details>
+      )}
+      {job.done ? <p className={job.failed ? 'qa-done qa-bad' : 'qa-done'}>{job.done}</p> : <p className="qa-muted qa-working">Working…</p>}
+      {job.rows.some((r) => r.shot) && <p className="qa-muted qa-tip">Click a step to see the page right after it.</p>}
+    </div>
+  );
+}
+
+function Log({ rows, pinned, onPin }: { rows: LogRow[]; pinned?: Pinned; onPin?(p: Pinned): void }): JSX.Element {
+  const end = useRef<HTMLLIElement>(null);
   // A block body on purpose: newer browsers return a promise from scrollIntoView,
   // and an effect that returns anything but a function crashes React on cleanup.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: 'end' });
-  }, [live?.lines.length]);
-  if (!live) return <p className="qa-muted">Nothing has run yet.</p>;
+    end.current?.scrollIntoView({ block: 'nearest' });
+  }, [rows.length]);
   return (
-    <section className="qa-section">
-      <div className="qa-head">
-        <h1 className="qa-title">{live.done ? live.title.replace(/^Running /, 'Ran ').replace(/^Exploring /, 'Explored ') : live.title}</h1>
-        {busy && !live.done ? (
-          <button className="btn btn-danger" onClick={onStop}>
-            Stop
-          </button>
-        ) : live.runId ? (
-          <button className="btn btn-primary" onClick={() => onOpen(live.runId!)}>
-            Open report
-          </button>
-        ) : null}
-      </div>
-      <Lines lines={live.lines} />
-      {live.done ? <p className="qa-done">{live.done}</p> : <p className="qa-muted qa-working">Working…</p>}
-      <div ref={end} />
-    </section>
-  );
-}
-
-function Lines({ lines }: { lines: LiveLine[] }): JSX.Element {
-  return (
-    <ol className="qa-lines">
-      {lines.map((l) => (
-        <li key={l.key} className={`qa-line qa-tone-${l.tone}`} style={{ paddingLeft: `${l.depth * 18}px` }}>
-          <span className="qa-mark" aria-hidden="true">
-            {l.mark}
-          </span>
-          <span>
-            {l.text}
-            {l.note && <span className="qa-note">{l.note}</span>}
-          </span>
-        </li>
-      ))}
+    <ol className="qa-log">
+      {rows.map((r) => {
+        const content = (
+          <>
+            <span className="qa-mark" aria-hidden="true">
+              {r.mark}
+            </span>
+            <span className="qa-log-text">
+              {r.text}
+              {r.note && <span className="qa-note">{r.note}</span>}
+            </span>
+            {r.shot && <span className="qa-shot-dot" title="Has a screenshot" aria-hidden="true" />}
+          </>
+        );
+        return (
+          <li key={r.key} className={`qa-row qa-tone-${r.tone} ${pinned && pinned.shot === r.shot ? 'qa-row-pinned' : ''}`} style={{ paddingLeft: `${8 + r.depth * 16}px` }}>
+            {r.shot && onPin ? (
+              <button className="qa-row-btn" onClick={() => onPin({ shot: r.shot!, label: r.text.trim() })}>
+                {content}
+              </button>
+            ) : (
+              <span className="qa-row-btn qa-row-static">{content}</span>
+            )}
+          </li>
+        );
+      })}
+      <li ref={end} className="qa-log-end" aria-hidden="true" />
     </ol>
   );
 }
@@ -444,11 +647,12 @@ function Detail({ runId, call }: { runId: string; call: Call }): JSX.Element {
     void call<QaRunDetail>(QA_METHODS.runDetail, { runId }).then((d) => d && setDetail(d));
   }, [runId, call]);
   const heals = detail?.kind === 'run' ? detail.summary.flows.reduce((n, f) => n + (f.heals?.length ?? 0), 0) : 0;
+  const done = applied?.applied.filter((a) => a.applied).length ?? 0;
   return (
-    <section className="qa-section qa-detail">
-      <div className="qa-head">
+    <div className="qa-detail">
+      <div className="qa-head qa-detail-head">
         <div>
-          <h1 className="qa-title">{detail?.kind === 'explore' ? 'Explore' : 'Test run'}</h1>
+          <h1 className="qa-title">{detail?.kind === 'explore' ? 'Explore report' : 'Test report'}</h1>
           <p className="qa-muted">{runId}</p>
         </div>
         <span className="qa-row-actions">
@@ -474,20 +678,18 @@ function Detail({ runId, call }: { runId: string; call: Call }): JSX.Element {
       {applied && (
         <div className="banner">
           <span>
-            {applied.applied.filter((a) => a.applied).length} fix{applied.applied.filter((a) => a.applied).length === 1 ? '' : 'es'} written into the files
+            {done} fix{done === 1 ? '' : 'es'} written into the files
             {applied.applied.some((a) => !a.applied) ? `; skipped: ${applied.applied.filter((a) => !a.applied).map((a) => `${a.file} step ${a.step} (${a.reason})`).join(', ')}` : ''}.
           </span>
         </div>
       )}
-      {/* The report is the same page the terminal writes. No scripts run in it
-          (no allow-scripts); same-origin only so its screenshots load with the
-          session's cookie. */}
+      {/* No scripts run in the report (no allow-scripts); same-origin only so its screenshots load with the session cookie. */}
       <iframe key={version} className="qa-report" title="Report" sandbox="allow-same-origin allow-popups" src={`${BASE}/attachment/runs/${runId}/report.html`} />
-    </section>
+    </div>
   );
 }
 
-function Record({ state, live, setLive, call, onDone }: { state: QaState; live?: Live; setLive(l: Live | undefined): void; call: Call; onDone(): void }): JSX.Element {
+function Record({ state, job, begin, call, onDone }: { state: QaState; job?: Job; begin(): void; call: Call; onDone(): void }): JSX.Element {
   const [start, setStart] = useState('/');
   const [stopped, setStopped] = useState<QaRecordStopResult>();
   const [name, setName] = useState('');
@@ -503,34 +705,45 @@ function Record({ state, live, setLive, call, onDone }: { state: QaState; live?:
     setName(r.suggestedName);
     setUse(r.known.map((k) => k.key));
   };
-  // The person pressed Done in the browser: go straight to saving.
+  const discard = async (): Promise<void> => {
+    await call(QA_METHODS.recordDiscard);
+    setStopped(undefined);
+  };
+  // Done pressed in the browser: go straight to saving.
   useEffect(() => {
-    if (recording && live?.kind === 'record' && live.done === 'finished' && !stopped) void stop();
-  }, [live?.done]);
+    if (recording && job?.kind === 'record' && job.done === 'finished' && !stopped) void stop();
+  }, [job?.done]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (saved) {
     return (
-      <section className="qa-section">
-        <h1 className="qa-title">Saved {saved.file.split('/').pop()}</h1>
-        <p className={saved.replay.status === 'passed' ? 'qa-done' : 'qa-bad'}>
-          {saved.replay.status === 'passed' ? '✓ It plays back without you.' : `✗ Playback failed — ${saved.replay.error}. The flow is saved; edit it or record again.`}
+      <div className="qa-pane">
+        <h2 className="qa-subtitle">Saved {saved.file.split('/').pop()}</h2>
+        <p className={saved.replay.status === 'passed' ? 'qa-done' : 'qa-done qa-bad'}>
+          {saved.replay.status === 'passed' ? '✓ It plays back without you.' : `✗ Playback failed — ${saved.replay.error}. The test is saved; edit it or record again.`}
         </p>
         {saved.secretsAdded.length > 0 && <p className="qa-muted">Added {saved.secretsAdded.join(', ')} to the secrets file.</p>}
-        <button className="btn btn-primary" onClick={() => { setSaved(undefined); setStopped(undefined); setLive(undefined); onDone(); }}>
+        <button
+          className="btn btn-primary"
+          onClick={() => {
+            setSaved(undefined);
+            setStopped(undefined);
+            onDone();
+          }}
+        >
           Back to tests
         </button>
-      </section>
+      </div>
     );
   }
 
   if (stopped) {
     return (
-      <section className="qa-section">
-        <h1 className="qa-title">Save the recording</h1>
+      <div className="qa-pane">
+        <h2 className="qa-subtitle">Save the recording</h2>
         {stopped.steps <= 1 ? (
           <>
             <p>Nothing was recorded.</p>
-            <button className="btn" onClick={async () => { await call(QA_METHODS.recordDiscard); setStopped(undefined); setLive(undefined); }}>
+            <button className="btn" onClick={() => void discard()}>
               Close
             </button>
           </>
@@ -559,40 +772,44 @@ function Record({ state, live, setLive, call, onDone }: { state: QaState; live?:
               </label>
             )}
             <div className="form-actions">
-              <button className="btn" onClick={async () => { await call(QA_METHODS.recordDiscard); setStopped(undefined); setLive(undefined); }}>
+              <button className="btn" onClick={() => void discard()}>
                 Discard
               </button>
-              <button className="btn btn-primary" disabled={!name.trim()} onClick={async () => {
-                const r = await call<QaRecordSaveResult>(QA_METHODS.recordSave, { name, use, saveSecrets: keepSecrets });
-                if (r) setSaved(r);
-              }}>
+              <button
+                className="btn btn-primary"
+                disabled={!name.trim()}
+                onClick={async () => {
+                  const r = await call<QaRecordSaveResult>(QA_METHODS.recordSave, { name, use, saveSecrets: keepSecrets });
+                  if (r) setSaved(r);
+                }}
+              >
                 Save and play back
               </button>
             </div>
           </>
         )}
-      </section>
+      </div>
     );
   }
 
-  if (recording && live?.kind === 'record') {
+  if (recording && job?.kind === 'record') {
     return (
-      <section className="qa-section">
-        <div className="qa-head">
-          <h1 className="qa-title">Recording</h1>
+      <div className="qa-log-wrap">
+        <div className="qa-log-head">
+          <h2 className="qa-subtitle">Recording</h2>
           <button className="btn btn-primary" onClick={() => void stop()}>
             Stop and save
           </button>
         </div>
-        <p className="qa-muted">Use your app in the browser window that opened. The bar at its bottom right adds checks. Press Done there, or Stop here, when you have finished.</p>
-        <Lines lines={live.lines} />
-      </section>
+        <p className="qa-muted">Use your app in the browser window that opened. Its bar at the bottom right adds checks. Press Done there, or Stop and save here.</p>
+        <Log rows={job.rows} />
+      </div>
     );
   }
 
   return (
-    <section className="qa-section">
-      <h1 className="qa-title">New test</h1>
+    <div className="qa-pane">
+      <h2 className="qa-subtitle">New test</h2>
       <p>Click through your app once in a browser window; Heap QA writes the test as you go, then plays it back to prove it works.</p>
       <label className="field">
         <span className="field-label">Start at</span>
@@ -603,23 +820,46 @@ function Record({ state, live, setLive, call, onDone }: { state: QaState; live?:
         className="btn btn-primary"
         disabled={Boolean(state.busy)}
         onClick={async () => {
-          setLive({ kind: 'record', title: 'Recording', lines: [] });
-          if (!(await call(QA_METHODS.record, { start }))) setLive(undefined);
+          begin();
+          await call(QA_METHODS.record, { start });
         }}
       >
         Start recording
       </button>
-    </section>
+    </div>
   );
 }
 
-function Explore({ busy, model, onStart }: { busy: boolean; model?: string; onStart(start: string, allowCommits: boolean, ai: boolean): void }): JSX.Element {
+function Explore({ state, busy, job, onStart, onOpenReport, onReset }: { state: QaState; busy: boolean; job?: Job; onStart(start: string, allowCommits: boolean, ai: boolean): void; onOpenReport(runId: string): void; onReset(): void }): JSX.Element {
   const [start, setStart] = useState('/');
   const [allow, setAllow] = useState(false);
   const [ai, setAi] = useState(false);
+  if (job) {
+    return (
+      <div className="qa-log-wrap">
+        <div className="qa-log-head">
+          <h2 className="qa-subtitle">{job.done ? job.title.replace(/^Exploring /, 'Explored ') : job.title}</h2>
+          {job.done && (
+            <span className="qa-row-actions">
+              <button className="btn btn-quiet" onClick={onReset}>
+                Explore again
+              </button>
+              {job.runId && (
+                <button className="btn btn-primary" onClick={() => onOpenReport(job.runId!)}>
+                  Open report
+                </button>
+              )}
+            </span>
+          )}
+        </div>
+        <Log rows={job.rows} />
+        {job.done ? <p className={job.failed ? 'qa-done qa-bad' : 'qa-done'}>{job.done}</p> : <p className="qa-muted qa-working">Working…</p>}
+      </div>
+    );
+  }
   return (
-    <section className="qa-section">
-      <h1 className="qa-title">Explore</h1>
+    <div className="qa-pane">
+      <h2 className="qa-subtitle">Explore</h2>
       <p>Find bugs with no test written: Heap QA visits every page it can reach, presses what is safe to press, fills forms with ordinary and awkward input, and reports what is plainly wrong — server errors, broken links, crashes, error text, layouts too wide for a phone, buttons that do nothing.</p>
       <label className="field">
         <span className="field-label">Start at</span>
@@ -629,39 +869,50 @@ function Explore({ busy, model, onStart }: { busy: boolean; model?: string; onSt
         <input type="checkbox" checked={allow} onChange={(e) => setAllow(e.target.checked)} />
         Also press Delete, Pay, Submit-like buttons — only on data you can lose
       </label>
-      {model && (
+      {state.model && (
         <label className="qa-check">
           <input type="checkbox" checked={ai} onChange={(e) => setAi(e.target.checked)} />
-          Also have {model} look at each page for what no rule catches (labelled as the AI's)
+          Also have {state.model} look at each page for what no rule catches (labelled as the AI's)
         </label>
       )}
       <button className="btn btn-primary" disabled={busy} onClick={() => onStart(start, allow, ai)}>
         Explore
       </button>
-    </section>
+    </div>
   );
 }
 
-function Ask({ state, busy, onStart }: { state: QaState; busy: boolean; onStart(task: string, start: string): void }): JSX.Element {
-  const [task, setTask] = useState('');
+function Ask({ state, busy, transcript, onSend, onStop }: { state: QaState; busy: boolean; transcript: Transcript; onSend(task: string, start: string): void; onStop(): void }): JSX.Element {
   const [start, setStart] = useState('/');
+  const working = state.busy?.kind === 'do';
   return (
-    <section className="qa-section">
-      <h1 className="qa-title">Ask AI to write a test</h1>
-      <p>Say what to do in your app. The AI does it in a browser; what worked becomes a test that replays without the AI, saved only if it does.</p>
+    <div className="qa-ask">
       {!state.model && <div className="banner banner-warn">No model is set for the agent role — set one in Heap Code's settings.</div>}
-      <label className="field">
-        <span className="field-label">What to do</span>
-        <textarea className="card-input qa-textarea" value={task} onChange={(e) => setTask(e.target.value)} placeholder="Log in as ai@example.test with the test password, then check you are welcomed" />
-      </label>
-      <label className="field">
-        <span className="field-label">Start at</span>
-        <input className="card-input" value={start} onChange={(e) => setStart(e.target.value)} />
-      </label>
-      <button className="btn btn-primary" disabled={busy || !task.trim() || !state.model} onClick={() => onStart(task.trim(), start)}>
-        Do it{state.model ? ` with ${state.model}` : ''}
-      </button>
-    </section>
+      <div className="qa-ask-messages">
+        <MessageList
+          transcript={transcript}
+          busy={working}
+          {...(working && state.busy ? { runStartedAt: state.busy.startedAt } : {})}
+          empty={{
+            title: 'Ask the AI to write a test',
+            body: 'Say what to do in your app — "log in as ai@example.test with the test password, then check you are welcomed". It works in a browser you can watch on the right; what worked becomes a test that replays without the AI, saved only if it does.',
+          }}
+        />
+      </div>
+      <Composer
+        onSend={(text) => onSend(text, start)}
+        onCancel={onStop}
+        busy={working}
+        disabled={!state.model || (busy && !working)}
+        placeholder="What should the AI do in your app?"
+        footer={
+          <label className="qa-start" title="Where the AI starts, on your app">
+            <span className="qa-muted">Start at</span>
+            <input className="qa-start-input" value={start} onChange={(e) => setStart(e.target.value)} />
+          </label>
+        }
+      />
+    </div>
   );
 }
 

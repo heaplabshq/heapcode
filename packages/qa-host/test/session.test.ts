@@ -59,6 +59,7 @@ describe('QaSession', { timeout: 60_000 }, () => {
 
     const before = await call<{ state: QaState }>(QA_METHODS.hello);
     expect(before.state.folder).toBeUndefined();
+    expect(before.state.root).toBe(root);
     expect(before.state.suggestedFolder).toBe(join(root, 'heapqa'));
 
     const after = await call<QaState>(QA_METHODS.init);
@@ -72,6 +73,9 @@ describe('QaSession', { timeout: 60_000 }, () => {
     expect(events.find((e) => e.type === 'error')).toBeUndefined();
     expect(events.filter((e) => e.type === 'step').map((e) => (e as { step: { status: string } }).step.status)).toEqual(['passed', 'passed']);
     expect(events.at(-1)).toMatchObject({ type: 'runEnd', runId, passed: 1, failed: 0 });
+    // Nothing runs out of sight: the page gets the browser live, and a picture after each step.
+    expect(events.some((e) => e.type === 'frame' && e.data.length > 100)).toBe(true);
+    expect(events.filter((e) => e.type === 'step').every((e) => e.type === 'step' && e.shot?.startsWith('data:image/'))).toBe(true);
 
     // The job ends just after its last event, when the browser has closed.
     let state = await call<QaState>(QA_METHODS.state);
@@ -102,5 +106,30 @@ describe('QaSession', { timeout: 60_000 }, () => {
     const session = new QaSession({ root, config: noModel, secrets: noSecrets, lan: true });
     expect((await session.state()).folder).toBe(join(root, 'qa'));
     expect((await session.state()).lan).toBe(true);
+  });
+
+  it('opens another folder from its own picker', async () => {
+    const first = mkdtempSync(join(tmpdir(), 'heapqa-session-'));
+    const second = mkdtempSync(join(tmpdir(), 'heapqa-session-'));
+    const { initWorkspace } = await import('@heapcode/qa');
+    initWorkspace(join(second, 'heapqa'));
+    const recorded: string[] = [];
+    const workspaces = { list: async () => [], record: async (p: string) => void recorded.push(p) };
+    const session = new QaSession({ root: first, config: noModel, secrets: noSecrets, lan: false, workspaces: workspaces as never });
+    const { peer, call } = fakePeer();
+    session.attach(peer);
+
+    const listed = await call<{ current: string; recent: { path: string }[] }>(QA_METHODS.workspaces);
+    expect(listed.current).toBe(first);
+    expect(listed.recent[0]!.path).toBe(first);
+    const browsed = await call<{ path: string; entries: unknown[] }>(QA_METHODS.browseFolders, { path: second });
+    expect(browsed.path).toBe(second);
+
+    const next = await call<QaState>(QA_METHODS.setRoot, { path: second });
+    expect(next.root).toBe(second);
+    expect(next.folder).toBe(join(second, 'heapqa'));
+    expect(recorded).toEqual([second]);
+    await expect(call(QA_METHODS.setRoot, { path: join(second, 'nope') })).rejects.toThrow(/Not a folder/);
+    await session.close();
   });
 });

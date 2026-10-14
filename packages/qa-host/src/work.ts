@@ -21,6 +21,7 @@ import {
   type Workspace,
 } from '@heapcode/qa';
 import type { PlaywrightDriver } from '@heapcode/qa-playwright';
+import type { AgentEvents } from '@heapcode/core';
 import { launchDriver, type AgentModel } from './orchestrate.js';
 
 /**
@@ -41,6 +42,7 @@ export interface RecordingEvents {
 export class RecordingSession {
   private readonly hinted = new Set<string>();
   private stopRecording: () => Promise<void> = async () => {};
+  private stopFrames: () => Promise<void> = async () => {};
   private closed = false;
   title = '';
 
@@ -53,12 +55,13 @@ export class RecordingSession {
 
   static async start(
     ws: Workspace,
-    options: { start: string; baseUrl?: string; browser?: 'chrome' | 'msedge' | 'chromium'; exitOnSigint?: boolean },
+    options: { start: string; baseUrl?: string; browser?: 'chrome' | 'msedge' | 'chromium'; exitOnSigint?: boolean; onFrame?: (jpeg: string) => void },
     events: RecordingEvents = {},
   ): Promise<RecordingSession> {
     const driver = await launchDriver(ws, { browser: options.browser, headless: false, exitOnSigint: options.exitOnSigint ?? false });
     const session = new RecordingSession(ws, driver, new Recording(options.baseUrl), events);
     try {
+      if (options.onFrame && driver.screencast) session.stopFrames = await driver.screencast(options.onFrame);
       session.stopRecording = await driver.record({
         event: (event) => {
           if (event.kind === 'done') events.onFinished?.();
@@ -97,6 +100,7 @@ export class RecordingSession {
   async stop(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.stopFrames();
     await this.stopRecording();
     await this.driver.close();
   }
@@ -170,11 +174,16 @@ export async function aiTask(options: {
   headless?: boolean;
   confirm(description: string): Promise<boolean>;
   onAction?(line: string): void;
+  /** What the agent says and calls, as it happens (see agentEvents.ts). */
+  agentEvents?: Partial<AgentEvents>;
+  /** Live frames of the browser, for a page to show. */
+  onFrame?(jpeg: string): void;
   signal?: AbortSignal;
 }): Promise<AiTaskOutcome> {
   const { ws, model } = options;
   const driver = await launchDriver(ws, { browser: options.browser, headless: options.headless ?? true });
   let result;
+  const stopFrames = options.onFrame && driver.screencast ? await driver.screencast(options.onFrame).catch(() => undefined) : undefined;
   try {
     result = await runAiTask({
       driver,
@@ -189,10 +198,11 @@ export async function aiTask(options: {
       secretNames: ws.secretNames,
       templates: options.templates,
       confirm: options.confirm,
-      events: { ...(options.onAction ? { onAction: options.onAction } : {}) },
+      events: { ...options.agentEvents, ...(options.onAction ? { onAction: options.onAction } : {}) },
       ...(options.signal ? { signal: options.signal } : {}),
     });
   } finally {
+    await stopFrames?.();
     await driver.close();
   }
 

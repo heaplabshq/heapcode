@@ -102,6 +102,8 @@ export interface SuiteEvents {
   /** The agent started looking for a step's element (it can take a while). */
   onHealStart?(id: string, request: HealRequest, model: string): void;
   onDiagnosis?(id: string, diagnosis: Diagnosis): void;
+  /** The healing agent's own events, while it looks (see agentEvents.ts). */
+  healAgentEvents?: Partial<import('@heapcode/core').AgentEvents>;
   onFlowEnd?(id: string, result: FlowResult): void;
 }
 
@@ -144,6 +146,7 @@ export async function runSuite(options: SuiteOptions): Promise<{ summary: RunSum
               contextWindow: model.contextWindow,
               templates,
               vision: model.vision,
+              ...(events?.healAgentEvents ? { events: events.healAgentEvents } : {}),
               onStart: (request) => events?.onHealStart?.(current, request, model.model),
             },
           }

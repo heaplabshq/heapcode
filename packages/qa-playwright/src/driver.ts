@@ -223,6 +223,27 @@ export class PlaywrightDriver implements Driver {
     return { mutations, requests: this.requestCount - start.requests, navigated };
   }
 
+  /**
+   * Chrome's own screencast over CDP: a frame each time the page repaints,
+   * acknowledged one at a time so a slow viewer slows the stream instead of
+   * queueing it.
+   */
+  async screencast(onFrame: (jpegBase64: string) => void): Promise<() => Promise<void>> {
+    const cdp = await this.context.newCDPSession(this.page);
+    let stopped = false;
+    cdp.on('Page.screencastFrame', (frame: { data: string; sessionId: number }) => {
+      if (stopped) return;
+      onFrame(frame.data);
+      void cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
+    });
+    await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 900 });
+    return async () => {
+      stopped = true;
+      await cdp.send('Page.stopScreencast').catch(() => {});
+      await cdp.detach().catch(() => {});
+    };
+  }
+
   async markedScreenshot(nodeIds: number[]): Promise<Uint8Array> {
     await this.ensureInspector();
     type Marks = { __heapqa: { mark(ids: number[]): number; unmark(): void } };

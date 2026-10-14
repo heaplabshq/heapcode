@@ -1,3 +1,4 @@
+import type { AgentEvent } from '@heapcode/core';
 import type { ExploreReportInput, RunSummary, StepResult } from '@heapcode/qa';
 
 /**
@@ -23,6 +24,11 @@ export const QA_METHODS = {
   runDetail: 'qa/runDetail',
   acceptHeals: 'qa/acceptHeals',
   flowSource: 'qa/flowSource',
+  /** The folder picker: recent folders, and folders under a path. */
+  workspaces: 'qa/workspaces',
+  browseFolders: 'qa/browseFolders',
+  /** Point Heap QA at a project (or a test folder directly). */
+  setRoot: 'qa/setRoot',
   /** Host → page: progress of whatever is running. */
   event: 'qa/event',
   /** Host → page: the state changed (flows, runs, busy). */
@@ -43,6 +49,8 @@ export interface QaFlowInfo {
 export type QaJobKind = 'run' | 'explore' | 'record' | 'do';
 
 export interface QaState {
+  /** The project Heap QA is looking at — the folder picker shows this. */
+  root: string;
   /** The test folder, when there is one. */
   folder?: string;
   folderName: string;
@@ -66,7 +74,11 @@ export interface QaState {
 
 export type QaEvent =
   | { type: 'flowStart'; runId: string; flowId: string; name: string }
-  | { type: 'step'; runId: string; flowId: string; step: Omit<StepResult, 'screenshot'> }
+  | { type: 'step'; runId: string; flowId: string; step: Omit<StepResult, 'screenshot' | 'visual'>; shot?: string }
+  /** The browser as it looks right now: a JPEG, base64. */
+  | { type: 'frame'; data: string }
+  /** The AI, as it works — the same stream Heap Code renders. */
+  | { type: 'agent'; job: 'do' | 'heal'; event: AgentEvent }
   | { type: 'healStart'; runId: string; flowId: string; what: string; model: string }
   | { type: 'diagnosis'; runId: string; flowId: string; text: string }
   | { type: 'flowEnd'; runId: string; flowId: string; status: 'passed' | 'failed'; error?: string; durationMs: number }
@@ -125,3 +137,6 @@ export interface RunListing {
   findings?: { high: number; medium: number; low: number };
   pages?: number;
 }
+
+/** The folder picker's answers — the same shapes Heap Code's picker takes. */
+export type { UiBrowseFoldersResult, UiWorkspacesResult } from '@heapcode/web-host/protocol';

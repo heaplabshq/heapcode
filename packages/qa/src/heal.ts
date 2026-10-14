@@ -3,7 +3,7 @@ import type { Fingerprint } from '@heapcode/page/fingerprint';
 import type { RecordedTarget } from '@heapcode/page/recording';
 import { findSimilar } from '@heapcode/page/similarity';
 import type { DomTree } from '@heapcode/page/tree';
-import { runAgent, type ToolCall, type ToolDefinition, type ToolResult } from '@heapcode/core/agent';
+import { runAgent, type AgentEvents, type ToolCall, type ToolDefinition, type ToolResult } from '@heapcode/core/agent';
 import type { Provider } from '@heapcode/core/providers';
 import { describeAttempts, type Attempt, type Driver } from './driver.js';
 import type { Locator } from './flow.js';
@@ -68,6 +68,8 @@ export interface HealerOptions {
     onStart?(request: HealRequest): void;
     /** The model reads images: offer `look`, a screenshot with element numbers drawn on. */
     vision?: boolean;
+    /** What the agent says and calls, as it happens — for a page to show. */
+    events?: Partial<AgentEvents>;
   };
 }
 
@@ -227,7 +229,7 @@ async function agentHeal(
       return result;
     },
     requestPermission: async () => true,
-    events: { onText: () => {}, onToolCall: () => {}, onToolResult: () => {} },
+    events: { onText: () => {}, onToolCall: () => {}, onToolResult: () => {}, ...agent.events },
     maxIterations: 12,
     ...(agent.contextWindow ? { contextWindow: agent.contextWindow } : {}),
     compaction: { kind: 'test-repair', preserve: 'what the step is for, what was looked at, and which elements are candidates' },

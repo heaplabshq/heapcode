@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import type { RpcPeer } from '@heapcode/core';
 import type { ConfigStore, SecretsStore } from '@heapcode/host';
@@ -19,7 +20,7 @@ import {
   type Workspace,
 } from '@heapcode/qa';
 import type { PlaywrightDriver } from '@heapcode/qa-playwright';
-import type { HostSession, WorkspaceEvents } from '@heapcode/web-host';
+import { listFolders, type HostSession, type WorkspaceEvents, type WorkspaceStore } from '@heapcode/web-host';
 import {
   QA_METHODS,
   QA_PROTOCOL_VERSION,
@@ -35,12 +36,15 @@ import {
 } from './protocol.js';
 import { exploreSite, findRun, launchDriver, listRuns, prepare, resolveAgentModel, runSuite } from './orchestrate.js';
 import { RecordingSession, aiTask, replayOnce, saveFlow } from './work.js';
+import { agentEventStream } from './agentEvents.js';
 
 export interface QaSessionDeps {
   /** The workspace `heapcode web` runs in; the test folder is found in or under it. */
   root: string;
   /** Heap Code's folder switches; Heap QA follows them (after any job in progress). */
   workspaceEvents?: WorkspaceEvents;
+  /** The recent-folders list Heap Code's picker shows, shared. */
+  workspaces?: WorkspaceStore;
   config: ConfigStore;
   secrets: SecretsStore;
   lan: boolean;
@@ -104,8 +108,28 @@ export class QaSession implements HostSession {
       this.folder = full;
       return this.pushState();
     });
-    ui.onRequest(QA_METHODS.run, async (raw) => this.startRun((raw as { flows?: string[] }).flows ?? []));
-    ui.onRequest(QA_METHODS.explore, async (raw) => this.startExplore(raw as { start?: string; allowCommits?: boolean; ai?: boolean }));
+    ui.onRequest(QA_METHODS.run, async (raw) => {
+      const p = raw as { flows?: string[]; headed?: boolean };
+      return this.startRun(p.flows ?? [], p.headed === true);
+    });
+    ui.onRequest(QA_METHODS.explore, async (raw) => this.startExplore(raw as { start?: string; allowCommits?: boolean; ai?: boolean; headed?: boolean }));
+    ui.onRequest(QA_METHODS.workspaces, async () => {
+      const recent = (await this.deps.workspaces?.list()) ?? [];
+      return {
+        current: this.folder ?? this.root,
+        recent: recent.some((r) => r.path === this.root) ? recent : [{ path: this.root, name: basename(this.root) || this.root, lastOpened: Date.now() }, ...recent],
+        home: homedir(),
+      };
+    });
+    ui.onRequest(QA_METHODS.browseFolders, async (raw) => listFolders((raw as { path?: string } | undefined)?.path));
+    ui.onRequest(QA_METHODS.setRoot, async (raw) => {
+      if (this.busy) throw new Error(`Busy: ${this.busy.label}. Stop it first.`);
+      const path = resolve(String((raw as { path?: unknown }).path ?? ''));
+      if (!existsSync(path) || !statSync(path).isDirectory()) throw new Error(`Not a folder: ${path}`);
+      await this.deps.workspaces?.record(path);
+      this.useRoot(path);
+      return this.state();
+    });
     ui.onRequest(QA_METHODS.record, async (raw) => this.startRecording((raw as { start?: string }).start));
     ui.onRequest(QA_METHODS.recordStop, async () => this.stopRecording());
     ui.onRequest(QA_METHODS.recordSave, async (raw) => this.saveRecording(raw as QaRecordSaveParams));
@@ -116,7 +140,7 @@ export class QaSession implements HostSession {
       this.finishJob();
       return {};
     });
-    ui.onRequest(QA_METHODS.do, async (raw) => this.startTask(raw as { task?: string; start?: string; name?: string }));
+    ui.onRequest(QA_METHODS.do, async (raw) => this.startTask(raw as { task?: string; start?: string; name?: string; headed?: boolean }));
     ui.onRequest(QA_METHODS.stop, async () => {
       this.abort?.abort();
       if (this.busy?.kind === 'record') return this.stopRecording();
@@ -173,6 +197,7 @@ export class QaSession implements HostSession {
   async state(): Promise<QaState> {
     const profile = await this.deps.config.resolve('agent').catch(() => undefined);
     const base: QaState = {
+      root: this.root,
       folderName: basename(this.folder ?? this.root),
       suggestedFolder: join(this.root, 'heapqa'),
       errors: [],
@@ -227,7 +252,16 @@ export class QaSession implements HostSession {
     void this.pushState();
   }
 
-  private async startRun(names: string[]): Promise<{ runId: string }> {
+  /** Live frames, at most ~8 a second: enough to watch, not enough to flood the socket. */
+  private frameAt = 0;
+  private frame = (data: string): void => {
+    const now = Date.now();
+    if (now - this.frameAt < 120) return;
+    this.frameAt = now;
+    this.emit({ type: 'frame', data });
+  };
+
+  private async startRun(names: string[], headed = false): Promise<{ runId: string }> {
     const ws = this.workspace();
     if (ws.errors.length) throw new Error(`Fix these first:\n${ws.errors.map((e) => `${e.file ?? ''}${e.line ? `:${e.line}` : ''} ${e.message}`).join('\n')}`);
     const { flows, unknown } = selectFlows(ws, names);
@@ -238,8 +272,9 @@ export class QaSession implements HostSession {
     void (async () => {
       let driver: PlaywrightDriver | undefined;
       try {
-        driver = await launchDriver(ws);
+        driver = await launchDriver(ws, { headless: !headed });
         abort.signal.addEventListener('abort', () => void driver?.close(), { once: true });
+        await driver.screencast(this.frame).catch(() => undefined);
         const model = ws.config.heal === 'ai' ? await resolveAgentModel(this.deps.config, this.deps.secrets) : undefined;
         const { summary } = await runSuite({
           ws,
@@ -253,9 +288,10 @@ export class QaSession implements HostSession {
           events: {
             onFlowStart: (flowId, flow) => this.emit({ type: 'flowStart', runId, flowId, name: flow.name }),
             onStep: (flowId, step) => {
-              const { screenshot: _shot, ...rest } = step;
-              this.emit({ type: 'step', runId, flowId, step: rest });
+              const { screenshot, visual: _visual, ...rest } = step;
+              this.emit({ type: 'step', runId, flowId, step: rest, ...(screenshot?.length ? { shot: `data:image/png;base64,${Buffer.from(screenshot).toString('base64')}` } : {}) });
             },
+            healAgentEvents: agentEventStream((event) => this.emit({ type: 'agent', job: 'heal', event })),
             onHealStart: (flowId, req, name) => this.emit({ type: 'healStart', runId, flowId, what: describeLocator(req.locator), model: name }),
             onDiagnosis: (flowId, d) => this.emit({ type: 'diagnosis', runId, flowId, text: d.text }),
             onFlowEnd: (flowId, r) =>
@@ -273,7 +309,7 @@ export class QaSession implements HostSession {
     return { runId };
   }
 
-  private async startExplore(params: { start?: string; allowCommits?: boolean; ai?: boolean }): Promise<{ runId: string }> {
+  private async startExplore(params: { start?: string; allowCommits?: boolean; ai?: boolean; headed?: boolean }): Promise<{ runId: string }> {
     const ws = this.workspace();
     const judgeWith = params.ai ? await resolveAgentModel(this.deps.config, this.deps.secrets) : undefined;
     if (params.ai && !judgeWith) throw new Error('No model is set for the agent role — set one in Heap Code\'s settings.');
@@ -284,7 +320,8 @@ export class QaSession implements HostSession {
     void (async () => {
       let driver: PlaywrightDriver | undefined;
       try {
-        driver = await launchDriver(ws, { timeout: Math.min(ws.config.timeout, 5000) });
+        driver = await launchDriver(ws, { timeout: Math.min(ws.config.timeout, 5000), headless: params.headed !== true });
+        await driver.screencast(this.frame).catch(() => undefined);
         const { result } = await exploreSite({
           ws,
           runId,
@@ -326,7 +363,7 @@ export class QaSession implements HostSession {
     try {
       this.recording = await RecordingSession.start(
         ws,
-        { start, ...(baseUrl ? { baseUrl } : {}) },
+        { start, ...(baseUrl ? { baseUrl } : {}), onFrame: this.frame },
         {
           onStep: (step, count) => this.emit({ type: 'recordStep', label: stepLabel(step), count }),
           onKnownStep: (m) => this.emit({ type: 'recordHint', text: `Steps ${m.from}–${m.to} are your reusable step "${m.use}" — you'll be offered it when you save.` }),
@@ -383,7 +420,7 @@ export class QaSession implements HostSession {
     }
   }
 
-  private async startTask(params: { task?: string; start?: string; name?: string }): Promise<Record<string, never>> {
+  private async startTask(params: { task?: string; start?: string; name?: string; headed?: boolean }): Promise<Record<string, never>> {
     const task = (params.task ?? '').trim();
     if (!task) throw new Error('Say what the AI should do.');
     const ws = this.workspace();
@@ -409,6 +446,9 @@ export class QaSession implements HostSession {
             return answer.allow === true;
           },
           onAction: (line) => this.emit({ type: 'action', line }),
+          agentEvents: agentEventStream((event) => this.emit({ type: 'agent', job: 'do', event })),
+          onFrame: this.frame,
+          headless: params.headed !== true,
           signal: abort.signal,
         });
         this.emit({

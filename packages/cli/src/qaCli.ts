@@ -137,7 +137,7 @@ Usage:
   heapcode qa export [flow…] [--out DIR]       Write each flow as a plain Playwright test (default <folder>/playwright/*.spec.ts),
                                                so the tests are yours with or without Heap QA
   heapcode qa github [--dir D]                 Write .github/workflows/heapqa.yml: run the flows on every pull request and comment
-  heapcode qa install                          Download Heap QA's own Chromium — only needed with no Chrome or Edge installed
+  heapcode qa install                          Download Heap QA's own Chromium: runs hidden with no Dock icon, and works with no Chrome or Edge installed
 
 Run flags:
   --dir D            The test folder (default: the current directory)

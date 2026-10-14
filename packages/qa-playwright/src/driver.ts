@@ -102,7 +102,7 @@ export class PlaywrightDriver implements Driver {
   }
 
   static async launch(options: LaunchOptions = {}): Promise<PlaywrightDriver> {
-    const browser = await launchBrowser(options.channel ?? 'chrome', options.headless ?? true, options.exitOnSigint ?? true);
+    const browser = await launchBrowser(options.channel, options.headless ?? true, options.exitOnSigint ?? true);
     const viewport = options.viewport ?? { width: 1280, height: 800 };
     const context = await browser.newContext({ viewport });
     context.setDefaultTimeout(options.timeout ?? DEFAULT_TIMEOUT);
@@ -359,7 +359,14 @@ export class PlaywrightDriver implements Driver {
   }
 }
 
-async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless: boolean, handleSIGINT: boolean): Promise<Browser> {
+/**
+ * Which browser, in order. Unset means "whatever works": hidden runs try
+ * Playwright's own windowless build first — the full Chrome app, even with
+ * --headless, puts an icon in the macOS Dock and can take focus, which reads
+ * as a window opening when the person asked for none. A visible run, or a
+ * browser the person chose in heapqa.yaml, starts that browser first.
+ */
+async function launchBrowser(chosen: 'chrome' | 'msedge' | 'chromium' | undefined, headless: boolean, handleSIGINT: boolean): Promise<Browser> {
   // Loaded on first launch, not at import: the CLI carries Heap QA in the same
   // bundle as everything else, and playwright-core is an optional dependency
   // there — a static import would make every `heapcode` command need it.
@@ -369,6 +376,14 @@ async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless
   } catch {
     throw new Error('Heap QA needs the playwright-core package, which is not installed. Reinstall Heap Code, or run `npm install -g playwright-core`.');
   }
+  if (chosen === undefined && headless) {
+    try {
+      return await chromium.launch({ headless, handleSIGINT });
+    } catch {
+      // Not downloaded (`heapcode qa install`): the installed Chrome, hidden, will do.
+    }
+  }
+  const channel = chosen ?? 'chrome';
   let installedError: string | undefined;
   if (channel !== 'chromium') {
     try {

@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ChatRequest, ChatResponse, Provider } from '@heapcode/core/providers';
 import { Templates, chainRecordings, initWorkspace, loadWorkspace, parseFlow, type Flow, type SavedFingerprints } from '@heapcode/qa';
 import { AskConversation, compact } from '../src/ask.js';
-import type { AgentModel } from '../src/orchestrate.js';
+import { aiLimits, type AgentModel } from '../src/orchestrate.js';
 
 const LOGIN = `<!doctype html><title>Log in</title><h1>Log in</h1><form action="/home">
   <label for="e">Email</label><input id="e" name="email"><button>Log in</button></form>`;
@@ -165,5 +165,20 @@ describe('compact', () => {
     expect(kept.map((e) => e.type)).toEqual(['text', 'tool_call', 'tool_result']);
     expect(kept[0]).toEqual({ type: 'text', text: 'Hello' });
     expect((kept[2] as { content: string }).content).toHaveLength(1500);
+  });
+});
+
+describe('aiLimits', () => {
+  it('keeps the short defaults when the connection sets no timeout', () => {
+    expect(aiLimits({})).toEqual({ healMs: 90_000, diagnoseMs: 45_000, judgeMs: 60_000 });
+  });
+  it('gives a slow model the time its connection allows — healing three calls of it', () => {
+    expect(aiLimits({ timeoutMs: 600_000 })).toEqual({ healMs: 1_800_000, diagnoseMs: 600_000, judgeMs: 600_000 });
+  });
+  it('never goes below the defaults for a short timeout', () => {
+    expect(aiLimits({ timeoutMs: 5_000 })).toEqual({ healMs: 90_000, diagnoseMs: 45_000, judgeMs: 60_000 });
+  });
+  it('has no limit when the connection waits as long as it takes', () => {
+    expect(aiLimits({ timeoutMs: 0 })).toEqual({ healMs: 0, diagnoseMs: 0, judgeMs: 0 });
   });
 });

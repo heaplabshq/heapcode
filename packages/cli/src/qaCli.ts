@@ -427,7 +427,7 @@ async function qaRun(args: string[]): Promise<number> {
         onFlowStart: (_id, flow) => say(`${flow.name}  (${flow.file})`),
         onStep: (_id, step) => say(stepLine(step)),
         // The step's row prints only when it ends; this says why it is taking a while.
-        onHealStart: (_id, req, name) => say(`      … ${describeLocator(req.locator)} has moved or gone — ${name} is looking for it (up to 90s)`),
+        onHealStart: (_id, req, name, limitMs) => say(`      … ${describeLocator(req.locator)} has moved or gone — ${name} is looking for it (${limitMs > 0 ? `up to ${Math.round(limitMs / 1000)}s` : 'no time limit'})`),
         onDiagnosis: (_id, guess) => say(`  ? likely cause (a guess): ${guess.text}`),
         onFlowEnd: (_id, result) => say(result.status === 'passed' ? `  ✓ passed in ${seconds(result.durationMs)}\n` : `  ✗ failed — ${result.error}\n`),
       },

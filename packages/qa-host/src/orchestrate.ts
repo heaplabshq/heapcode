@@ -56,6 +56,27 @@ export interface AgentModel {
   maxTokens?: number;
   /** The model reads images — screenshots can go to it. */
   vision: boolean;
+  /** The connection's response timeout (Settings → Providers), in ms: unset keeps the defaults, 0 waits forever. */
+  timeoutMs?: number;
+}
+
+/**
+ * How long Heap QA's own AI work may take, from the connection's response
+ * timeout — so a slow model someone has given more time is given it here too.
+ * Unset keeps short defaults, so a run never stalls long on a quiet model;
+ * 0 is no limit (Stop still works). Healing is several model calls, so it
+ * gets three timeouts; the others are one call each. 0 in a result is "none".
+ */
+export function aiLimits(model: Pick<AgentModel, 'timeoutMs'>): { healMs: number; diagnoseMs: number; judgeMs: number } {
+  const t = model.timeoutMs;
+  if (t === undefined) return { healMs: 90_000, diagnoseMs: 45_000, judgeMs: 60_000 };
+  if (t === 0) return { healMs: 0, diagnoseMs: 0, judgeMs: 0 };
+  return { healMs: Math.max(90_000, 3 * t), diagnoseMs: Math.max(45_000, t), judgeMs: Math.max(60_000, t) };
+}
+
+/** A signal that fires after `ms`, or none for 0 (no limit). */
+function within(ms: number): AbortSignal | undefined {
+  return ms > 0 ? AbortSignal.timeout(ms) : undefined;
 }
 
 export async function resolveAgentModel(config: ConfigStore, secrets: SecretsStore): Promise<AgentModel | undefined> {
@@ -71,6 +92,7 @@ export async function resolveAgentModel(config: ConfigStore, secrets: SecretsSto
     vision: resolveCapabilities(profile).vision,
     contextWindow,
     ...(profile.maxTokens ? { maxTokens: profile.maxTokens } : {}),
+    ...(profile.timeoutMs !== undefined ? { timeoutMs: profile.timeoutMs } : {}),
   };
 }
 
@@ -100,7 +122,8 @@ export interface SuiteEvents {
   onFlowStart?(id: string, flow: Flow): void;
   onStep?(id: string, step: StepResult): void;
   /** The agent started looking for a step's element (it can take a while). */
-  onHealStart?(id: string, request: HealRequest, model: string): void;
+  /** `limitMs` 0 is no limit. */
+  onHealStart?(id: string, request: HealRequest, model: string, limitMs: number): void;
   onDiagnosis?(id: string, diagnosis: Diagnosis): void;
   /** The healing agent's own events, while it looks (see agentEvents.ts). */
   healAgentEvents?: Partial<import('@heapcode/core').AgentEvents>;
@@ -147,7 +170,8 @@ export async function runSuite(options: SuiteOptions): Promise<{ summary: RunSum
               templates,
               vision: model.vision,
               ...(events?.healAgentEvents ? { events: events.healAgentEvents } : {}),
-              onStart: (request) => events?.onHealStart?.(current, request, model.model),
+              timeoutMs: aiLimits(model).healMs,
+              onStart: (request) => events?.onHealStart?.(current, request, model.model, aiLimits(model).healMs),
             },
           }
         : {},
@@ -189,7 +213,7 @@ export async function runSuite(options: SuiteOptions): Promise<{ summary: RunSum
     // How the elements looked when this flow last passed — what healing compares with next time.
     if (result.status === 'passed') saveRefreshed(ws.dir, result.refreshed);
     else if (diagnoseWith) {
-      const guess = await diagnose(diagnoseWith.provider, diagnoseWith.model, result, AbortSignal.timeout(45_000));
+      const guess = await diagnose(diagnoseWith.provider, diagnoseWith.model, result, within(aiLimits(diagnoseWith).diagnoseMs));
       if (guess) {
         result.diagnosis = guess;
         events?.onDiagnosis?.(id, guess);
@@ -240,7 +264,7 @@ export async function exploreSite(options: ExploreSiteOptions): Promise<{ result
     ...(options.forms !== undefined ? { forms: options.forms } : {}),
     ...(options.buttons !== undefined ? { buttons: options.buttons } : {}),
     ...(options.allowCommits !== undefined ? { allowCommits: options.allowCommits } : {}),
-    ...(options.judgeWith ? { judge: createPageJudge({ provider: options.judgeWith.provider, model: options.judgeWith.model, vision: options.judgeWith.vision }) } : {}),
+    ...(options.judgeWith ? { judge: createPageJudge({ provider: options.judgeWith.provider, model: options.judgeWith.model, vision: options.judgeWith.vision, timeoutMs: aiLimits(options.judgeWith).judgeMs }) } : {}),
     ...(options.onPage ? { onPage: options.onPage } : {}),
     ...(options.onFinding ? { onFinding: options.onFinding } : {}),
     ...(options.signal ? { signal: options.signal } : {}),

@@ -143,7 +143,7 @@ export function App(): JSX.Element {
           break;
         }
         case 'healStart':
-          addRow({ mark: '…', tone: 'warn', text: `${e.what} has moved or gone — ${e.model} is looking for it (up to 90s)`, depth: 2 });
+          addRow({ mark: '…', tone: 'warn', text: `${e.what} has moved or gone — ${e.model} is looking for it (${e.limitSec > 0 ? `up to ${e.limitSec}s` : 'no time limit'})`, depth: 2 });
           break;
         case 'diagnosis':
           addRow({ mark: '?', tone: 'dim', text: `Likely cause (a guess): ${e.text}`, depth: 1 });

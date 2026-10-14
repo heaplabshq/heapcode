@@ -27,8 +27,10 @@ Do not report matters of taste, design choices, missing features you would like,
 Reply with JSON only: {"problems": [{"title": "...", "detail": "...", "severity": "medium" | "low"}]}
 "title" is a short line; "detail" says exactly what and where, quoting the text involved.`;
 
-export function createPageJudge(options: { provider: Provider; model: string; vision: boolean; signal?: AbortSignal }): PageJudge {
+export function createPageJudge(options: { provider: Provider; model: string; vision: boolean; signal?: AbortSignal; /** Per page; 0 is no limit. Default 60s. */ timeoutMs?: number }): PageJudge {
+  const limit = options.timeoutMs ?? 60_000;
   return async ({ url, outline, screenshot }) => {
+    const signal = options.signal ?? (limit > 0 ? AbortSignal.timeout(limit) : undefined);
     try {
       const res = await options.provider.chat({
         model: options.model,
@@ -42,7 +44,7 @@ export function createPageJudge(options: { provider: Provider; model: string; vi
           },
         ],
         temperature: 0,
-        signal: options.signal ?? AbortSignal.timeout(60_000),
+        ...(signal ? { signal } : {}),
       });
       const json = /\{[\s\S]*\}/.exec(res.content)?.[0];
       if (!json) return [];

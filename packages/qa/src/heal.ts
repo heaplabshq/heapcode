@@ -204,11 +204,13 @@ async function agentHeal(
   // turn's tool calls are refused and the loop is stopped.
   const stop = new AbortController();
   if (agent.signal) agent.signal.addEventListener('abort', () => stop.abort(), { once: true });
+  // 0 is no limit: the person gave the model as long as it takes (Stop still ends it).
   const timeoutMs = agent.timeoutMs ?? 90_000;
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   // Raced, not only aborted: a provider that ignores the signal must not hold the run.
   const deadline = new Promise<void>((resolve) => {
+    if (timeoutMs <= 0) return;
     timer = setTimeout(() => {
       timedOut = true;
       stop.abort();

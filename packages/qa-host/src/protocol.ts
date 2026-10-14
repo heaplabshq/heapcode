@@ -103,7 +103,8 @@ export type QaEvent =
   | { type: 'askNote'; text: string; warn?: boolean }
   /** The AI, as it works — the same stream Heap Code renders. */
   | { type: 'agent'; job: 'do' | 'heal'; event: AgentEvent }
-  | { type: 'healStart'; runId: string; flowId: string; what: string; model: string }
+  /** `limitSec` 0: no time limit (the connection's response timeout is 0). */
+  | { type: 'healStart'; runId: string; flowId: string; what: string; model: string; limitSec: number }
   | { type: 'diagnosis'; runId: string; flowId: string; text: string }
   | { type: 'flowEnd'; runId: string; flowId: string; status: 'passed' | 'failed'; error?: string; durationMs: number }
   | { type: 'runEnd'; runId: string; passed: number; failed: number; healed: number }

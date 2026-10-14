@@ -891,7 +891,7 @@ function ProfileRow({
             />
             <NumberField
               label="Response timeout (seconds)"
-              hint="How long to wait for the model to start replying before giving up — a long reply that has started is never cut off. Raise it for slow or local models on big tasks; 0 waits as long as it takes. Empty is 300."
+              hint="How long to wait for the model to start replying before giving up — a long reply that has started is never cut off. Raise it for slow or local models on big tasks; 0 waits as long as it takes. Empty is 300. Heap QA follows it too — finding a moved button gets three times it."
               value={draft.timeoutSecs}
               placeholder="300"
               zero

@@ -374,7 +374,7 @@ export class QaSession implements HostSession {
               this.emit({ type: 'step', runId, flowId, step: rest, ...(screenshot?.length ? { shot: `data:image/png;base64,${Buffer.from(screenshot).toString('base64')}` } : {}) });
             },
             healAgentEvents: agentEventStream((event) => this.emit({ type: 'agent', job: 'heal', event })),
-            onHealStart: (flowId, req, name) => this.emit({ type: 'healStart', runId, flowId, what: describeLocator(req.locator), model: name }),
+            onHealStart: (flowId, req, name, limitMs) => this.emit({ type: 'healStart', runId, flowId, what: describeLocator(req.locator), model: name, limitSec: Math.round(limitMs / 1000) }),
             onDiagnosis: (flowId, d) => this.emit({ type: 'diagnosis', runId, flowId, text: d.text }),
             onFlowEnd: (flowId, r) =>
               this.emit({ type: 'flowEnd', runId, flowId, status: r.status, durationMs: r.durationMs, ...(r.error ? { error: r.error } : {}) }),

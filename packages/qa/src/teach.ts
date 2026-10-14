@@ -167,7 +167,10 @@ function matchRun(run: Step[], reusable: Flow, flowInputs: Record<string, string
       case 'expect': {
         const eb = (b as typeof a).expect;
         if (a.expect.kind !== eb.kind) return undefined;
-        if ('target' in a.expect && 'target' in eb && !sameElement(a.expect.target, eb.target)) return undefined;
+        const ta = 'target' in a.expect ? a.expect.target : undefined;
+        const tb = 'target' in eb ? eb.target : undefined;
+        if (Boolean(ta) !== Boolean(tb) || (ta && tb && !sameElement(ta, tb))) return undefined;
+        if (a.expect.kind === 'screenshot' && eb.kind === 'screenshot' && a.expect.name !== eb.name) return undefined;
         break;
       }
       case 'wait':

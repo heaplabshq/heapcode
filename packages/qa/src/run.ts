@@ -6,6 +6,8 @@ import type { Expectation, Flow, Locator, Step } from './flow.js';
 import type { HealOutcome, Healer } from './heal.js';
 import type { SavedFingerprints } from './record.js';
 import type { Filled, Templates } from './template.js';
+import { join } from 'node:path';
+import { checkSnapshot } from './visual.js';
 
 /**
  * Playing a flow back: no model, no guessing — every step does exactly what
@@ -72,6 +74,8 @@ export interface StepResult {
   bug?: boolean;
   /** The page when the step failed: its address and outline (secrets redacted). */
   page?: { url: string; outline: string };
+  /** A screenshot check's outcome; `diff` is a PNG of what changed. */
+  visual?: { name: string; status: 'created' | 'updated' | 'matched' | 'differs'; diffPercent: number; diff?: Uint8Array };
   attempts?: Attempt[];
   error?: string;
   console: ConsoleLine[];
@@ -132,6 +136,11 @@ export interface RunOptions {
   refreshFingerprints?: boolean;
   /** Read the page when a step fails, for the report. Default true. */
   captureFailure?: boolean;
+  /**
+   * Where screenshot checks keep their pictures (`<dir>/<flow or step>/<name>.png`),
+   * and whether to replace them with what the page looks like now.
+   */
+  snapshots?: { dir: string; update: boolean };
 }
 
 export async function runFlow(id: string, flow: Flow, options: RunOptions): Promise<FlowResult> {
@@ -364,7 +373,7 @@ async function perform(step: Exclude<Step, { kind: 'use' }>, templates: Template
       await sleep(step.ms);
       return;
     case 'expect':
-      await check(step.expect, templates, ctx, result, find);
+      await check(step.expect, templates, ctx, result, find, place);
       return;
   }
 }
@@ -401,7 +410,7 @@ function savedFingerprint(ctx: Ctx, place: Place, locator: Locator): Fingerprint
   return saved && JSON.stringify(saved.locator) === JSON.stringify(locator) ? saved.fingerprint : undefined;
 }
 
-async function check(expectation: Expectation, templates: Templates, ctx: Ctx, result: StepResult, find: Find): Promise<void> {
+async function check(expectation: Expectation, templates: Templates, ctx: Ctx, result: StepResult, find: Find, place: Place): Promise<void> {
   const { driver } = ctx;
   switch (expectation.kind) {
     case 'visible': {
@@ -484,6 +493,26 @@ async function check(expectation: Expectation, templates: Templates, ctx: Ctx, r
       result.console.push(...now);
       const errors = ctx.consoleSoFar.filter((l) => l.level === 'error');
       if (errors.length) throw new Error(`The page logged ${errors.length} error${errors.length === 1 ? '' : 's'}: ${errors.slice(0, 3).map((e) => e.message).join(' | ')}`);
+      return;
+    }
+    case 'screenshot': {
+      if (!ctx.snapshots) throw new Error('Screenshot checks need a place to keep their pictures — run them from a test folder.');
+      if (!driver.capture) throw new Error('This browser driver cannot take screenshots for checks.');
+      const target = expectation.target ? await find(expectation.target, true) : undefined;
+      await driver.settle?.();
+      const now = await driver.capture(target);
+      const outcome = checkSnapshot(join(ctx.snapshots.dir, place.source.id, `${expectation.name}.png`), now, {
+        maxDiff: expectation.maxDiff ?? 1,
+        update: ctx.snapshots.update,
+      });
+      result.visual = { name: expectation.name, status: outcome.status, diffPercent: outcome.diffPercent, ...(outcome.diff ? { diff: outcome.diff } : {}) };
+      if (outcome.status === 'differs') {
+        throw new Error(
+          `${expectation.target ? describeLocator(expectation.target) : 'The page'} looks different from the saved "${expectation.name}" picture: ` +
+            `${outcome.message ?? `${outcome.diffPercent.toFixed(2)}% of pixels changed (allowed ${expectation.maxDiff ?? 1}%)`}. ` +
+            'If the change is intended, run again with --update-snapshots.',
+        );
+      }
       return;
     }
     case 'noServerErrors': {
@@ -581,6 +610,8 @@ function safeLabel(step: Step, templates: Templates | undefined): string {
           return 'expect no console errors';
         case 'noServerErrors':
           return 'expect no server errors';
+        case 'screenshot':
+          return `expect ${e.target ? describeLocator(e.target) : 'the page'} to look like "${e.name}"`;
       }
     }
   }

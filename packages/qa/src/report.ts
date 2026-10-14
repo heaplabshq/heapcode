@@ -130,6 +130,8 @@ function stepRow(step: SavedStep): string {
   if (consoleErrors.length) extras.push(`<ul>${consoleErrors.map((l) => `<li>console: ${esc(l.message)}</li>`).join('')}</ul>`);
   if (step.failedRequests.length) extras.push(`<ul>${step.failedRequests.map((r) => `<li>${esc(r.method)} ${esc(r.url)} → ${esc(String(r.status ?? r.error ?? 'failed'))}</li>`).join('')}</ul>`);
   if (step.healed) extras.push(`<ul><li>found again by ${step.healed.via === 'similarity' ? 'similarity' : 'the AI'} as ${esc(describeLocator(step.healed.locator))}${step.healed.reason ? ` — ${esc(step.healed.reason)}` : ''}</li></ul>`);
+  if (step.visual?.diff) extras.push(`<ul><li>${step.visual.diffPercent.toFixed(2)}% of pixels differ from the saved "${esc(step.visual.name)}" picture — highlighted below</li></ul><a class="shot" href="${esc(step.visual.diff)}" target="_blank"><img loading="lazy" src="${esc(step.visual.diff)}" alt="What changed in ${esc(step.visual.name)}"></a>`);
+  else if (step.visual && step.visual.status !== 'matched') extras.push(`<ul><li>${step.visual.status === 'created' ? 'saved' : 'replaced'} the "${esc(step.visual.name)}" picture</li></ul>`);
   if (step.screenshot) extras.push(`<a class="shot" href="${esc(step.screenshot)}" target="_blank"><img loading="lazy" src="${esc(step.screenshot)}" alt="Screenshot after step ${esc(step.path)}"></a>`);
   return `<li class="step ${step.status}" style="padding-left:${step.depth * 18}px"><span class="mark ${step.status}">${mark}</span><span class="label"><span class="path">${esc(step.path)}</span>${esc(step.label)}${step.healed ? '<span class="badge heal">healed</span>' : ''}${step.bug ? '<span class="badge bug">likely app bug</span>' : ''}${step.intent && step.kind !== 'use' ? `<div class="intent">${esc(step.intent)}</div>` : ''}</span><span class="time">${step.status === 'skipped' ? 'skipped' : ms(step.durationMs)}</span>${extras.length ? `<div class="extra">${extras.join('')}</div>` : ''}</li>`;
 }
@@ -226,6 +228,7 @@ const FINDING_KIND: Record<string, string> = {
   'failed-request': 'failed request',
   layout: 'layout',
   'dead-button': 'does nothing',
+  'looks-wrong': 'judged by the AI',
 };
 
 /** The explorer's page: findings by severity, each with where, what set it off, evidence and its repro. */

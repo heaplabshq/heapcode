@@ -32,7 +32,7 @@ export function formatErrors(errors: ParseError[]): string {
 
 const STEP_KINDS = ['goto', 'click', 'type', 'select', 'press', 'expect', 'use', 'wait'] as const;
 const LOCATOR_KEYS = ['testId', 'role', 'name', 'label', 'placeholder', 'text', 'css', 'nth'] as const;
-const EXPECT_KINDS = ['visible', 'hidden', 'text', 'url', 'count', 'noConsoleErrors', 'noServerErrors'] as const;
+const EXPECT_KINDS = ['visible', 'hidden', 'text', 'url', 'count', 'noConsoleErrors', 'noServerErrors', 'screenshot'] as const;
 
 class Reader {
   readonly errors: ParseError[] = [];
@@ -297,6 +297,21 @@ function parseExpect(r: Reader, node: Node | null): Expectation | undefined {
     case 'noConsoleErrors':
     case 'noServerErrors':
       return { kind };
+    case 'screenshot': {
+      // `screenshot: checkout` — the whole page; or { name, in, maxDiff }.
+      if (isScalar(value)) {
+        const name = r.string(value, 'expect.screenshot');
+        return name !== undefined && validName(r, value, name) ? { kind, name } : undefined;
+      }
+      if (!isMap(value)) return r.fail(value, '`expect.screenshot` takes a name, or name / in / maxDiff.');
+      const f = Object.fromEntries(r.entries(value).map(([k, v]) => [k, v]));
+      for (const [k, , kn] of r.entries(value)) if (!['name', 'in', 'maxDiff'].includes(k)) r.fail(kn, `\`expect.screenshot\` takes name, in and maxDiff — not \`${k}\`.`);
+      const name = r.string(f.name, 'expect.screenshot.name');
+      const target = f.in === undefined ? undefined : r.locator(f.in, 'expect.screenshot.in');
+      const maxDiff = f.maxDiff === undefined ? undefined : r.number(f.maxDiff, 'expect.screenshot.maxDiff (percent of pixels)');
+      if (name === undefined || !validName(r, value, name)) return undefined;
+      return { kind, name, ...(target ? { target } : {}), ...(maxDiff !== undefined ? { maxDiff } : {}) };
+    }
     default:
       return r.fail(keyNode, `Unknown check \`${kind}\`. Use ${EXPECT_KINDS.join(', ')}.`);
   }
@@ -371,6 +386,13 @@ export function parseConfig(text: string | undefined, file = 'heapqa.yaml'): Par
     }
   }
   return r.errors.length ? { ok: false, errors: r.errors } : { ok: true, value: config };
+}
+
+/** A screenshot name becomes a file name: letters, digits, dash, underscore, dot. */
+function validName(r: Reader, node: Node | null, name: string): boolean {
+  if (/^[\w.-]+$/.test(name) && !name.startsWith('.')) return true;
+  r.fail(node, `Screenshot name \`${name}\` can only use letters, digits, - _ and . (it becomes a file name).`);
+  return false;
 }
 
 function targetPatternValid(pattern: string): boolean {

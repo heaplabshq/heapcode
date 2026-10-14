@@ -36,6 +36,8 @@ export const CONFIG_FILE = 'heapqa.yaml';
 export const FLOWS_DIR = 'flows';
 export const STEPS_DIR = 'steps';
 export const RESULTS_DIR = 'results';
+/** Saved pictures for screenshot checks — committed with the flows. */
+export const SNAPSHOTS_DIR = 'snapshots';
 /** AI-written flows that did not replay — kept for a person to look at, never run. */
 export const DRAFTS_DIR = 'drafts';
 /** Read for secrets when heapqa.yaml names no `secretsFile`. */

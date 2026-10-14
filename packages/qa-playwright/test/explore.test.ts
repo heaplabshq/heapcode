@@ -99,4 +99,27 @@ describe('explore', { timeout: 120_000 }, () => {
     const nan = await runFlow('repro2', by('error-text', /NaN/)!.repro!, { driver, library: new Map(), templates, baseUrl: base, timeout: 1000, screenshots: 'none', captureFailure: false });
     expect(nan.status).toBe('failed');
   });
+
+  it('adds what an AI judge saw, labelled and never high', async () => {
+    if (!driver) return;
+    const templates = new Templates({ inputs: {}, secret: () => undefined, env: {}, runId: 'r' });
+    const judged: string[] = [];
+    const result = await explore({
+      driver,
+      startUrl: `${base}/about`,
+      baseUrl: base,
+      targets: [],
+      templates,
+      screenshots: false,
+      maxPages: 1,
+      buttons: false,
+      forms: false,
+      judge: async (page) => {
+        judged.push(page.url);
+        return [{ title: 'Banner runs off the screen', detail: 'The grey banner is wider than the page', severity: 'medium' }];
+      },
+    });
+    expect(judged).toEqual([`${base}/about`]);
+    expect(result.findings.find((f) => f.kind === 'looks-wrong')).toMatchObject({ title: 'AI: Banner runs off the screen', severity: 'medium' });
+  });
 });

@@ -93,7 +93,12 @@ export type Expectation =
   | { kind: 'count'; target: Locator; equals: number }
   | { kind: 'noConsoleErrors' }
   /** No request so far in the flow got a 5xx or failed outright. */
-  | { kind: 'noServerErrors' };
+  | { kind: 'noServerErrors' }
+  /**
+   * The page (or `target`) still looks like the picture saved as `name`;
+   * fails when more than `maxDiff` percent of pixels changed (default 1).
+   */
+  | { kind: 'screenshot'; name: string; target?: Locator; maxDiff?: number };
 
 export interface Flow extends Source {
   name: string;

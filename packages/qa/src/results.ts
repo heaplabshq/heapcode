@@ -23,9 +23,11 @@ import { RESULTS_DIR } from './workspace.js';
  * folder's .gitignore keeps them out of commits.
  */
 
-export interface SavedStep extends Omit<StepResult, 'screenshot'> {
+export interface SavedStep extends Omit<StepResult, 'screenshot' | 'visual'> {
   /** Relative to the run folder. */
   screenshot?: string;
+  /** As in StepResult, with `diff` a path relative to the run folder. */
+  visual?: Omit<NonNullable<StepResult['visual']>, 'diff'> & { diff?: string };
 }
 
 export interface SavedFlow extends Omit<FlowResult, 'steps' | 'trace' | 'refreshed' | 'failurePage'> {
@@ -66,13 +68,24 @@ export function tracePathFor(runDir: string, flowId: string): string {
 /** Write a flow's screenshots and return it with file references instead of bytes. */
 export function saveFlow(runDir: string, flow: FlowResult): SavedFlow {
   const steps = flow.steps.map((step): SavedStep => {
-    const { screenshot, ...rest } = step;
-    if (!screenshot || screenshot.length === 0) return rest;
+    const { screenshot, visual, ...rest } = step;
     const folder = join(runDir, 'screenshots', flow.id);
+    const saved: SavedStep = { ...rest };
+    if (visual) {
+      const { diff, ...keep } = visual;
+      saved.visual = keep;
+      if (diff?.length) {
+        mkdirSync(folder, { recursive: true });
+        const file = join(folder, `${step.path}-diff.png`);
+        writeFileSync(file, diff);
+        saved.visual.diff = relative(runDir, file);
+      }
+    }
+    if (!screenshot || screenshot.length === 0) return saved;
     mkdirSync(folder, { recursive: true });
     const file = join(folder, `${step.path}.png`);
     writeFileSync(file, screenshot);
-    return { ...rest, screenshot: relative(runDir, file) };
+    return { ...saved, screenshot: relative(runDir, file) };
   });
   // Refreshed fingerprints go to the flow's fingerprints file, not the report;
   // the failure page is big, so it gets a file of its own.

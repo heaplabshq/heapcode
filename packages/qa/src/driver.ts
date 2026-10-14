@@ -63,6 +63,17 @@ export interface Driver {
   watch?(): Promise<void>;
   /** …and stop, returning the counts. */
   watched?(): Promise<Activity>;
+  /**
+   * Optional: a PNG of the page (or one element) for a screenshot check —
+   * steady: animations finished, caret hidden — unlike `screenshot`, which is
+   * the evidence of what a step did.
+   */
+  capture?(target?: Target): Promise<Uint8Array>;
+  /**
+   * Optional: a screenshot with these nodes' numbers drawn on them (from the
+   * last `inspect`) — what a vision model looks at to pick an element.
+   */
+  markedScreenshot?(nodeIds: number[]): Promise<Uint8Array>;
   /** Optional: the window size; undefined restores the driver's default. */
   viewport?(size?: { width: number; height: number }): Promise<void>;
 }

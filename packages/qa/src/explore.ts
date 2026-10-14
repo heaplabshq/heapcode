@@ -6,6 +6,8 @@ import type { Flow, Locator, Step } from './flow.js';
 import { describeLocator } from './run.js';
 import { isAllowedTarget } from './targets.js';
 import type { Templates } from './template.js';
+import { formatOutline } from '@heapcode/page/outline';
+import type { PageJudge } from './judge.js';
 
 /**
  * Finding bugs with no script: visit every page that can be reached from the
@@ -25,7 +27,7 @@ import type { Templates } from './template.js';
  * `allowCommits` lifts the first for a disposable environment.
  */
 
-export type FindingKind = 'server-error' | 'broken-link' | 'crash' | 'error-text' | 'console-error' | 'failed-request' | 'layout' | 'dead-button';
+export type FindingKind = 'server-error' | 'broken-link' | 'crash' | 'error-text' | 'console-error' | 'failed-request' | 'layout' | 'dead-button' | 'looks-wrong';
 
 export interface Finding {
   id: string;
@@ -72,6 +74,8 @@ export interface ExploreOptions {
   /** Also press what reads like it commits something. Only for disposable data. */
   allowCommits?: boolean;
   screenshots?: boolean;
+  /** Also have a model judge each page (`--ai`); its findings are `looks-wrong`. */
+  judge?: PageJudge;
   onPage?(url: string, index: number): void;
   onFinding?(finding: Finding): void;
   signal?: AbortSignal;
@@ -253,6 +257,26 @@ export async function explore(options: ExploreOptions): Promise<ExploreResult> {
       continue;
     }
     await observe(info.url, undefined, [open], info.url);
+
+    // The AI's look, when asked for: a judgement, so never high and always labelled.
+    if (options.judge) {
+      const tree = await driver.inspect().catch(() => undefined);
+      const shot = await driver.screenshot().catch(() => undefined);
+      if (tree) {
+        const problems = await options.judge({ url: info.url, outline: templates.redact(formatOutline(tree)), ...(shot ? { screenshot: shot } : {}) });
+        for (const p of problems) {
+          await report({
+            kind: 'looks-wrong',
+            severity: p.severity,
+            title: `AI: ${p.title}`,
+            detail: templates.redact(p.detail || p.title),
+            page: info.url,
+            console: [],
+            requests: [],
+          });
+        }
+      }
+    }
 
     // 2. At phone width.
     if (options.layout !== false && driver.viewport && driver.health) {

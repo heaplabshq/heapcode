@@ -25,6 +25,7 @@ export {
   STEPS_DIR,
   RESULTS_DIR,
   DRAFTS_DIR,
+  SNAPSHOTS_DIR,
   DEFAULT_SECRETS_FILE,
   type Workspace,
 } from './workspace.js';
@@ -65,3 +66,6 @@ export { createHealer, type Healer, type HealerOptions, type HealOutcome, type H
 export { renderHtmlReport, renderJunit, renderMarkdown, renderFixBrief, renderExploreReport, renderPrComment, type ExploreReportInput } from './report.js';
 export { diagnose, failureEvidence } from './diagnose.js';
 export { explore, type ExploreOptions, type ExploreResult, type Finding, type FindingKind } from './explore.js';
+export { exportPlaywright, EXPORT_HEADER } from './exportPlaywright.js';
+export { compareImages, checkSnapshot, type VisualResult, type SnapshotOutcome } from './visual.js';
+export { createPageJudge, type PageJudge, type PageProblem } from './judge.js';

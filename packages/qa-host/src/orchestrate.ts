@@ -4,8 +4,10 @@ import { createProvider, resolveCapabilities, type Provider } from '@heapcode/co
 import { profileContextWindow, type ConfigStore, type SecretsStore } from '@heapcode/host';
 import {
   RESULTS_DIR,
+  SNAPSHOTS_DIR,
   Templates,
   createHealer,
+  createPageJudge,
   createRunDir,
   diagnose,
   explore,
@@ -52,6 +54,8 @@ export interface AgentModel {
   nativeToolCalls: boolean;
   contextWindow: number;
   maxTokens?: number;
+  /** The model reads images — screenshots can go to it. */
+  vision: boolean;
 }
 
 export async function resolveAgentModel(config: ConfigStore, secrets: SecretsStore): Promise<AgentModel | undefined> {
@@ -64,6 +68,7 @@ export async function resolveAgentModel(config: ConfigStore, secrets: SecretsSto
     provider,
     model: profile.model,
     nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
+    vision: resolveCapabilities(profile).vision,
     contextWindow,
     ...(profile.maxTokens ? { maxTokens: profile.maxTokens } : {}),
   };
@@ -112,6 +117,8 @@ export interface SuiteOptions {
   heal?: boolean;
   diagnose?: boolean;
   trace?: boolean;
+  /** Replace the screenshot checks' saved pictures with what the pages look like now. */
+  updateSnapshots?: boolean;
   events?: SuiteEvents;
   /** Stops between flows; closing the driver stops the flow in progress. */
   signal?: AbortSignal;
@@ -136,6 +143,7 @@ export async function runSuite(options: SuiteOptions): Promise<{ summary: RunSum
               nativeToolCalls: model.nativeToolCalls,
               contextWindow: model.contextWindow,
               templates,
+              vision: model.vision,
               onStart: (request) => events?.onHealStart?.(current, request, model.model),
             },
           }
@@ -173,6 +181,7 @@ export async function runSuite(options: SuiteOptions): Promise<{ summary: RunSum
       ...(healer ? { healer } : {}),
       fingerprints: (source) => readFingerprints(ws.dir, source.id, source.kind),
       refreshFingerprints: true,
+      snapshots: { dir: join(ws.dir, SNAPSHOTS_DIR), update: options.updateSnapshots === true },
     });
     // How the elements looked when this flow last passed — what healing compares with next time.
     if (result.status === 'passed') saveRefreshed(ws.dir, result.refreshed);
@@ -207,6 +216,8 @@ export interface ExploreSiteOptions {
   forms?: boolean;
   buttons?: boolean;
   allowCommits?: boolean;
+  /** Have this model judge each page too. */
+  judgeWith?: AgentModel;
   onPage?(url: string, index: number): void;
   onFinding?(finding: Finding): void;
   signal?: AbortSignal;
@@ -226,6 +237,7 @@ export async function exploreSite(options: ExploreSiteOptions): Promise<{ result
     ...(options.forms !== undefined ? { forms: options.forms } : {}),
     ...(options.buttons !== undefined ? { buttons: options.buttons } : {}),
     ...(options.allowCommits !== undefined ? { allowCommits: options.allowCommits } : {}),
+    ...(options.judgeWith ? { judge: createPageJudge({ provider: options.judgeWith.provider, model: options.judgeWith.model, vision: options.judgeWith.vision }) } : {}),
     ...(options.onPage ? { onPage: options.onPage } : {}),
     ...(options.onFinding ? { onFinding: options.onFinding } : {}),
     ...(options.signal ? { signal: options.signal } : {}),

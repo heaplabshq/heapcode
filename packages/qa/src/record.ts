@@ -211,7 +211,7 @@ function followInputs(step: Step, values: [string, string][]): Step {
   if (e.kind === 'text') {
     return { ...step, expect: { ...e, target: clean(e.target), ...(e.equals !== undefined ? { equals: template(e.equals) } : {}), ...(e.contains !== undefined ? { contains: template(e.contains) } : {}) } };
   }
-  return 'target' in e ? { ...step, expect: { ...e, target: clean(e.target) } as typeof e } : step;
+  return 'target' in e && e.target ? { ...step, expect: { ...e, target: clean(e.target) } as typeof e } : step;
 }
 
 function locator(target: RecordedTarget): Locator {

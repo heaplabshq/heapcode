@@ -150,4 +150,32 @@ describe('self-healing', { timeout: 60_000 }, () => {
     expect(gone.steps[2]).toMatchObject({ status: 'failed', bug: true });
     expect(gone.steps[2]!.error).toMatch(/not on the page any more: there is no way to save the profile/);
   });
+
+  it('lets a vision model look at a numbered screenshot before it picks', async () => {
+    if (!driver) return;
+    const dir = folder();
+    version = 'v1';
+    saveRefreshed(dir, (await run(dir, undefined, true)).refreshed);
+    const templates = new Templates({ inputs: {}, secret: () => undefined, env: {}, runId: 'r' });
+    let image = '';
+    let turn = 0;
+    const vision = {
+      async chat(req: ChatRequest): Promise<ChatResponse> {
+        turn += 1;
+        if (turn === 1) return { content: '', toolCalls: [{ id: 'l', name: 'look', args: {} }] };
+        // The screenshot arrives as images on a message after the tool result.
+        image = req.messages.flatMap((m) => (m as { images?: string[] }).images ?? []).find((i) => i.startsWith('data:image/png')) ?? '';
+        if (turn === 2) return { content: '', toolCalls: [{ id: 's', name: 'search', args: { text: 'update' } }] };
+        const last = [...req.messages].reverse().find((m) => m.role === 'tool');
+        const hit = /\[(\d+)\] <button/.exec(typeof last?.content === 'string' ? last.content : '');
+        return { content: '', toolCalls: [{ id: 'p', name: 'pick', args: { node: Number(hit![1]), reason: 'the button labelled Update profile in the screenshot' } }] };
+      },
+    } as unknown as Provider;
+    version = 'v3';
+    const healed = await run(dir, createHealer({ agent: { provider: vision, model: 'm', nativeToolCalls: true, templates, vision: true } }));
+    expect(healed.status, healed.error).toBe('passed');
+    expect(healed.steps[2]!.healed).toMatchObject({ via: 'agent' });
+    expect(image.length).toBeGreaterThan(1000);
+    expect(await driver.page.locator('heapqa-marks').count()).toBe(0);
+  });
 });

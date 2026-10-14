@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -8,6 +8,8 @@ import {
   type Finding,
   renderFixBrief,
   renderPrComment,
+  exportPlaywright,
+  EXPORT_HEADER,
   writeReports,
   applyHeals,
   type HealProposal,
@@ -83,6 +85,8 @@ export async function runQa(argv: string[]): Promise<number> {
       return qaExplore(rest);
     case 'comment':
       return qaComment(rest);
+    case 'export':
+      return qaExport(rest);
     case 'github':
       return qaGithub(rest);
     case 'reuse':
@@ -129,6 +133,8 @@ Usage:
   heapcode qa comment [--run ID] [--pr N] [--yes]
                                                Post the last run's results as one comment on this branch's pull request
                                                (updated on later runs; asks first unless --yes, as CI needs)
+  heapcode qa export [flow…] [--out DIR]       Write each flow as a plain Playwright test (default <folder>/playwright/*.spec.ts),
+                                               so the tests are yours with or without Heap QA
   heapcode qa github [--dir D]                 Write .github/workflows/heapqa.yml: run the flows on every pull request and comment
   heapcode qa install                          Download Heap QA's own Chromium — only needed with no Chrome or Edge installed
 
@@ -141,6 +147,7 @@ Run flags:
   --no-trace         Do not save traces of failed flows
   --accept-heals     Write the fixes healing found into the flow files after the run
   --no-heal          Fail a step whose element is missing, without trying to find it again
+  --update-snapshots Save what the pages look like now as the screenshot checks' pictures
   --no-diagnose      Do not ask the agent model for a likely cause of each failure
   --open             Open the HTML report when the run ends
 
@@ -159,6 +166,8 @@ Explore flags: --dir, --base-url, --browser, --headed, --open as above, and
   --depth N          Link hops from the start (default 3)
   --allow-commits    Also press Delete / Pay / Submit-like buttons — only on data you can lose
   --no-forms, --no-buttons   Skip filling forms / pressing buttons
+  --ai               Also have your agent model look at each page for what no rule catches
+                     (overlapping text, broken images, placeholder text) — labelled as the AI's
 Explore never presses Log out, never submits a form with a password, and
 reports only what is wrong on any page. Exit 1 when it finds something high.
 
@@ -198,13 +207,16 @@ interface Flags {
   pages?: number;
   depth?: number;
   pr?: number;
+  out?: string;
+  updateSnapshots: boolean;
+  ai: boolean;
   allowCommits: boolean;
   forms: boolean;
   buttons: boolean;
 }
 
 function parseFlags(args: string[]): Flags | string {
-  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false, acceptHeals: false, heal: true, accept: false, diagnose: true, open: false, allowCommits: false, forms: true, buttons: true };
+  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false, acceptHeals: false, heal: true, accept: false, diagnose: true, open: false, allowCommits: false, forms: true, buttons: true, updateSnapshots: false, ai: false };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     const value = (): string | undefined => args[++i];
@@ -254,6 +266,12 @@ function parseFlags(args: string[]): Flags | string {
       case '--accept-heals':
         flags.acceptHeals = true;
         break;
+      case '--ai':
+        flags.ai = true;
+        break;
+      case '--update-snapshots':
+        flags.updateSnapshots = true;
+        break;
       case '--no-heal':
         flags.heal = false;
         break;
@@ -269,6 +287,12 @@ function parseFlags(args: string[]): Flags | string {
         if (!Number.isInteger(n) || n < 0) return `${arg} takes a whole number.`;
         if (arg === '--pages') flags.pages = n;
         else flags.depth = n;
+        break;
+      }
+      case '--out': {
+        const v = value();
+        if (!v) return '--out takes a folder.';
+        flags.out = resolve(v);
         break;
       }
       case '--pr': {
@@ -397,6 +421,7 @@ async function qaRun(args: string[]): Promise<number> {
       heal: flags.heal,
       diagnose: flags.diagnose,
       trace: flags.trace,
+      updateSnapshots: flags.updateSnapshots,
       events: {
         onFlowStart: (_id, flow) => say(`${flow.name}  (${flow.file})`),
         onStep: (_id, step) => say(stepLine(step)),
@@ -458,7 +483,12 @@ async function qaExplore(args: string[]): Promise<number> {
     return fail(err instanceof Error ? err.message : String(err));
   }
   const say = flags.json ? () => {} : (line: string) => console.log(line);
-  say(`Exploring from ${start}${flags.allowCommits ? ' — pressing commit-like buttons too' : ''}\n`);
+  const judgeWith = flags.ai ? await agentModel() : undefined;
+  if (flags.ai && !judgeWith) {
+    await driver.close();
+    return fail('--ai needs a model for the agent role: `heapcode model set agent <connection> <model>`.');
+  }
+  say(`Exploring from ${start}${flags.allowCommits ? ' — pressing commit-like buttons too' : ''}${judgeWith ? ` — ${judgeWith.model} looks at each page too` : ''}\n`);
   const abort = new AbortController();
   const onSigint = (): void => abort.abort();
   process.once('SIGINT', onSigint);
@@ -476,6 +506,7 @@ async function qaExplore(args: string[]): Promise<number> {
       forms: flags.forms,
       buttons: flags.buttons,
       allowCommits: flags.allowCommits,
+      ...(judgeWith ? { judgeWith } : {}),
       onPage: (url, i) => say(`  ${i}. ${url.replace(new URL(start).origin, '') || '/'}`),
       onFinding: (f) => say(`     ${f.severity === 'high' ? '✗' : f.severity === 'medium' ? '!' : '·'} ${f.title}`),
       signal: abort.signal,
@@ -522,6 +553,37 @@ async function qaComment(args: string[]): Promise<number> {
   const posted = await postPrComment({ cwd, pr, body });
   if (typeof posted === 'string') return fail(posted);
   console.log(`${posted.updated ? 'Updated' : 'Posted'} the Heap QA comment on #${pr.number}${posted.url ? `: ${posted.url}` : ''}.`);
+  return 0;
+}
+
+function qaExport(args: string[]): number {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const ws = loadWorkspace(flags.dir);
+  if (ws.errors.length) return fail(`Fix these first:\n${formatErrors(ws.errors)}`);
+  const { flows, unknown } = selectFlows(ws, flags.positional);
+  if (unknown.length) return fail(`No flow named ${unknown.join(', ')}.`);
+  const out = flags.out ?? join(ws.dir, 'playwright');
+  mkdirSync(out, { recursive: true });
+  let written = 0;
+  for (const [id, flow] of flows) {
+    const file = join(out, `${id}.spec.ts`);
+    // Only a file this command wrote is ever replaced.
+    if (existsSync(file) && !readFileSync(file, 'utf8').startsWith(EXPORT_HEADER)) {
+      console.log(`· ${shown(file)} was not written by Heap QA — left as it is.`);
+      continue;
+    }
+    writeFileSync(file, exportPlaywright(id, flow, ws.steps, ws.config.baseUrl ? { baseUrl: ws.config.baseUrl } : {}));
+    console.log(`✓ ${shown(file)}`);
+    written += 1;
+  }
+  if (written) {
+    console.log(
+      `\nRun them with Playwright Test (npm i -D @playwright/test, then npx playwright test ${shown(out)}).` +
+        ' Set BASE_URL to point at another copy of the app, and the secrets your flows use as environment variables.' +
+        ' Healing, fingerprints and the reports stay with Heap QA.',
+    );
+  }
   return 0;
 }
 

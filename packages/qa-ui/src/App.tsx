@@ -253,10 +253,10 @@ export function App(): JSX.Element {
             ) : view.name === 'record' ? (
               <Record state={state} live={live} setLive={setLive} call={call} onDone={() => setView({ name: 'tests' })} />
             ) : view.name === 'explore' ? (
-              <Explore busy={busy} onStart={async (start, allowCommits) => {
+              <Explore busy={busy} {...(state.model ? { model: state.model } : {})} onStart={async (start, allowCommits, ai) => {
                 setLive({ kind: 'explore', title: `Exploring ${start || '/'}`, lines: [] });
                 setView({ name: 'live' });
-                if (!(await call(QA_METHODS.explore, { start, allowCommits }))) setLive(undefined);
+                if (!(await call(QA_METHODS.explore, { start, allowCommits, ai }))) setLive(undefined);
               }} />
             ) : (
               <Ask state={state} busy={busy} onStart={async (task, start) => {
@@ -613,9 +613,10 @@ function Record({ state, live, setLive, call, onDone }: { state: QaState; live?:
   );
 }
 
-function Explore({ busy, onStart }: { busy: boolean; onStart(start: string, allowCommits: boolean): void }): JSX.Element {
+function Explore({ busy, model, onStart }: { busy: boolean; model?: string; onStart(start: string, allowCommits: boolean, ai: boolean): void }): JSX.Element {
   const [start, setStart] = useState('/');
   const [allow, setAllow] = useState(false);
+  const [ai, setAi] = useState(false);
   return (
     <section className="qa-section">
       <h1 className="qa-title">Explore</h1>
@@ -628,7 +629,13 @@ function Explore({ busy, onStart }: { busy: boolean; onStart(start: string, allo
         <input type="checkbox" checked={allow} onChange={(e) => setAllow(e.target.checked)} />
         Also press Delete, Pay, Submit-like buttons — only on data you can lose
       </label>
-      <button className="btn btn-primary" disabled={busy} onClick={() => onStart(start, allow)}>
+      {model && (
+        <label className="qa-check">
+          <input type="checkbox" checked={ai} onChange={(e) => setAi(e.target.checked)} />
+          Also have {model} look at each page for what no rule catches (labelled as the AI's)
+        </label>
+      )}
+      <button className="btn btn-primary" disabled={busy} onClick={() => onStart(start, allow, ai)}>
         Explore
       </button>
     </section>

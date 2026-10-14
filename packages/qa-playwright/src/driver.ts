@@ -223,6 +223,23 @@ export class PlaywrightDriver implements Driver {
     return { mutations, requests: this.requestCount - start.requests, navigated };
   }
 
+  async markedScreenshot(nodeIds: number[]): Promise<Uint8Array> {
+    await this.ensureInspector();
+    type Marks = { __heapqa: { mark(ids: number[]): number; unmark(): void } };
+    await this.page.evaluate((ids) => (globalThis as unknown as Marks).__heapqa.mark(ids), nodeIds);
+    try {
+      return await this.page.screenshot({ type: 'png' });
+    } finally {
+      await this.page.evaluate(() => (globalThis as unknown as Marks).__heapqa.unmark()).catch(() => {});
+    }
+  }
+
+  async capture(target?: Target): Promise<Uint8Array> {
+    const options = { type: 'png' as const, animations: 'disabled' as const, caret: 'hide' as const };
+    if (!target) return this.page.screenshot(options);
+    return this.withTarget(target, (t) => t.screenshot(options));
+  }
+
   async viewport(size?: { width: number; height: number }): Promise<void> {
     await this.page.setViewportSize(size ?? this.defaultViewport);
   }

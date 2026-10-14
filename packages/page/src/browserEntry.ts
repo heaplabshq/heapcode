@@ -27,6 +27,14 @@ export interface HeapQaPageApi {
   /** Start counting DOM changes; `watched` stops and returns the count. */
   watch(): void;
   watched(): number;
+  /**
+   * Draw each node's number over it (from the last `inspect`), for a vision
+   * model to point at; `unmark` takes the labels away again. The labels are
+   * in a closed shadow root and ignore the pointer, so they change nothing a
+   * person could click.
+   */
+  mark(ids: number[]): number;
+  unmark(): void;
 }
 
 let last: Element[] = [];
@@ -58,6 +66,32 @@ const api: HeapQaPageApi = {
   },
   watched() {
     return activity.stop();
+  },
+  mark(ids) {
+    api.unmark();
+    const host = document.createElement('heapqa-marks');
+    host.setAttribute('style', 'all: initial; position: fixed; inset: 0; z-index: 2147483647; pointer-events: none;');
+    const root = host.attachShadow({ mode: 'closed' });
+    let drawn = 0;
+    for (const id of ids) {
+      const el = api.element(id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || r.bottom < 0 || r.top > innerHeight) continue;
+      const box = document.createElement('div');
+      box.setAttribute('style', `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;outline:2px solid #e11d48;`);
+      const tag = document.createElement('span');
+      tag.textContent = String(id);
+      tag.setAttribute('style', 'position:absolute;left:-2px;top:-16px;background:#e11d48;color:#fff;font:bold 11px/14px monospace;padding:0 3px;border-radius:3px;');
+      box.appendChild(tag);
+      root.appendChild(box);
+      drawn += 1;
+    }
+    document.documentElement.appendChild(host);
+    return drawn;
+  },
+  unmark() {
+    document.querySelectorAll('heapqa-marks').forEach((m) => m.remove());
   },
 };
 

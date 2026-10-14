@@ -19,10 +19,13 @@
     "@heapcode/core": "workspace:*",
     "@heapcode/page": "workspace:*",
     "@heapcode/web-host": "workspace:*",
+    "pixelmatch": "~7.2.0",
+    "pngjs": "^7.0.0",
     "yaml": "^2.5.1"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/pngjs": "^6.0.5",
     "typescript": "^5.5.4",
     "vitest": "^2.0.5"
   }

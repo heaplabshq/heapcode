@@ -1,4 +1,6 @@
+import { join } from 'node:path';
 import {
+  SNAPSHOTS_DIR,
   Recording,
   Templates,
   applyDescription,
@@ -134,6 +136,8 @@ export async function replayOnce(
       ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
       timeout: ws.config.timeout,
       screenshots: 'none',
+      // A new flow's screenshot checks take their first pictures here.
+      snapshots: { dir: join(ws.dir, SNAPSHOTS_DIR), update: false },
     });
   } finally {
     await driver.close();

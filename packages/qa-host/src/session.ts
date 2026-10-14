@@ -87,7 +87,7 @@ export class QaSession implements HostSession {
       return this.pushState();
     });
     ui.onRequest(QA_METHODS.run, async (raw) => this.startRun((raw as { flows?: string[] }).flows ?? []));
-    ui.onRequest(QA_METHODS.explore, async (raw) => this.startExplore(raw as { start?: string; allowCommits?: boolean }));
+    ui.onRequest(QA_METHODS.explore, async (raw) => this.startExplore(raw as { start?: string; allowCommits?: boolean; ai?: boolean }));
     ui.onRequest(QA_METHODS.record, async (raw) => this.startRecording((raw as { start?: string }).start));
     ui.onRequest(QA_METHODS.recordStop, async () => this.stopRecording());
     ui.onRequest(QA_METHODS.recordSave, async (raw) => this.saveRecording(raw as QaRecordSaveParams));
@@ -249,8 +249,10 @@ export class QaSession implements HostSession {
     return { runId };
   }
 
-  private async startExplore(params: { start?: string; allowCommits?: boolean }): Promise<{ runId: string }> {
+  private async startExplore(params: { start?: string; allowCommits?: boolean; ai?: boolean }): Promise<{ runId: string }> {
     const ws = this.workspace();
+    const judgeWith = params.ai ? await resolveAgentModel(this.deps.config, this.deps.secrets) : undefined;
+    if (params.ai && !judgeWith) throw new Error('No model is set for the agent role — set one in Heap Code\'s settings.');
     const { runId, templates, baseUrl } = prepare(ws);
     const start = resolveUrl(params.start || '/', baseUrl);
     if (!isAllowedTarget(start, ws.config.targets)) throw new Error(notAllowedMessage(start));
@@ -267,6 +269,7 @@ export class QaSession implements HostSession {
           start,
           driver,
           ...(params.allowCommits ? { allowCommits: true } : {}),
+          ...(judgeWith ? { judgeWith } : {}),
           onPage: (url, index) => this.emit({ type: 'page', runId: `${runId}-explore`, url, index }),
           onFinding: (f) => this.emit({ type: 'finding', runId: `${runId}-explore`, severity: f.severity, title: f.title }),
           signal: abort.signal,

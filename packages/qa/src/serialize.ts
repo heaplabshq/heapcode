@@ -76,6 +76,10 @@ function expectValue(e: Expectation): unknown {
       return 'noConsoleErrors';
     case 'noServerErrors':
       return 'noServerErrors';
+    case 'screenshot':
+      return e.target === undefined && e.maxDiff === undefined
+        ? { screenshot: e.name }
+        : { screenshot: { name: e.name, ...(e.target ? { in: locatorObject(e.target) } : {}), ...(e.maxDiff !== undefined ? { maxDiff: e.maxDiff } : {}) } };
     case 'visible':
     case 'hidden':
       return { [e.kind]: locatorObject(e.target) };

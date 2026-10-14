@@ -5,3 +5,4 @@ export * from './protocol.js';
 export * from './github.js';
 export * from './agentEvents.js';
 export * from './openFile.js';
+export * from './ask.js';

@@ -13,6 +13,7 @@ import {
   QA_METHODS,
   QA_PROTOCOL_VERSION,
   type QaAcceptHealsResult,
+  type QaAskHistory,
   type QaEvent,
   type QaRecordSaveResult,
   type QaRecordStopResult,
@@ -91,6 +92,9 @@ export function App(): JSX.Element {
   const [job, setJob] = useState<Job>();
   const [ai, setAi] = useState<Transcript>(emptyTranscript);
   const [heal, setHeal] = useState<Transcript>(emptyTranscript);
+  /** The test Ask AI's conversation is building in this folder, once it has one. */
+  const [askTest, setAskTest] = useState<string>();
+  const [askReload, setAskReload] = useState(0);
   const [frame, setFrame] = useState<string>();
   const [pinned, setPinned] = useState<Pinned>();
   const [error, setError] = useState<string>();
@@ -168,6 +172,9 @@ export function App(): JSX.Element {
         case 'recordFinished':
           setJob((j) => j && { ...j, done: 'finished' });
           break;
+        case 'askNote':
+          setAi((t) => withNotice(t, e.text, e.warn === true));
+          break;
         case 'action':
           // The AI's actions already show as tool calls in its transcript.
           break;
@@ -180,6 +187,7 @@ export function App(): JSX.Element {
             ),
           );
           setJob((j) => j && { ...j, done: e.saved ? 'saved' : 'not saved', failed: !e.saved });
+          setAskReload((n) => n + 1);
           break;
         case 'error':
           setError(e.message);
@@ -265,6 +273,30 @@ export function App(): JSX.Element {
     begin('run', title, 'run');
     if (!(await call(QA_METHODS.run, { flows, headed }))) setJob(undefined);
   };
+
+  // Ask AI remembers per folder: its conversation is shown again on opening
+  // the folder (or the app), as Heap Code shows a saved conversation.
+  const askFolder = state?.folder;
+  const askLoaded = useRef<string>();
+  useEffect(() => {
+    if (!askFolder || status !== 'open') return;
+    const first = askLoaded.current !== askFolder;
+    askLoaded.current = askFolder;
+    void client
+      .request<QaAskHistory>(QA_METHODS.askHistory)
+      .then((h) => {
+        setAskTest(h.test);
+        if (!first) return;
+        let t: Transcript = emptyTranscript;
+        for (const turn of h.turns) {
+          t = withUserMessage(settle(t), turn.task);
+          for (const event of turn.events) t = reduce(t, event, seq.current++);
+          t = withNotice(settle(t), turn.note, turn.warn);
+        }
+        setAi(t);
+      })
+      .catch(() => undefined);
+  }, [askFolder, askReload, status, client]);
 
   // A pinned step belongs to the run it came from: leaving that view lets go of it.
   useEffect(() => {
@@ -457,8 +489,11 @@ export function App(): JSX.Element {
                 }
               }}
               onStop={() => void call(QA_METHODS.stop)}
-              onNew={() => {
+              building={askTest}
+              onNew={async () => {
+                if ((await call(QA_METHODS.askReset)) === undefined) return;
                 setAi(emptyTranscript);
+                setAskTest(undefined);
                 setFrame(undefined);
                 if (job?.kind === 'do') setJob(undefined);
               }}
@@ -1049,7 +1084,7 @@ function Explore({ state, busy, job, onStart, onOpenReport, onReset }: { state: 
   );
 }
 
-function Ask({ state, busy, transcript, onSend, onStop, onNew, onOpenSettings }: { state: QaState; busy: boolean; transcript: Transcript; onSend(task: string, start: string): void; onStop(): void; onNew(): void; onOpenSettings(): void }): JSX.Element {
+function Ask({ state, busy, transcript, building, onSend, onStop, onNew, onOpenSettings }: { state: QaState; busy: boolean; transcript: Transcript; building?: string; onSend(task: string, start: string): void; onStop(): void; onNew(): void; onOpenSettings(): void }): JSX.Element {
   const [start, setStart] = useState('/');
   const working = state.busy?.kind === 'do';
   return (
@@ -1070,7 +1105,7 @@ function Ask({ state, busy, transcript, onSend, onStop, onNew, onOpenSettings }:
           {...(working && state.busy ? { runStartedAt: state.busy.startedAt } : {})}
           empty={{
             title: 'Ask the AI to write a test',
-            body: 'Say what to do in your app — "log in as ai@example.test with the test password, then check you are welcomed". It works in a browser you can watch; what worked becomes a test that replays without the AI, saved only if it does. Each request starts fresh.',
+            body: 'Say what to do in your app — "log in as ai@example.test with the test password". It works in a browser you can watch, and what worked becomes a test that replays without the AI. Follow up with "now also check the cart": it carries on in the same browser and adds to the same test. The conversation is remembered for this folder until New chat.',
           }}
         />
       </div>
@@ -1082,13 +1117,18 @@ function Ask({ state, busy, transcript, onSend, onStop, onNew, onOpenSettings }:
         placeholder="What should the AI do in your app?"
         footer={
           <>
+            {building ? (
+              <span className="qa-start" title="Follow-ups carry on from where the last request stopped and add to this test">
+                Building <strong className="qa-building">{building}</strong>
+              </span>
+            ) : (
             <label className="qa-start" title="Where the AI starts, on your app">
               <span>Start at</span>
               <input className="qa-start-input" value={start} spellCheck={false} onChange={(e) => setStart(e.target.value)} />
             </label>
+            )}
             <span className="composer-bar-right">
-              {/* Each request is its own task in a fresh browser, so this clears the screen, not a memory. */}
-              <button className="btn btn-quiet" disabled={working || transcript.items.length === 0} onClick={onNew} title="Clear this conversation">
+              <button className="btn btn-quiet" disabled={working || transcript.items.length === 0} onClick={onNew} title="Forget this conversation and close its browser — the next request starts a new test">
                 New chat
               </button>
             </span>

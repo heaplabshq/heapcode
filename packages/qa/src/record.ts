@@ -75,6 +75,15 @@ export class Recording {
     return this.push({ kind: 'goto', url: this.relative(url), intent: `open ${this.relative(url)}` });
   }
 
+  /**
+   * Carry on from a page already open — a follow-up to an earlier task in the
+   * same browser. No step for it: the earlier recording already got here.
+   */
+  resume(url: string, at = Date.now()): void {
+    this.currentUrl = url;
+    this.lastActionAt = at;
+  }
+
   navigated(url: string, at = Date.now()): Step | undefined {
     // Before `start`, the opening load itself — already the first step.
     if (this.currentUrl === undefined) return undefined;

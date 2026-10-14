@@ -212,14 +212,37 @@ export async function aiTask(options: {
     return { ...base, notSaved: result.outcome === 'stopped' ? 'Stopped — no flow saved.' : 'The task was not completed, so no flow was saved.' };
   }
 
-  let flow = result.recording.flow;
-  const described = await describeFlow(model.provider, model.model, options.task, flow);
-  if (described) flow = applyDescription(flow, described);
-  flow = { ...flow, name: options.name ?? described?.name ?? options.task.toLowerCase().slice(0, 60) };
-  const id = flowId(flow.name, ws.flows.keys());
-  const played = await replayOnce(ws, id, flow, { ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}), ...(options.browser ? { browser: options.browser } : {}), templates: options.templates });
-  if (played.status !== 'passed') {
-    return { ...base, draft: { file: writeDraft(ws.dir, id, flow), error: played.error ?? 'it failed' } };
+  return { ...base, ...(await keepAiFlow({ ws, model, task: options.task, recorded: result.recording, ...(options.name ? { name: options.name } : {}), ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}), ...(options.browser ? { browser: options.browser } : {}), templates: options.templates })) };
+}
+
+/**
+ * What an AI run did, kept as a test: named (by the model, unless a name is
+ * given), replayed once without the model, then saved to flows/ — or, when it
+ * does not replay, kept in drafts/ for a person to look at. `id` keeps the
+ * file a conversation has been building (an Ask AI follow-up replaces it).
+ */
+export async function keepAiFlow(options: {
+  ws: Workspace;
+  model: AgentModel;
+  task: string;
+  recorded: { flow: Flow; fingerprints: SavedFingerprints };
+  name?: string;
+  id?: string;
+  baseUrl?: string;
+  browser?: 'chrome' | 'msedge' | 'chromium';
+  templates: Templates;
+}): Promise<{ saved?: { id: string; file: string; flow: Flow }; draft?: { file: string; error: string }; id: string; name: string }> {
+  const { ws, model } = options;
+  let flow = options.recorded.flow;
+  if (!options.name) {
+    const described = await describeFlow(model.provider, model.model, options.task, flow);
+    if (described) flow = applyDescription(flow, described);
+    flow = { ...flow, name: described?.name ?? options.task.toLowerCase().slice(0, 60) };
+  } else {
+    flow = { ...flow, name: options.name };
   }
-  return { ...base, saved: { id, file: writeFlow(ws.dir, id, flow, result.recording.fingerprints), flow } };
+  const id = options.id ?? flowId(flow.name, ws.flows.keys());
+  const played = await replayOnce(ws, id, flow, { ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}), ...(options.browser ? { browser: options.browser } : {}), templates: options.templates });
+  if (played.status !== 'passed') return { id, name: flow.name, draft: { file: writeDraft(ws.dir, id, flow), error: played.error ?? 'it failed' } };
+  return { id, name: flow.name, saved: { id, file: writeFlow(ws.dir, id, flow, options.recorded.fingerprints), flow } };
 }

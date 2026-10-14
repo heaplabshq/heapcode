@@ -3,7 +3,7 @@ import type { RecordedTarget } from '@heapcode/page/recording';
 import type { DomTree } from '@heapcode/page/tree';
 import { classifyBrowserAction } from '@heapcode/web-host/browserTools';
 import { FINISH_TOOL, runAgent, type AgentEvents, type AgentOutcome, type ToolCall, type ToolDefinition, type ToolResult } from '@heapcode/core/agent';
-import type { Provider } from '@heapcode/core/providers';
+import type { ChatMessage, Provider } from '@heapcode/core/providers';
 import type { Driver } from './driver.js';
 import { Recording, type RecordingResult } from './record.js';
 import { resolveUrl, stepLabel } from './run.js';
@@ -46,6 +46,13 @@ export interface AiTaskOptions {
   events?: Partial<AgentEvents> & { onAction?(line: string): void };
   maxIterations?: number;
   signal?: AbortSignal;
+  /**
+   * A follow-up to earlier tasks in this conversation: what was asked and what
+   * came of it, oldest first. With `continuing`, the browser is where the last
+   * task left it — the run starts there, not at `startUrl`.
+   */
+  history?: ChatMessage[];
+  continuing?: boolean;
 }
 
 export interface AiTaskResult {
@@ -122,9 +129,9 @@ export const QA_TOOLS: ToolDefinition[] = [
   FINISH_TOOL,
 ];
 
-export function qaSystemPrompt(secretNames: string[]): string {
+export function qaSystemPrompt(secretNames: string[], continuing = false): string {
   return `You are Heap QA's tester. You carry out a task in a web app the way a person would, using only the tools, so that what you do can be saved as an automated test and run again without you.
-
+${continuing ? '\nThis is a follow-up in a conversation. The browser is still on the page where the previous task finished, with everything it did still in effect (logged in, items added…). Carry on from there — do not start over, and do not repeat what was already done; your steps are added to the end of the same test.\n' : ''}
 How to work:
 - Start by reading the page with \`page\`. Act on elements by their numbers from the latest outline only — numbers change when the page changes, so read it again after each action that changes the page.
 - Prefer what a person would use: visible buttons, links and labelled fields. Do the task directly; no detours, no exploring unrelated pages — every action you take becomes a step of the test.
@@ -141,9 +148,14 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
   const { driver, templates } = options;
   if (!driver.describe) throw new Error('This browser driver cannot describe elements, which recording an AI run needs.');
   const recording = new Recording(options.baseUrl);
-  const startUrl = resolveUrl(options.startUrl, options.baseUrl);
-  await driver.open(startUrl);
-  recording.start(startUrl);
+  const startUrl = options.continuing ? driver.current().url : resolveUrl(options.startUrl, options.baseUrl);
+  if (options.continuing) {
+    // The earlier steps already brought the browser here; this run's steps follow on.
+    recording.resume(startUrl);
+  } else {
+    await driver.open(startUrl);
+    recording.start(startUrl);
+  }
   let tree: DomTree | undefined;
   let summary = '';
   const say = (line: string): void => options.events?.onAction?.(line);
@@ -273,7 +285,8 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
     model: options.model,
     task: options.task,
     workspaceName: safeHost(startUrl),
-    systemPrompt: qaSystemPrompt(options.secretNames),
+    systemPrompt: qaSystemPrompt(options.secretNames, options.continuing === true),
+    ...(options.history?.length ? { history: options.history } : {}),
     tools: QA_TOOLS,
     nativeToolCalls: options.nativeToolCalls,
     execute,

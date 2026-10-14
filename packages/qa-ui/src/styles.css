@@ -174,3 +174,4 @@ html[data-chrome="mac"] .rail-collapsed ~ .qa-main .qa-toolbar { padding-left: 6
 .qa-head { flex-wrap: nowrap; align-items: center; }
 .qa-head > div { flex: 1 1 auto; min-width: 0; }
 .qa-head .qa-muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qa-building { color: var(--text); font-weight: 500; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

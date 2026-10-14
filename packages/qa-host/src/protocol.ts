@@ -38,6 +38,9 @@ export const QA_METHODS = {
    * The same global config Heap Code and Heap Chat edit (see web-host's
    * connectionSettings.ts).
    */
+  /** Ask AI's conversation for this folder, to show again; and New chat. */
+  askHistory: 'qa/askHistory',
+  askReset: 'qa/askReset',
   settings: 'qa/settings',
   saveProfile: 'qa/saveProfile',
   deleteProfile: 'qa/deleteProfile',
@@ -96,6 +99,8 @@ export type QaEvent =
   | { type: 'step'; runId: string; flowId: string; step: Omit<StepResult, 'screenshot' | 'visual'>; shot?: string }
   /** The browser as it looks right now: a JPEG, base64. */
   | { type: 'frame'; data: string }
+  /** A line about the conversation itself — "getting back to where we were". */
+  | { type: 'askNote'; text: string; warn?: boolean }
   /** The AI, as it works — the same stream Heap Code renders. */
   | { type: 'agent'; job: 'do' | 'heal'; event: AgentEvent }
   | { type: 'healStart'; runId: string; flowId: string; what: string; model: string }
@@ -159,3 +164,10 @@ export interface RunListing {
 
 /** The folder picker's answers — the same shapes Heap Code's picker takes. */
 export type { UiBrowseFoldersResult, UiSettings, UiWorkspacesResult } from '@heapcode/web-host/protocol';
+
+/** Ask AI's conversation for the open test folder. */
+export interface QaAskHistory {
+  turns: Array<{ task: string; events: AgentEvent[]; note: string; warn: boolean }>;
+  /** The test the conversation is building, once it has one. */
+  test?: string;
+}

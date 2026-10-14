@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
-import type { RpcPeer } from '@heapcode/core';
+import type { AgentEvent, RpcPeer } from '@heapcode/core';
 import type { ConfigStore, SecretsStore } from '@heapcode/host';
 import {
   CONFIG_FILE,
@@ -40,6 +40,7 @@ import {
   QA_METHODS,
   QA_PROTOCOL_VERSION,
   type QaAcceptHealsResult,
+  type QaAskHistory,
   type QaEvent,
   type QaFlowInfo,
   type QaJobKind,
@@ -50,8 +51,9 @@ import {
   type QaState,
 } from './protocol.js';
 import { exploreSite, findRun, launchDriver, listRuns, prepare, resolveAgentModel, runSuite } from './orchestrate.js';
-import { RecordingSession, aiTask, replayOnce, saveFlow } from './work.js';
+import { RecordingSession, replayOnce, saveFlow } from './work.js';
 import { openFile } from './openFile.js';
+import { AskConversation } from './ask.js';
 import { agentEventStream } from './agentEvents.js';
 
 export interface QaSessionDeps {
@@ -88,6 +90,8 @@ export class QaSession implements HostSession {
   private recordContext: { baseUrl?: string } = {};
 
   private root: string;
+  /** Ask AI's conversation for the open test folder (its browser stays open between requests). */
+  private askConv: AskConversation | undefined;
   private pendingRoot: string | undefined;
 
   constructor(private readonly deps: QaSessionDeps) {
@@ -104,6 +108,7 @@ export class QaSession implements HostSession {
   private useRoot(root: string): void {
     this.root = root;
     this.folder = findFolder(root);
+    this.leaveConversation();
     void this.pushState();
   }
 
@@ -154,6 +159,16 @@ export class QaSession implements HostSession {
       await this.recording?.stop();
       this.recording = undefined;
       this.finishJob();
+      return {};
+    });
+    ui.onRequest(QA_METHODS.askHistory, async (): Promise<QaAskHistory> => {
+      if (!this.folder) return { turns: [] };
+      const conv = this.conversation();
+      return { turns: conv.turns, ...(conv.testName ? { test: conv.testName } : {}) };
+    });
+    ui.onRequest(QA_METHODS.askReset, async () => {
+      if (this.busy?.kind === 'do') throw new Error('Stop the AI first.');
+      if (this.folder) await this.conversation().reset();
       return {};
     });
     ui.onRequest(QA_METHODS.do, async (raw) => this.startTask(raw as { task?: string; start?: string; name?: string; headed?: boolean }));
@@ -222,6 +237,7 @@ export class QaSession implements HostSession {
 
   async close(): Promise<void> {
     this.abort?.abort();
+    await this.askConv?.close();
     await this.recording?.stop().catch(() => {});
   }
 
@@ -497,14 +513,15 @@ export class QaSession implements HostSession {
     const abort = this.beginJob('do', `${model.model}: ${task}`);
     void (async () => {
       try {
-        const done = await aiTask({
+        const events: AgentEvent[] = [];
+        const conv = this.conversation();
+        const done = await conv.ask({
           ws,
           model,
           task,
           start: params.start || '/',
           ...(baseUrl ? { baseUrl } : {}),
           templates,
-          ...(params.name ? { name: params.name } : {}),
           // Asked in the page. No page attached → refused, never assumed.
           confirm: async (description) => {
             if (!this.ui) return false;
@@ -512,16 +529,26 @@ export class QaSession implements HostSession {
             return answer.allow === true;
           },
           onAction: (line) => this.emit({ type: 'action', line }),
-          agentEvents: agentEventStream((event) => this.emit({ type: 'agent', job: 'do', event })),
+          onNote: (text) => this.emit({ type: 'askNote', text }),
+          agentEvents: agentEventStream((event) => {
+            events.push(event);
+            this.emit({ type: 'agent', job: 'do', event });
+          }),
           onFrame: this.frame,
           headless: params.headed !== true,
           signal: abort.signal,
         });
+        const note = done.saved
+          ? `Saved ${relative(ws.dir, done.saved)} — it replays without the AI.`
+          : done.draft
+            ? `It did not replay (${done.error}). Kept as a draft: ${relative(ws.dir, done.draft)}`
+            : (done.notSaved ?? 'Ended.');
+        conv.remember({ task, events, note, warn: !done.saved });
         this.emit({
           type: 'doEnd',
           summary: done.summary,
-          ...(done.saved ? { saved: relative(ws.dir, done.saved.file) } : {}),
-          ...(done.draft ? { draft: relative(ws.dir, done.draft.file), error: done.draft.error } : {}),
+          ...(done.saved ? { saved: relative(ws.dir, done.saved) } : {}),
+          ...(done.draft ? { draft: relative(ws.dir, done.draft), error: done.error ?? '' } : {}),
           ...(done.notSaved ? { notSaved: done.notSaved } : {}),
         });
       } catch (err) {
@@ -531,6 +558,22 @@ export class QaSession implements HostSession {
       }
     })();
     return {};
+  }
+
+  /** The open folder's conversation, loaded from disk the first time it is asked for. */
+  private conversation(): AskConversation {
+    if (!this.folder) throw new Error('There is no test folder yet — set one up first.');
+    if (this.askConv?.folder !== this.folder) {
+      void this.askConv?.close();
+      this.askConv = new AskConversation(this.folder);
+    }
+    return this.askConv;
+  }
+
+  /** Another folder: its conversation stays on disk, its browser closes. */
+  private leaveConversation(): void {
+    void this.askConv?.close();
+    this.askConv = undefined;
   }
 
   private runDetail(runId: string): QaRunDetail {

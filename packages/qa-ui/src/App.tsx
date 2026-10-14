@@ -413,6 +413,11 @@ export function App(): JSX.Element {
                     }
                   }}
                   onStop={() => void call(QA_METHODS.stop)}
+                  onNew={() => {
+                    setAi(emptyTranscript);
+                    setFrame(undefined);
+                    if (job?.kind === 'do') setJob(undefined);
+                  }}
                 />
               }
               live={live('do')}
@@ -911,11 +916,19 @@ function Explore({ state, busy, job, onStart, onOpenReport, onReset }: { state: 
   );
 }
 
-function Ask({ state, busy, transcript, onSend, onStop }: { state: QaState; busy: boolean; transcript: Transcript; onSend(task: string, start: string): void; onStop(): void }): JSX.Element {
+function Ask({ state, busy, transcript, onSend, onStop, onNew }: { state: QaState; busy: boolean; transcript: Transcript; onSend(task: string, start: string): void; onStop(): void; onNew(): void }): JSX.Element {
   const [start, setStart] = useState('/');
   const working = state.busy?.kind === 'do';
   return (
     <div className="qa-ask">
+      <div className="qa-ask-head">
+        <h2 className="qa-subtitle">Ask AI</h2>
+        {/* Each request is its own task in a fresh browser — the AI does not carry earlier ones over — so this clears the screen, not a memory. */}
+        <span className="qa-muted qa-ask-note">Each request starts fresh in a new browser.</span>
+        <button className="btn btn-quiet" disabled={working || transcript.items.length === 0} onClick={onNew} title="Clear this conversation and start again">
+          New chat
+        </button>
+      </div>
       {!state.model && <div className="banner banner-warn">No model is set for the agent role — set one in Heap Code's settings.</div>}
       <div className="qa-ask-messages">
         <MessageList

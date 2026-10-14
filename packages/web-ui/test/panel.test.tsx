@@ -165,3 +165,31 @@ describe('the toolbar', () => {
     }
   });
 });
+
+describe('the Files tab', () => {
+  it('shows a file the agent created without leaving the folder', async () => {
+    // The reported bug: the listing was read once per folder visit, so a file
+    // the agent wrote appeared only after going up a folder and back.
+    let disk = [{ name: 'a.txt', path: 'a.txt', directory: false }];
+    const props = panelProps({ tab: 'files', loadTree: () => Promise.resolve(disk), workspaceVersion: 1 });
+    const view = render(<Panel {...props} />);
+    expect(await screen.findByText('a.txt')).toBeTruthy();
+
+    disk = [...disk, { name: 'new.txt', path: 'new.txt', directory: false }];
+    view.rerender(<Panel {...props} workspaceVersion={2} />);
+    expect(await screen.findByText('new.txt')).toBeTruthy();
+
+    disk = disk.filter((e) => e.name !== 'a.txt');
+    view.rerender(<Panel {...props} workspaceVersion={3} />);
+    await vi.waitFor(() => expect(screen.queryByText('a.txt')).toBeNull());
+  });
+
+  it('re-reads when the window comes back into focus, for edits made elsewhere', async () => {
+    let disk = [{ name: 'a.txt', path: 'a.txt', directory: false }];
+    render(<Panel {...panelProps({ tab: 'files', loadTree: () => Promise.resolve(disk) })} />);
+    expect(await screen.findByText('a.txt')).toBeTruthy();
+    disk = [{ name: 'b.txt', path: 'b.txt', directory: false }];
+    fireEvent.focus(window);
+    expect(await screen.findByText('b.txt')).toBeTruthy();
+  });
+});

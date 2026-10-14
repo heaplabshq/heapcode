@@ -277,7 +277,10 @@ export function App(): JSX.Element {
     [rpc],
   );
 
+  /** Bumped on every workspace refresh, so the Files view re-reads what it shows. */
+  const [workspaceVersion, setWorkspaceVersion] = useState(0);
   const refreshWorkspace = useCallback(() => {
+    setWorkspaceVersion((v) => v + 1);
     void rpc
       .request<UiChangesResult>(UI_METHODS.changes)
       .then((r) => setChanges(r.files))
@@ -1258,6 +1261,7 @@ export function App(): JSX.Element {
               openPath={openPath}
               loadDiff={loadDiff}
               loadTree={loadTree}
+              workspaceVersion={workspaceVersion}
               loadFile={loadFile}
               onRevertFile={(path) => workspaceAct(UI_METHODS.revertFile, { path })}
               onRevertAll={() => workspaceAct(UI_METHODS.revertAll, undefined)}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   UiArtifactMeta,
   UiIndexStatus,
@@ -41,6 +41,12 @@ export interface PanelProps {
 
   loadDiff(path: string): Promise<UiDiffResult>;
   loadTree(path: string): Promise<UiTreeEntry[]>;
+  /**
+   * Bumped whenever the workspace may have changed on disk — after a tool that
+   * writes, deletes, renames or runs a command. The Files view re-reads what
+   * it is showing when it moves.
+   */
+  workspaceVersion?: number;
   loadFile(path: string): Promise<UiReadFileResult>;
   onRevertFile(path: string): void;
   onRevertAll(): void;
@@ -378,7 +384,7 @@ function Checkpoints(props: PanelProps): JSX.Element | null {
   );
 }
 
-function Files({ loadTree, loadFile, openPath }: PanelProps): JSX.Element {
+function Files({ loadTree, loadFile, openPath, workspaceVersion }: PanelProps): JSX.Element {
   const [dir, setDir] = useState('');
   const [entries, setEntries] = useState<UiTreeEntry[]>();
   const [file, setFile] = useState<UiReadFileResult>();
@@ -417,6 +423,42 @@ function Files({ loadTree, loadFile, openPath }: PanelProps): JSX.Element {
   useEffect(() => {
     load('');
   }, [load]);
+
+  // Re-read in place when the workspace changes — a file the agent created or
+  // deleted used to appear only after navigating away and back, since the
+  // listing was fetched once per folder visit. Quietly: no "loading" flash, the
+  // folder and an open file stay where they are. Also on returning to the
+  // window, for changes made in an editor or a terminal.
+  const dirRef = useRef(dir);
+  dirRef.current = dir;
+  const fileRef = useRef(file);
+  fileRef.current = file;
+  const refresh = useCallback(() => {
+    const at = dirRef.current;
+    void loadTree(at)
+      .then((next) => {
+        if (dirRef.current === at) setEntries(next);
+      })
+      .catch(() => {
+        /* the folder itself may be gone; the next visit says so */
+      });
+    const shown = fileRef.current;
+    if (shown) {
+      void loadFile(shown.path)
+        .then((next) => {
+          if (fileRef.current?.path === shown.path) setFile(next);
+        })
+        .catch(() => {});
+    }
+  }, [loadTree, loadFile]);
+  const firstVersion = useRef(workspaceVersion);
+  useEffect(() => {
+    if (workspaceVersion !== firstVersion.current) refresh();
+  }, [workspaceVersion, refresh]);
+  useEffect(() => {
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [refresh]);
 
   // A path clicked in a tool chip opens here.
   useEffect(() => {

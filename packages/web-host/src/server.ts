@@ -155,7 +155,11 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
   // lights over the rail). Stamped on <html> so the page is laid out for it
   // from its first frame — styles injected after load made every switch
   // between products paint once the plain way, then jump.
-  const windowChrome: Record<string, string> = process.env.HEAPCODE_WINDOW_CHROME === 'mac' ? { chrome: 'mac' } : {};
+  const windowChromeEnv = process.env.HEAPCODE_WINDOW_CHROME === 'mac';
+  // Only for the desktop app's own window: the same address opened in an
+  // ordinary browser has a real title bar and must get the ordinary layout.
+  const windowChrome = (req: IncomingMessage): Record<string, string> =>
+    windowChromeEnv && /\bElectron\//.test(String(req.headers['user-agent'] ?? '')) ? { chrome: 'mac' } : {};
   const products = mounts.map((m) => m.path.replace(/^\//, '')).join(',');
 
   const http = createServer((req, res) => {
@@ -296,13 +300,13 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       // the root with its socket at /rpc, and mounted it sits under a prefix —
       // hardcoding one of those breaks the other, which is exactly what a
       // first attempt at this did.
-      const attrs = { 'rpc-path': `${pageMount.path}/rpc`, 'sibling': 'code', products, ...windowChrome };
+      const attrs = { 'rpc-path': `${pageMount.path}/rpc`, 'sibling': 'code', products, ...windowChrome(req) };
       if (await serveStatic(pageMount.staticDir, stripMount(pageMount, url.pathname), res, attrs)) return;
     }
 
     // The page is told whether the other product is there, so the switcher is
     // absent rather than broken when it is not.
-    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': opts.mount ? 'true' : 'false', products, ...windowChrome })))
+    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': opts.mount ? 'true' : 'false', products, ...windowChrome(req) })))
       return;
 
     res.writeHead(404, { 'content-type': 'text/plain' });

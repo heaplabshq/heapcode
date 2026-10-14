@@ -586,16 +586,62 @@ function LivePanel({ frame, pinned, onUnpin, busy, headed, hint }: { frame?: str
 
 function Setup({ state, onInit }: { state: QaState; onInit(): void }): JSX.Element {
   return (
-    <div className="qa-page">
-      <section className="qa-hero">
-        <h1 className="qa-title">Test your app with Heap QA</h1>
-        <p>Heap QA keeps tests as readable files in a test folder: settings, tests and reusable steps. {state.folderName} has none yet.</p>
-        <p className="qa-muted">Pick another folder above, or make one at {state.suggestedFolder} — with an example test and a .gitignore for results and test passwords.</p>
+    <Launch
+      title="Test your app"
+      body={`Heap QA keeps tests as readable files in a test folder — settings, tests and reusable steps. ${state.folderName} has none yet. Pick another folder above, or set one up here.`}
+    >
+      <div className="qa-launch-row">
+        <span className="qa-launch-prefix" title={state.suggestedFolder}>
+          {state.suggestedFolder}
+        </span>
+        <span className="qa-launch-fill" />
         <button className="btn btn-primary" onClick={onInit}>
-          Set up a test folder here
+          Set up a test folder
         </button>
-      </section>
+      </div>
+    </Launch>
+  );
+}
+
+/**
+ * The start of every job, laid out as Heap Code's empty conversation: what
+ * this is, centred in the space, and the one control to begin with at the
+ * bottom in a box drawn like its composer.
+ */
+function Launch({ title, body, children, options }: { title: string; body: ReactNode; children: ReactNode; options?: ReactNode }): JSX.Element {
+  return (
+    <div className="qa-launch">
+      <div className="messages messages-empty">
+        <div className="empty">
+          <h1>{title}</h1>
+          <p>{body}</p>
+        </div>
+      </div>
+      <div className="composer">
+        <div className="composer-box qa-launch-box">{children}</div>
+        {options && <div className="composer-bar qa-launch-options">{options}</div>}
+      </div>
     </div>
+  );
+}
+
+/** A path on the app: its address shown as the fixed part, the path typed after it. */
+function StartAt({ baseUrl, value, onChange, onEnter, label }: { baseUrl?: string; value: string; onChange(v: string): void; onEnter(): void; label: string }): JSX.Element {
+  return (
+    <label className="qa-launch-url" title="A path on your app, or a full address it may reach">
+      <span className="sr-only">{label}</span>
+      {baseUrl && !/^https?:/i.test(value) && <span className="qa-launch-prefix">{baseUrl.replace(/\/$/, '')}</span>}
+      <input
+        className="composer-input qa-launch-input"
+        value={value}
+        placeholder="/"
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onEnter();
+        }}
+      />
+    </label>
   );
 }
 
@@ -603,7 +649,7 @@ function Tests({ state, busy, onRun, onView, call }: { state: QaState; busy: boo
   const [source, setSource] = useState<{ file: string; text: string }>();
   const blocked = busy || state.errors.length > 0;
   return (
-    <div className="qa-page">
+    <div className="qa-page qa-wide">
       <div className="qa-head">
         <div>
           <h1 className="qa-title">Tests</h1>
@@ -692,7 +738,7 @@ function Tests({ state, busy, onRun, onView, call }: { state: QaState; busy: boo
 function RunLog({ job, heal, pinned, onPin, onOpenReport }: { job?: Job; heal: Transcript; pinned?: Pinned; onPin(p: Pinned): void; onOpenReport(runId: string): void }): JSX.Element {
   if (!job) return <p className="qa-empty">Nothing has run yet — run a test from Tests.</p>;
   return (
-    <div className="qa-log-wrap">
+    <div className="qa-log-wrap qa-col">
       <div className="qa-log-head">
         <h2 className="qa-subtitle">{job.done ? job.title.replace(/^Running /, 'Ran ') : job.title}</h2>
         {job.done && job.runId && (
@@ -918,39 +964,32 @@ function Record({ state, job, begin, call, onDone }: { state: QaState; job?: Job
 
   if (recording && job?.kind === 'record') {
     return (
-      <div className="qa-log-wrap">
+      <div className="qa-log-wrap qa-col">
         <div className="qa-log-head">
           <h2 className="qa-subtitle">Recording</h2>
           <button className="btn btn-primary" onClick={() => void stop()}>
             Stop and save
           </button>
         </div>
-        <p className="qa-muted">Use your app in the browser window that opened. Its bar at the bottom right adds checks. Press Done there, or Stop and save here.</p>
+        <p className="qa-muted qa-log-lead">Use your app in the browser window that opened — its bar at the bottom right adds checks. Press Done there, or Stop and save here.</p>
         <Log rows={job.rows} />
       </div>
     );
   }
 
+  const go = async (): Promise<void> => {
+    begin();
+    await call(QA_METHODS.record, { start });
+  };
   return (
-    <div className="qa-pane">
-      <h2 className="qa-subtitle">New test</h2>
-      <p>Click through your app once in a browser window; Heap QA writes the test as you go, then plays it back to prove it works.</p>
-      <label className="field">
-        <span className="field-label">Start at</span>
-        <input className="card-input" value={start} onChange={(e) => setStart(e.target.value)} placeholder="/login" />
-        <span className="field-hint">A path on {state.baseUrl ?? 'your app'}, or a full address the tests may reach.</span>
-      </label>
-      <button
-        className="btn btn-primary"
-        disabled={Boolean(state.busy)}
-        onClick={async () => {
-          begin();
-          await call(QA_METHODS.record, { start });
-        }}
-      >
-        Start recording
-      </button>
-    </div>
+    <Launch title="Record a test" body="Click through your app once in a browser window. Heap QA writes the test as you go, then plays it back to prove it works.">
+      <StartAt label="Start at" baseUrl={state.baseUrl} value={start} onChange={setStart} onEnter={() => void go()} />
+      <div className="composer-actions">
+        <button className="btn btn-primary" disabled={Boolean(state.busy)} onClick={() => void go()}>
+          Start recording
+        </button>
+      </div>
+    </Launch>
   );
 }
 
@@ -960,7 +999,7 @@ function Explore({ state, busy, job, onStart, onOpenReport, onReset }: { state: 
   const [ai, setAi] = useState(false);
   if (job) {
     return (
-      <div className="qa-log-wrap">
+      <div className="qa-log-wrap qa-col">
         <div className="qa-log-head">
           <h2 className="qa-subtitle">{job.done ? job.title.replace(/^Exploring /, 'Explored ') : job.title}</h2>
           {job.done && (
@@ -982,27 +1021,31 @@ function Explore({ state, busy, job, onStart, onOpenReport, onReset }: { state: 
     );
   }
   return (
-    <div className="qa-pane">
-      <h2 className="qa-subtitle">Explore</h2>
-      <p>Find bugs with no test written: Heap QA visits every page it can reach, presses what is safe to press, fills forms with ordinary and awkward input, and reports what is plainly wrong — server errors, broken links, crashes, error text, layouts too wide for a phone, buttons that do nothing.</p>
-      <label className="field">
-        <span className="field-label">Start at</span>
-        <input className="card-input" value={start} onChange={(e) => setStart(e.target.value)} />
-      </label>
-      <label className="qa-check">
-        <input type="checkbox" checked={allow} onChange={(e) => setAllow(e.target.checked)} />
-        Also press Delete, Pay, Submit-like buttons — only on data you can lose
-      </label>
-      {state.model && (
-        <label className="qa-check">
-          <input type="checkbox" checked={ai} onChange={(e) => setAi(e.target.checked)} />
-          Also have {state.model} look at each page for what no rule catches (labelled as the AI's)
-        </label>
-      )}
-      <button className="btn btn-primary" disabled={busy} onClick={() => onStart(start, allow, ai)}>
-        Explore
-      </button>
-    </div>
+    <Launch
+      title="Explore for bugs"
+      body="No test needed: Heap QA visits every page it can reach, presses what is safe, fills forms with ordinary and awkward input, and reports what is plainly wrong — server errors, broken links, crashes, error text, pages too wide for a phone, buttons that do nothing."
+      options={
+        <>
+          <label className="qa-opt">
+            <input type="checkbox" checked={allow} onChange={(e) => setAllow(e.target.checked)} />
+            Also press Delete, Pay and Submit-like buttons
+          </label>
+          {state.model && (
+            <label className="qa-opt" title={`One ${state.model} call per page; what it reports is labelled as the AI's`}>
+              <input type="checkbox" checked={ai} onChange={(e) => setAi(e.target.checked)} />
+              AI look at each page
+            </label>
+          )}
+        </>
+      }
+    >
+      <StartAt label="Start at" baseUrl={state.baseUrl} value={start} onChange={setStart} onEnter={() => !busy && onStart(start, allow, ai)} />
+      <div className="composer-actions">
+        <button className="btn btn-primary" disabled={busy} onClick={() => onStart(start, allow, ai)}>
+          Explore
+        </button>
+      </div>
+    </Launch>
   );
 }
 
@@ -1011,14 +1054,6 @@ function Ask({ state, busy, transcript, onSend, onStop, onNew, onOpenSettings }:
   const working = state.busy?.kind === 'do';
   return (
     <div className="qa-ask">
-      <div className="qa-ask-head">
-        <h2 className="qa-subtitle">Ask AI</h2>
-        {/* Each request is its own task in a fresh browser — the AI does not carry earlier ones over — so this clears the screen, not a memory. */}
-        <span className="qa-muted qa-ask-note">Each request starts fresh in a new browser.</span>
-        <button className="btn btn-quiet" disabled={working || transcript.items.length === 0} onClick={onNew} title="Clear this conversation and start again">
-          New chat
-        </button>
-      </div>
       {!state.model && (
         <div className="banner banner-warn" role="alert">
           <strong>No model yet.</strong>
@@ -1035,7 +1070,7 @@ function Ask({ state, busy, transcript, onSend, onStop, onNew, onOpenSettings }:
           {...(working && state.busy ? { runStartedAt: state.busy.startedAt } : {})}
           empty={{
             title: 'Ask the AI to write a test',
-            body: 'Say what to do in your app — "log in as ai@example.test with the test password, then check you are welcomed". It works in a browser you can watch on the right; what worked becomes a test that replays without the AI, saved only if it does.',
+            body: 'Say what to do in your app — "log in as ai@example.test with the test password, then check you are welcomed". It works in a browser you can watch; what worked becomes a test that replays without the AI, saved only if it does. Each request starts fresh.',
           }}
         />
       </div>
@@ -1046,10 +1081,18 @@ function Ask({ state, busy, transcript, onSend, onStop, onNew, onOpenSettings }:
         disabled={!state.model || (busy && !working)}
         placeholder="What should the AI do in your app?"
         footer={
-          <label className="qa-start" title="Where the AI starts, on your app">
-            <span className="qa-muted">Start at</span>
-            <input className="qa-start-input" value={start} onChange={(e) => setStart(e.target.value)} />
-          </label>
+          <>
+            <label className="qa-start" title="Where the AI starts, on your app">
+              <span>Start at</span>
+              <input className="qa-start-input" value={start} spellCheck={false} onChange={(e) => setStart(e.target.value)} />
+            </label>
+            <span className="composer-bar-right">
+              {/* Each request is its own task in a fresh browser, so this clears the screen, not a memory. */}
+              <button className="btn btn-quiet" disabled={working || transcript.items.length === 0} onClick={onNew} title="Clear this conversation">
+                New chat
+              </button>
+            </span>
+          </>
         }
       />
     </div>

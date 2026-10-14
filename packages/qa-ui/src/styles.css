@@ -145,3 +145,32 @@ button.qa-row-btn:hover .qa-shot-dot { background: var(--accent); }
   .qa-file { display: none; }
   .qa-page { padding: 16px; }
 }
+
+/* ---------- launch: Heap Code's empty conversation, with a composer-shaped start ---------- */
+.qa-launch { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; --gutter: max(16px, calc((100% - var(--col)) / 2)); }
+.qa-launch-box { align-items: center; padding: 6px 7px 6px 14px; flex-wrap: nowrap; }
+.qa-launch-url { flex: 1 1 auto; display: flex; align-items: center; min-width: 0; cursor: text; }
+.qa-launch-prefix { color: var(--text-dim); font-family: var(--mono); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; flex: 0 1 auto; }
+.qa-launch-input { font-family: var(--mono); font-size: 13px; min-width: 6ch; }
+.qa-launch-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+.qa-launch-fill { flex: 1 1 auto; }
+.qa-launch-options { flex-wrap: wrap; gap: 14px; }
+.qa-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+.qa-opt input { margin: 0; }
+
+/* Logs, the save form and the report sit in the same reading column as Heap Code's transcript. */
+.qa-col { width: 100%; max-width: calc(var(--col) + 40px); margin: 0 auto; box-sizing: border-box; }
+.qa-pane { width: 100%; max-width: calc(var(--col) + 40px); margin: 0 auto; box-sizing: border-box; padding-top: 32px; }
+.qa-wide { width: 100%; max-width: 1040px; margin: 0 auto; box-sizing: border-box; }
+.qa-log-lead { padding: 0 20px 8px; margin: 0; }
+.qa-start { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); }
+
+/* The desktop app pins the rail's collapse button beside the traffic lights;
+   with the rail collapsed that lands over this strip's left end, which Heap
+   Code keeps empty and Heap QA does not (the folder chip). */
+html[data-chrome="mac"] .rail-collapsed ~ .qa-main .qa-toolbar { padding-left: 64px; }
+
+/* The heading's second line is a long path: it shortens, so the action stays on the right. */
+.qa-head { flex-wrap: nowrap; align-items: center; }
+.qa-head > div { flex: 1 1 auto; min-width: 0; }
+.qa-head .qa-muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -130,6 +130,12 @@ describe('QaSession', { timeout: 60_000 }, () => {
     expect(next.folder).toBe(join(second, 'heapqa'));
     expect(recorded).toEqual([second]);
     await expect(call(QA_METHODS.setRoot, { path: join(second, 'nope') })).rejects.toThrow(/Not a folder/);
+
+    // Settings change from the page, and the page sees them.
+    const saved = await call<QaState>(QA_METHODS.saveSettings, { baseUrl: 'http://localhost:5173', targets: ['https://staging.example.com'], heal: 'similarity' });
+    expect(saved).toMatchObject({ baseUrl: 'http://localhost:5173', heal: 'similarity', settings: { targets: ['https://staging.example.com'], timeout: 10000 } });
+    await expect(call(QA_METHODS.saveSettings, { targets: ['nope'] })).rejects.toThrow(/not an address/);
+    await expect(call(QA_METHODS.openReport, { runId: '../x' })).rejects.toThrow(/No such run/);
     await session.close();
   });
 });

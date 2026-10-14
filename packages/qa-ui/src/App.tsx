@@ -248,8 +248,9 @@ export function App(): JSX.Element {
     active: typeof view === 'object' && view.detail === r.id,
   }));
   const is = (v: string): boolean => view === v;
+  // The browser belongs to the job that showed it: another view starts empty.
   const live = (kind: Job['kind'], hint?: string): JSX.Element => (
-    <LivePanel frame={frame} pinned={pinned} onUnpin={() => setPinned(undefined)} busy={busy && job?.kind === kind} headed={kind === 'record' || headed} {...(hint ? { hint } : {})} />
+    <LivePanel frame={job?.kind === kind ? frame : undefined} pinned={pinned} onUnpin={() => setPinned(undefined)} busy={busy && job?.kind === kind} headed={kind === 'record' || headed} {...(hint ? { hint } : {})} />
   );
 
   return (
@@ -303,7 +304,7 @@ export function App(): JSX.Element {
               </span>
             )}
             <span className="qa-top-spacer" />
-            <label className="qa-switch" title="Open a real browser window while tests run, explore, or the AI works. Off runs it hidden — the live view here shows it either way. Recording always opens a window.">
+            <label className="qa-switch" title="The live view on the right always shows the browser. Turn this on to also open it as its own window — full size, and you can open its developer tools. Recording always opens one, since you click in it.">
               <input
                 type="checkbox"
                 role="switch"
@@ -316,7 +317,7 @@ export function App(): JSX.Element {
                 }
               />
               <span className="qa-switch-track" aria-hidden="true" />
-              <span>Show browser window</span>
+              <span>Also open a browser window</span>
             </label>
             {state?.busy && (
               <span className="qa-busy">
@@ -339,7 +340,20 @@ export function App(): JSX.Element {
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
           {error && (
             <div className="banner banner-error" role="alert">
-              <span>{error}</span>
+              {/* The command line's instructions say to edit heapqa.yaml; here there is a button for it. */}
+              <span>{/is not listed in heapqa\.yaml/.test(error) ? `${error.split(' To test it')[0]} Allow it here, or under Settings → Other sites tests may open.` : error}</span>
+              {state?.settings && /is not listed in heapqa\.yaml/.test(error) && originIn(error) && (
+                <button
+                  type="button"
+                  className="banner-action"
+                  onClick={async () => {
+                    const origin = originIn(error)!;
+                    if (await call(QA_METHODS.saveSettings, { targets: [...(state.settings?.targets ?? []), origin] })) setError(undefined);
+                  }}
+                >
+                  Allow {originIn(error)}
+                </button>
+              )}
               <button type="button" className="banner-action" onClick={() => setError(undefined)}>
                 Dismiss
               </button>
@@ -356,7 +370,14 @@ export function App(): JSX.Element {
             <Workbench left={<RunLog job={job} heal={heal} pinned={pinned} onPin={setPinned} onOpenReport={(id) => setView({ detail: id })} />} live={live('run')} />
           ) : is('record') ? (
             <Workbench
-              left={<Record state={state} job={job} begin={() => begin('record', 'Recording', 'record')} call={call} onDone={() => setView('tests')} />}
+              left={
+                <Record
+                  state={state} job={job} begin={() => begin('record', 'Recording', 'record')} call={call} onDone={() => {
+                    setJob(undefined);
+                    setView('tests');
+                  }}
+                />
+              }
               live={live('record', 'Use the browser window that opened — this mirrors it.')}
             />
           ) : is('explore') ? (
@@ -397,7 +418,7 @@ export function App(): JSX.Element {
               live={live('do')}
             />
           ) : typeof view === 'object' ? (
-            <Detail runId={view.detail} call={call} />
+            <Detail runId={view.detail} call={call} lan={state.lan} />
           ) : null}
         </main>
       </div>
@@ -420,7 +441,7 @@ export function App(): JSX.Element {
           </div>
         </div>
       )}
-      {settingsOpen && state && <SettingsDialog state={state} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && state && <SettingsDialog state={state} request={(m, p) => client.request(m, p)} onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
@@ -637,7 +658,7 @@ function Log({ rows, pinned, onPin }: { rows: LogRow[]; pinned?: Pinned; onPin?(
   );
 }
 
-function Detail({ runId, call }: { runId: string; call: Call }): JSX.Element {
+function Detail({ runId, call, lan }: { runId: string; call: Call; lan: boolean }): JSX.Element {
   const [detail, setDetail] = useState<QaRunDetail>();
   const [applied, setApplied] = useState<QaAcceptHealsResult>();
   const [version, setVersion] = useState(0);
@@ -670,9 +691,17 @@ function Detail({ runId, call }: { runId: string; call: Call }): JSX.Element {
               Accept {heals} fix{heals === 1 ? '' : 'es'}
             </button>
           )}
-          <a className="btn btn-quiet" href={`${BASE}/attachment/runs/${runId}/report.html`} target="_blank" rel="noreferrer">
-            Open in a tab
-          </a>
+          {lan ? (
+            // Reached over the network: this browser has the sign-in cookie, so a tab works.
+            <a className="btn btn-quiet" href={`${BASE}/attachment/runs/${runId}/report.html`} target="_blank" rel="noreferrer">
+              Open in a tab
+            </a>
+          ) : (
+            // The file, not a link: from the desktop app a link opens in a browser that is not signed in.
+            <button className="btn btn-quiet" onClick={() => void call(QA_METHODS.openReport, { runId })}>
+              Open in browser
+            </button>
+          )}
         </span>
       </div>
       {applied && (
@@ -916,33 +945,107 @@ function Ask({ state, busy, transcript, onSend, onStop }: { state: QaState; busy
   );
 }
 
-function SettingsDialog({ state, onClose }: { state: QaState; onClose(): void }): JSX.Element {
+function SettingsDialog({ state, request, onClose }: { state: QaState; request(method: string, params: unknown): Promise<unknown>; onClose(): void }): JSX.Element {
+  const [baseUrl, setBaseUrl] = useState(state.baseUrl ?? '');
+  const [targets, setTargets] = useState((state.settings?.targets ?? []).join('\n'));
+  const [heal, setHeal] = useState(state.heal);
+  const [timeout, setTimeoutSecs] = useState(String((state.settings?.timeout ?? 10_000) / 1000));
+  const [channel, setChannel] = useState(state.settings?.channel ?? '');
+  const [secretsFile, setSecretsFile] = useState(state.settings?.secretsFile ?? '');
+  const [problem, setProblem] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const editable = Boolean(state.folder);
+
+  const save = async (): Promise<void> => {
+    const secs = Number(timeout);
+    if (!Number.isFinite(secs) || secs <= 0) return setProblem('A step may wait a number of seconds, more than 0.');
+    setSaving(true);
+    setProblem(undefined);
+    try {
+      // Straight to the client, not `call`: a refusal belongs in this dialog, not the page banner.
+      await request(QA_METHODS.saveSettings, {
+        baseUrl,
+        targets: targets.split(/[\n,]/).map((t) => t.trim()).filter(Boolean),
+        heal,
+        timeout: Math.round(secs * 1000),
+        channel: channel || undefined,
+        secretsFile,
+      });
+      onClose();
+    } catch (e) {
+      setProblem((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="modal-scrim" onClick={onClose}>
       <div className="modal" role="dialog" aria-modal="true" aria-label="Heap QA settings" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">Heap QA</div>
-        <div className="modal-body">
+        <div className="modal-head">Heap QA settings</div>
+        <div className="modal-body qa-settings">
+          {!editable ? (
+            <p className="qa-muted">Set up a test folder first — settings are saved in it.</p>
+          ) : (
+            <>
+              <label className="field">
+                <span className="field-label">Your app's address</span>
+                <input className="card-input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:3000" />
+                <span className="field-hint">Where tests start. Paths like /login are on this address.</span>
+              </label>
+              <label className="field">
+                <span className="field-label">Other sites tests may open</span>
+                <textarea className="card-input qa-textarea" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder={'https://staging.example.com\nhttps://*.vercel.app'} />
+                <span className="field-hint">One per line. Your own computer (localhost) is always allowed; anything else must be listed, so a test never wanders onto a site by mistake.</span>
+              </label>
+              <label className="field">
+                <span className="field-label">When a button or field has moved</span>
+                <select className="card-input" value={heal} onChange={(e) => setHeal(e.target.value as QaState['heal'])}>
+                  <option value="ai">Find it by likeness, then ask the AI</option>
+                  <option value="similarity">Find it by likeness only (no AI)</option>
+                  <option value="off">Fail the test</option>
+                </select>
+              </label>
+              <div className="qa-settings-row">
+                <label className="field">
+                  <span className="field-label">Wait per step (seconds)</span>
+                  <input className="card-input" inputMode="decimal" value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} />
+                </label>
+                <label className="field">
+                  <span className="field-label">Browser</span>
+                  <select className="card-input" value={channel} onChange={(e) => setChannel(e.target.value as typeof channel)}>
+                    <option value="">Automatic</option>
+                    <option value="chrome">Chrome</option>
+                    <option value="msedge">Edge</option>
+                    <option value="chromium">Chromium (Playwright's own)</option>
+                  </select>
+                </label>
+              </div>
+              <label className="field">
+                <span className="field-label">Test passwords file</span>
+                <input className="card-input" value={secretsFile} onChange={(e) => setSecretsFile(e.target.value)} placeholder=".env.test" />
+                <span className="field-hint">Inside the test folder and kept out of git. Tests use its values as {'{{secret:NAME}}'}.</span>
+              </label>
+            </>
+          )}
           <dl className="qa-facts">
             <dt>Test folder</dt>
             <dd>{state.folder ?? 'none yet'}</dd>
-            <dt>App address</dt>
-            <dd>{state.baseUrl ?? 'not set — add baseUrl to heapqa.yaml'}</dd>
-            <dt>Healing</dt>
-            <dd>{state.heal === 'ai' ? 'similarity, then the AI' : state.heal === 'similarity' ? 'similarity only (no model)' : 'off'}</dd>
-            <dt>Model</dt>
-            <dd>{state.model ? `${state.model} on ${state.profile} (the agent role)` : 'none — set the agent role in Heap Code'}</dd>
+            <dt>AI model</dt>
+            <dd>{state.model ? `${state.model} on ${state.profile}` : 'none set'} — shared with Heap Code{HAS_CODE ? <>; <a href="/">change it there</a></> : ''}</dd>
           </dl>
-          <p className="qa-muted">Settings live in heapqa.yaml in the test folder. Models are shared with Heap Code: change them in its settings.</p>
+          {problem && <p className="qa-bad">{problem}</p>}
           <div className="form-actions">
-            {HAS_CODE && (
-              <a className="btn" href="/">
-                Open Heap Code
-              </a>
-            )}
-            <button className="btn btn-primary" onClick={onClose}>
-              Done
+            <button className="btn" onClick={onClose}>
+              Cancel
             </button>
+            {editable && (
+              <button className="btn btn-primary" disabled={saving} onClick={() => void save()}>
+                Save
+              </button>
+            )}
           </div>
+          <p className="qa-muted">Saved in heapqa.yaml in the test folder, so the command line and CI use the same settings.</p>
         </div>
       </div>
     </div>
@@ -963,6 +1066,12 @@ function RailRow({ label, icon, collapsed, active, onClick }: { label: string; i
       )}
     </button>
   );
+}
+
+/** The address an "is not listed" refusal names, as an origin to allow. */
+function originIn(message: string): string | undefined {
+  const m = /(https?:\/\/[^\s/]+)/.exec(message);
+  return m?.[1];
 }
 
 function pathOf(url: string): string {

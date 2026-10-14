@@ -29,6 +29,10 @@ export const QA_METHODS = {
   browseFolders: 'qa/browseFolders',
   /** Point Heap QA at a project (or a test folder directly). */
   setRoot: 'qa/setRoot',
+  /** Change heapqa.yaml's settings from the page. */
+  saveSettings: 'qa/saveSettings',
+  /** Open a run's report.html in this computer's browser. */
+  openReport: 'qa/openReport',
   /** Host → page: progress of whatever is running. */
   event: 'qa/event',
   /** Host → page: the state changed (flows, runs, busy). */
@@ -60,6 +64,8 @@ export interface QaState {
   errors: string[];
   baseUrl?: string;
   heal: 'ai' | 'similarity' | 'off';
+  /** The rest of heapqa.yaml, for the settings dialog. */
+  settings?: { targets: string[]; timeout: number; channel?: 'chrome' | 'msedge' | 'chromium'; secretsFile?: string };
   flows: QaFlowInfo[];
   /** Reusable steps, by name. */
   steps: string[];

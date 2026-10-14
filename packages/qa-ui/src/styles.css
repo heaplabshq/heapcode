@@ -8,7 +8,9 @@
  * for work — the log or the AI on the left, the browser on the right.
  */
 
-.qa-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.qa-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; --gutter: 16px; }
+.qa-main > .banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qa-main > .banner .banner-action + .banner-action { margin-left: 0; }
 
 /* ---------- top bar ---------- */
 .qa-top { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg); flex-wrap: wrap; min-height: 48px; }
@@ -138,3 +140,11 @@ button.qa-row-btn:hover .qa-shot-dot { background: var(--accent); }
 
 /* Heap Code's picker sits at the bottom and opens upward; here it is in the top bar. */
 .qa-top .wsp-pop { bottom: auto; top: calc(100% + 6px); }
+
+/* ---------- settings ---------- */
+.qa-settings .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.qa-settings .field > .card-input { flex: none; width: 100%; box-sizing: border-box; }
+.qa-settings select.card-input { width: 100%; }
+.qa-settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.qa-textarea { min-height: 64px; width: 100%; resize: vertical; font-family: var(--mono); font-size: 12.5px; }
+@media (max-width: 520px) { .qa-settings-row { grid-template-columns: 1fr; } }

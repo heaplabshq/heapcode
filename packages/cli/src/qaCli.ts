@@ -46,6 +46,7 @@ import {
   postPrComment,
   writeGithubWorkflow,
   launchDriver,
+  openFile,
   prepare,
   replayOnce,
   resolveAgentModel,
@@ -640,11 +641,6 @@ async function qaFix(args: string[]): Promise<number> {
   return new Promise((done) => child.on('exit', (code) => done(code ?? 1)));
 }
 
-function openFile(path: string): void {
-  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['/c', 'start', '', path] : [path];
-  spawn(command, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
-}
 
 /** The agent role's model, ready to call — or undefined when none is set up. */
 function agentModel(): Promise<AgentModel | undefined> {

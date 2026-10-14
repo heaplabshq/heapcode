@@ -11,6 +11,8 @@ import {
   initWorkspace,
   isAllowedTarget,
   loadWorkspace,
+  writeSettings,
+  type QaSettingsPatch,
   notAllowedMessage,
   resolveUrl,
   saveSecrets,
@@ -36,6 +38,7 @@ import {
 } from './protocol.js';
 import { exploreSite, findRun, launchDriver, listRuns, prepare, resolveAgentModel, runSuite } from './orchestrate.js';
 import { RecordingSession, aiTask, replayOnce, saveFlow } from './work.js';
+import { openFile } from './openFile.js';
 import { agentEventStream } from './agentEvents.js';
 
 export interface QaSessionDeps {
@@ -146,6 +149,21 @@ export class QaSession implements HostSession {
       if (this.busy?.kind === 'record') return this.stopRecording();
       return {};
     });
+    ui.onRequest(QA_METHODS.saveSettings, async (raw) => {
+      const ws = this.workspace();
+      writeSettings(ws.dir, raw as QaSettingsPatch);
+      return this.pushState();
+    });
+    ui.onRequest(QA_METHODS.openReport, async (raw) => {
+      const runId = String((raw as { runId?: unknown }).runId ?? '');
+      if (!this.folder || !/^[\w-]+$/.test(runId)) throw new Error('No such run.');
+      const file = join(this.folder, RESULTS_DIR, runId, 'report.html');
+      if (!existsSync(file)) throw new Error('That run has no report.');
+      // On this computer — so never for a page reached over the network.
+      if (this.deps.lan) throw new Error('Reached over the network: open the report from the computer running Heap QA.');
+      openFile(file);
+      return {};
+    });
     ui.onRequest(QA_METHODS.runDetail, async (raw) => this.runDetail(String((raw as { runId?: unknown }).runId ?? '')));
     ui.onRequest(QA_METHODS.acceptHeals, async (raw) => this.acceptHeals(String((raw as { runId?: unknown }).runId ?? '')));
     ui.onRequest(QA_METHODS.flowSource, async (raw) => {
@@ -226,6 +244,12 @@ export class QaSession implements HostSession {
       errors: ws.errors.map((e) => `${e.file ?? ''}${e.line ? `:${e.line}` : ''} ${e.message}`.trim()),
       ...(ws.config.baseUrl ? { baseUrl: ws.config.baseUrl } : {}),
       heal: ws.config.heal,
+      settings: {
+        targets: ws.config.targets,
+        timeout: ws.config.timeout,
+        ...(ws.config.browser.channel ? { channel: ws.config.browser.channel } : {}),
+        ...(ws.config.secretsFile ? { secretsFile: ws.config.secretsFile } : {}),
+      },
       flows,
       steps: [...ws.steps.keys()],
       runs,

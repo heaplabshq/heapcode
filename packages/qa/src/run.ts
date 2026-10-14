@@ -1,4 +1,6 @@
 import type { Fingerprint } from '@heapcode/page/fingerprint';
+import { formatOutline } from '@heapcode/page/outline';
+import type { DomTree } from '@heapcode/page/tree';
 import { describeAttempts, locate, probesOf, type Attempt, type ConsoleLine, type Driver, type FailedRequest, type Target } from './driver.js';
 import type { Expectation, Flow, Locator, Step } from './flow.js';
 import type { HealOutcome, Healer } from './heal.js';
@@ -68,6 +70,8 @@ export interface StepResult {
   healed?: { via: 'similarity' | 'agent'; score?: number; reason?: string; locator: Locator };
   /** Healing looked and decided the element is gone — a bug in the app, not drift. */
   bug?: boolean;
+  /** The page when the step failed: its address and outline (secrets redacted). */
+  page?: { url: string; outline: string };
   attempts?: Attempt[];
   error?: string;
   console: ConsoleLine[];
@@ -93,6 +97,18 @@ export interface FlowResult {
   heals: HealProposal[];
   /** Fingerprints from this run — worth saving only if it passed. */
   refreshed: FingerprintRefresh[];
+  /** The whole page at the failing step, secrets redacted — for the report and for "fix this". */
+  failurePage?: DomTree;
+  /** Filled in after the run by a model, when one is asked: a guess at why it failed. */
+  diagnosis?: Diagnosis;
+}
+
+export interface Diagnosis {
+  /** Where the fault most likely is. */
+  kind: 'app' | 'test' | 'environment' | 'unknown';
+  /** Two or three sentences — a guess, and labelled as one wherever it is shown. */
+  text: string;
+  model: string;
 }
 
 export interface RunOptions {
@@ -114,6 +130,8 @@ export interface RunOptions {
   fingerprints?: (source: StepSource) => SavedFingerprints | undefined;
   /** Record each element's fingerprint as the run finds it. Default false. */
   refreshFingerprints?: boolean;
+  /** Read the page when a step fails, for the report. Default true. */
+  captureFailure?: boolean;
 }
 
 export async function runFlow(id: string, flow: Flow, options: RunOptions): Promise<FlowResult> {
@@ -150,6 +168,7 @@ export async function runFlow(id: string, flow: Flow, options: RunOptions): Prom
     ...(trace ? { trace } : {}),
     heals: ctx.heals,
     refreshed: failedStep ? [] : ctx.refreshed,
+    ...(ctx.failurePage ? { failurePage: ctx.failurePage } : {}),
   };
 }
 
@@ -160,6 +179,7 @@ interface Ctx extends RunOptions {
   failed: boolean;
   heals: HealProposal[];
   refreshed: FingerprintRefresh[];
+  failurePage?: DomTree;
 }
 
 async function runSteps(list: Step[], templates: Templates, ctx: Ctx, prefix: string, depth: number, source: StepSource): Promise<void> {
@@ -232,6 +252,7 @@ async function runOne(step: Exclude<Step, { kind: 'use' }>, templates: Templates
     result.status = 'failed';
     result.error = templates.redact(message(err));
     ctx.failed = true;
+    if (ctx.captureFailure !== false) await captureFailure(ctx, result, templates);
   }
   result.durationMs = Date.now() - started;
   result.console = ctx.driver.drainConsole().map((l) => redactLine(l, templates));
@@ -344,6 +365,32 @@ async function perform(step: Exclude<Step, { kind: 'use' }>, templates: Template
       await check(step.expect, templates, ctx, result, find);
       return;
   }
+}
+
+/** What the page looked like when the step failed: an outline for the report, the whole tree for later. */
+async function captureFailure(ctx: Ctx, result: StepResult, templates: Templates): Promise<void> {
+  try {
+    const tree = redactTree(await ctx.driver.inspect(), templates);
+    result.page = { url: tree.url, outline: formatOutline(tree, { maxChars: 4000 }) };
+    ctx.failurePage = tree;
+  } catch {
+    // A crashed or navigating page cannot be read; the error already says what happened.
+  }
+}
+
+function redactTree(tree: DomTree, templates: Templates): DomTree {
+  const r = (v: string): string => templates.redact(v);
+  return {
+    ...tree,
+    url: r(tree.url),
+    nodes: tree.nodes.map((n) => ({
+      ...n,
+      text: r(n.text),
+      attrs: Object.fromEntries(Object.entries(n.attrs).map(([k, v]) => [k, r(v)])),
+      ...(n.name !== undefined ? { name: r(n.name) } : {}),
+      ...(n.value !== undefined ? { value: r(n.value) } : {}),
+    })),
+  };
 }
 
 /** The fingerprint saved for this step — only if the file's locator is still the one it was saved for. */

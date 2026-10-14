@@ -120,5 +120,10 @@ describe('runFlow on Playwright', { timeout: 30_000 }, () => {
     expect(result.steps[1]!.screenshot?.length).toBeGreaterThan(0);
     expect(result.steps[0]!.screenshot).toBeUndefined();
     expect(existsSync(result.trace!)).toBe(true);
+    // The page at the failure: an outline in the step, the whole tree saved beside the run.
+    expect(result.steps[1]!.page?.outline).toMatch(/\[\d+\] button "Log in"/);
+    const saved = saveFlow(runDir, result);
+    expect(saved.failurePage).toBe(join('pages', 'broken.json'));
+    expect(JSON.parse(readFileSync(join(runDir, saved.failurePage!), 'utf8')).nodes.length).toBeGreaterThan(5);
   });
 });

@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { readdirSync } from 'node:fs';
@@ -7,6 +8,9 @@ import {
   FLOWS_DIR,
   Recording,
   Templates,
+  diagnose,
+  renderFixBrief,
+  writeReports,
   applyHeals,
   createHealer,
   saveRefreshed,
@@ -71,6 +75,10 @@ export async function runQa(argv: string[]): Promise<number> {
       return qaDo(rest);
     case 'heals':
       return qaHeals(rest);
+    case 'report':
+      return qaReport(rest);
+    case 'fix':
+      return qaFix(rest);
     case 'reuse':
       return qaReuse(rest);
     case 'check':
@@ -107,6 +115,10 @@ Usage:
   heapcode qa reuse <step> [flow…]             Use an existing reusable step in every flow (or the ones named) that repeats its steps
   heapcode qa run [flow…] [flags]              Play flows back (all of them, or the ones named) and save the results
   heapcode qa heals [--run ID] [--accept]      Show the fixes healing proposed in the last run (or run ID); --accept writes them into the files
+  heapcode qa report [--run ID] [--open]       Rebuild the HTML report of the last run (or run ID); --open shows it in the browser
+  heapcode qa fix <flow> [--run ID] [--repo DIR]
+                                               Hand a failed flow to Heap Code with the evidence; with --repo, start it there
+                                               (edits allowed, commands still need approval)
   heapcode qa install                          Download Heap QA's own Chromium — only needed with no Chrome or Edge installed
 
 Run flags:
@@ -118,6 +130,8 @@ Run flags:
   --no-trace         Do not save traces of failed flows
   --accept-heals     Write the fixes healing found into the flow files after the run
   --no-heal          Fail a step whose element is missing, without trying to find it again
+  --no-diagnose      Do not ask the agent model for a likely cause of each failure
+  --open             Open the HTML report when the run ends
 
 When a step's element has moved or changed, the run looks for it again: by
 similarity to how it last looked (no model), then — with \`heal: ai\`, the default
@@ -159,10 +173,13 @@ interface Flags {
   heal: boolean;
   run?: string;
   accept: boolean;
+  diagnose: boolean;
+  open: boolean;
+  repo?: string;
 }
 
 function parseFlags(args: string[]): Flags | string {
-  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false, acceptHeals: false, heal: true, accept: false };
+  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false, acceptHeals: false, heal: true, accept: false, diagnose: true, open: false };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     const value = (): string | undefined => args[++i];
@@ -218,6 +235,18 @@ function parseFlags(args: string[]): Flags | string {
       case '--accept':
         flags.accept = true;
         break;
+      case '--no-diagnose':
+        flags.diagnose = false;
+        break;
+      case '--open':
+        flags.open = true;
+        break;
+      case '--repo': {
+        const v = value();
+        if (!v) return '--repo takes the folder of the app\'s code.';
+        flags.repo = resolve(v);
+        break;
+      }
       case '--run': {
         const v = value();
         if (!v) return '--run takes a run id (a folder name in results/).';
@@ -312,11 +341,24 @@ async function qaRun(args: string[]): Promise<number> {
   // Healing: similarity always (unless off); the agent model only with `heal: ai` and a model set up.
   let healer: Healer | undefined;
   const mode = flags.heal ? ws.config.heal : 'off';
+  // One model for healing and for diagnosis; `heal: similarity` keeps both off it.
+  const model = ws.config.heal === 'ai' && (flags.diagnose || mode === 'ai') ? await agentModel() : undefined;
   if (mode !== 'off') {
-    const model = mode === 'ai' ? await agentModel() : undefined;
     healer = createHealer(
       model
-        ? { agent: { provider: model.provider, model: model.model, nativeToolCalls: model.nativeToolCalls, contextWindow: model.contextWindow, templates: baseTemplates } }
+        ? mode === 'ai'
+          ? {
+              agent: {
+                provider: model.provider,
+                model: model.model,
+                nativeToolCalls: model.nativeToolCalls,
+                contextWindow: model.contextWindow,
+                templates: baseTemplates,
+                // The step's row prints only when it ends; this says why it is taking a while.
+                onStart: (req) => say(`      … ${describeLocator(req.locator)} has moved or gone — ${model.model} is looking for it (up to 90s)`),
+              },
+            }
+          : {}
         : {},
     );
   }
@@ -345,6 +387,13 @@ async function qaRun(args: string[]): Promise<number> {
       });
       // How the elements looked when this flow last passed — what healing compares with next time.
       if (result.status === 'passed') saveRefreshed(ws.dir, result.refreshed);
+      else if (model && flags.diagnose) {
+        const guess = await diagnose(model.provider, model.model, result, AbortSignal.timeout(45_000));
+        if (guess) {
+          result.diagnosis = guess;
+          say(`  ? likely cause (a guess): ${guess.text}`);
+        }
+      }
       summary.flows.push(saveFlow(runDir, result));
       if (result.status === 'passed') summary.passed += 1;
       else summary.failed += 1;
@@ -356,11 +405,13 @@ async function qaRun(args: string[]): Promise<number> {
 
   summary.durationMs = Date.now() - started;
   const file = writeRunSummary(summary);
+  const report = writeReports(summary);
   if (flags.json) {
     console.log(JSON.stringify(summary, null, 2));
   } else {
     const total = summary.passed + summary.failed;
     console.log(`${summary.failed ? '✗' : '✓'} ${summary.passed}/${total} passed in ${seconds(summary.durationMs)}`);
+    console.log(`Report: ${shown(report)}`);
     console.log(`Results: ${shown(file)}`);
     for (const f of summary.flows) if (f.trace) console.log(`Trace (${f.id}): npx playwright show-trace ${shown(resolve(runDir, f.trace))}`);
   }
@@ -373,7 +424,65 @@ async function qaRun(args: string[]): Promise<number> {
       console.log(`Review: heapcode qa heals${flags.dir === process.cwd() ? '' : ` --dir ${shown(flags.dir)}`}    Accept: add --accept`);
     }
   }
+  if (flags.open) openFile(report);
+  if (summary.failed && !flags.json) console.log(`Hand a failure to Heap Code: heapcode qa fix <flow> --repo <your app's folder>`);
   return summary.failed ? 1 : 0;
+}
+
+/** The newest run in results/, or the one named. */
+function findRun(dir: string, runId: string | undefined): { runId: string; summary: RunSummary } | string {
+  const resultsDir = join(dir, 'results');
+  const runs = existsSync(resultsDir) ? readdirSync(resultsDir).filter((d) => existsSync(join(resultsDir, d, 'run.json'))).sort() : [];
+  const id = runId ?? runs.at(-1);
+  if (!id) return 'No runs yet — `heapcode qa run` first.';
+  const file = join(resultsDir, id, 'run.json');
+  if (!existsSync(file)) return `No run ${id} in results/.`;
+  const summary = JSON.parse(readFileSync(file, 'utf8')) as RunSummary;
+  // The folder may have moved since; the report is written where it is now.
+  return { runId: id, summary: { ...summary, dir: join(resultsDir, id) } };
+}
+
+function qaReport(args: string[]): number {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const found = findRun(flags.dir, flags.run);
+  if (typeof found === 'string') return fail(found);
+  const report = writeReports(found.summary);
+  console.log(`Report: ${shown(report)}`);
+  if (flags.open) openFile(report);
+  return 0;
+}
+
+async function qaFix(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  const found = findRun(flags.dir, flags.run);
+  if (typeof found === 'string') return fail(found);
+  const failed = found.summary.flows.filter((f) => f.status === 'failed');
+  if (!failed.length) return fail(`Nothing failed in run ${found.runId}.`);
+  const name = flags.positional[0];
+  const flow = name ? failed.find((f) => f.id === name || f.file === name || f.file?.endsWith(`/${name}.yaml`)) : failed.length === 1 ? failed[0] : undefined;
+  if (!flow) return fail(`Which flow? Failed in run ${found.runId}: ${failed.map((f) => f.id).join(', ')}.`);
+
+  const brief = renderFixBrief(flow, found.summary);
+  const briefFile = join(found.summary.dir, `fix-${flow.id}.md`);
+  writeFileSync(briefFile, brief);
+  if (!flags.repo) {
+    console.log(brief);
+    console.log(`\nSaved to ${shown(briefFile)}. To hand it to Heap Code in your app's folder:\n  heapcode qa fix ${flow.id} --repo <app folder>`);
+    return 0;
+  }
+  if (!existsSync(flags.repo)) return fail(`${flags.repo} does not exist.`);
+  // Heap Code itself, headless, in the app's folder: edits apply, commands still ask (and so are refused).
+  console.log(`Starting Heap Code in ${shown(flags.repo)} with the evidence from ${flow.id}…\n`);
+  const child = spawn(process.execPath, [process.argv[1]!, '-p', brief, '--permission-mode', 'auto-edit'], { cwd: flags.repo, stdio: 'inherit' });
+  return new Promise((done) => child.on('exit', (code) => done(code ?? 1)));
+}
+
+function openFile(path: string): void {
+  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+  const args = process.platform === 'win32' ? ['/c', 'start', '', path] : [path];
+  spawn(command, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
 }
 
 /** The agent role's model, ready to call — or undefined when none is set up. */
@@ -406,13 +515,9 @@ function reportApplied(applied: ReturnType<typeof applyHeals>, json: boolean): v
 async function qaHeals(args: string[]): Promise<number> {
   const flags = parseFlags(args);
   if (typeof flags === 'string') return usage(flags);
-  const resultsDir = join(flags.dir, 'results');
-  const runs = existsSync(resultsDir) ? readdirSync(resultsDir).filter((d) => existsSync(join(resultsDir, d, 'run.json'))).sort() : [];
-  const runId = flags.run ?? runs.at(-1);
-  if (!runId) return fail('No runs yet — `heapcode qa run` first.');
-  const file = join(resultsDir, runId, 'run.json');
-  if (!existsSync(file)) return fail(`No run ${runId} in results/.`);
-  const summary = JSON.parse(readFileSync(file, 'utf8')) as RunSummary;
+  const found = findRun(flags.dir, flags.run);
+  if (typeof found === 'string') return fail(found);
+  const { runId, summary } = found;
   const heals = summary.flows.flatMap((f) => f.heals ?? []);
   if (!heals.length) {
     console.log(`Run ${runId} healed nothing.`);

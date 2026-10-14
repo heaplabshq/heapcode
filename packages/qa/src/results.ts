@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { FlowResult, StepResult } from './run.js';
+import { renderHtmlReport, renderJunit, renderMarkdown } from './report.js';
 import { RESULTS_DIR } from './workspace.js';
 
 /**
@@ -11,6 +12,8 @@ import { RESULTS_DIR } from './workspace.js';
  *   run.json                    everything below, minus the images
  *   screenshots/<flow>/<step>.png
  *   traces/<flow>.zip           failed flows only — open with `npx playwright show-trace`
+ *   pages/<flow>.json           failed flows only — the whole page at the failing step
+ *   report.html, junit.xml, summary.md
  * ```
  *
  * In the folder rather than hidden in ~/.heapcode, so a person finds them
@@ -23,9 +26,11 @@ export interface SavedStep extends Omit<StepResult, 'screenshot'> {
   screenshot?: string;
 }
 
-export interface SavedFlow extends Omit<FlowResult, 'steps' | 'trace' | 'refreshed'> {
+export interface SavedFlow extends Omit<FlowResult, 'steps' | 'trace' | 'refreshed' | 'failurePage'> {
   steps: SavedStep[];
   trace?: string;
+  /** Relative to the run folder: the whole page at the failure, as JSON. */
+  failurePage?: string;
 }
 
 export interface RunSummary {
@@ -67,13 +72,29 @@ export function saveFlow(runDir: string, flow: FlowResult): SavedFlow {
     writeFileSync(file, screenshot);
     return { ...rest, screenshot: relative(runDir, file) };
   });
-  // Refreshed fingerprints go to the flow's fingerprints file, not the report.
-  const { trace, refreshed: _refreshed, ...rest } = flow;
-  return { ...rest, steps, ...(trace ? { trace: relative(runDir, trace) } : {}) };
+  // Refreshed fingerprints go to the flow's fingerprints file, not the report;
+  // the failure page is big, so it gets a file of its own.
+  const { trace, refreshed: _refreshed, failurePage, ...rest } = flow;
+  let pageFile: string | undefined;
+  if (failurePage) {
+    mkdirSync(join(runDir, 'pages'), { recursive: true });
+    pageFile = join(runDir, 'pages', `${flow.id}.json`);
+    writeFileSync(pageFile, JSON.stringify(failurePage));
+  }
+  return { ...rest, steps, ...(trace ? { trace: relative(runDir, trace) } : {}), ...(pageFile ? { failurePage: relative(runDir, pageFile) } : {}) };
 }
 
 export function writeRunSummary(summary: RunSummary): string {
   const file = join(summary.dir, 'run.json');
   writeFileSync(file, `${JSON.stringify(summary, null, 2)}\n`);
   return file;
+}
+
+/** report.html, junit.xml and summary.md beside run.json. Returns the HTML report's path. */
+export function writeReports(summary: RunSummary): string {
+  const html = join(summary.dir, 'report.html');
+  writeFileSync(html, renderHtmlReport(summary));
+  writeFileSync(join(summary.dir, 'junit.xml'), renderJunit(summary));
+  writeFileSync(join(summary.dir, 'summary.md'), renderMarkdown(summary));
+  return html;
 }

@@ -40,6 +40,7 @@ export {
   type StepSource,
   type HealProposal,
   type FingerprintRefresh,
+  type Diagnosis,
 } from './run.js';
 export {
   newRunId,
@@ -47,6 +48,7 @@ export {
   tracePathFor,
   saveFlow,
   writeRunSummary,
+  writeReports,
   type RunSummary,
   type SavedFlow,
   type SavedStep,
@@ -58,3 +60,5 @@ export { applyHeals, saveRefreshed, type AppliedHeal, flowPath, stepPath, finger
 export { extractSteps, findUses, applyUses, inputsUsed, sameElement, parseRange, type Extracted, type UseMatch } from './teach.js';
 export { runAiTask, describeFlow, applyDescription, qaSystemPrompt, QA_TOOLS, type AiTaskOptions, type AiTaskResult } from './agent.js';
 export { createHealer, type Healer, type HealerOptions, type HealOutcome, type HealRequest } from './heal.js';
+export { renderHtmlReport, renderJunit, renderMarkdown, renderFixBrief } from './report.js';
+export { diagnose, failureEvidence } from './diagnose.js';

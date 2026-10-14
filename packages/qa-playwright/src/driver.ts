@@ -40,7 +40,10 @@ export class BrowserMissingError extends Error {
     super(
       'No browser to test with. Heap QA uses an installed Google Chrome or Microsoft Edge, ' +
         'or its own Chromium — install that with `heapcode qa install`.\n' +
-        `(${cause.split('\n')[0]})`,
+        cause
+          .split('\n')
+          .map((line) => `  ${line}`)
+          .join('\n'),
     );
   }
 }
@@ -288,17 +291,20 @@ async function launchBrowser(channel: 'chrome' | 'msedge' | 'chromium', headless
   } catch {
     throw new Error('Heap QA needs the playwright-core package, which is not installed. Reinstall Heap Code, or run `npm install -g playwright-core`.');
   }
+  let installedError: string | undefined;
   if (channel !== 'chromium') {
     try {
       return await chromium.launch({ channel, headless, handleSIGINT });
-    } catch {
-      // Not installed — fall back to Playwright's own build below.
+    } catch (err) {
+      // Not installed, or would not start — fall back to Playwright's own build below.
+      installedError = `${channel}: ${(err instanceof Error ? err.message : String(err)).split('\n')[0]}`;
     }
   }
   try {
     return await chromium.launch({ headless, handleSIGINT });
   } catch (err) {
-    throw new BrowserMissingError(err instanceof Error ? err.message : String(err));
+    const own = `Heap QA's Chromium: ${(err instanceof Error ? err.message : String(err)).split('\n')[0]}`;
+    throw new BrowserMissingError(installedError ? `${installedError}\n${own}` : own);
   }
 }
 

@@ -55,7 +55,18 @@ export interface HealerOptions {
   /** Minimum lead over the runner-up. Default 0.12 (0.2 for checks). */
   minMargin?: number;
   /** Stage 2. Without it, healing stops at similarity. */
-  agent?: { provider: Provider; model: string; nativeToolCalls: boolean; contextWindow?: number; templates: Templates; signal?: AbortSignal };
+  agent?: {
+    provider: Provider;
+    model: string;
+    nativeToolCalls: boolean;
+    contextWindow?: number;
+    templates: Templates;
+    signal?: AbortSignal;
+    /** Longest the agent may look, in ms. Default 90 000 — a slow model must not stall a run. */
+    timeoutMs?: number;
+    /** Told when the agent starts looking, so a host can say so. */
+    onStart?(request: HealRequest): void;
+  };
 }
 
 export function createHealer(options: HealerOptions = {}): Healer {
@@ -83,6 +94,7 @@ export function createHealer(options: HealerOptions = {}): Healer {
       if (request.isCheck || request.similarityOnly || !options.agent) return { found: false, reason: similarityNote, missing: false };
 
       // Stage 2: the agent looks.
+      options.agent.onStart?.(request);
       return agentHeal(driver, tree, request, options.agent, similarityNote);
     },
   };
@@ -171,7 +183,18 @@ async function agentHeal(
   // turn's tool calls are refused and the loop is stopped.
   const stop = new AbortController();
   if (agent.signal) agent.signal.addEventListener('abort', () => stop.abort(), { once: true });
-  await runAgent({
+  const timeoutMs = agent.timeoutMs ?? 90_000;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Raced, not only aborted: a provider that ignores the signal must not hold the run.
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      stop.abort();
+      resolve();
+    }, timeoutMs);
+  });
+  const looking = runAgent({
     provider: agent.provider,
     model: agent.model,
     task,
@@ -191,8 +214,11 @@ async function agentHeal(
     compaction: { kind: 'test-repair', preserve: 'what the step is for, what was looked at, and which elements are candidates' },
     signal: stop.signal,
   }).catch(() => undefined);
+  await Promise.race([looking, deadline]);
+  clearTimeout(timer);
 
-  return decision ?? { found: false, reason: 'the agent could not decide', missing: false };
+  if (decision) return decision;
+  return { found: false, reason: timedOut ? `the AI did not decide within ${Math.round(timeoutMs / 1000)}s` : 'the AI could not decide', missing: false };
 }
 
 function safeHost(url: string): string {

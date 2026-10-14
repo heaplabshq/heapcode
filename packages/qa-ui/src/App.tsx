@@ -5,6 +5,9 @@ import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/Produ
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
 import { Composer } from '@heapcode/web-ui/components/Composer';
+import { Settings, SettingsGroup, SettingsRow, SettingsSection } from '@heapcode/web-ui/components/Settings';
+import { ICON_BROWSER, ICON_POP_OUT } from '@heapcode/web-ui/components/icons';
+import { usePanelWidth } from '@heapcode/web-ui/panelWidth';
 import { emptyTranscript, reduce, settle, withNotice, withUserMessage, type Transcript } from '@heapcode/web-ui/transcript';
 import {
   QA_METHODS,
@@ -16,6 +19,7 @@ import {
   type QaRunDetail,
   type QaState,
   type UiBrowseFoldersResult,
+  type UiSettings,
   type UiWorkspacesResult,
 } from '@heapcode/qa-host/protocol';
 
@@ -93,7 +97,11 @@ export function App(): JSX.Element {
   const [confirm, setConfirm] = useState<{ description: string; decide(allow: boolean): void }>();
   const [headed, setHeaded] = useState(() => remembered('heapqa.headed') === 'true');
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heapqa.rail') === 'collapsed');
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  /** The Settings page open, or undefined when the dialog is closed. */
+  const [settingsOpen, setSettingsOpen] = useState<string>();
+  const [uiSettings, setUiSettings] = useState<UiSettings>();
+  const [browserOpen, setBrowserOpen] = useState(() => remembered('heapqa.browser') === 'open');
+  const { width: panelWidth, startDrag: startPanelDrag } = usePanelWidth('heapqa.panelWidth');
   const client = useMemo(() => new RpcClient(RPC_URL, setStatus), []);
   const seq = useRef(0);
 
@@ -218,8 +226,34 @@ export function App(): JSX.Element {
     [client],
   );
 
-  /** A fresh job on the workbench: clears the log, the live view and any pinned step. */
+  const setBrowser = (open: boolean): void => {
+    setBrowserOpen(open);
+    remember('heapqa.browser', open ? 'open' : 'closed');
+  };
+  /** A step's screenshot, on the right — opening the panel if it was closed. */
+  const pin = (p: Pinned): void => {
+    setPinned(p);
+    setBrowser(true);
+  };
+
+  const refreshSettings = (): void => {
+    client.request<UiSettings>(QA_METHODS.settings).then(setUiSettings).catch(() => undefined);
+  };
+  const openSettings = (page?: string): void => {
+    refreshSettings();
+    setSettingsOpen(page ?? 'tests');
+  };
+  /** Every shared-settings change: send it, then re-read — as Heap Chat does. */
+  const editSettings = (method: string, params: unknown): void => {
+    client
+      .request(method, params)
+      .then(refreshSettings)
+      .catch((e: Error) => setError(e.message));
+  };
+
+  /** A fresh job: clears the log, the live view and any pinned step, and shows the browser. */
   const begin = (kind: Job['kind'], title: string, to: View): void => {
+    setBrowser(true);
     setJob({ kind, title, rows: [] });
     setFrame(undefined);
     setPinned(undefined);
@@ -248,10 +282,11 @@ export function App(): JSX.Element {
     active: typeof view === 'object' && view.detail === r.id,
   }));
   const is = (v: string): boolean => view === v;
-  // The browser belongs to the job that showed it: another view starts empty.
-  const live = (kind: Job['kind'], hint?: string): JSX.Element => (
-    <LivePanel frame={job?.kind === kind ? frame : undefined} pinned={pinned} onUnpin={() => setPinned(undefined)} busy={busy && job?.kind === kind} headed={kind === 'record' || headed} {...(hint ? { hint } : {})} />
-  );
+  // The browser belongs to the job that showed it: a view of another job's
+  // kind starts empty, unless something is running right now.
+  const viewKind: Job['kind'] | undefined = view === 'run' ? 'run' : view === 'record' ? 'record' : view === 'explore' ? 'explore' : view === 'ask' ? 'do' : undefined;
+  const showFrame = busy || (job !== undefined && job.kind === viewKind);
+  const jobBusy = busy && job !== undefined && state?.busy?.kind === job.kind;
 
   return (
     <div className="app">
@@ -272,7 +307,7 @@ export function App(): JSX.Element {
           busy={false}
           state={{ model: state?.model, profile: state?.profile }}
           status={status}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => openSettings()}
           extraNav={
             <>
               <RailRow label="Tests" collapsed={railCollapsed} active={is('tests')} onClick={() => setView('tests')} icon={<IconList />} />
@@ -282,8 +317,9 @@ export function App(): JSX.Element {
             </>
           }
         />
-        <main className="qa-main">
-          <header className="qa-top">
+        <main className="chat qa-main">
+          {/* Heap Code's top strip: what this is about on the left, view toggles on the right. */}
+          <div className="qa-toolbar">
             {state && (
               <WorkspacePicker
                 current={state.folder ?? state.root}
@@ -299,49 +335,64 @@ export function App(): JSX.Element {
               />
             )}
             {state?.baseUrl && (
-              <span className="qa-chip" title="Where the tests point — baseUrl in heapqa.yaml">
+              <button className="qa-chip" title="Where the tests point — change it in Settings" onClick={() => openSettings('tests')}>
                 {state.baseUrl}
-              </span>
+              </button>
             )}
-            <span className="qa-top-spacer" />
-            <label className="qa-switch" title="The live view on the right always shows the browser. Turn this on to also open it as its own window — full size, and you can open its developer tools. Recording always opens one, since you click in it.">
-              <input
-                type="checkbox"
-                role="switch"
-                checked={headed}
-                onChange={() =>
-                  setHeaded((h) => {
-                    remember('heapqa.headed', String(!h));
-                    return !h;
-                  })
-                }
-              />
-              <span className="qa-switch-track" aria-hidden="true" />
-              <span>Also open a browser window</span>
-            </label>
             {state?.busy && (
               <span className="qa-busy">
                 <span className="qa-dot" aria-hidden="true" />
                 <span className="qa-busy-label">{state.busy.label}</span>
                 {state.busy.kind !== 'record' && (
-                  <button className="btn btn-danger" onClick={() => void call(QA_METHODS.stop)}>
+                  <button className="btn btn-quiet btn-sm" onClick={() => void call(QA_METHODS.stop)}>
                     Stop
                   </button>
                 )}
               </span>
             )}
-          </header>
+            <span className="qa-top-spacer" />
+            <div className="chat-tools qa-tools" role="toolbar" aria-label="Browser">
+              <button
+                className={`chat-tool chat-tool-icon ${headed ? 'chat-tool-on' : ''}`}
+                aria-pressed={headed}
+                aria-label="Also open a browser window"
+                title={
+                  headed
+                    ? 'Runs also open a separate browser window — click to run hidden'
+                    : 'Runs are hidden and shown in the Browser panel — click to also open a separate window (full size, with developer tools)'
+                }
+                onClick={() =>
+                  setHeaded((h) => {
+                    remember('heapqa.headed', String(!h));
+                    return !h;
+                  })
+                }
+              >
+                {ICON_POP_OUT}
+              </button>
+              <button
+                className={`chat-tool chat-tool-icon ${browserOpen ? 'chat-tool-on' : ''}`}
+                aria-pressed={browserOpen}
+                aria-label="Browser"
+                title="Browser"
+                onClick={() => setBrowser(!browserOpen)}
+              >
+                {ICON_BROWSER}
+                {!browserOpen && jobBusy && <span className="chat-tool-dot" aria-hidden="true" />}
+              </button>
+            </div>
+          </div>
           {state?.lan && (
             <div className="banner banner-warn" role="alert">
               <strong>Reached over the network.</strong>
-              <span>Browser windows open on the computer running Heap QA, not on this device — the live view still shows them here.</span>
+              <span>Browser windows open on the computer running Heap QA, not on this device — the Browser panel still shows them here.</span>
             </div>
           )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
           {error && (
             <div className="banner banner-error" role="alert">
               {/* The command line's instructions say to edit heapqa.yaml; here there is a button for it. */}
-              <span>{/is not listed in heapqa\.yaml/.test(error) ? `${error.split(' To test it')[0]} Allow it here, or under Settings → Other sites tests may open.` : error}</span>
+              <span>{/is not listed in heapqa\.yaml/.test(error) ? `${error.split(' To test it')[0]} Allow it here, or in Settings → Tests.` : error}</span>
               {state?.settings && /is not listed in heapqa\.yaml/.test(error) && originIn(error) && (
                 <button
                   type="button"
@@ -367,65 +418,79 @@ export function App(): JSX.Element {
           ) : is('tests') ? (
             <Tests state={state} busy={busy} onRun={startRun} onView={(id) => setView({ detail: id })} call={call} />
           ) : is('run') ? (
-            <Workbench left={<RunLog job={job} heal={heal} pinned={pinned} onPin={setPinned} onOpenReport={(id) => setView({ detail: id })} />} live={live('run')} />
+            <RunLog job={job} heal={heal} pinned={pinned} onPin={pin} onOpenReport={(id) => setView({ detail: id })} />
           ) : is('record') ? (
-            <Workbench
-              left={
-                <Record
-                  state={state} job={job} begin={() => begin('record', 'Recording', 'record')} call={call} onDone={() => {
-                    setJob(undefined);
-                    setView('tests');
-                  }}
-                />
-              }
-              live={live('record', 'Use the browser window that opened — this mirrors it.')}
+            <Record
+              state={state}
+              job={job}
+              begin={() => begin('record', 'Recording', 'record')}
+              call={call}
+              onDone={() => {
+                setJob(undefined);
+                setView('tests');
+              }}
             />
           ) : is('explore') ? (
-            <Workbench
-              left={
-                <Explore
-                  state={state}
-                  busy={busy}
-                  job={job?.kind === 'explore' ? job : undefined}
-                  onOpenReport={(id) => setView({ detail: id })}
-                  onReset={() => setJob(undefined)}
-                  onStart={async (start, allowCommits, aiLook) => {
-                    begin('explore', `Exploring ${start || '/'}`, 'explore');
-                    if (!(await call(QA_METHODS.explore, { start, allowCommits, ai: aiLook, headed }))) setJob(undefined);
-                  }}
-                />
-              }
-              live={live('explore')}
+            <Explore
+              state={state}
+              busy={busy}
+              job={job?.kind === 'explore' ? job : undefined}
+              onOpenReport={(id) => setView({ detail: id })}
+              onReset={() => setJob(undefined)}
+              onStart={async (start, allowCommits, aiLook) => {
+                begin('explore', `Exploring ${start || '/'}`, 'explore');
+                if (!(await call(QA_METHODS.explore, { start, allowCommits, ai: aiLook, headed }))) setJob(undefined);
+              }}
             />
           ) : is('ask') ? (
-            <Workbench
-              left={
-                <Ask
-                  state={state}
-                  busy={busy}
-                  transcript={ai}
-                  onSend={async (task, start) => {
-                    begin('do', task, 'ask');
-                    setAi((t) => withUserMessage(settle(t), task));
-                    if (!(await call(QA_METHODS.do, { task, start, headed }))) {
-                      setJob(undefined);
-                      setAi((t) => settle(t));
-                    }
-                  }}
-                  onStop={() => void call(QA_METHODS.stop)}
-                  onNew={() => {
-                    setAi(emptyTranscript);
-                    setFrame(undefined);
-                    if (job?.kind === 'do') setJob(undefined);
-                  }}
-                />
-              }
-              live={live('do')}
+            <Ask
+              state={state}
+              busy={busy}
+              transcript={ai}
+              onSend={async (task, start) => {
+                begin('do', task, 'ask');
+                setAi((t) => withUserMessage(settle(t), task));
+                if (!(await call(QA_METHODS.do, { task, start, headed }))) {
+                  setJob(undefined);
+                  setAi((t) => settle(t));
+                }
+              }}
+              onStop={() => void call(QA_METHODS.stop)}
+              onNew={() => {
+                setAi(emptyTranscript);
+                setFrame(undefined);
+                if (job?.kind === 'do') setJob(undefined);
+              }}
+              onOpenSettings={() => openSettings('providers')}
             />
           ) : typeof view === 'object' ? (
             <Detail runId={view.detail} call={call} lan={state.lan} />
           ) : null}
         </main>
+
+        {/* The browser, as Heap Code's side panel: closable, resizable, back from the globe icon. */}
+        {browserOpen && (
+          <>
+            <div className="panel-splitter" role="separator" aria-orientation="vertical" aria-label="Resize browser panel" onPointerDown={startPanelDrag} />
+            <section className="panel" aria-label="Browser" style={panelWidth ? { width: panelWidth } : undefined}>
+              <header className="panel-head">
+                <span className="panel-head-icon">{ICON_BROWSER}</span>
+                <h2 className="panel-title">Browser</h2>
+                <button className="icon-btn panel-close" onClick={() => setBrowser(false)} aria-label="Close panel" title="Close — the globe icon brings it back">
+                  ✕
+                </button>
+              </header>
+              <LivePanel
+                frame={showFrame ? frame : undefined}
+                pinned={pinned}
+                onUnpin={() => setPinned(undefined)}
+                busy={jobBusy}
+                headed={state?.busy?.kind === 'record' || headed}
+                {...(state?.busy?.kind === 'record' ? { hint: 'Use the browser window that opened — this mirrors it.' } : {})}
+              />
+            </section>
+          </>
+        )}
       </div>
       {confirm && (
         <div className="modal-scrim">
@@ -446,22 +511,46 @@ export function App(): JSX.Element {
           </div>
         </div>
       )}
-      {settingsOpen && state && <SettingsDialog state={state} request={(m, p) => client.request(m, p)} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && state && (
+        <Settings
+          settings={uiSettings}
+          onClose={() => setSettingsOpen(undefined)}
+          initialPage={settingsOpen}
+          // Only what Heap QA uses from the shared config: connections and the
+          // model roles (healing and AI tests run on the agent role).
+          pages={['providers']}
+          extraPages={[
+            {
+              id: 'tests',
+              group: 'Heap QA',
+              label: 'Tests',
+              icon: <IconList />,
+              keywords: 'address base url targets sites healing timeout browser chrome edge secrets passwords',
+              render: (go) => <TestSettings state={state} save={(patch) => client.request<QaState>(QA_METHODS.saveSettings, patch).then(setState)} onChangeModel={() => go('providers')} />,
+            },
+          ]}
+          onSaveProfile={(profile, apiKey) => editSettings(QA_METHODS.saveProfile, { profile, apiKey })}
+          onDeleteProfile={(name) => editSettings(QA_METHODS.deleteProfile, { name })}
+          onUseProfile={(name) => editSettings(QA_METHODS.useProfile, { name })}
+          onSetRole={(role, assignment) => editSettings(QA_METHODS.setRole, { role, assignment })}
+          onSetWebSearch={(patch) => editSettings(QA_METHODS.setWebSearch, patch)}
+          listConnectionModels={(connection) => client.request<{ models: string[] }>(QA_METHODS.listConnectionModels, { connection }).then((r) => r.models)}
+          listModels={(profileName) => client.request<{ models: string[] }>(QA_METHODS.listConnectionModels, { connection: profileName }).then((r) => r.models)}
+          probeProvider={(params) => client.request(QA_METHODS.probeProvider, params)}
+          // Not on the pages offered here, but required by the props.
+          onSetPersona={() => {}}
+          onToggleSubAgents={() => {}}
+          onToggleNativeTools={() => {}}
+          onResetPermissions={() => {}}
+          onSaveMcpServer={() => {}}
+          onDeleteMcpServer={() => {}}
+        />
+      )}
     </div>
   );
 }
 
 type Call = <T>(method: string, params?: unknown) => Promise<T | undefined>;
-
-/** What is happening on the left, the browser on the right. */
-function Workbench({ left, live }: { left: ReactNode; live: ReactNode }): JSX.Element {
-  return (
-    <div className="qa-bench">
-      <section className="qa-bench-left">{left}</section>
-      <section className="qa-bench-right">{live}</section>
-    </div>
-  );
-}
 
 function LivePanel({ frame, pinned, onUnpin, busy, headed, hint }: { frame?: string; pinned?: Pinned; onUnpin(): void; busy: boolean; headed: boolean; hint?: string }): JSX.Element {
   const src = pinned?.shot ?? frame;
@@ -478,8 +567,8 @@ function LivePanel({ frame, pinned, onUnpin, busy, headed, hint }: { frame?: str
           </>
         ) : (
           <>
-            <span className={`qa-live-tag ${busy ? 'qa-live-tag-on' : ''}`}>{busy ? 'Live' : 'Browser'}</span>
-            <span className="qa-live-title">{busy ? (hint ?? (headed ? 'Also open in its own window' : 'Running hidden — this is what it sees')) : src ? 'The last thing it showed' : ''}</span>
+            {busy && <span className="qa-live-tag qa-live-tag-on">Live</span>}
+            {(busy || src) && <span className="qa-live-title">{busy ? (hint ?? (headed ? 'Also open in its own window' : 'Running hidden — this is what it sees')) : 'The last thing it showed'}</span>}
           </>
         )}
       </div>
@@ -916,7 +1005,7 @@ function Explore({ state, busy, job, onStart, onOpenReport, onReset }: { state: 
   );
 }
 
-function Ask({ state, busy, transcript, onSend, onStop, onNew }: { state: QaState; busy: boolean; transcript: Transcript; onSend(task: string, start: string): void; onStop(): void; onNew(): void }): JSX.Element {
+function Ask({ state, busy, transcript, onSend, onStop, onNew, onOpenSettings }: { state: QaState; busy: boolean; transcript: Transcript; onSend(task: string, start: string): void; onStop(): void; onNew(): void; onOpenSettings(): void }): JSX.Element {
   const [start, setStart] = useState('/');
   const working = state.busy?.kind === 'do';
   return (
@@ -929,7 +1018,15 @@ function Ask({ state, busy, transcript, onSend, onStop, onNew }: { state: QaStat
           New chat
         </button>
       </div>
-      {!state.model && <div className="banner banner-warn">No model is set for the agent role — set one in Heap Code's settings.</div>}
+      {!state.model && (
+        <div className="banner banner-warn" role="alert">
+          <strong>No model yet.</strong>
+          <span>Ask AI runs on the agent role.</span>
+          <button type="button" className="banner-action" onClick={onOpenSettings}>
+            Open Settings
+          </button>
+        </div>
+      )}
       <div className="qa-ask-messages">
         <MessageList
           transcript={transcript}
@@ -958,110 +1055,91 @@ function Ask({ state, busy, transcript, onSend, onStop, onNew }: { state: QaStat
   );
 }
 
-function SettingsDialog({ state, request, onClose }: { state: QaState; request(method: string, params: unknown): Promise<unknown>; onClose(): void }): JSX.Element {
+/**
+ * Heap QA's own page in the shared Settings dialog: heapqa.yaml, laid out
+ * with the dialog's own rows so it reads like the pages around it. Each
+ * field saves when it is left — the way the other pages apply as you go —
+ * and a refusal shows under it.
+ */
+function TestSettings({ state, save, onChangeModel }: { state: QaState; save(patch: Record<string, unknown>): Promise<void>; onChangeModel(): void }): JSX.Element {
   const [baseUrl, setBaseUrl] = useState(state.baseUrl ?? '');
   const [targets, setTargets] = useState((state.settings?.targets ?? []).join('\n'));
-  const [heal, setHeal] = useState(state.heal);
   const [timeout, setTimeoutSecs] = useState(String((state.settings?.timeout ?? 10_000) / 1000));
-  const [channel, setChannel] = useState(state.settings?.channel ?? '');
   const [secretsFile, setSecretsFile] = useState(state.settings?.secretsFile ?? '');
   const [problem, setProblem] = useState<string>();
-  const [saving, setSaving] = useState(false);
-  const editable = Boolean(state.folder);
+  const [saved, setSaved] = useState(false);
 
-  const save = async (): Promise<void> => {
-    const secs = Number(timeout);
-    if (!Number.isFinite(secs) || secs <= 0) return setProblem('A step may wait a number of seconds, more than 0.');
-    setSaving(true);
+  if (!state.folder) {
+    return (
+      <SettingsSection description="Settings for the test folder, saved in its heapqa.yaml.">
+        <p className="hint">Set up a test folder first — these settings are saved in it.</p>
+      </SettingsSection>
+    );
+  }
+  const apply = (patch: Record<string, unknown>): void => {
     setProblem(undefined);
-    try {
-      // Straight to the client, not `call`: a refusal belongs in this dialog, not the page banner.
-      await request(QA_METHODS.saveSettings, {
-        baseUrl,
-        targets: targets.split(/[\n,]/).map((t) => t.trim()).filter(Boolean),
-        heal,
-        timeout: Math.round(secs * 1000),
-        channel: channel || undefined,
-        secretsFile,
-      });
-      onClose();
-    } catch (e) {
-      setProblem((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
+    setSaved(false);
+    save(patch)
+      .then(() => setSaved(true))
+      .catch((e: Error) => setProblem(e.message));
+  };
+  const secs = (): number | undefined => {
+    const n = Number(timeout);
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) : undefined;
   };
 
   return (
-    <div className="modal-scrim" onClick={onClose}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Heap QA settings" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">Heap QA settings</div>
-        <div className="modal-body qa-settings">
-          {!editable ? (
-            <p className="qa-muted">Set up a test folder first — settings are saved in it.</p>
-          ) : (
-            <>
-              <label className="field">
-                <span className="field-label">Your app's address</span>
-                <input className="card-input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:3000" />
-                <span className="field-hint">Where tests start. Paths like /login are on this address.</span>
-              </label>
-              <label className="field">
-                <span className="field-label">Other sites tests may open</span>
-                <textarea className="card-input qa-textarea" value={targets} onChange={(e) => setTargets(e.target.value)} placeholder={'https://staging.example.com\nhttps://*.vercel.app'} />
-                <span className="field-hint">One per line. Your own computer (localhost) is always allowed; anything else must be listed, so a test never wanders onto a site by mistake.</span>
-              </label>
-              <label className="field">
-                <span className="field-label">When a button or field has moved</span>
-                <select className="card-input" value={heal} onChange={(e) => setHeal(e.target.value as QaState['heal'])}>
-                  <option value="ai">Find it by likeness, then ask the AI</option>
-                  <option value="similarity">Find it by likeness only (no AI)</option>
-                  <option value="off">Fail the test</option>
-                </select>
-              </label>
-              <div className="qa-settings-row">
-                <label className="field">
-                  <span className="field-label">Wait per step (seconds)</span>
-                  <input className="card-input" inputMode="decimal" value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} />
-                </label>
-                <label className="field">
-                  <span className="field-label">Browser</span>
-                  <select className="card-input" value={channel} onChange={(e) => setChannel(e.target.value as typeof channel)}>
-                    <option value="">Automatic</option>
-                    <option value="chrome">Chrome</option>
-                    <option value="msedge">Edge</option>
-                    <option value="chromium">Chromium (Playwright's own)</option>
-                  </select>
-                </label>
-              </div>
-              <label className="field">
-                <span className="field-label">Test passwords file</span>
-                <input className="card-input" value={secretsFile} onChange={(e) => setSecretsFile(e.target.value)} placeholder=".env.test" />
-                <span className="field-hint">Inside the test folder and kept out of git. Tests use its values as {'{{secret:NAME}}'}.</span>
-              </label>
-            </>
-          )}
-          <dl className="qa-facts">
-            <dt>Test folder</dt>
-            <dd>{state.folder ?? 'none yet'}</dd>
-            <dt>AI model</dt>
-            <dd>{state.model ? `${state.model} on ${state.profile}` : 'none set'} — shared with Heap Code{HAS_CODE ? <>; <a href="/">change it there</a></> : ''}</dd>
-          </dl>
-          {problem && <p className="qa-bad">{problem}</p>}
-          <div className="form-actions">
-            <button className="btn" onClick={onClose}>
-              Cancel
+    <SettingsSection description="How tests run in this folder. Saved in its heapqa.yaml, so the command line and CI use the same settings.">
+      <SettingsGroup label="Your app">
+        <SettingsRow label="Address" hint="Where tests start. Paths like /login are on this address." stacked>
+          <input className="card-input" value={baseUrl} placeholder="http://localhost:3000" onChange={(e) => setBaseUrl(e.target.value)} onBlur={() => baseUrl !== (state.baseUrl ?? '') && apply({ baseUrl })} />
+        </SettingsRow>
+        <SettingsRow label="Other sites tests may open" hint="One per line. Your own computer (localhost) is always allowed; anything else must be listed, so a test never wanders onto a site by mistake." stacked>
+          <textarea
+            className="card-input qa-textarea"
+            value={targets}
+            placeholder={'https://staging.example.com\nhttps://*.vercel.app'}
+            onChange={(e) => setTargets(e.target.value)}
+            onBlur={() => apply({ targets: targets.split(/[\n,]/).map((t) => t.trim()).filter(Boolean) })}
+          />
+        </SettingsRow>
+      </SettingsGroup>
+      <SettingsGroup label="Running">
+        <SettingsRow label="When a button or field has moved" hint="Likeness compares label, position and kind; the AI looks at the page when that is not sure. Fixes are only suggested — you accept them.">
+          <select className="select" value={state.heal} onChange={(e) => apply({ heal: e.target.value })}>
+            <option value="ai">Likeness, then the AI</option>
+            <option value="similarity">Likeness only (no AI)</option>
+            <option value="off">Fail the test</option>
+          </select>
+        </SettingsRow>
+        <SettingsRow label="Wait per step" hint="How long a step waits for the page, in seconds.">
+          <input className="card-input qa-num-input" inputMode="decimal" value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} onBlur={() => (secs() ? apply({ timeout: secs() }) : setProblem('Wait per step is a number of seconds, more than 0.'))} />
+        </SettingsRow>
+        <SettingsRow label="Browser" hint="Automatic runs hidden in Playwright's own browser, and uses Chrome when that is missing.">
+          <select className="select" value={state.settings?.channel ?? ''} onChange={(e) => apply({ channel: e.target.value || undefined })}>
+            <option value="">Automatic</option>
+            <option value="chrome">Chrome</option>
+            <option value="msedge">Edge</option>
+            <option value="chromium">Chromium (Playwright's)</option>
+          </select>
+        </SettingsRow>
+        <SettingsRow label="Test passwords file" hint="Inside the test folder and kept out of git. Tests use its values as {{secret:NAME}}." stacked>
+          <input className="card-input" value={secretsFile} placeholder=".env.test" onChange={(e) => setSecretsFile(e.target.value)} onBlur={() => secretsFile !== (state.settings?.secretsFile ?? '') && apply({ secretsFile })} />
+        </SettingsRow>
+      </SettingsGroup>
+      <SettingsGroup label="AI">
+        <SettingsRow label="Model" hint="Healing, failure notes and Ask AI use the agent role — shared with Heap Code and Heap Chat.">
+          <span className="qa-settings-model">
+            <span>{state.model ? `${state.model} · ${state.profile}` : 'none set'}</span>
+            <button className="btn btn-sm" onClick={onChangeModel}>
+              Change
             </button>
-            {editable && (
-              <button className="btn btn-primary" disabled={saving} onClick={() => void save()}>
-                Save
-              </button>
-            )}
-          </div>
-          <p className="qa-muted">Saved in heapqa.yaml in the test folder, so the command line and CI use the same settings.</p>
-        </div>
-      </div>
-    </div>
+          </span>
+        </SettingsRow>
+      </SettingsGroup>
+      {problem ? <p className="qa-bad">{problem}</p> : saved ? <p className="hint">Saved.</p> : null}
+      <p className="hint">Test folder: {state.folder}</p>
+    </SettingsSection>
   );
 }
 

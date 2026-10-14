@@ -25,3 +25,4 @@ export * from './wsDuplex.js';
 export * from './attachmentRoute.js';
 export * from './mcpLogin.js';
 export * from './models.js';
+export * from './connectionSettings.js';

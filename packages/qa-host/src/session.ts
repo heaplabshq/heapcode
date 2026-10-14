@@ -22,7 +22,20 @@ import {
   type Workspace,
 } from '@heapcode/qa';
 import type { PlaywrightDriver } from '@heapcode/qa-playwright';
-import { listFolders, type HostSession, type WorkspaceEvents, type WorkspaceStore } from '@heapcode/web-host';
+import {
+  connectionModels,
+  deleteConnection,
+  listFolders,
+  probeConnection,
+  saveConnection,
+  setModelRole,
+  setWebSearch,
+  sharedSettings,
+  type HostSession,
+  type WorkspaceEvents,
+  type WorkspaceStore,
+} from '@heapcode/web-host';
+import type { UiModelRole } from '@heapcode/web-host/protocol';
 import {
   QA_METHODS,
   QA_PROTOCOL_VERSION,
@@ -164,6 +177,35 @@ export class QaSession implements HostSession {
       openFile(file);
       return {};
     });
+    // The shared Settings dialog: one config file, one role table, for all three products.
+    const { config, secrets } = this.deps;
+    ui.onRequest(QA_METHODS.settings, async () => ({
+      personas: [],
+      persona: '',
+      permissionMode: '',
+      subAgents: false,
+      nativeToolCalls: true,
+      mcpServers: [],
+      permissionGrants: [],
+      ...(await sharedSettings(config, secrets)),
+    }));
+    const thenState = async (work: Promise<unknown>): Promise<null> => {
+      await work;
+      void this.pushState();
+      return null;
+    };
+    ui.onRequest(QA_METHODS.saveProfile, async (raw) => thenState(saveConnection(config, secrets, raw as never)));
+    ui.onRequest(QA_METHODS.deleteProfile, async (raw) => thenState(deleteConnection(config, secrets, String((raw as { name?: unknown }).name ?? ''))));
+    ui.onRequest(QA_METHODS.useProfile, async (raw) => thenState(config.setActiveProfile(String((raw as { name?: unknown }).name ?? ''))));
+    ui.onRequest(QA_METHODS.setRole, async (raw) => {
+      const { role, assignment } = raw as { role: UiModelRole; assignment?: { connection: string; model: string } };
+      return thenState(setModelRole(config, role, assignment));
+    });
+    ui.onRequest(QA_METHODS.listConnectionModels, async (raw) => ({
+      models: (await connectionModels(config, secrets, String((raw as { connection?: unknown }).connection ?? '')).catch(() => [])).map((m) => m.id),
+    }));
+    ui.onRequest(QA_METHODS.probeProvider, async (raw) => probeConnection(secrets, (raw ?? {}) as never));
+    ui.onRequest(QA_METHODS.setWebSearch, async (raw) => thenState(setWebSearch(config, secrets, raw as never)));
     ui.onRequest(QA_METHODS.runDetail, async (raw) => this.runDetail(String((raw as { runId?: unknown }).runId ?? '')));
     ui.onRequest(QA_METHODS.acceptHeals, async (raw) => this.acceptHeals(String((raw as { runId?: unknown }).runId ?? '')));
     ui.onRequest(QA_METHODS.flowSource, async (raw) => {

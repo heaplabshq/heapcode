@@ -119,14 +119,9 @@ export const ICON_PREVIEW = (
   </svg>
 );
 
-/** A globe: somewhere on the web. */
-export const ICON_BROWSER = (
-  <svg {...S}>
-    <circle cx="12" cy="12" r="9" />
-    <path d="M3 12h18" />
-    <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
-  </svg>
-);
+/** A globe: somewhere on the web. Shared with Heap Chat and Heap QA, in icons.tsx. */
+export { ICON_BROWSER } from './icons.js';
+import { ICON_BROWSER } from './icons.js';
 
 /**
  * Every view, with what the toolbar shows for it. The first three are icons

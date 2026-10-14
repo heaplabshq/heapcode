@@ -56,3 +56,22 @@ export const ICON_RESTORE = (
     <path d="M3 3v5h5" />
   </svg>
 );
+
+/** A globe: somewhere on the web — the Browser view, in all three products. */
+export const ICON_BROWSER = (
+  // 15, the panel-tab size, rather than the message-toolbar 14.
+  <svg {...S} width={15} height={15}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18" />
+  </svg>
+);
+
+/** A window with an arrow out of it: open in a separate window. */
+export const ICON_POP_OUT = (
+  <svg {...S} width={15} height={15}>
+    <path d="M14 4h6v6" />
+    <path d="M20 4l-8 8" />
+    <path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4" />
+  </svg>
+);

@@ -8,24 +8,20 @@
  * for work — the log or the AI on the left, the browser on the right.
  */
 
-.qa-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; --gutter: 16px; }
+.qa-main { --gutter: 16px; }
 .qa-main > .banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .qa-main > .banner .banner-action + .banner-action { margin-left: 0; }
 
-/* ---------- top bar ---------- */
-.qa-top { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg); flex-wrap: wrap; min-height: 48px; }
+/* ---------- top strip: folder and app on the left, view toggles on the right (Heap Code's) ---------- */
+.qa-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 0 16px; flex: 0 0 auto; min-height: 36px; flex-wrap: wrap; }
+.qa-toolbar .chat-tools { padding: 0; }
 .qa-top-spacer { flex: 1 1 auto; }
-.qa-chip { font-family: var(--mono); font-size: 12px; color: var(--text-dim); background: var(--chip-bg); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qa-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; user-select: none; }
-.qa-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.qa-switch-track { width: 30px; height: 18px; border-radius: 999px; background: var(--border-strong); position: relative; transition: background 0.15s; flex: none; }
-.qa-switch-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 999px; background: var(--bg); transition: transform 0.15s; }
-.qa-switch input:checked + .qa-switch-track { background: var(--accent); }
-.qa-switch input:checked + .qa-switch-track::after { transform: translateX(12px); }
-.qa-switch input:focus-visible + .qa-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
-.qa-busy { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; padding-left: 10px; border-left: 1px solid var(--border); }
-.qa-busy-label { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qa-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--ok); animation: qa-pulse 1.2s ease-in-out infinite; }
+.qa-chip { font-family: var(--mono); font-size: 12px; color: var(--text-dim); background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.qa-chip:hover { border-color: var(--accent); color: var(--text); }
+.qa-busy { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.qa-busy-label { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--ok); animation: qa-pulse 1.2s ease-in-out infinite; }
+.btn-sm { padding: 2px 10px; font-size: 12px; }
 
 /* ---------- full-width pages ---------- */
 .qa-page { flex: 1 1 auto; overflow-y: auto; padding: 24px 28px 48px; }
@@ -55,11 +51,7 @@
 .qa-source { margin-top: 16px; }
 .qa-source pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; overflow: auto; font-family: var(--mono); font-size: 12.5px; max-height: 50vh; margin: 0; }
 
-/* ---------- workbench: work left, browser right ---------- */
-.qa-bench { flex: 1 1 auto; display: grid; grid-template-columns: minmax(340px, 2fr) 3fr; min-height: 0; }
-.qa-bench-left { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
-.qa-bench-right { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-sunken); }
-
+/* ---------- the work: one column, the browser in Heap Code's side panel ---------- */
 .qa-pane { flex: 1 1 auto; overflow-y: auto; padding: 20px 20px 32px; }
 .qa-pane > p { line-height: 1.5; }
 .qa-log-wrap { flex: 1 1 auto; overflow-y: auto; padding: 16px 0 24px; }
@@ -98,7 +90,8 @@ button.qa-row-btn:hover .qa-shot-dot { background: var(--accent); }
 
 /* ---------- the live browser ---------- */
 .qa-live { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
-.qa-live-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg); min-height: 44px; }
+.qa-live-bar:empty { display: none; }
+.qa-live-bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); min-height: 36px; }
 .qa-live-tag { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: var(--chip-bg); color: var(--text-dim); flex: none; }
 .qa-live-tag-on { background: var(--danger); color: #fff; }
 .qa-live-tag-on::before { content: '● '; }
@@ -109,7 +102,7 @@ button.qa-row-btn:hover .qa-shot-dot { background: var(--accent); }
 .qa-live-empty { max-width: 44ch; text-align: center; color: var(--text-dim); font-size: 13.5px; line-height: 1.5; }
 
 /* ---------- Ask AI: Heap Code's transcript and composer ---------- */
-.qa-ask { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; --gutter: 20px; }
+.qa-ask { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; --gutter: max(16px, calc((100% - var(--col)) / 2)); }
 .qa-ask-messages { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .qa-start { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
 .qa-start-input { font: inherit; font-family: var(--mono); width: 16ch; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
@@ -126,28 +119,29 @@ button.qa-row-btn:hover .qa-shot-dot { background: var(--accent); }
 .qa-facts dt { color: var(--text-dim); }
 .qa-facts dd { margin: 0; overflow-wrap: anywhere; }
 
-/* Narrow: the browser goes under the work instead of beside it. */
+/* Narrow windows: tighter padding, and the file column goes. */
 @media (max-width: 900px) {
-  .qa-bench { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(240px, 45%); }
-  .qa-bench-left { border-right: 0; border-bottom: 1px solid var(--border); }
   .qa-page { padding: 16px; }
   .qa-file { display: none; }
 }
 @media (max-width: 640px) {
-  .qa-top { padding: 8px 12px; }
+  .qa-toolbar { padding: 6px 8px 0 12px; }
   .qa-busy-label { max-width: 14ch; }
 }
 
 /* Heap Code's picker sits at the bottom and opens upward; here it is in the top bar. */
-.qa-top .wsp-pop { bottom: auto; top: calc(100% + 6px); }
+.qa-toolbar .wsp-pop { bottom: auto; top: calc(100% + 6px); }
 
-/* ---------- settings ---------- */
-.qa-settings .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-.qa-settings .field > .card-input { flex: none; width: 100%; box-sizing: border-box; }
-.qa-settings select.card-input { width: 100%; }
-.qa-settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.qa-textarea { min-height: 64px; width: 100%; resize: vertical; font-family: var(--mono); font-size: 12.5px; }
-@media (max-width: 520px) { .qa-settings-row { grid-template-columns: 1fr; } }
-.qa-ask-head { display: flex; align-items: center; gap: 10px; padding: 10px 20px; border-bottom: 1px solid var(--border); }
-.qa-ask-note { flex: 1 1 auto; font-size: 12px; margin: 0; }
-.qa-ask-head .qa-subtitle { white-space: nowrap; }
+/* ---------- the Tests page in the shared Settings ---------- */
+.qa-textarea { min-height: 64px; width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--mono); font-size: 12.5px; }
+.setting-row-control .card-input { width: 100%; box-sizing: border-box; }
+.qa-num-input { max-width: 8ch; }
+.qa-settings-model { display: inline-flex; align-items: center; gap: 10px; font-size: 12.5px; }
+
+/* The column narrows when the browser panel opens: the table gives way by the same rule as a narrow window. */
+.qa-main { container-type: inline-size; }
+.qa-name { min-width: 16ch; }
+@container (max-width: 720px) {
+  .qa-file { display: none; }
+  .qa-page { padding: 16px; }
+}

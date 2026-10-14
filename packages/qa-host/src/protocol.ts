@@ -33,6 +33,19 @@ export const QA_METHODS = {
   saveSettings: 'qa/saveSettings',
   /** Open a run's report.html in this computer's browser. */
   openReport: 'qa/openReport',
+  /**
+   * The shared Settings dialog's pages: connections, model roles, web search.
+   * The same global config Heap Code and Heap Chat edit (see web-host's
+   * connectionSettings.ts).
+   */
+  settings: 'qa/settings',
+  saveProfile: 'qa/saveProfile',
+  deleteProfile: 'qa/deleteProfile',
+  useProfile: 'qa/useProfile',
+  setRole: 'qa/setRole',
+  listConnectionModels: 'qa/listConnectionModels',
+  probeProvider: 'qa/probeProvider',
+  setWebSearch: 'qa/setWebSearch',
   /** Host → page: progress of whatever is running. */
   event: 'qa/event',
   /** Host → page: the state changed (flows, runs, busy). */
@@ -145,4 +158,4 @@ export interface RunListing {
 }
 
 /** The folder picker's answers — the same shapes Heap Code's picker takes. */
-export type { UiBrowseFoldersResult, UiWorkspacesResult } from '@heapcode/web-host/protocol';
+export type { UiBrowseFoldersResult, UiSettings, UiWorkspacesResult } from '@heapcode/web-host/protocol';

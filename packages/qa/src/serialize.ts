@@ -74,6 +74,8 @@ function expectValue(e: Expectation): unknown {
   switch (e.kind) {
     case 'noConsoleErrors':
       return 'noConsoleErrors';
+    case 'noServerErrors':
+      return 'noServerErrors';
     case 'visible':
     case 'hidden':
       return { [e.kind]: locatorObject(e.target) };

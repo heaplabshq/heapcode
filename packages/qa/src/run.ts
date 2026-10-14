@@ -142,7 +142,7 @@ export async function runFlow(id: string, flow: Flow, options: RunOptions): Prom
   if (traced) await options.driver.startTrace!();
 
   const baseUrl = options.baseUrl ?? (flow.baseUrl ? options.templates.fill(flow.baseUrl).value : undefined);
-  const ctx: Ctx = { ...options, baseUrl, steps, consoleSoFar, failed: false, heals: [], refreshed: [] };
+  const ctx: Ctx = { ...options, baseUrl, steps, consoleSoFar, requestsSoFar: [], failed: false, heals: [], refreshed: [] };
   // Drop anything left over from a previous flow on the same page.
   options.driver.drainConsole();
   options.driver.drainFailedRequests();
@@ -176,6 +176,7 @@ interface Ctx extends RunOptions {
   baseUrl: string | undefined;
   steps: StepResult[];
   consoleSoFar: ConsoleLine[];
+  requestsSoFar: FailedRequest[];
   failed: boolean;
   heals: HealProposal[];
   refreshed: FingerprintRefresh[];
@@ -262,6 +263,7 @@ async function runOne(step: Exclude<Step, { kind: 'use' }>, templates: Templates
     ...(r.error ? { error: templates.redact(r.error) } : {}),
   }));
   ctx.consoleSoFar.push(...result.console);
+  ctx.requestsSoFar.push(...result.failedRequests);
   if (ctx.screenshots === 'every-step' || (ctx.screenshots === 'on-failure' && result.status === 'failed')) {
     try {
       result.screenshot = await ctx.driver.screenshot();
@@ -484,6 +486,17 @@ async function check(expectation: Expectation, templates: Templates, ctx: Ctx, r
       if (errors.length) throw new Error(`The page logged ${errors.length} error${errors.length === 1 ? '' : 's'}: ${errors.slice(0, 3).map((e) => e.message).join(' | ')}`);
       return;
     }
+    case 'noServerErrors': {
+      // This step's own requests too, read now.
+      const now = ctx.driver.drainFailedRequests().map((r) => ({ ...r, url: templates.redact(r.url) }));
+      ctx.requestsSoFar.push(...now);
+      result.failedRequests.push(...now);
+      const bad = ctx.requestsSoFar.filter((r) => r.status === undefined || r.status >= 500);
+      if (bad.length) {
+        throw new Error(`${bad.length} request${bad.length === 1 ? '' : 's'} failed: ${bad.slice(0, 3).map((r) => `${r.method} ${r.url} → ${r.status ?? r.error}`).join(' | ')}`);
+      }
+      return;
+    }
   }
 }
 
@@ -566,6 +579,8 @@ function safeLabel(step: Step, templates: Templates | undefined): string {
           return `expect ${e.equals} of ${describeLocator(e.target)}`;
         case 'noConsoleErrors':
           return 'expect no console errors';
+        case 'noServerErrors':
+          return 'expect no server errors';
       }
     }
   }

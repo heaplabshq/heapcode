@@ -1,5 +1,5 @@
 import type { RecordedTarget } from '@heapcode/page/recording';
-import { TEST_ID_ATTRS, type DomTree } from '@heapcode/page/tree';
+import { TEST_ID_ATTRS, type DomTree, type PageHealth } from '@heapcode/page/tree';
 import {
   DEFAULT_TIMEOUT,
   isAllowedTarget,
@@ -10,6 +10,7 @@ import {
   type PageInfo,
   type Probe,
   type RecordListener,
+  type Activity,
   type Target,
 } from '@heapcode/qa';
 import type { Browser, BrowserContext, ElementHandle, Locator, Page } from 'playwright-core';
@@ -60,13 +61,25 @@ export class PlaywrightDriver implements Driver {
   private consoleLines: ConsoleLine[] = [];
   private failed: FailedRequest[] = [];
   private lastTitle = '';
+  private requestCount = 0;
+  private navigations = 0;
+  private watchStart: { requests: number; navigations: number } | undefined;
+  private readonly defaultViewport: { width: number; height: number };
 
   private constructor(
     private readonly browser: Browser,
     private readonly context: BrowserContext,
     readonly page: Page,
     private readonly targets: readonly string[],
+    viewport: { width: number; height: number },
   ) {
+    this.defaultViewport = viewport;
+    page.on('request', () => {
+      this.requestCount += 1;
+    });
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) this.navigations += 1;
+    });
     page.on('console', (msg) => {
       // The browser asks every site for /favicon.ico by itself; a 404 there is
       // not the app's doing, and counting it fails nearly every app's
@@ -90,20 +103,21 @@ export class PlaywrightDriver implements Driver {
 
   static async launch(options: LaunchOptions = {}): Promise<PlaywrightDriver> {
     const browser = await launchBrowser(options.channel ?? 'chrome', options.headless ?? true, options.exitOnSigint ?? true);
-    const context = await browser.newContext({ viewport: options.viewport ?? { width: 1280, height: 800 } });
+    const viewport = options.viewport ?? { width: 1280, height: 800 };
+    const context = await browser.newContext({ viewport });
     context.setDefaultTimeout(options.timeout ?? DEFAULT_TIMEOUT);
     await context.addInitScript({ content: INSPECT_BUNDLE });
     const page = await context.newPage();
-    return new PlaywrightDriver(browser, context, page, options.targets ?? []);
+    return new PlaywrightDriver(browser, context, page, options.targets ?? [], viewport);
   }
 
   async open(url: string): Promise<PageInfo> {
     if (!isAllowedTarget(url, this.targets)) throw new Error(notAllowedMessage(url));
-    await this.page.goto(url, { waitUntil: 'load' });
+    const response = await this.page.goto(url, { waitUntil: 'load' });
     // A redirect can land somewhere nobody listed.
     if (!isAllowedTarget(this.page.url(), this.targets)) throw new Error(notAllowedMessage(this.page.url()));
     this.lastTitle = await this.page.title();
-    return this.current();
+    return { ...this.current(), ...(response ? { status: response.status() } : {}) };
   }
 
   /** The title as of the last `open` — `current()` is synchronous, and a title needs a round trip. */
@@ -185,6 +199,32 @@ export class PlaywrightDriver implements Driver {
     await this.ensureInspector();
     const found = this.locator(target.probe).nth(target.index);
     return (await found.evaluate((el) => (globalThis as unknown as { __heapqa: { describeElement(el: unknown): unknown } }).__heapqa.describeElement(el))) as RecordedTarget;
+  }
+
+  async health(): Promise<PageHealth> {
+    await this.ensureInspector();
+    return this.page.evaluate(() => (globalThis as unknown as { __heapqa: { health(): PageHealth } }).__heapqa.health());
+  }
+
+  async watch(): Promise<void> {
+    await this.ensureInspector();
+    this.watchStart = { requests: this.requestCount, navigations: this.navigations };
+    await this.page.evaluate(() => (globalThis as unknown as { __heapqa: { watch(): void } }).__heapqa.watch());
+  }
+
+  async watched(): Promise<Activity> {
+    const start = this.watchStart ?? { requests: this.requestCount, navigations: this.navigations };
+    this.watchStart = undefined;
+    const navigated = this.navigations > start.navigations;
+    // After a navigation the counter lived on the old page; the new page is change enough.
+    const mutations = navigated
+      ? 0
+      : await this.page.evaluate(() => (globalThis as unknown as { __heapqa?: { watched(): number } }).__heapqa?.watched() ?? 0).catch(() => 0);
+    return { mutations, requests: this.requestCount - start.requests, navigated };
+  }
+
+  async viewport(size?: { width: number; height: number }): Promise<void> {
+    await this.page.setViewportSize(size ?? this.defaultViewport);
   }
 
   async settle(): Promise<void> {

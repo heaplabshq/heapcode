@@ -91,7 +91,9 @@ export type Expectation =
   | { kind: 'text'; target: Locator; equals?: string; contains?: string }
   | { kind: 'url'; equals?: string; contains?: string; matches?: string }
   | { kind: 'count'; target: Locator; equals: number }
-  | { kind: 'noConsoleErrors' };
+  | { kind: 'noConsoleErrors' }
+  /** No request so far in the flow got a 5xx or failed outright. */
+  | { kind: 'noServerErrors' };
 
 export interface Flow extends Source {
   name: string;

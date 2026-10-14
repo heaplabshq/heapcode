@@ -1,5 +1,6 @@
 import { inspect, type DomTree, type InspectOptions } from './inspect.js';
 import { describeTarget } from './recorder.js';
+import { ActivityWatch, pageHealth, type PageHealth } from './health.js';
 import type { RecordedTarget } from './recording.js';
 
 /**
@@ -21,9 +22,15 @@ export interface HeapQaPageApi {
   describe(id: number): RecordedTarget | null;
   /** The same for an element the driver already holds (found by a locator). */
   describeElement(el: Element): RecordedTarget;
+  /** Error text on screen, sideways overflow — see health.ts. */
+  health(): PageHealth;
+  /** Start counting DOM changes; `watched` stops and returns the count. */
+  watch(): void;
+  watched(): number;
 }
 
 let last: Element[] = [];
+const activity = new ActivityWatch();
 
 const api: HeapQaPageApi = {
   inspect(options) {
@@ -42,6 +49,15 @@ const api: HeapQaPageApi = {
   },
   describeElement(el) {
     return describeTarget(el);
+  },
+  health() {
+    return pageHealth(document);
+  },
+  watch() {
+    activity.start(document);
+  },
+  watched() {
+    return activity.stop();
   },
 };
 

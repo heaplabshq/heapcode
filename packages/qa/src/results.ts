@@ -1,7 +1,9 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { FlowResult, StepResult } from './run.js';
-import { renderHtmlReport, renderJunit, renderMarkdown } from './report.js';
+import { renderExploreReport, renderHtmlReport, renderJunit, renderMarkdown, type ExploreReportInput } from './report.js';
+import type { ExploreResult } from './explore.js';
+import { serializeFlow } from './serialize.js';
 import { RESULTS_DIR } from './workspace.js';
 
 /**
@@ -97,4 +99,32 @@ export function writeReports(summary: RunSummary): string {
   writeFileSync(join(summary.dir, 'junit.xml'), renderJunit(summary));
   writeFileSync(join(summary.dir, 'summary.md'), renderMarkdown(summary));
   return html;
+}
+
+/**
+ * An explore run, in `results/<run id>-explore/`: explore.json, report.html,
+ * a screenshot and a repro flow per finding. Returns the report's path.
+ */
+export function writeExplore(workspaceDir: string, runId: string, result: ExploreResult, meta: { start: string; startedAt: string; durationMs: number }): { dir: string; report: string } {
+  const dir = join(workspaceDir, RESULTS_DIR, `${runId}-explore`);
+  mkdirSync(join(dir, 'screenshots'), { recursive: true });
+  mkdirSync(join(dir, 'repros'), { recursive: true });
+  const findings: ExploreReportInput['findings'] = result.findings.map((f) => {
+    const { screenshot, repro, ...rest } = f;
+    const out: ExploreReportInput['findings'][number] = { ...rest };
+    if (screenshot?.length) {
+      writeFileSync(join(dir, 'screenshots', `${f.id}.png`), screenshot);
+      out.screenshot = join('screenshots', `${f.id}.png`);
+    }
+    if (repro) {
+      writeFileSync(join(dir, 'repros', `${f.id}.yaml`), serializeFlow(repro));
+      out.repro = join('repros', `${f.id}.yaml`);
+    }
+    return out;
+  });
+  const input: ExploreReportInput = { runId, ...meta, pages: result.pages, findings, skipped: result.skipped };
+  writeFileSync(join(dir, 'explore.json'), `${JSON.stringify(input, null, 2)}\n`);
+  const report = join(dir, 'report.html');
+  writeFileSync(report, renderExploreReport(input));
+  return { dir, report };
 }

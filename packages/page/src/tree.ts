@@ -87,3 +87,13 @@ export const INTERACTIVE_ROLES = new Set([
   'menuitemradio',
   'treeitem',
 ]);
+
+/** What is plainly wrong with a page — computed in the page by `health.ts`. */
+export interface PageHealth {
+  /** Visible text that looks like an error the app did not mean to show. */
+  errorTexts: string[];
+  /** How far the page scrolls sideways beyond the window, in px; 0 is fine. */
+  overflowX: number;
+  /** The widest element past the window's right edge, described. */
+  overflowCulprit?: string;
+}

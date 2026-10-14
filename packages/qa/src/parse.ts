@@ -32,7 +32,7 @@ export function formatErrors(errors: ParseError[]): string {
 
 const STEP_KINDS = ['goto', 'click', 'type', 'select', 'press', 'expect', 'use', 'wait'] as const;
 const LOCATOR_KEYS = ['testId', 'role', 'name', 'label', 'placeholder', 'text', 'css', 'nth'] as const;
-const EXPECT_KINDS = ['visible', 'hidden', 'text', 'url', 'count', 'noConsoleErrors'] as const;
+const EXPECT_KINDS = ['visible', 'hidden', 'text', 'url', 'count', 'noConsoleErrors', 'noServerErrors'] as const;
 
 class Reader {
   readonly errors: ParseError[] = [];
@@ -242,6 +242,7 @@ function parseStep(r: Reader, node: Node | null): Step | undefined {
 
 function parseExpect(r: Reader, node: Node | null): Expectation | undefined {
   if (isScalar(node) && node.value === 'noConsoleErrors') return { kind: 'noConsoleErrors' };
+  if (isScalar(node) && node.value === 'noServerErrors') return { kind: 'noServerErrors' };
   if (!isMap(node) || node.items.length !== 1) {
     return r.fail(node, `\`expect\` takes one check: ${EXPECT_KINDS.join(', ')}.`);
   }
@@ -294,6 +295,7 @@ function parseExpect(r: Reader, node: Node | null): Expectation | undefined {
       return target && equals !== undefined ? { kind, target, equals } : undefined;
     }
     case 'noConsoleErrors':
+    case 'noServerErrors':
       return { kind };
     default:
       return r.fail(keyNode, `Unknown check \`${kind}\`. Use ${EXPECT_KINDS.join(', ')}.`);

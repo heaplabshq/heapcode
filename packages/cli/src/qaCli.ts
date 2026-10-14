@@ -8,6 +8,9 @@ import {
   FLOWS_DIR,
   Recording,
   Templates,
+  explore,
+  writeExplore,
+  type Finding,
   diagnose,
   renderFixBrief,
   writeReports,
@@ -79,6 +82,8 @@ export async function runQa(argv: string[]): Promise<number> {
       return qaReport(rest);
     case 'fix':
       return qaFix(rest);
+    case 'explore':
+      return qaExplore(rest);
     case 'reuse':
       return qaReuse(rest);
     case 'check':
@@ -114,6 +119,7 @@ Usage:
                                                --everywhere uses it in every other flow that repeats those steps too
   heapcode qa reuse <step> [flow…]             Use an existing reusable step in every flow (or the ones named) that repeats its steps
   heapcode qa run [flow…] [flags]              Play flows back (all of them, or the ones named) and save the results
+  heapcode qa explore [address] [flags]        Find bugs with no script: visit every page, press what is safe, fill forms with odd input
   heapcode qa heals [--run ID] [--accept]      Show the fixes healing proposed in the last run (or run ID); --accept writes them into the files
   heapcode qa report [--run ID] [--open]       Rebuild the HTML report of the last run (or run ID); --open shows it in the browser
   heapcode qa fix <flow> [--run ID] [--repo DIR]
@@ -142,6 +148,14 @@ as a bug.
 
 Record flags: --dir, --base-url, --browser as above, and
   --name NAME        What to call the flow (asked for when not given)
+
+Explore flags: --dir, --base-url, --browser, --headed, --open as above, and
+  --pages N          Pages to visit at most (default 20)
+  --depth N          Link hops from the start (default 3)
+  --allow-commits    Also press Delete / Pay / Submit-like buttons — only on data you can lose
+  --no-forms, --no-buttons   Skip filling forms / pressing buttons
+Explore never presses Log out, never submits a form with a password, and
+reports only what is wrong on any page. Exit 1 when it finds something high.
 
 Do flags: --dir, --base-url, --browser, --headed, --name as above, and
   --url PATH         Where to start (default /)
@@ -176,10 +190,15 @@ interface Flags {
   diagnose: boolean;
   open: boolean;
   repo?: string;
+  pages?: number;
+  depth?: number;
+  allowCommits: boolean;
+  forms: boolean;
+  buttons: boolean;
 }
 
 function parseFlags(args: string[]): Flags | string {
-  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false, acceptHeals: false, heal: true, accept: false, diagnose: true, open: false };
+  const flags: Flags = { dir: process.cwd(), positional: [], headed: false, json: false, trace: true, everywhere: false, yes: false, acceptHeals: false, heal: true, accept: false, diagnose: true, open: false, allowCommits: false, forms: true, buttons: true };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     const value = (): string | undefined => args[++i];
@@ -237,6 +256,23 @@ function parseFlags(args: string[]): Flags | string {
         break;
       case '--no-diagnose':
         flags.diagnose = false;
+        break;
+      case '--pages':
+      case '--depth': {
+        const n = Number(value());
+        if (!Number.isInteger(n) || n < 0) return `${arg} takes a whole number.`;
+        if (arg === '--pages') flags.pages = n;
+        else flags.depth = n;
+        break;
+      }
+      case '--allow-commits':
+        flags.allowCommits = true;
+        break;
+      case '--no-forms':
+        flags.forms = false;
+        break;
+      case '--no-buttons':
+        flags.buttons = false;
         break;
       case '--open':
         flags.open = true;
@@ -429,10 +465,76 @@ async function qaRun(args: string[]): Promise<number> {
   return summary.failed ? 1 : 0;
 }
 
+async function qaExplore(args: string[]): Promise<number> {
+  const flags = parseFlags(args);
+  if (typeof flags === 'string') return usage(flags);
+  if (!existsSync(flags.dir)) return fail(`${flags.dir} does not exist. Start a test folder with \`heapcode qa init\`.`);
+  const ws = loadWorkspace(flags.dir);
+  const configErrors = ws.errors.filter((e) => e.file === 'heapqa.yaml');
+  if (configErrors.length) return fail(formatErrors(configErrors));
+  const runId = newRunId();
+  const templates = new Templates({ inputs: {}, secret: ws.secret, env: process.env, runId });
+  let baseUrl: string | undefined;
+  let start: string;
+  try {
+    const raw = flags.baseUrl ?? ws.config.baseUrl;
+    baseUrl = raw === undefined ? undefined : templates.fill(raw).value;
+    start = resolveUrl(flags.positional[0] ?? '/', baseUrl);
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+  if (!isAllowedTarget(start, ws.config.targets)) return fail(notAllowedMessage(start));
+
+  let driver: PlaywrightDriver;
+  try {
+    driver = await PlaywrightDriver.launch({ channel: flags.browser ?? ws.config.browser.channel, headless: !flags.headed, timeout: Math.min(ws.config.timeout, 5000), targets: ws.config.targets });
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+  const say = flags.json ? () => {} : (line: string) => console.log(line);
+  say(`Exploring from ${start}${flags.allowCommits ? ' — pressing commit-like buttons too' : ''}\n`);
+  const started = Date.now();
+  const abort = new AbortController();
+  const onSigint = (): void => abort.abort();
+  process.once('SIGINT', onSigint);
+  let result;
+  try {
+    result = await explore({
+      driver,
+      startUrl: start,
+      ...(baseUrl ? { baseUrl } : {}),
+      targets: ws.config.targets,
+      templates,
+      ...(flags.pages !== undefined ? { maxPages: flags.pages } : {}),
+      ...(flags.depth !== undefined ? { maxDepth: flags.depth } : {}),
+      forms: flags.forms,
+      buttons: flags.buttons,
+      allowCommits: flags.allowCommits,
+      onPage: (url, i) => say(`  ${i}. ${url.replace(new URL(start).origin, '') || '/'}`),
+      onFinding: (f) => say(`     ${f.severity === 'high' ? '✗' : f.severity === 'medium' ? '!' : '·'} ${f.title}`),
+      signal: abort.signal,
+    });
+  } finally {
+    process.off('SIGINT', onSigint);
+    await driver.close();
+  }
+  const { dir, report } = writeExplore(ws.dir, runId, result, { start, startedAt: new Date(started).toISOString(), durationMs: Date.now() - started });
+  const high = result.findings.filter((f: Finding) => f.severity === 'high').length;
+  if (flags.json) {
+    console.log(readFileSync(join(dir, 'explore.json'), 'utf8'));
+  } else {
+    console.log(`\n${result.findings.length ? `${result.findings.length} finding${result.findings.length === 1 ? '' : 's'} (${high} high)` : 'Nothing plainly wrong'} on ${result.pages.length} page${result.pages.length === 1 ? '' : 's'}${result.skipped.length ? `; ${result.skipped.length} thing${result.skipped.length === 1 ? '' : 's'} not tried on purpose (see the report)` : ''}.`);
+    console.log(`Report: ${shown(report)}`);
+    if (result.findings.some((f: Finding) => f.repro)) console.log(`Repro flows: ${shown(join(dir, 'repros'))} — copy one into flows/ to keep checking for that bug.`);
+  }
+  if (flags.open) openFile(report);
+  return high ? 1 : 0;
+}
+
 /** The newest run in results/, or the one named. */
 function findRun(dir: string, runId: string | undefined): { runId: string; summary: RunSummary } | string {
   const resultsDir = join(dir, 'results');
-  const runs = existsSync(resultsDir) ? readdirSync(resultsDir).filter((d) => existsSync(join(resultsDir, d, 'run.json'))).sort() : [];
+  const runs = existsSync(resultsDir) ? readdirSync(resultsDir).filter((d) => !d.endsWith('-explore') && existsSync(join(resultsDir, d, 'run.json'))).sort() : [];
   const id = runId ?? runs.at(-1);
   if (!id) return 'No runs yet — `heapcode qa run` first.';
   const file = join(resultsDir, id, 'run.json');

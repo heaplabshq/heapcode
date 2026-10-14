@@ -1,5 +1,5 @@
 import type { RecordedEvent, RecordedTarget } from '@heapcode/page/recording';
-import type { DomTree } from '@heapcode/page/tree';
+import type { DomTree, PageHealth } from '@heapcode/page/tree';
 import { LADDER, type Locator, type Strategy } from './flow.js';
 
 /**
@@ -57,6 +57,20 @@ export interface Driver {
    * need it (every lookup retries); something that reads the page once does.
    */
   settle?(): Promise<void>;
+  /** Optional, for exploring: what is plainly wrong with the page (see `@heapcode/page` health). */
+  health?(): Promise<PageHealth>;
+  /** Optional: start counting what the page does (DOM changes, requests, navigations)… */
+  watch?(): Promise<void>;
+  /** …and stop, returning the counts. */
+  watched?(): Promise<Activity>;
+  /** Optional: the window size; undefined restores the driver's default. */
+  viewport?(size?: { width: number; height: number }): Promise<void>;
+}
+
+export interface Activity {
+  mutations: number;
+  requests: number;
+  navigated: boolean;
 }
 
 export interface RecordListener {
@@ -71,6 +85,8 @@ export interface RecordListener {
 export interface PageInfo {
   url: string;
   title: string;
+  /** HTTP status of the page itself, when it was just opened. */
+  status?: number;
 }
 
 /** A locator reduced to one strategy — what `Driver.count` answers about. */

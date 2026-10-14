@@ -45,6 +45,10 @@
     "./domTools": {
       "types": "./src/domTools.ts",
       "default": "./src/domTools.ts"
+    },
+    "./health": {
+      "types": "./src/health.ts",
+      "default": "./src/health.ts"
     }
   },
   "scripts": {

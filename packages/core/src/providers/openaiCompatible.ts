@@ -228,6 +228,8 @@ export class OpenAICompatibleProvider implements Provider {
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
       ...(req.topP !== undefined ? { top_p: req.topP } : {}),
+      ...(req.frequencyPenalty !== undefined ? { frequency_penalty: req.frequencyPenalty } : {}),
+      ...(req.presencePenalty !== undefined ? { presence_penalty: req.presencePenalty } : {}),
     });
   }
 

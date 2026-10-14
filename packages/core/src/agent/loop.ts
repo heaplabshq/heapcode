@@ -1,4 +1,5 @@
-import type { ChatMessage, ChatResponse, Provider, TokenUsage } from '../providers/types.js';
+import { REPETITION_NOTICE, REPETITION_NUDGE, RepetitionError, RepetitionWatch } from './repetition.js';
+import type { ChatMessage, ChatRequest, ChatResponse, Provider, TokenUsage } from '../providers/types.js';
 import { isAbortError, isToolsUnsupported } from '../providers/errors.js';
 import {
   COMPACTION_THRESHOLD,
@@ -468,13 +469,21 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
 
   // Prefer streaming transport: reasoning models produce bytes immediately but
   // can exceed any sane non-streaming timeout on their full response.
-  const buildRequest = (msgs: ChatMessage[], withTools: boolean) => ({
+  const buildRequest = (
+    msgs: ChatMessage[],
+    withTools: boolean,
+    /** The retry after a reply looped: warmer, and steered away from repeating. */
+    unstick?: { penalties: boolean },
+    /** The run's signal joined with one that cuts this reply off (see `attempt`). */
+    watched?: AbortSignal,
+  ): ChatRequest => ({
     model,
     messages: msgs,
     tools: withTools && nativeToolCalls ? toolsWithFinish : undefined,
-    temperature: opts.temperature ?? 0.2,
+    temperature: unstick ? Math.max(0.7, (opts.temperature ?? 0.2) + 0.4) : (opts.temperature ?? 0.2),
     maxTokens: opts.maxTokens,
-    signal,
+    ...(unstick?.penalties ? { frequencyPenalty: 0.5, presencePenalty: 0.3 } : {}),
+    signal: watched ?? signal,
   });
 
   /**
@@ -527,30 +536,90 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     let streamed = false;
     let reasoned = false;
     let toolChars = 0;
-    const onDelta = (text: string, kind: 'text' | 'reasoning' | 'tool' = 'text'): void => {
-      if (kind === 'reasoning') {
-        reasoned = true;
-        events.onReasoningDelta?.(text);
-        return;
+
+    /**
+     * One streamed attempt, watched for a loop. A reply that starts repeating
+     * itself is cut off there (see repetition.ts) rather than left to run to
+     * its token limit; the caller decides what happens next.
+     */
+    const attempt = async (request: (stop: AbortSignal) => ChatRequest): Promise<ChatResponse> => {
+      const stop = new AbortController();
+      const watched = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+      const thinking = new RepetitionWatch();
+      // Narration only: in the text protocol the reply carries tool calls —
+      // whole files among them — where repeated blocks are ordinary.
+      const saying = nativeToolCalls ? new RepetitionWatch() : undefined;
+      let looped: RepetitionError | undefined;
+      const onDelta = (text: string, kind: 'text' | 'reasoning' | 'tool' = 'text'): void => {
+        if (looped) return;
+        if (kind === 'reasoning') {
+          reasoned = true;
+          events.onReasoningDelta?.(text);
+          if (thinking.push(text)) looped = new RepetitionError('reasoning');
+        } else if (kind === 'tool') {
+          toolChars += text.length;
+          events.onToolStream?.(toolChars);
+          return;
+        } else {
+          if (liveText && nativeToolCalls) {
+            streamed = true;
+            events.onTextDelta?.(text);
+          }
+          if (saying?.push(text)) looped = new RepetitionError('text');
+        }
+        if (looped) stop.abort(looped);
+      };
+      let reply: ChatResponse;
+      try {
+        reply = await provider.chatStreamed!(request(watched), onDelta);
+      } catch (err) {
+        if (looped) throw looped;
+        throw err;
       }
-      if (kind === 'tool') {
-        toolChars += text.length;
-        events.onToolStream?.(toolChars);
-        return;
-      }
-      if (liveText && nativeToolCalls) {
-        streamed = true;
-        events.onTextDelta?.(text);
+      // A provider may hand back what it had when cut off instead of throwing.
+      if (looped) throw looped;
+      return reply;
+    };
+
+    const firstTry = async (): Promise<ChatResponse> => {
+      try {
+        return await attempt((watched) => buildRequest(msgs, withTools, undefined, watched));
+      } catch (err) {
+        if (!recoverFromUnsupportedTools(err)) throw err;
+        // withTools is now moot — nativeToolCalls is false, so buildRequest
+        // omits the array either way; passing false says so at the call site.
+        return attempt((watched) => buildRequest(msgs, false, undefined, watched));
       }
     };
+
     let response: ChatResponse;
     try {
-      response = await provider.chatStreamed(buildRequest(msgs, withTools), onDelta);
+      response = await firstTry();
     } catch (err) {
-      if (!recoverFromUnsupportedTools(err)) throw err;
-      // withTools is now moot — nativeToolCalls is false, so buildRequest
-      // omits the array either way; passing false says so at the call site.
-      response = await provider.chatStreamed(buildRequest(msgs, false), onDelta);
+      if (!(err instanceof RepetitionError)) throw err;
+      // Once: said so in the transcript, told so in the request, and sampled
+      // so as not to fall into the same groove. The looping reply is dropped.
+      if (reasoned) events.onReasoningEnd?.();
+      if (streamed) events.onTextEnd?.();
+      reasoned = false;
+      streamed = false;
+      events.onText(REPETITION_NOTICE);
+      const nudged: ChatMessage[] = [...msgs, { role: 'user', content: REPETITION_NUDGE }];
+      try {
+        response = await attempt((watched) => buildRequest(nudged, withTools, { penalties: true }, watched));
+      } catch (again) {
+        if (again instanceof RepetitionError) {
+          throw new Error('The model kept repeating itself, even when asked again. Try again, or a different model for this role.');
+        }
+        if (signal?.aborted) throw again;
+        // An endpoint that refuses the penalty settings still gets the nudge.
+        response = await attempt((watched) => buildRequest(nudged, withTools, { penalties: false }, watched)).catch((last: unknown) => {
+          if (last instanceof RepetitionError) {
+            throw new Error('The model kept repeating itself, even when asked again. Try again, or a different model for this role.');
+          }
+          throw last;
+        });
+      }
     }
     if (reasoned) events.onReasoningEnd?.();
     if (streamed) events.onTextEnd?.();

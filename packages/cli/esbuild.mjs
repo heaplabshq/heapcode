@@ -57,6 +57,17 @@ function copyChatUi() {
 }
 copyChatUi();
 
+/** And Heap QA's — see copyWebUi. */
+function copyQaUi() {
+  const from = fileURLToPath(new URL('../qa-ui/dist', import.meta.url));
+  if (!existsSync(from)) {
+    console.warn('[build] packages/qa-ui/dist not found — Heap QA in `heapcode web` will serve the API only.');
+    return;
+  }
+  cpSync(from, 'dist/qa', { recursive: true });
+}
+copyQaUi();
+
 const ctx = await esbuild.context({
   // dist/daemon.js is the core server's entry point — the CLI autostarts it
   // detached when nothing is listening (docs/phase3-protocol-design.md §6).

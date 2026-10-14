@@ -10,6 +10,7 @@ import {
 } from '@heapcode/host';
 import { DEFAULT_PORT, WorkspaceStore, isLoopback, startWebHost } from '@heapcode/web-host';
 import { ChatSession } from '@heapcode/chat-host';
+import { QaSession } from '@heapcode/qa-host';
 import { loadProjectInstructions } from './memory.js';
 import { connectToServer } from './server/client.js';
 import { cliVersion } from './version.js';
@@ -24,6 +25,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const staticDir = join(__dirname, 'web');
 /** Heap Chat's bundle, mounted under /chat so the two share an origin and a token. */
 const chatStaticDir = join(__dirname, 'chat');
+/** Heap QA's bundle, mounted under /qa the same way. */
+const qaStaticDir = join(__dirname, 'qa');
 
 export interface WebCliOptions {
   port?: number;
@@ -112,6 +115,16 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
             lan: deps.lan,
           }),
       },
+      // Heap QA, the third product on this origin. Its test folder is found in
+      // this workspace (the root, heapqa/ or qa/ — whichever has heapqa.yaml),
+      // or offered to be made at heapqa/. Built on first visit to /qa.
+      mounts: [
+        {
+          path: '/qa',
+          staticDir: qaStaticDir,
+          createSession: (deps) => new QaSession({ root: deps.root, config: deps.config, secrets: deps.secrets, lan: deps.lan }),
+        },
+      ],
     });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;

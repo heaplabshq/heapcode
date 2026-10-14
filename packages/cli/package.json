@@ -44,6 +44,7 @@
     "@heapcode/core": "workspace:*",
     "@heapcode/host": "workspace:*",
     "@heapcode/qa": "workspace:*",
+    "@heapcode/qa-host": "workspace:*",
     "@heapcode/qa-playwright": "workspace:*",
     "@heapcode/repomap": "workspace:*",
     "@heapcode/web-host": "workspace:*",

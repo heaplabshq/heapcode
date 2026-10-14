@@ -1,0 +1,35 @@
+{
+  "name": "@heapcode/qa-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Heap QA's host: running, exploring, recording and AI tasks for both the terminal and the app, and the session the app talks to.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./protocol": {
+      "types": "./src/protocol.ts",
+      "default": "./src/protocol.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@heapcode/core": "workspace:*",
+    "@heapcode/host": "workspace:*",
+    "@heapcode/page": "workspace:*",
+    "@heapcode/qa": "workspace:*",
+    "@heapcode/qa-playwright": "workspace:*",
+    "@heapcode/web-host": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

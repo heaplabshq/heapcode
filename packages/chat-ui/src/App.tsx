@@ -17,7 +17,7 @@ import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
 import { Toasts } from '@heapcode/web-ui/components/Toasts';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
-import { ProductToggle } from '@heapcode/web-ui/components/ProductToggle';
+import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/ProductToggle';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
@@ -79,6 +79,8 @@ import { MemoryPanel } from './components/MemoryPanel.js';
  */
 const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
 const HAS_CODE = document.documentElement.dataset.sibling === 'code';
+/** Heap QA, mounted beside this page by `heapcode web`. */
+const HAS_QA = servedProducts().includes('qa');
 /** The mount prefix, derived from the socket path — `/chat/rpc` → `/chat`. */
 const BASE = RPC_PATH.replace(/\/rpc$/, '');
 
@@ -411,7 +413,7 @@ export function App(): JSX.Element {
           brand="Heap Chat"
           // Absent when Heap Code is not served here: a switcher with one
           // working half teaches people the control is broken.
-          toggle={HAS_CODE ? <ProductToggle current="chat" chatPath={`${BASE}/`} /> : undefined}
+          toggle={HAS_CODE ? <ProductToggle current="chat" chatPath={`${BASE}/`} {...(HAS_QA ? { qaPath: '/qa/' } : {})} /> : undefined}
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {

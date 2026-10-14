@@ -67,7 +67,7 @@ import { MessageList } from './components/MessageList.js';
 import { useTransientNotice } from './notice.js';
 import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
-import { ProductToggle } from './components/ProductToggle.js';
+import { ProductToggle, servedProducts } from './components/ProductToggle.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { ChatTools } from './components/ChatTools.js';
@@ -155,6 +155,8 @@ const MUTATING_TOOLS = new Set([
  * the switcher is simply absent rather than offering a link to a 404.
  */
 const CHAT_MOUNTED = document.documentElement.dataset.chatMounted === 'true';
+/** Heap QA, mounted at /qa by the same host — see ProductToggle. */
+const QA_MOUNTED = servedProducts().includes('qa');
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
@@ -1057,7 +1059,11 @@ export function App(): JSX.Element {
     <div className="app">
       <div className="body">
         <Sidebar
-          toggle={CHAT_MOUNTED ? <ProductToggle current="code" chatPath="/chat/" /> : undefined}
+          toggle={
+            CHAT_MOUNTED || QA_MOUNTED ? (
+              <ProductToggle current="code" {...(CHAT_MOUNTED ? { chatPath: '/chat/' } : {})} {...(QA_MOUNTED ? { qaPath: '/qa/' } : {})} />
+            ) : undefined
+          }
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {

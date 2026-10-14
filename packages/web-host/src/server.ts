@@ -78,13 +78,21 @@ export interface WebHostOptions extends Omit<WebSessionDeps, 'root'> {
    * Built lazily, on the first browser that asks for it, so a `heapcode web`
    * whose chat tab is never opened pays nothing for it.
    */
-  mount?: {
-    /** URL prefix, e.g. `/chat`. No trailing slash. */
-    path: string;
-    /** Directory holding the mounted product's built SPA. */
-    staticDir?: string;
-    createSession: (deps: WebSessionDeps & { lan: boolean }) => HostSession;
-  };
+  mount?: MountedProduct;
+  /**
+   * More products mounted the same way (Heap QA at `/qa`). Kept apart from
+   * `mount` so callers that mount only Heap Chat are untouched; the two lists
+   * are served identically.
+   */
+  mounts?: MountedProduct[];
+}
+
+export interface MountedProduct {
+  /** URL prefix, e.g. `/chat`. No trailing slash. */
+  path: string;
+  /** Directory holding the mounted product's built SPA. */
+  staticDir?: string;
+  createSession: (deps: WebSessionDeps & { lan: boolean }) => HostSession;
 }
 
 export interface RunningWebHost {
@@ -125,15 +133,24 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
   const deps = { ...opts, lan: !isLoopback(host), mcpLogins };
   const session = opts.createSession ? opts.createSession(deps) : new WebSession(deps);
 
-  const mount = opts.mount;
-  /** The mounted product's session, built on first use rather than at launch. */
-  let mounted: HostSession | undefined;
-  const mountedSession = (): HostSession => (mounted ??= mount!.createSession(deps));
-  /** Does this URL belong to the mounted product? */
-  const underMount = (pathname: string): boolean =>
-    Boolean(mount) && (pathname === mount!.path || pathname.startsWith(`${mount!.path}/`));
+  const mounts: MountedProduct[] = [...(opts.mount ? [opts.mount] : []), ...(opts.mounts ?? [])];
+  /** Each mounted product's session, built on first use rather than at launch. */
+  const mounted = new Map<MountedProduct, HostSession>();
+  const mountedSession = (m: MountedProduct): HostSession => {
+    let s = mounted.get(m);
+    if (!s) {
+      s = m.createSession(deps);
+      mounted.set(m, s);
+    }
+    return s;
+  };
+  /** The mounted product this URL belongs to, if any. */
+  const mountOf = (pathname: string): MountedProduct | undefined =>
+    mounts.find((m) => pathname === m.path || pathname.startsWith(`${m.path}/`));
   /** That URL with the mount prefix removed, so the SPA is served from its own root. */
-  const stripMount = (pathname: string): string => pathname.slice(mount!.path.length) || '/';
+  const stripMount = (m: MountedProduct, pathname: string): string => pathname.slice(m.path.length) || '/';
+  /** Which products are served here, for each page's switcher: `chat,qa`. */
+  const products = mounts.map((m) => m.path.replace(/^\//, '')).join(',');
 
   const http = createServer((req, res) => {
     void handleHttp(req, res).catch(() => {
@@ -238,8 +255,8 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     // an attachment is as private as the conversation carrying it. Before the
     // static handlers, or index.html would answer for it — which is exactly
     // what happened, and what a 200 of text/html for a PNG looks like.
-    const underMountPath = Boolean(mount) && underMount(url.pathname);
-    const attachmentAt = underMountPath ? stripMount(url.pathname) : url.pathname;
+    const attachmentMount = mountOf(url.pathname);
+    const attachmentAt = attachmentMount ? stripMount(attachmentMount, url.pathname) : url.pathname;
     if (attachmentAt.startsWith(ATTACHMENT_PREFIX)) {
       const id = decodeURIComponent(attachmentAt.slice(ATTACHMENT_PREFIX.length));
       // Whichever product the page belongs to. Both resolve the same
@@ -247,7 +264,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       // either way — content-addressed images shared by two products the same
       // person is running are a saving, not a leak. It routes by product
       // anyway, so separating the stores later is a change in one place.
-      const owner = underMountPath ? mountedSession() : session;
+      const owner = attachmentMount ? mountedSession(attachmentMount) : session;
       const found = await owner.attachment?.(id);
       if (!found) {
         res.writeHead(404, { 'content-type': 'text/plain' });
@@ -266,19 +283,20 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
 
     // The mounted product first: its prefix is more specific than the root,
     // and the root's index.html fallback would otherwise swallow it.
-    if (mount?.staticDir && underMount(url.pathname)) {
+    const pageMount = mountOf(url.pathname);
+    if (pageMount?.staticDir) {
       // The mounted page is told where its own socket is and that the other
       // product is here. It cannot infer either: served standalone it sits at
       // the root with its socket at /rpc, and mounted it sits under a prefix —
       // hardcoding one of those breaks the other, which is exactly what a
       // first attempt at this did.
-      const attrs = { 'rpc-path': `${mount.path}/rpc`, 'sibling': 'code' };
-      if (await serveStatic(mount.staticDir, stripMount(url.pathname), res, attrs)) return;
+      const attrs = { 'rpc-path': `${pageMount.path}/rpc`, 'sibling': 'code', products };
+      if (await serveStatic(pageMount.staticDir, stripMount(pageMount, url.pathname), res, attrs)) return;
     }
 
     // The page is told whether the other product is there, so the switcher is
     // absent rather than broken when it is not.
-    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': mount ? 'true' : 'false' })))
+    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': opts.mount ? 'true' : 'false', products })))
       return;
 
     res.writeHead(404, { 'content-type': 'text/plain' });
@@ -306,7 +324,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     // Which session a browser reaches is decided here, by path, and nowhere
     // else — a mode flag carried inside the connection would be the one thing
     // this arrangement exists to avoid.
-    const forMount = Boolean(mount) && url.pathname === `${mount!.path}/rpc`;
+    const forMount = mounts.find((m) => url.pathname === `${m.path}/rpc`);
     if (url.pathname !== '/rpc' && !forMount) return reject(404, 'Not Found');
 
     // CSRF defense. A page on another origin must not be able to open this
@@ -330,7 +348,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     }
     limiter.succeed(peer);
 
-    wss.handleUpgrade(req, socket, head, (ws) => attach(ws, forMount ? mountedSession() : session));
+    wss.handleUpgrade(req, socket, head, (ws) => attach(ws, forMount ? mountedSession(forMount) : session));
   });
 
   function attach(ws: WebSocket, target: HostSession): void {
@@ -358,8 +376,8 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     async close() {
       wss.close();
       await session.close();
-      // Only if something actually opened it; an unused mount has no session.
-      await mounted?.close();
+      // Only those something actually opened; an unused mount has no session.
+      for (const s of mounted.values()) await s.close();
       await new Promise<void>((resolve) => http.close(() => resolve()));
     },
   };

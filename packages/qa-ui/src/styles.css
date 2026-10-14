@@ -1,0 +1,56 @@
+/*
+ * Only what is genuinely Heap QA's. The shell — rail, buttons, banners,
+ * modals, fields, tokens — is `@heapcode/web-ui/styles.css`, imported first.
+ */
+
+.qa-main { display: flex; flex-direction: column; min-width: 0; }
+.qa-scroll { flex: 1 1 auto; overflow-y: auto; }
+.qa-section { max-width: 920px; margin: 0 auto; padding: 24px var(--gutter) 48px; }
+.qa-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.qa-title { font-size: 19px; font-weight: 600; margin: 0 0 4px; }
+.qa-muted { color: var(--text-dim); font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; }
+
+.qa-list { list-style: none; margin: 12px 0 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); }
+.qa-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.qa-row:last-child { border-bottom: 0; }
+.qa-row-main { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.qa-row-name { font-weight: 500; overflow-wrap: anywhere; }
+.qa-row-sub { margin: 0; }
+.qa-row-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.qa-status { width: 20px; text-align: center; font-weight: 700; color: var(--text-dim); flex: none; }
+.qa-passed { color: var(--ok); }
+.qa-failed { color: var(--danger); }
+.qa-errors ul { margin: 4px 0 0; padding-left: 18px; }
+
+.qa-source { margin-top: 16px; }
+.qa-source pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; overflow: auto; font-family: var(--mono); font-size: 12.5px; max-height: 420px; }
+
+.qa-lines { list-style: none; margin: 8px 0 0; padding: 0; font-family: var(--mono); font-size: 12.5px; }
+.qa-line { display: flex; gap: 8px; padding: 3px 0; overflow-wrap: anywhere; }
+.qa-mark { width: 18px; flex: none; text-align: center; font-weight: 700; }
+.qa-tone-ok .qa-mark { color: var(--ok); }
+.qa-tone-bad { color: var(--danger); }
+.qa-tone-warn .qa-mark, .qa-tone-warn .qa-note { color: var(--warn); }
+.qa-tone-dim { color: var(--text-dim); }
+.qa-note { display: block; color: var(--text-dim); font-size: 12px; margin-top: 1px; }
+.qa-done { font-weight: 600; margin-top: 14px; }
+.qa-bad { color: var(--danger); font-weight: 600; }
+.qa-working { animation: qa-pulse 1.4s ease-in-out infinite; }
+@keyframes qa-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .qa-working { animation: none; } }
+
+.qa-detail { max-width: none; display: flex; flex-direction: column; height: 100%; }
+.qa-report { flex: 1 1 auto; min-height: 480px; width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
+
+.qa-check { display: flex; gap: 8px; align-items: baseline; margin: 8px 0 14px; font-size: 13.5px; }
+.qa-fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px 2px; margin: 0 0 14px; }
+.qa-textarea { min-height: 84px; width: 100%; resize: vertical; font: inherit; }
+
+.qa-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0 0 12px; }
+.qa-facts dt { color: var(--text-dim); }
+.qa-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .qa-row { flex-wrap: wrap; }
+  .qa-row-actions { width: 100%; justify-content: flex-end; }
+}

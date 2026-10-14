@@ -1,29 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { readdirSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import {
   FLOWS_DIR,
-  Recording,
-  Templates,
-  explore,
-  writeExplore,
   type Finding,
-  diagnose,
   renderFixBrief,
   writeReports,
   applyHeals,
-  createHealer,
-  saveRefreshed,
   type HealProposal,
-  type Healer,
-  applyDescription,
   applyUses,
-  describeFlow,
-  runAiTask,
-  writeDraft,
   extractSteps,
   findUses,
   parseRange,
@@ -31,7 +18,6 @@ import {
   type Flow,
   type UseMatch,
   describeLocator,
-  createRunDir,
   flowId,
   isAllowedTarget,
   notAllowedMessage,
@@ -42,18 +28,24 @@ import {
   formatErrors,
   initWorkspace,
   loadWorkspace,
-  newRunId,
-  runFlow,
-  saveFlow,
   selectFlows,
-  tracePathFor,
-  writeRunSummary,
-  type RunSummary,
   type StepResult,
 } from '@heapcode/qa';
 import { BrowserMissingError, PlaywrightDriver, installChromium } from '@heapcode/qa-playwright';
-import { createProvider, resolveCapabilities } from '@heapcode/core';
-import { ConfigStore, SecretsStore, configFile, profileContextWindow, secretsFile } from '@heapcode/host';
+import { ConfigStore, SecretsStore, configFile, secretsFile } from '@heapcode/host';
+import {
+  RecordingSession,
+  aiTask,
+  exploreSite,
+  findRun,
+  launchDriver,
+  prepare,
+  replayOnce,
+  resolveAgentModel,
+  runSuite,
+  saveFlow,
+  type AgentModel,
+} from '@heapcode/qa-host';
 
 /**
  * `heapcode qa …` — Heap QA from the terminal.
@@ -351,97 +343,54 @@ async function qaRun(args: string[]): Promise<number> {
   if (unknown.length) return fail(`No flow named ${unknown.join(', ')}. Flows: ${[...ws.flows.keys()].join(', ') || 'none — add one to flows/'}.`);
   if (flows.length === 0) return fail('No flows to run — add a .yaml file to flows/ (`heapcode qa init` makes an example).');
 
-  const runId = newRunId();
-  const env = process.env;
-  const baseTemplates = new Templates({ inputs: {}, secret: ws.secret, env, runId });
-  let baseUrl: string | undefined;
+  let prepared;
   try {
-    const raw = flags.baseUrl ?? ws.config.baseUrl;
-    baseUrl = raw === undefined ? undefined : baseTemplates.fill(raw).value;
+    prepared = prepare(ws, flags.baseUrl);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
+  const { runId, templates, baseUrl } = prepared;
 
   let driver: PlaywrightDriver;
   try {
-    driver = await PlaywrightDriver.launch({
-      channel: flags.browser ?? ws.config.browser.channel,
-      headless: flags.headed ? false : (ws.config.browser.headless ?? true),
-      timeout: ws.config.timeout,
-      targets: ws.config.targets,
-    });
+    driver = await launchDriver(ws, { browser: flags.browser, headless: flags.headed ? false : undefined });
   } catch (err) {
     return fail(err instanceof BrowserMissingError || err instanceof Error ? err.message : String(err));
   }
 
-  // Healing: similarity always (unless off); the agent model only with `heal: ai` and a model set up.
-  let healer: Healer | undefined;
-  const mode = flags.heal ? ws.config.heal : 'off';
   // One model for healing and for diagnosis; `heal: similarity` keeps both off it.
+  const mode = flags.heal ? ws.config.heal : 'off';
   const model = ws.config.heal === 'ai' && (flags.diagnose || mode === 'ai') ? await agentModel() : undefined;
-  if (mode !== 'off') {
-    healer = createHealer(
-      model
-        ? mode === 'ai'
-          ? {
-              agent: {
-                provider: model.provider,
-                model: model.model,
-                nativeToolCalls: model.nativeToolCalls,
-                contextWindow: model.contextWindow,
-                templates: baseTemplates,
-                // The step's row prints only when it ends; this says why it is taking a while.
-                onStart: (req) => say(`      … ${describeLocator(req.locator)} has moved or gone — ${model.model} is looking for it (up to 90s)`),
-              },
-            }
-          : {}
-        : {},
-    );
-  }
-
-  const runDir = createRunDir(ws.dir, runId);
-  const started = Date.now();
-  const summary: RunSummary = { runId, startedAt: new Date(started).toISOString(), durationMs: 0, dir: runDir, ...(baseUrl ? { baseUrl } : {}), passed: 0, failed: 0, flows: [] };
   const say = flags.json ? () => {} : (line: string) => console.log(line);
   say(`Running ${flows.length} flow${flows.length === 1 ? '' : 's'}${baseUrl ? ` against ${baseUrl}` : ''}\n`);
 
+  let outcome;
   try {
-    for (const [id, flow] of flows) {
-      say(`${flow.name}  (${flow.file})`);
-      const result = await runFlow(id, flow, {
-        driver,
-        library: ws.steps,
-        templates: baseTemplates.withInputs(flow.inputs),
-        baseUrl,
-        timeout: ws.config.timeout,
-        screenshots: 'every-step',
-        ...(flags.trace ? { tracePath: tracePathFor(runDir, id) } : {}),
-        onStep: (step) => say(stepLine(step)),
-        ...(healer ? { healer } : {}),
-        fingerprints: (source) => readFingerprints(ws.dir, source.id, source.kind),
-        refreshFingerprints: true,
-      });
-      // How the elements looked when this flow last passed — what healing compares with next time.
-      if (result.status === 'passed') saveRefreshed(ws.dir, result.refreshed);
-      else if (model && flags.diagnose) {
-        const guess = await diagnose(model.provider, model.model, result, AbortSignal.timeout(45_000));
-        if (guess) {
-          result.diagnosis = guess;
-          say(`  ? likely cause (a guess): ${guess.text}`);
-        }
-      }
-      summary.flows.push(saveFlow(runDir, result));
-      if (result.status === 'passed') summary.passed += 1;
-      else summary.failed += 1;
-      say(result.status === 'passed' ? `  ✓ passed in ${seconds(result.durationMs)}\n` : `  ✗ failed — ${result.error}\n`);
-    }
+    outcome = await runSuite({
+      ws,
+      flows,
+      runId,
+      templates,
+      ...(baseUrl ? { baseUrl } : {}),
+      driver,
+      ...(model ? { model } : {}),
+      heal: flags.heal,
+      diagnose: flags.diagnose,
+      trace: flags.trace,
+      events: {
+        onFlowStart: (_id, flow) => say(`${flow.name}  (${flow.file})`),
+        onStep: (_id, step) => say(stepLine(step)),
+        // The step's row prints only when it ends; this says why it is taking a while.
+        onHealStart: (_id, req, name) => say(`      … ${describeLocator(req.locator)} has moved or gone — ${name} is looking for it (up to 90s)`),
+        onDiagnosis: (_id, guess) => say(`  ? likely cause (a guess): ${guess.text}`),
+        onFlowEnd: (_id, result) => say(result.status === 'passed' ? `  ✓ passed in ${seconds(result.durationMs)}\n` : `  ✗ failed — ${result.error}\n`),
+      },
+    });
   } finally {
     await driver.close();
   }
-
-  summary.durationMs = Date.now() - started;
-  const file = writeRunSummary(summary);
-  const report = writeReports(summary);
+  const { summary, report, file } = outcome;
+  const runDir = summary.dir;
   if (flags.json) {
     console.log(JSON.stringify(summary, null, 2));
   } else {
@@ -472,14 +421,11 @@ async function qaExplore(args: string[]): Promise<number> {
   const ws = loadWorkspace(flags.dir);
   const configErrors = ws.errors.filter((e) => e.file === 'heapqa.yaml');
   if (configErrors.length) return fail(formatErrors(configErrors));
-  const runId = newRunId();
-  const templates = new Templates({ inputs: {}, secret: ws.secret, env: process.env, runId });
-  let baseUrl: string | undefined;
+  let prepared;
   let start: string;
   try {
-    const raw = flags.baseUrl ?? ws.config.baseUrl;
-    baseUrl = raw === undefined ? undefined : templates.fill(raw).value;
-    start = resolveUrl(flags.positional[0] ?? '/', baseUrl);
+    prepared = prepare(ws, flags.baseUrl);
+    start = resolveUrl(flags.positional[0] ?? '/', prepared.baseUrl);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
@@ -487,24 +433,24 @@ async function qaExplore(args: string[]): Promise<number> {
 
   let driver: PlaywrightDriver;
   try {
-    driver = await PlaywrightDriver.launch({ channel: flags.browser ?? ws.config.browser.channel, headless: !flags.headed, timeout: Math.min(ws.config.timeout, 5000), targets: ws.config.targets });
+    driver = await launchDriver(ws, { browser: flags.browser, headless: !flags.headed, timeout: Math.min(ws.config.timeout, 5000) });
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
   const say = flags.json ? () => {} : (line: string) => console.log(line);
   say(`Exploring from ${start}${flags.allowCommits ? ' — pressing commit-like buttons too' : ''}\n`);
-  const started = Date.now();
   const abort = new AbortController();
   const onSigint = (): void => abort.abort();
   process.once('SIGINT', onSigint);
-  let result;
+  let explored;
   try {
-    result = await explore({
+    explored = await exploreSite({
+      ws,
+      runId: prepared.runId,
+      templates: prepared.templates,
+      ...(prepared.baseUrl ? { baseUrl: prepared.baseUrl } : {}),
+      start,
       driver,
-      startUrl: start,
-      ...(baseUrl ? { baseUrl } : {}),
-      targets: ws.config.targets,
-      templates,
       ...(flags.pages !== undefined ? { maxPages: flags.pages } : {}),
       ...(flags.depth !== undefined ? { maxDepth: flags.depth } : {}),
       forms: flags.forms,
@@ -518,7 +464,7 @@ async function qaExplore(args: string[]): Promise<number> {
     process.off('SIGINT', onSigint);
     await driver.close();
   }
-  const { dir, report } = writeExplore(ws.dir, runId, result, { start, startedAt: new Date(started).toISOString(), durationMs: Date.now() - started });
+  const { result, dir, report } = explored;
   const high = result.findings.filter((f: Finding) => f.severity === 'high').length;
   if (flags.json) {
     console.log(readFileSync(join(dir, 'explore.json'), 'utf8'));
@@ -529,19 +475,6 @@ async function qaExplore(args: string[]): Promise<number> {
   }
   if (flags.open) openFile(report);
   return high ? 1 : 0;
-}
-
-/** The newest run in results/, or the one named. */
-function findRun(dir: string, runId: string | undefined): { runId: string; summary: RunSummary } | string {
-  const resultsDir = join(dir, 'results');
-  const runs = existsSync(resultsDir) ? readdirSync(resultsDir).filter((d) => !d.endsWith('-explore') && existsSync(join(resultsDir, d, 'run.json'))).sort() : [];
-  const id = runId ?? runs.at(-1);
-  if (!id) return 'No runs yet — `heapcode qa run` first.';
-  const file = join(resultsDir, id, 'run.json');
-  if (!existsSync(file)) return `No run ${id} in results/.`;
-  const summary = JSON.parse(readFileSync(file, 'utf8')) as RunSummary;
-  // The folder may have moved since; the report is written where it is now.
-  return { runId: id, summary: { ...summary, dir: join(resultsDir, id) } };
 }
 
 function qaReport(args: string[]): number {
@@ -588,20 +521,8 @@ function openFile(path: string): void {
 }
 
 /** The agent role's model, ready to call — or undefined when none is set up. */
-async function agentModel(): Promise<{ provider: ReturnType<typeof createProvider>; model: string; nativeToolCalls: boolean; contextWindow: number; maxTokens?: number } | undefined> {
-  const config = new ConfigStore(configFile());
-  const profile = await config.resolve('agent').catch(() => undefined);
-  if (!profile?.model) return undefined;
-  const apiKey = await new SecretsStore(secretsFile()).getApiKey(profile.name);
-  const provider = createProvider(profile, apiKey);
-  const contextWindow = (await provider.contextLengthFor?.(profile.model).catch(() => undefined)) ?? profileContextWindow(profile);
-  return {
-    provider,
-    model: profile.model,
-    nativeToolCalls: resolveCapabilities(profile).nativeToolCalls,
-    contextWindow,
-    ...(profile.maxTokens ? { maxTokens: profile.maxTokens } : {}),
-  };
+function agentModel(): Promise<AgentModel | undefined> {
+  return resolveAgentModel(new ConfigStore(configFile()), new SecretsStore(secretsFile()));
 }
 
 function describeHeal(h: HealProposal): string {
@@ -644,67 +565,34 @@ async function qaRecord(args: string[]): Promise<number> {
   const configErrors = ws.errors.filter((e) => e.file === 'heapqa.yaml');
   if (configErrors.length) return fail(formatErrors(configErrors));
 
-  const baseTemplates = new Templates({ inputs: {}, secret: ws.secret, env: process.env, runId: newRunId() });
   let baseUrl: string | undefined;
   let start: string;
   try {
-    const raw = flags.baseUrl ?? ws.config.baseUrl;
-    baseUrl = raw === undefined ? undefined : baseTemplates.fill(raw).value;
+    baseUrl = prepare(ws, flags.baseUrl).baseUrl;
     start = resolveUrl(flags.positional[0] ?? '/', baseUrl);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
   if (!isAllowedTarget(start, ws.config.targets)) return fail(notAllowedMessage(start));
 
-  let driver: PlaywrightDriver;
-  try {
-    driver = await PlaywrightDriver.launch({
-      channel: flags.browser ?? ws.config.browser.channel,
-      headless: false,
-      timeout: ws.config.timeout,
-      targets: ws.config.targets,
-      exitOnSigint: false,
-    });
-  } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err));
-  }
-
-  const recording = new Recording(baseUrl);
-  const hinted = new Set<string>();
-  const say = (step: ReturnType<Recording['add']>): void => {
-    if (!step) return;
-    console.log(`  + ${recording.stepCount}  ${stepLabel(step)}`);
-    // A known reusable step, just done by hand: say so now, offer it at the end.
-    const { steps, inputs } = recording.peek();
-    for (const m of findUses(steps, ws.steps, inputs)) {
-      const key = `${m.use}@${m.from}`;
-      if (hinted.has(key)) continue;
-      hinted.add(key);
-      console.log(`    ↳ steps ${m.from}–${m.to} are your reusable step \`${m.use}\` — you'll be offered it when you finish`);
-    }
-  };
   let finish: () => void = () => {};
   const finished = new Promise<void>((resolve) => (finish = resolve));
   const onSigint = (): void => finish();
   process.once('SIGINT', onSigint);
-
-  let stop: () => Promise<void> = async () => {};
-  let title = '';
+  let session: RecordingSession;
   try {
-    stop = await driver.record({
-      event: (event) => {
-        if (event.kind === 'done') finish();
-        else say(recording.add(event));
-        return recording.stepCount;
+    session = await RecordingSession.start(
+      ws,
+      { start, ...(baseUrl ? { baseUrl } : {}), ...(flags.browser ? { browser: flags.browser } : {}) },
+      {
+        onStep: (step, n) => console.log(`  + ${n}  ${stepLabel(step)}`),
+        // A known reusable step, just done by hand: say so now, offer it at the end.
+        onKnownStep: (m) => console.log(`    ↳ steps ${m.from}–${m.to} are your reusable step \`${m.use}\` — you'll be offered it when you finish`),
+        onFinished: () => finish(),
       },
-      navigated: (url) => say(recording.navigated(url)),
-      closed: () => finish(),
-    });
-    say(recording.start(start));
-    title = (await driver.open(start)).title;
+    );
   } catch (err) {
     process.off('SIGINT', onSigint);
-    await driver.close();
     return fail(err instanceof Error ? err.message : String(err));
   }
   console.log(
@@ -713,10 +601,9 @@ async function qaRecord(args: string[]): Promise<number> {
   );
   await finished;
   process.off('SIGINT', onSigint);
-  await stop();
-  await driver.close();
+  await session.stop();
 
-  if (recording.stepCount <= 1) {
+  if (session.stepCount <= 1) {
     console.log('Nothing was recorded — no flow saved.');
     return 0;
   }
@@ -724,12 +611,9 @@ async function qaRecord(args: string[]): Promise<number> {
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
   try {
-    const suggested = title.trim().toLowerCase() || 'recording';
+    const suggested = session.title.trim().toLowerCase() || 'recording';
     const name = flags.name ?? ((await rl?.question(`\nName this flow [${suggested}]: `))?.trim() || suggested);
-    const finished = recording.finish(name);
-    const { secrets } = finished;
-    let { flow, fingerprints } = finished;
-    const known = findUses(flow.steps, ws.steps, flow.inputs);
+    const { flow, fingerprints, secrets, known } = session.finish(name);
     const accepted: UseMatch[] = [];
     for (const m of known) {
       const answer = rl ? (await rl.question(`Steps ${m.from}–${m.to} are your reusable step \`${m.use}\`. Use it instead? [Y/n]: `)).trim().toLowerCase() : 'n';
@@ -738,12 +622,9 @@ async function qaRecord(args: string[]): Promise<number> {
         for (const [ours, theirs] of m.secrets) console.log(`  Note: \`${m.use}\` types secret ${theirs} where you typed ${ours}.`);
       }
     }
-    if (accepted.length) ({ flow, fingerprints } = applyUses(flow, fingerprints, accepted));
-    else if (known.length && !rl) console.log(`Steps ${known.map((m) => `${m.from}–${m.to} (${m.use})`).join(', ')} repeat reusable steps; edit the flow to \`use:\` them.`);
-    mkdirSync(join(ws.dir, FLOWS_DIR), { recursive: true });
-    const id = flowId(name, ws.flows.keys());
-    const file = writeFlow(ws.dir, id, flow, fingerprints);
-    console.log(`Saved ${shown(file)} — ${flow.steps.length} steps.`);
+    if (!accepted.length && known.length && !rl) console.log(`Steps ${known.map((m) => `${m.from}–${m.to} (${m.use})`).join(', ')} repeat reusable steps; edit the flow to \`use:\` them.`);
+    const saved = saveFlow(ws, flow, fingerprints, accepted);
+    console.log(`Saved ${shown(saved.file)} — ${saved.flow.steps.length} steps.`);
 
     const secretNames = Object.keys(secrets);
     if (secretNames.length) {
@@ -759,30 +640,13 @@ async function qaRecord(args: string[]): Promise<number> {
 
     // Prove it: play it back once, with nobody at the keyboard.
     console.log('\nPlaying it back once…');
-    const replay = await PlaywrightDriver.launch({
-      channel: flags.browser ?? ws.config.browser.channel,
-      headless: true,
-      timeout: ws.config.timeout,
-      targets: ws.config.targets,
-    });
-    try {
-      const result = await runFlow(id, flow, {
-        driver: replay,
-        library: ws.steps,
-        templates: new Templates({ inputs: flow.inputs, secret: (n) => ws.secret(n) ?? secrets[n], env: process.env, runId: newRunId() }),
-        baseUrl,
-        timeout: ws.config.timeout,
-        screenshots: 'none',
-      });
-      if (result.status === 'passed') {
-        console.log(`✓ It plays back. Run it any time with \`heapcode qa run ${id}\`.`);
-        return 0;
-      }
-      console.log(`✗ Playback failed — ${result.error}\nThe flow is saved; edit ${shown(file)} or record it again.`);
-      return 1;
-    } finally {
-      await replay.close();
+    const result = await replayOnce(ws, saved.id, saved.flow, { ...(baseUrl ? { baseUrl } : {}), ...(flags.browser ? { browser: flags.browser } : {}), secrets });
+    if (result.status === 'passed') {
+      console.log(`✓ It plays back. Run it any time with \`heapcode qa run ${saved.id}\`.`);
+      return 0;
     }
+    console.log(`✗ Playback failed — ${result.error}\nThe flow is saved; edit ${shown(saved.file)} or record it again.`);
+    return 1;
   } finally {
     rl?.close();
   }
@@ -803,49 +667,32 @@ async function qaDo(args: string[]): Promise<number> {
   if (!model) {
     return fail('No model is set up. Add a connection with `heapcode connection add`, then `heapcode model set agent <connection> <model>`.');
   }
-  const { provider, contextWindow } = model;
-
-  const runId = newRunId();
-  const templates = new Templates({ inputs: {}, secret: ws.secret, env: process.env, runId });
-  let baseUrl: string | undefined;
+  let prepared;
   try {
-    const raw = flags.baseUrl ?? ws.config.baseUrl;
-    baseUrl = raw === undefined ? undefined : templates.fill(raw).value;
-    resolveUrl(flags.url ?? '/', baseUrl);
+    prepared = prepare(ws, flags.baseUrl);
+    resolveUrl(flags.url ?? '/', prepared.baseUrl);
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
   }
 
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
-  const launch = (headless: boolean): Promise<PlaywrightDriver> =>
-    PlaywrightDriver.launch({ channel: flags.browser ?? ws.config.browser.channel, headless, timeout: ws.config.timeout, targets: ws.config.targets });
-  let driver: PlaywrightDriver;
-  try {
-    driver = await launch(!flags.headed);
-  } catch (err) {
-    rl?.close();
-    return fail(err instanceof Error ? err.message : String(err));
-  }
-
   console.log(`${model.model} is doing: ${task}\n`);
   const abort = new AbortController();
   const onSigint = (): void => abort.abort();
   process.once('SIGINT', onSigint);
-  let result;
+  let done;
   try {
-    result = await runAiTask({
-      driver,
-      provider,
-      model: model.model,
-      nativeToolCalls: model.nativeToolCalls,
-      contextWindow,
-      ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
+    done = await aiTask({
+      ws,
+      model,
       task,
-      startUrl: flags.url ?? '/',
-      baseUrl,
-      secretNames: ws.secretNames,
-      templates,
+      start: flags.url ?? '/',
+      ...(prepared.baseUrl ? { baseUrl: prepared.baseUrl } : {}),
+      templates: prepared.templates,
+      ...(flags.name ? { name: flags.name } : {}),
+      ...(flags.browser ? { browser: flags.browser } : {}),
+      headless: !flags.headed,
       confirm: async (what) => {
         if (flags.yes) return true;
         if (!rl) {
@@ -855,60 +702,28 @@ async function qaDo(args: string[]): Promise<number> {
         const answer = (await rl.question(`  ? ${what} — this looks like it commits something. Allow? [y/N]: `)).trim().toLowerCase();
         return answer === 'y' || answer === 'yes';
       },
-      events: { onAction: (line) => console.log(`  • ${line}`) },
+      onAction: (line) => console.log(`  • ${line}`),
       signal: abort.signal,
     });
   } catch (err) {
-    rl?.close();
-    process.off('SIGINT', onSigint);
-    await driver.close();
     return fail(err instanceof Error ? err.message : String(err));
-  }
-  process.off('SIGINT', onSigint);
-  await driver.close();
-
-  const usable = result.recording.flow.steps.filter((s) => s.kind !== 'goto').length;
-  console.log(`\n${result.summary || `(the run ended: ${result.outcome})`}`);
-  if (result.outcome !== 'done' || usable === 0) {
+  } finally {
+    process.off('SIGINT', onSigint);
     rl?.close();
-    console.log(result.outcome === 'stopped' ? 'Stopped — no flow saved.' : 'The task was not completed, so no flow was saved.');
+  }
+  console.log(`\n${done.summary || `(the run ended: ${done.outcome})`}`);
+  if (done.notSaved) {
+    console.log(done.notSaved);
     return 1;
   }
-
-  try {
-    let flow = result.recording.flow;
-    const described = await describeFlow(provider, model.model, task, flow);
-    if (described) flow = applyDescription(flow, described);
-    const name = flags.name ?? described?.name ?? task.toLowerCase().slice(0, 60);
-    flow = { ...flow, name };
-    const id = flowId(name, ws.flows.keys());
-    const hasChecks = flow.steps.some((s) => s.kind === 'expect');
-
-    console.log('\nPlaying it back without the AI…');
-    const replay = await launch(true);
-    try {
-      const played = await runFlow(id, flow, {
-        driver: replay,
-        library: ws.steps,
-        templates: templates.withInputs(flow.inputs),
-        baseUrl,
-        timeout: ws.config.timeout,
-        screenshots: 'none',
-      });
-      if (played.status !== 'passed') {
-        const draft = writeDraft(ws.dir, id, flow);
-        console.log(`✗ It did not replay — ${played.error}\nSaved as a draft to look at: ${shown(draft)} (not run by \`heapcode qa run\`).`);
-        return 1;
-      }
-    } finally {
-      await replay.close();
-    }
-    const file = writeFlow(ws.dir, id, flow, result.recording.fingerprints);
-    console.log(`✓ Saved ${shown(file)} — ${flow.steps.length} steps, and it replays.${hasChecks ? '' : ' It has no checks yet; add an `expect` so it can fail when the app is wrong.'}`);
-    return 0;
-  } finally {
-    rl?.close();
+  if (done.draft) {
+    console.log(`✗ It did not replay — ${done.draft.error}\nSaved as a draft to look at: ${shown(done.draft.file)} (not run by \`heapcode qa run\`).`);
+    return 1;
   }
+  const saved = done.saved!;
+  const hasChecks = saved.flow.steps.some((s) => s.kind === 'expect');
+  console.log(`✓ Saved ${shown(saved.file)} — ${saved.flow.steps.length} steps, and it replays.${hasChecks ? '' : ' It has no checks yet; add an `expect` so it can fail when the app is wrong.'}`);
+  return 0;
 }
 
 function qaExtract(args: string[]): number {

@@ -19,7 +19,7 @@ import {
   type Workspace,
 } from '@heapcode/qa';
 import type { PlaywrightDriver } from '@heapcode/qa-playwright';
-import type { HostSession } from '@heapcode/web-host';
+import type { HostSession, WorkspaceEvents } from '@heapcode/web-host';
 import {
   QA_METHODS,
   QA_PROTOCOL_VERSION,
@@ -39,6 +39,8 @@ import { RecordingSession, aiTask, replayOnce, saveFlow } from './work.js';
 export interface QaSessionDeps {
   /** The workspace `heapcode web` runs in; the test folder is found in or under it. */
   root: string;
+  /** Heap Code's folder switches; Heap QA follows them (after any job in progress). */
+  workspaceEvents?: WorkspaceEvents;
   config: ConfigStore;
   secrets: SecretsStore;
   lan: boolean;
@@ -65,8 +67,24 @@ export class QaSession implements HostSession {
   private pendingRecording: ReturnType<RecordingSession['finish']> | undefined;
   private recordContext: { baseUrl?: string } = {};
 
+  private root: string;
+  private pendingRoot: string | undefined;
+
   constructor(private readonly deps: QaSessionDeps) {
+    this.root = deps.root;
     this.folder = findFolder(deps.root);
+    deps.workspaceEvents?.on((root) => {
+      // Never mid-job: the switch waits for the run to end (see finishJob).
+      if (this.busy) this.pendingRoot = root;
+      else this.useRoot(root);
+    });
+  }
+
+  /** Point Heap QA at another project: its test folder, or none yet. */
+  private useRoot(root: string): void {
+    this.root = root;
+    this.folder = findFolder(root);
+    void this.pushState();
   }
 
   attach(ui: RpcPeer): void {
@@ -74,14 +92,14 @@ export class QaSession implements HostSession {
     ui.onRequest(QA_METHODS.hello, async () => ({ version: QA_PROTOCOL_VERSION, state: await this.state() }));
     ui.onRequest(QA_METHODS.state, async () => this.state());
     ui.onRequest(QA_METHODS.init, async () => {
-      const folder = this.folder ?? join(this.deps.root, 'heapqa');
+      const folder = this.folder ?? join(this.root, 'heapqa');
       initWorkspace(folder);
       this.folder = folder;
       return this.pushState();
     });
     ui.onRequest(QA_METHODS.setFolder, async (raw) => {
       const path = String((raw as { path?: unknown }).path ?? '');
-      const full = resolve(this.deps.root, path);
+      const full = resolve(this.root, path);
       if (!existsSync(join(full, CONFIG_FILE))) throw new Error(`${path} has no ${CONFIG_FILE}.`);
       this.folder = full;
       return this.pushState();
@@ -155,8 +173,8 @@ export class QaSession implements HostSession {
   async state(): Promise<QaState> {
     const profile = await this.deps.config.resolve('agent').catch(() => undefined);
     const base: QaState = {
-      folderName: basename(this.folder ?? this.deps.root),
-      suggestedFolder: join(this.deps.root, 'heapqa'),
+      folderName: basename(this.folder ?? this.root),
+      suggestedFolder: join(this.root, 'heapqa'),
       errors: [],
       heal: 'ai',
       flows: [],
@@ -200,6 +218,12 @@ export class QaSession implements HostSession {
   private finishJob(): void {
     this.busy = undefined;
     this.abort = undefined;
+    if (this.pendingRoot) {
+      const root = this.pendingRoot;
+      this.pendingRoot = undefined;
+      this.useRoot(root);
+      return;
+    }
     void this.pushState();
   }
 

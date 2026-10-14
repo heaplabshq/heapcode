@@ -122,7 +122,8 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
         {
           path: '/qa',
           staticDir: qaStaticDir,
-          createSession: (deps) => new QaSession({ root: deps.root, config: deps.config, secrets: deps.secrets, lan: deps.lan }),
+          createSession: (deps) =>
+            new QaSession({ root: deps.root, config: deps.config, secrets: deps.secrets, lan: deps.lan, ...(deps.workspaceEvents ? { workspaceEvents: deps.workspaceEvents } : {}) }),
         },
       ],
     });

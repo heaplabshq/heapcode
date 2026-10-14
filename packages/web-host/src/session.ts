@@ -162,7 +162,7 @@ import { attachmentPath } from './attachmentRoute.js';
 import { connectionModels, probeConnection } from './models.js';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
-import { listFolders, type WorkspaceStore } from './workspaces.js';
+import { listFolders, type WorkspaceEvents, type WorkspaceStore } from './workspaces.js';
 import {
   BROWSER_TOOL_NAMES,
   classifyBrowserAction,
@@ -246,6 +246,8 @@ export interface WebSessionDeps {
    * rather than offering one that could not finish.
    */
   mcpLogins?: McpLoginRegistry;
+  /** Told when this session switches folder — see WorkspaceEvents. */
+  workspaceEvents?: WorkspaceEvents;
   /**
    * Opens the daemon connection. Injected rather than called directly so tests
    * can point at an in-process server, and so the CLI can supply the path to
@@ -626,6 +628,7 @@ export class WebSession {
     this.permissions = undefined;
 
     this.root = target;
+    this.deps.workspaceEvents?.changed(target);
     // A conversation belongs to the workspace it happened in — carrying one
     // across would file this repo's turns under the other one's history.
     this.conversation = undefined;

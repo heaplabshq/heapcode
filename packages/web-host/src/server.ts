@@ -10,6 +10,7 @@ import { CALLBACK_PATH, callbackPage, createMcpLoginRegistry, describeCallbackEr
 import { WebSession, type WebSessionDeps } from './session.js';
 import { serveStatic } from './static.js';
 import { webSocketDuplex } from './wsDuplex.js';
+import { WorkspaceEvents } from './workspaces.js';
 
 export const DEFAULT_PORT = 7411;
 
@@ -130,7 +131,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
    * LAN-reached page must still be signed in from the machine running this.
    */
   const mcpLogins = createMcpLoginRegistry(() => `http://127.0.0.1:${boundPort()}`);
-  const deps = { ...opts, lan: !isLoopback(host), mcpLogins };
+  const deps = { ...opts, lan: !isLoopback(host), mcpLogins, workspaceEvents: new WorkspaceEvents() };
   const session = opts.createSession ? opts.createSession(deps) : new WebSession(deps);
 
   const mounts: MountedProduct[] = [...(opts.mount ? [opts.mount] : []), ...(opts.mounts ?? [])];

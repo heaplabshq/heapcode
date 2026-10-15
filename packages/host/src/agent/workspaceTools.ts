@@ -412,6 +412,15 @@ export class WorkspaceToolExecutor {
               'Provide the exact existing code (copy it from read_file output, without the line numbers).',
           );
         }
+        // Reported as a failure, not "Edited": a model told it succeeded at
+        // changing nothing goes on doing it (the agent loop counts failures).
+        if (next === current) {
+          return fail(
+            `The edit changed nothing in ${a.path}. ` +
+              'The file already reads that way, so nothing was written — this edit has probably been applied already. ' +
+              'Re-read the file before changing it again.',
+          );
+        }
         const beforeError = await checkSyntax(a.path ?? '', current);
         const afterError = !beforeError ? await checkSyntax(a.path ?? '', next) : undefined;
         if (afterError) {
@@ -584,6 +593,13 @@ export class WorkspaceToolExecutor {
             );
           }
           text = next;
+        }
+        if (text === original) {
+          return fail(
+            `The ${edits.length} edits changed nothing in ${a.path}. ` +
+              'The file already reads that way, so nothing was written — this edit has probably been applied already. ' +
+              'Re-read the file before changing it again.',
+          );
         }
         const beforeError = await checkSyntax(a.path ?? '', original);
         const afterError = !beforeError ? await checkSyntax(a.path ?? '', text) : undefined;

@@ -238,6 +238,12 @@ const CONTINUE_NUDGE =
  * Says what happened and how to make it stick, because the automatic recovery
  * costs a round trip on every run until the profile is changed.
  */
+/** Calls in a row that failed or changed nothing: the model is told at the first, the run ends at the second. */
+const FRUITLESS_NUDGE = 5;
+const FRUITLESS_STOP = 10;
+/** Changing calls that may succeed on a second identical try — they depend on the world outside the files. */
+const RETRYABLE_TOOLS = new Set(['run_command', 'run_tests']);
+
 const TOOL_PROTOCOL_FALLBACK_NOTICE =
   'This model rejected native tool calling, so heapcode switched to its text-based tool protocol ' +
   'for the rest of this run. Tool support comes from the model\'s chat template, so this is a ' +
@@ -692,6 +698,22 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const cacheableLookup = (tool: ToolDefinition): boolean =>
     tool.permission === 'read' || tool.name === 'web_search' || tool.name === 'fetch_url';
 
+  /**
+   * Calls that change things, and failed — so the same call is not sent again
+   * while nothing has changed. The look-up cache's counterpart: a model stuck
+   * on an edit whose search text is not in the file will send that exact edit
+   * thirty times, each failing the same way, each costing a turn.
+   */
+  const failedChanges = new Map<string, { at: number; result: ToolResult }>();
+  /** The last call that changed something successfully — what makes a failed call worth retrying. */
+  let lastChangeAt = -1;
+  /**
+   * Calls in a row that failed or changed nothing. Successful changes reset
+   * it; successful look-ups do not, since read-then-fail-to-edit is exactly
+   * the circle this watches for. A refusal by the person is not counted.
+   */
+  let fruitless = 0;
+
   const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
     // Loop-owned bookkeeping, handled before the host roundtrip: the list is
     // this run's state, not workspace state, so no host has an executor for
@@ -741,6 +763,25 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       return repeated;
     }
 
+    // Commands may depend on the outside world (a server coming up), so a
+    // failed one can fairly be tried again; an edit cannot.
+    const changeKey =
+      !cacheableLookup(tool) && !RETRYABLE_TOOLS.has(call.name) ? `${call.name}:${JSON.stringify(call.args ?? {})}` : undefined;
+    const failedBefore = changeKey ? failedChanges.get(changeKey) : undefined;
+    if (failedBefore && failedBefore.at > lastChangeAt) {
+      const again: ToolResult = {
+        id: call.id,
+        name: call.name,
+        isError: true,
+        content:
+          'You already made this exact call and it failed, and nothing has changed since — so it would fail ' +
+          'the same way, and it was not run again. Its error was:\n\n' +
+          failedBefore.result.content +
+          '\n\nChange the approach: re-read the file for its current text, or make a different change.',
+      };
+      return settleFruitless(again, false);
+    }
+
     let result: ToolResult;
     const decision =
       tool.permission === 'read' ? true : await opts.requestPermission(call, tool);
@@ -787,10 +828,42 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     // `tool_call_id`") on the *next* request, so every session died the first
     // time the agent ran a shell command. Restamp here, once, for every host.
     result = { ...result, id: call.id };
-    events.onToolResult(result);
-    return result;
+    if (!allowed) {
+      events.onToolResult(result);
+      return result;
+    }
+    if (changeKey && result.isError) failedChanges.set(changeKey, { at, result });
+    if (!cacheableLookup(tool) && !result.isError) lastChangeAt = at;
+    return settleFruitless(result, !cacheableLookup(tool) && !result.isError);
   };
 
+  /**
+   * Count a result toward the run of calls that got nowhere, telling the model
+   * at FRUITLESS_NUDGE and ending the run at FRUITLESS_STOP — a stuck agent
+   * otherwise spins until its step budget, minutes later.
+   */
+  const settleFruitless = (result: ToolResult, changedSomething: boolean): ToolResult => {
+    if (changedSomething) fruitless = 0;
+    else if (result.isError) fruitless += 1;
+    let shown = result;
+    if (result.isError && fruitless === FRUITLESS_NUDGE) {
+      shown = {
+        ...result,
+        content:
+          `${result.content}\n\nThat is ${FRUITLESS_NUDGE} calls in a row that failed or changed nothing. ` +
+          'Stop repeating the same kind of attempt. Re-read what you are changing, rethink the approach, ' +
+          'or ask the user if you are blocked.',
+      };
+    }
+    events.onToolResult(shown);
+    if (fruitless >= FRUITLESS_STOP) {
+      throw new Error(
+        `Stopped: ${FRUITLESS_STOP} tool calls in a row failed or changed nothing, so the agent was going in circles. ` +
+          'Look at the last error above, then ask again — perhaps with a hint, or with a different model for this role.',
+      );
+    }
+    return shown;
+  };
   let repairs = 0;
   let nudges = 0;
   let finishReminderSent = false;

@@ -45,3 +45,20 @@ describe('Save to workspace', () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 });
+
+describe('Open in new tab, in the desktop app', () => {
+  it('hands the page to the host to open in the system browser, rather than a window it would be refused', async () => {
+    const onOpenInBrowser = vi.fn();
+    const open = vi.spyOn(window, 'open');
+    render(
+      <Preview artifacts={[META as never]} loadArtifact={() => Promise.resolve(ARTIFACT as never)} onSave={() => {}} onSelect={() => {}} onOpenInBrowser={onOpenInBrowser} />,
+    );
+    fireEvent.click(await screen.findByText('Open in new tab'));
+    expect(open).not.toHaveBeenCalled();
+    const [title, html] = onOpenInBrowser.mock.calls[0]! as [string, string];
+    expect(title).toBe('Progress Tracker');
+    // Still behind the sandboxed frame, as in the panel.
+    expect(html).toMatch(/<iframe[^>]+sandbox="allow-scripts"/);
+    expect(html).toContain('srcdoc="');
+  });
+});

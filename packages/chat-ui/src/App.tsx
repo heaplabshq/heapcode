@@ -668,6 +668,14 @@ export function App(): JSX.Element {
               loadArtifact={(id, version) =>
                 client.request<ChatArtifactResult>(CHAT_METHODS.artifact, { id, version })
               }
+              // The desktop app opens no windows of its own: its system browser instead.
+              {...(desktopBridge()
+                ? {
+                    onOpenInBrowser: (title: string, html: string) => {
+                      void client.request(CHAT_METHODS.openInBrowser, { title, html }).catch((e: Error) => setError(e.message));
+                    },
+                  }
+                : {})}
               onSaveArtifact={(id, path, version) => {
                 client
                   .request(CHAT_METHODS.saveArtifact, { id, path, version })

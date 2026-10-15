@@ -52,7 +52,7 @@ import {
 } from './protocol.js';
 import { exploreSite, findRun, launchDriver, listRuns, prepare, resolveAgentModel, runSuite } from './orchestrate.js';
 import { RecordingSession, replayOnce, saveFlow } from './work.js';
-import { openFile } from './openFile.js';
+import { openFile } from '@heapcode/web-host';
 import { AskConversation } from './ask.js';
 import { agentEventStream } from './agentEvents.js';
 

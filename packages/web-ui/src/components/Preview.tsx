@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Empty } from './Empty.js';
 import type { UiArtifactMeta, UiArtifactResult } from '@heapcode/web-host/protocol';
-import { SANDBOX, buildFrameDocument, mountStandalone } from '../artifactFrame.js';
+import { SANDBOX, buildFrameDocument, mountStandalone, standaloneDocument } from '../artifactFrame.js';
 import { renderMarkdown } from '../markdown.js';
 
 export interface PreviewProps {
   artifacts: UiArtifactMeta[];
   loadArtifact(id: string, version?: number): Promise<UiArtifactResult>;
   onSave(id: string, path: string, version?: number): void;
+  /**
+   * Open the artifact's full page somewhere other than a window of this page —
+   * the desktop app's system browser. Unset in a browser, where a new tab works.
+   */
+  onOpenInBrowser?(title: string, html: string): void;
   /** Set when a chip or the panel asked for a specific artifact. */
   selectedId?: string;
   onSelect(id: string): void;
@@ -116,6 +121,7 @@ export function Preview(props: PreviewProps): JSX.Element {
             <button
               className="btn"
               onClick={() => {
+                if (props.onOpenInBrowser) return props.onOpenInBrowser(artifact.title, standaloneDocument(artifact.title, srcDoc));
                 // Opened synchronously in the handler, or the popup blocker
                 // takes it. `noopener` is not passed because the handle is
                 // what we write into; the reference back is cut instead.

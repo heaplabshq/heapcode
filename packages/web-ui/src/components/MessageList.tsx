@@ -20,6 +20,11 @@ import { WorkingIndicator } from './WorkingIndicator.js';
 const WINDOW = 60;
 const STEP = 60;
 
+/** Within this many pixels of the end counts as "at the bottom", and the list follows the stream. */
+const PIN_PX = 60;
+/** How long after the person's own scrolling the list waits before following again. */
+const SETTLE_MS = 180;
+
 export interface MessageListProps {
   transcript: Transcript;
   /** Clicking a path in a tool chip opens it in the workspace panel. */
@@ -58,7 +63,6 @@ export function MessageList({
   hideTaskId,
   empty,
 }: MessageListProps): JSX.Element {
-  const end = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -73,10 +77,40 @@ export function MessageList({
   // because the transcript is the record of what each turn set out to do.
   const shown = hideTaskId ? windowed.filter((item) => item.id !== hideTaskId) : windowed;
 
+  /**
+   * When the person last moved the list themselves — wheel, trackpad, touch,
+   * keys or the scrollbar. A trackpad's glide keeps sending wheel events after
+   * the fingers lift, so this stays fresh for the whole gesture.
+   */
+  const lastUserScroll = useRef(0);
+  const touched = (): void => {
+    lastUserScroll.current = performance.now();
+  };
+
   // Follow the stream, but stop fighting the user the moment they scroll up to
   // read something — and resume when they come back to the bottom.
-  useEffect(() => {
-    if (pinned) end.current?.scrollIntoView({ block: 'end' });
+  //
+  // Never mid-gesture: following on every streamed chunk while a glide was
+  // still carrying the list down made the two fight — the text shook for a
+  // second or two after reaching the bottom. Before paint (a layout effect),
+  // and on this scroller alone (not scrollIntoView, which also moves whatever
+  // contains it), so no frame shows the new text in the wrong place.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!pinned || !el) return;
+    const quiet = performance.now() - lastUserScroll.current;
+    if (quiet >= SETTLE_MS) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    // Mid-gesture: catch up once it has settled. Not re-measured — text that
+    // arrived during the glide has grown the gap — and not needed: scrolling
+    // up meanwhile unpins, and unpinning cancels this timer.
+    const timer = setTimeout(() => {
+      const now = scroller.current;
+      if (now) now.scrollTop = now.scrollHeight;
+    }, SETTLE_MS - quiet);
+    return () => clearTimeout(timer);
   }, [transcript, pinned, busy]);
 
   // Opening a different conversation is a different transcript; the window has
@@ -131,10 +165,14 @@ export function MessageList({
       role="log"
       aria-label="Conversation"
       aria-live="off"
+      onWheel={touched}
+      onTouchMove={touched}
+      onPointerDown={touched}
+      onKeyDown={touched}
       onScroll={() => {
         const el = scroller.current;
         if (!el) return;
-        setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
+        setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < PIN_PX);
       }}
     >
       {total === 0 && (
@@ -190,7 +228,6 @@ export function MessageList({
         </div>
       )}
       {busy && <WorkingIndicator activity={activityOf(transcript)} startedAt={runStartedAt} />}
-      <div ref={end} />
     </div>
   );
 }

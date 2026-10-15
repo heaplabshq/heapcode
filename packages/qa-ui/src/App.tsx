@@ -914,10 +914,11 @@ function Record({ state, job, begin, call, onDone }: { state: QaState; job?: Job
     await call(QA_METHODS.recordDiscard);
     setStopped(undefined);
   };
-  // Done pressed in the browser: go straight to saving.
+  // Done pressed in the browser: go straight to saving. Keyed on the job
+  // finishing only — the other values are read at that moment, not watched.
   useEffect(() => {
     if (recording && job?.kind === 'record' && job.done === 'finished' && !stopped) void stop();
-  }, [job?.done]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [job?.done]);
 
   if (saved) {
     return (

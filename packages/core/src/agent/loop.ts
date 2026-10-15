@@ -241,6 +241,9 @@ const CONTINUE_NUDGE =
 /** Calls in a row that failed or changed nothing: the model is told at the first, the run ends at the second. */
 const FRUITLESS_NUDGE = 5;
 const FRUITLESS_STOP = 10;
+/** Calls in a row that only repeated earlier ones: told at the first, stopped at the second. */
+const REPEAT_NUDGE = 3;
+const REPEAT_STOP = 8;
 /** Changing calls that may succeed on a second identical try — they depend on the world outside the files. */
 const RETRYABLE_TOOLS = new Set(['run_command', 'run_tests']);
 
@@ -719,6 +722,13 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
    * the circle this watches for. A refusal by the person is not counted.
    */
   let fruitless = 0;
+  /**
+   * Look-ups in a row that only repeated an earlier one with nothing changed
+   * since — the read-only circle (App.tsx, OrderSuccess.tsx, OrderDetail.tsx,
+   * App.tsx…) that `fruitless` cannot see, because every one of those calls
+   * succeeds. Any call that is not such a repeat resets it.
+   */
+  let repeats = 0;
 
   const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
     // Loop-owned bookkeeping, handled before the host roundtrip: the list is
@@ -756,18 +766,35 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     if (cached && cached.at > lastMutationAt) {
       // Said plainly, and with the answer attached: an agent that is going in
       // circles needs to be told which circle, not merely refused.
+      repeats += 1;
+      const circling =
+        repeats >= REPEAT_NUDGE
+          ? `That is ${repeats} calls in a row that only repeated earlier ones — you are going in circles. ` +
+            'You already have everything those calls return. Stop reading and act now: make the change, ' +
+            'run the check, or finish and say what is blocking you.\n\n'
+          : '';
       const repeated: ToolResult = {
         ...cached.result,
         id: call.id,
         content:
+          circling +
           'You already made this exact call earlier in this run and nothing has changed since. ' +
           'Here is what it returned — use it rather than calling again, and if it does not answer ' +
           'your question, a different call or a question to the user will.\n\n' +
           cached.result.content,
       };
       events.onToolResult(repeated);
+      if (repeats >= REPEAT_STOP) {
+        throw new Error(
+          `Stopped: ${REPEAT_STOP} tool calls in a row only repeated earlier ones, so the agent was going in circles ` +
+            '(reading the same files over and over). Ask again — perhaps with a hint at what to change, or with a ' +
+            'different model for this role.',
+        );
+      }
       return repeated;
     }
+    // A call that is not a repeat: whatever it is, the circle is broken.
+    repeats = 0;
 
     // Commands may depend on the outside world (a server coming up), so a
     // failed one can fairly be tried again; an edit cannot.
@@ -814,7 +841,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
         // Anything that is not a look-up may have changed the workspace —
         // including a shell command, which is how most non-obvious changes
         // happen. Every cached read from before now is suspect.
-        if (!cacheableLookup(tool)) lastMutationAt = at;
+        // A failed edit changed nothing, so the reads before it still stand;
+        // a failed command may have done half its work, so it counts.
+        if (!cacheableLookup(tool) && !(result.isError && !RETRYABLE_TOOLS.has(call.name))) lastMutationAt = at;
         else if (key && !result.isError) lookupCache.set(key, { at, result });
       } catch (err) {
         result = {

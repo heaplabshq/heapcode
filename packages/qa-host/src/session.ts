@@ -353,10 +353,11 @@ export class QaSession implements HostSession {
     const abort = this.beginJob('run', flows.length === 1 ? `Running ${flows[0]![1].name}` : `Running ${flows.length} flows`, runId);
     void (async () => {
       let driver: PlaywrightDriver | undefined;
+      let stopFrames: (() => Promise<void>) | undefined;
       try {
         driver = await launchDriver(ws, { headless: !headed });
         abort.signal.addEventListener('abort', () => void driver?.close(), { once: true });
-        await driver.screencast(this.frame).catch(() => undefined);
+        stopFrames = await driver.screencast(this.frame).catch(() => undefined);
         const model = ws.config.heal === 'ai' ? await resolveAgentModel(this.deps.config, this.deps.secrets) : undefined;
         const { summary } = await runSuite({
           ws,
@@ -380,8 +381,11 @@ export class QaSession implements HostSession {
               this.emit({ type: 'flowEnd', runId, flowId, status: r.status, durationMs: r.durationMs, ...(r.error ? { error: r.error } : {}) }),
           },
         });
+        // The live view off before the end is said: a frame after "finished" is a stray.
+        await stopFrames?.();
         this.emit({ type: 'runEnd', runId, passed: summary.passed, failed: summary.failed, healed: summary.flows.reduce((n, f) => n + (f.heals?.length ?? 0), 0) });
       } catch (err) {
+        await stopFrames?.().catch(() => {});
         this.emit({ type: 'error', message: message(err) });
       } finally {
         await driver?.close().catch(() => {});
@@ -401,9 +405,10 @@ export class QaSession implements HostSession {
     const abort = this.beginJob('explore', `Exploring ${start}`, `${runId}-explore`);
     void (async () => {
       let driver: PlaywrightDriver | undefined;
+      let stopFrames: (() => Promise<void>) | undefined;
       try {
         driver = await launchDriver(ws, { timeout: Math.min(ws.config.timeout, 5000), headless: params.headed !== true });
-        await driver.screencast(this.frame).catch(() => undefined);
+        stopFrames = await driver.screencast(this.frame).catch(() => undefined);
         const { result } = await exploreSite({
           ws,
           runId,
@@ -417,6 +422,7 @@ export class QaSession implements HostSession {
           onFinding: (f) => this.emit({ type: 'finding', runId: `${runId}-explore`, severity: f.severity, title: f.title }),
           signal: abort.signal,
         });
+        await stopFrames?.();
         this.emit({
           type: 'exploreEnd',
           runId: `${runId}-explore`,
@@ -425,6 +431,7 @@ export class QaSession implements HostSession {
           pages: result.pages.length,
         });
       } catch (err) {
+        await stopFrames?.().catch(() => {});
         this.emit({ type: 'error', message: message(err) });
       } finally {
         await driver?.close().catch(() => {});

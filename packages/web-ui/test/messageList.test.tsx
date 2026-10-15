@@ -334,11 +334,32 @@ describe('following the stream', () => {
     const view = render(<MessageList transcript={t} busy />);
     const list = view.container.querySelector<HTMLElement>('.messages')!;
     layout(list, () => height);
+    // The person scrolls up — input first, as a real wheel or trackpad sends.
+    fireEvent.wheel(list, { deltaY: -900 });
     list.scrollTop = 100;
     fireEvent.scroll(list);
     height = 1300;
     t = say(' more', t);
     view.rerender(<MessageList transcript={t} busy />);
     expect(list.scrollTop).toBe(100);
+  });
+});
+
+
+describe('following the stream, when the page moves the list', () => {
+  it('keeps following when a scroll was not the person\'s — the browser clamping as content shrank', () => {
+    // At the end of a run the conversation reloads and shrinks; the browser
+    // clamps the scroll position, firing a scroll far from the end. That used
+    // to count as "scrolled up", and the list stopped following.
+    let height = 3000;
+    const t = fold([{ type: 'text_delta', text: 'long reply' }]);
+    const view = render(<MessageList transcript={t} busy />);
+    const list = view.container.querySelector<HTMLElement>('.messages')!;
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, get: () => height });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, get: () => 400 });
+    list.scrollTop = 1200; // left mid-way by a clamp, no input from anyone
+    height = 2000;
+    fireEvent.scroll(list);
+    expect(list.scrollTop).toBe(2000);
   });
 });

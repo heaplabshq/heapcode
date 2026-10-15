@@ -24,6 +24,8 @@ const STEP = 60;
 const PIN_PX = 60;
 /** How long after the person's own scrolling the list waits before following again. */
 const SETTLE_MS = 180;
+/** A scroll this soon after the person's own input is theirs; later ones are the page's. */
+const USER_SCROLL_MS = 400;
 
 export interface MessageListProps {
   transcript: Transcript;
@@ -65,7 +67,16 @@ export function MessageList({
 }: MessageListProps): JSX.Element {
   const scroller = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
-  const [pinned, setPinned] = useState(true);
+  const [pinned, setPinnedState] = useState(true);
+  /** `pinned`, for callbacks that outlive a render (the size observer, timers). */
+  const pinnedRef = useRef(true);
+  const setPinned = (next: boolean): void => {
+    pinnedRef.current = next;
+    setPinnedState(next);
+  };
+  /** Everything below the empty state — what the size observer watches. */
+  const content = useRef<HTMLDivElement>(null);
+  const catchUp = useRef<ReturnType<typeof setTimeout>>();
   const [visible, setVisible] = useState(WINDOW);
 
   const total = transcript.items.length;
@@ -87,31 +98,49 @@ export function MessageList({
     lastUserScroll.current = performance.now();
   };
 
-  // Follow the stream, but stop fighting the user the moment they scroll up to
-  // read something — and resume when they come back to the bottom.
-  //
-  // Never mid-gesture: following on every streamed chunk while a glide was
-  // still carrying the list down made the two fight — the text shook for a
-  // second or two after reaching the bottom. Before paint (a layout effect),
-  // and on this scroller alone (not scrollIntoView, which also moves whatever
-  // contains it), so no frame shows the new text in the wrong place.
-  useLayoutEffect(() => {
+  /**
+   * To the end, if following — now, or once the person's own scrolling has
+   * settled. Never mid-gesture: following on every streamed chunk while a
+   * glide was still carrying the list made the two fight, and the text shook.
+   * On this scroller alone (not scrollIntoView, which moves its containers).
+   */
+  const follow = (): void => {
     const el = scroller.current;
-    if (!pinned || !el) return;
+    if (!el || !pinnedRef.current) return;
     const quiet = performance.now() - lastUserScroll.current;
+    clearTimeout(catchUp.current);
     if (quiet >= SETTLE_MS) {
       el.scrollTop = el.scrollHeight;
       return;
     }
-    // Mid-gesture: catch up once it has settled. Not re-measured — text that
-    // arrived during the glide has grown the gap — and not needed: scrolling
-    // up meanwhile unpins, and unpinning cancels this timer.
-    const timer = setTimeout(() => {
+    catchUp.current = setTimeout(() => {
       const now = scroller.current;
-      if (now) now.scrollTop = now.scrollHeight;
+      if (now && pinnedRef.current) now.scrollTop = now.scrollHeight;
     }, SETTLE_MS - quiet);
-    return () => clearTimeout(timer);
+  };
+  const followRef = useRef(follow);
+  followRef.current = follow;
+
+  // New messages: before paint, so no frame shows them in the wrong place.
+  useLayoutEffect(() => {
+    if (pinned) follow();
   }, [transcript, pinned, busy]);
+
+  // Anything else that changes the height — the window of older messages
+  // resetting when a run ends and the conversation reloads, thinking folding
+  // away, code finishing highlighting, an image loading — is followed by
+  // size, not by message: the list used to sit wherever the browser left it
+  // until the next message, sometimes thousands of pixels up.
+  useEffect(() => {
+    const node = content.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => followRef.current());
+    ro.observe(node);
+    return () => {
+      ro.disconnect();
+      clearTimeout(catchUp.current);
+    };
+  }, [total > 0 || Boolean(busy)]);
 
   // Opening a different conversation is a different transcript; the window has
   // to start at its tail rather than inheriting however far back the last one
@@ -169,10 +198,27 @@ export function MessageList({
       onTouchMove={touched}
       onPointerDown={touched}
       onKeyDown={touched}
+      // While following, the browser's own scroll anchoring is off: it kept
+      // the view on an element above when content changed, pulling the list
+      // up; following the end is this component's job. Reading further up it
+      // is on, where holding the line in place is exactly right.
+      style={{ overflowAnchor: pinned ? 'none' : 'auto' }}
       onScroll={() => {
         const el = scroller.current;
         if (!el) return;
-        setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < PIN_PX);
+        const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_PX;
+        if (atEnd) {
+          if (!pinnedRef.current) setPinned(true);
+          return;
+        }
+        // Only the person unpins it. A scroll they did not make — the browser
+        // clamping when content shrank, as at the end of a run — used to count
+        // as scrolling up, and the list stopped following the reply.
+        if (performance.now() - lastUserScroll.current < USER_SCROLL_MS) {
+          if (pinnedRef.current) setPinned(false);
+        } else if (pinnedRef.current) {
+          followRef.current();
+        }
       }}
     >
       {total === 0 && (
@@ -212,6 +258,8 @@ export function MessageList({
           </p>
         </div>
       )}
+      {(total > 0 || busy) && (
+      <div ref={content}>
       {hidden > 0 && (
         <div className="earlier" ref={top}>
           <button className="btn btn-quiet" onClick={() => setVisible((v) => v + STEP)}>
@@ -228,6 +276,8 @@ export function MessageList({
         </div>
       )}
       {busy && <WorkingIndicator activity={activityOf(transcript)} startedAt={runStartedAt} />}
+      </div>
+      )}
     </div>
   );
 }

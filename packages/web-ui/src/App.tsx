@@ -1289,6 +1289,14 @@ export function App(): JSX.Element {
               selectedArtifact={selectedArtifact}
               onSelectArtifact={setSelectedArtifact}
               loadArtifact={loadArtifact}
+              // The desktop app opens no windows of its own: its system browser instead.
+              {...(desktopBridge()
+                ? {
+                    onOpenInBrowser: (title: string, html: string) => {
+                      void rpc.request(UI_METHODS.openInBrowser, { title, html }).catch((err: Error) => setError(err.message));
+                    },
+                  }
+                : {})}
               onSaveArtifact={(id, path, version) => {
                 void rpc
                   .request(UI_METHODS.saveArtifact, { id, path, version })

@@ -159,6 +159,7 @@ import {
 } from './protocol.js';
 import type { DaemonHello } from './hello.js';
 import { attachmentPath } from './attachmentRoute.js';
+import { openPageRequest } from './openFile.js';
 import { connectionModels, probeConnection } from './models.js';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
@@ -1100,6 +1101,12 @@ export class WebSession {
       if (!chosen) throw new Error(`No version ${version} of ${id}`);
       return { ...toArtifactMeta(artifact), version: index + 1, content: chosen.content };
     });
+
+
+    // The desktop app's "Open in new tab": it allows no windows of its own,
+    // so the page goes to the system browser as a file. On this computer —
+    // never for a page reached over the network, which would open it here.
+    ui.onRequest(UI_METHODS.openInBrowser, async (raw) => openPageRequest(raw, this.deps.lan, 'Heap Code'));
 
     ui.onRequest(UI_METHODS.saveArtifact, async (raw): Promise<UiSaveArtifactResult> => {
       const { id, path, version } = raw as UiSaveArtifactParams;

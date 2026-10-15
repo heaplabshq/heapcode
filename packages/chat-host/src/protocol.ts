@@ -72,6 +72,8 @@ export const CHAT_METHODS = {
   artifacts: 'chat/artifacts',
   artifact: 'chat/artifact',
   saveArtifact: 'chat/saveArtifact',
+  /** As web-host's ui/openInBrowser. */
+  openInBrowser: 'chat/openInBrowser',
   // MCP servers — the same connectors Heap Code registers, from the same config.
   saveMcpServer: 'chat/saveMcpServer',
   deleteMcpServer: 'chat/deleteMcpServer',

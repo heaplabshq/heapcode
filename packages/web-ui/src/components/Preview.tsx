@@ -20,6 +20,14 @@ export function Preview(props: PreviewProps): JSX.Element {
   const [mermaidSvg, setMermaidSvg] = useState<string>();
   const [error, setError] = useState<string>();
   const [blocked, setBlocked] = useState(false);
+  /**
+   * The file name being typed for "Save to workspace", while its field is open.
+   *
+   * A field in the panel rather than `window.prompt`: Electron does not
+   * implement prompt() — it returns null without showing anything — so in the
+   * desktop app the button silently did nothing.
+   */
+  const [saveAs, setSaveAs] = useState<string>();
 
   const { loadArtifact } = props;
   useEffect(() => {
@@ -122,17 +130,57 @@ export function Preview(props: PreviewProps): JSX.Element {
             </button>
             <button
               className="btn"
-              onClick={() => {
-                const suggested = `${slug(artifact.title)}.${extFor(artifact.kind, artifact.language)}`;
-                const path = window.prompt('Save to workspace as:', suggested);
-                if (path) props.onSave(artifact.id, path, artifact.version);
-              }}
+              aria-expanded={saveAs !== undefined}
+              onClick={() => setSaveAs(saveAs === undefined ? `${slug(artifact.title)}.${extFor(artifact.kind, artifact.language)}` : undefined)}
             >
               Save to workspace
             </button>
           </div>
         )}
       </div>
+
+      {artifact && saveAs !== undefined && (
+        <form
+          className="preview-save"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const path = saveAs.trim();
+            if (!path) return;
+            props.onSave(artifact.id, path, artifact.version);
+            setSaveAs(undefined);
+          }}
+        >
+          <label className="preview-save-label" htmlFor="preview-save-path">
+            Save as
+          </label>
+          <input
+            id="preview-save-path"
+            className="card-input"
+            value={saveAs}
+            autoFocus
+            spellCheck={false}
+            onFocus={(e) => {
+              // The name selected, the extension kept — the part usually changed.
+              const dot = e.target.value.lastIndexOf('.');
+              e.target.setSelectionRange(0, dot > 0 ? dot : e.target.value.length);
+            }}
+            onChange={(e) => setSaveAs(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setSaveAs(undefined);
+            }}
+            aria-describedby="preview-save-hint"
+          />
+          <button className="btn btn-primary" type="submit" disabled={!saveAs.trim()}>
+            Save
+          </button>
+          <button className="btn btn-quiet" type="button" onClick={() => setSaveAs(undefined)}>
+            Cancel
+          </button>
+          <span id="preview-save-hint" className="hint preview-save-hint">
+            Inside this workspace — add a folder in front (docs/…) to put it in one.
+          </span>
+        </form>
+      )}
 
       {error && <p className="hint">{error}</p>}
       {blocked && <p className="hint">Your browser blocked the new tab — allow pop-ups for this page to open it.</p>}

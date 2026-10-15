@@ -34,6 +34,9 @@ export interface ChatRequest {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  /** Discourage repeating tokens already used (OpenAI-style, -2..2). Sent only when set. */
+  frequencyPenalty?: number;
+  presencePenalty?: number;
   signal?: AbortSignal;
 }
 

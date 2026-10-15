@@ -116,6 +116,22 @@ describe('WorkspaceToolExecutor — file operations', () => {
     expect(await readFile(join(root, 'a.txt'), 'utf8')).toBe('const x = 100;\nconst y = 2;');
   });
 
+  it('edit_file that changes nothing is an error, not "Edited" — and writes nothing', async () => {
+    // A model told it succeeded at a no-op repeats it; the agent loop counts failures.
+    await writeFile(join(root, 'a.txt'), 'const x = 1;\nconst y = 2;');
+    const result = await executor.execute(call('edit_file', { path: 'a.txt', search: 'const x = 1;', replace: 'const x = 1;' }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/changed nothing/);
+    expect(checkpoint.size).toBe(0);
+  });
+
+  it('multi_edit whose edits change nothing is an error too', async () => {
+    await writeFile(join(root, 'a.txt'), 'const x = 1;');
+    const result = await executor.execute(call('multi_edit', { path: 'a.txt', edits: [{ search: 'x = 1', replace: 'x = 1' }] }));
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/changed nothing/);
+  });
+
   it('edit_file result includes a diff of the actual change, not just a bare confirmation', async () => {
     await writeFile(join(root, 'a.txt'), 'const x = 1;\nconst y = 2;');
     const result = await executor.execute(call('edit_file', { path: 'a.txt', search: 'const x = 1;', replace: 'const x = 100;' }));

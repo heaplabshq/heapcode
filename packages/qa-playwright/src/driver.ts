@@ -1,0 +1,414 @@
+import type { RecordedTarget } from '@heapcode/page/recording';
+import { TEST_ID_ATTRS, type DomTree, type PageHealth } from '@heapcode/page/tree';
+import {
+  DEFAULT_TIMEOUT,
+  isAllowedTarget,
+  notAllowedMessage,
+  type ConsoleLine,
+  type Driver,
+  type FailedRequest,
+  type PageInfo,
+  type Probe,
+  type RecordListener,
+  type Activity,
+  type Target,
+} from '@heapcode/qa';
+import type { Browser, BrowserContext, ElementHandle, Locator, Page } from 'playwright-core';
+import { INSPECT_BUNDLE, RECORDER_BUNDLE } from './inspectBundle.generated.js';
+
+export interface LaunchOptions {
+  /**
+   * `chrome` / `msedge`: the browser already installed on the machine — no
+   * download. `chromium`: Playwright's own build (`heapcode qa install`).
+   * Default: chrome, falling back to chromium.
+   */
+  channel?: 'chrome' | 'msedge' | 'chromium';
+  headless?: boolean;
+  /** Per-action timeout in ms. */
+  timeout?: number;
+  /** Non-local origins the driver may open — `heapqa.yaml`'s `targets`. */
+  targets?: readonly string[];
+  viewport?: { width: number; height: number };
+  /**
+   * Let Playwright close the browser and exit on Ctrl+C (its default). The
+   * recorder turns this off: there, Ctrl+C means "finish and save".
+   */
+  exitOnSigint?: boolean;
+}
+
+export class BrowserMissingError extends Error {
+  constructor(cause: string) {
+    super(
+      'No browser to test with. Heap QA uses an installed Google Chrome or Microsoft Edge, ' +
+        'or its own Chromium — install that with `heapcode qa install`.\n' +
+        cause
+          .split('\n')
+          .map((line) => `  ${line}`)
+          .join('\n'),
+    );
+  }
+}
+
+/**
+ * The `Driver` on Playwright.
+ *
+ * Its own browser profile every launch: none of the person's cookies, none of
+ * their logins — a test starts from what a new visitor sees, every time.
+ * `@heapcode/page`'s inspect script is installed into every frame before the
+ * page's own scripts run, so `inspect()` is always available.
+ */
+export class PlaywrightDriver implements Driver {
+  private consoleLines: ConsoleLine[] = [];
+  private failed: FailedRequest[] = [];
+  private lastTitle = '';
+  private requestCount = 0;
+  private navigations = 0;
+  private watchStart: { requests: number; navigations: number } | undefined;
+  private readonly defaultViewport: { width: number; height: number };
+
+  private constructor(
+    private readonly browser: Browser,
+    private readonly context: BrowserContext,
+    readonly page: Page,
+    private readonly targets: readonly string[],
+    viewport: { width: number; height: number },
+  ) {
+    this.defaultViewport = viewport;
+    page.on('request', () => {
+      this.requestCount += 1;
+    });
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) this.navigations += 1;
+    });
+    page.on('console', (msg) => {
+      // The browser asks every site for /favicon.ico by itself; a 404 there is
+      // not the app's doing, and counting it fails nearly every app's
+      // "no console errors" check.
+      if (isFavicon(msg.location().url)) return;
+      const type = msg.type();
+      const level = type === 'error' ? 'error' : type === 'warning' ? 'warning' : 'info';
+      const loc = msg.location();
+      this.consoleLines.push({ level, message: msg.text(), ...(loc.url ? { source: `${loc.url}:${loc.lineNumber}` } : {}) });
+    });
+    // An uncaught exception is the page's most serious console error.
+    page.on('pageerror', (err) => this.consoleLines.push({ level: 'error', message: `Uncaught ${err.name}: ${err.message}` }));
+    page.on('requestfailed', (req) => {
+      if (isFavicon(req.url())) return;
+      this.failed.push({ url: req.url(), method: req.method(), error: req.failure()?.errorText ?? 'failed' });
+    });
+    page.on('response', (res) => {
+      if (res.status() >= 400 && !isFavicon(res.url())) this.failed.push({ url: res.url(), method: res.request().method(), status: res.status() });
+    });
+  }
+
+  static async launch(options: LaunchOptions = {}): Promise<PlaywrightDriver> {
+    const browser = await launchBrowser(options.channel, options.headless ?? true, options.exitOnSigint ?? true);
+    const viewport = options.viewport ?? { width: 1280, height: 800 };
+    const context = await browser.newContext({ viewport });
+    context.setDefaultTimeout(options.timeout ?? DEFAULT_TIMEOUT);
+    await context.addInitScript({ content: INSPECT_BUNDLE });
+    const page = await context.newPage();
+    return new PlaywrightDriver(browser, context, page, options.targets ?? [], viewport);
+  }
+
+  async open(url: string): Promise<PageInfo> {
+    if (!isAllowedTarget(url, this.targets)) throw new Error(notAllowedMessage(url));
+    const response = await this.page.goto(url, { waitUntil: 'load' });
+    // A redirect can land somewhere nobody listed.
+    if (!isAllowedTarget(this.page.url(), this.targets)) throw new Error(notAllowedMessage(this.page.url()));
+    this.lastTitle = await this.page.title();
+    return { ...this.current(), ...(response ? { status: response.status() } : {}) };
+  }
+
+  /** The title as of the last `open` — `current()` is synchronous, and a title needs a round trip. */
+  current(): PageInfo {
+    return { url: this.page.url(), title: this.lastTitle };
+  }
+
+  async inspect(): Promise<DomTree> {
+    await this.ensureInspector();
+    return this.page.evaluate(() => (globalThis as unknown as { __heapqa: { inspect(): DomTree } }).__heapqa.inspect());
+  }
+
+  async count(probe: Probe): Promise<number> {
+    return this.locator(probe).count();
+  }
+
+  async click(target: Target): Promise<void> {
+    await this.withTarget(target, (t) => t.click());
+  }
+
+  async type(target: Target, text: string, options: { clear: boolean }): Promise<void> {
+    await this.withTarget(target, async (t) => {
+      if (options.clear) return t.fill(text);
+      // Appending is typing key by key, as a person would after the existing text.
+      if ('pressSequentially' in t) return t.pressSequentially(text);
+      return t.type(text);
+    });
+  }
+
+  async select(target: Target, option: string): Promise<void> {
+    await this.withTarget(target, async (t) => {
+      try {
+        await t.selectOption({ label: option });
+      } catch {
+        await t.selectOption({ value: option });
+      }
+    });
+  }
+
+  async press(key: string, target?: Target): Promise<void> {
+    if (target) await this.withTarget(target, (t) => t.press(key));
+    else await this.page.keyboard.press(key);
+  }
+
+  async textOf(target: Target): Promise<string> {
+    return this.withTarget(target, async (t) => ((await t.innerText()) ?? '').replace(/\s+/g, ' ').trim());
+  }
+
+  async isVisible(target: Target): Promise<boolean> {
+    return this.withTarget(target, (t) => t.isVisible());
+  }
+
+  async screenshot(): Promise<Uint8Array> {
+    return this.page.screenshot({ type: 'png' });
+  }
+
+  drainConsole(): ConsoleLine[] {
+    const out = this.consoleLines;
+    this.consoleLines = [];
+    return out;
+  }
+
+  drainFailedRequests(): FailedRequest[] {
+    const out = this.failed;
+    this.failed = [];
+    return out;
+  }
+
+  async startTrace(): Promise<void> {
+    await this.context.tracing.start({ screenshots: true, snapshots: true });
+  }
+
+  async stopTrace(path: string | undefined): Promise<void> {
+    await this.context.tracing.stop(path ? { path } : {});
+  }
+
+  async describeTarget(target: Target): Promise<RecordedTarget | undefined> {
+    if ('nodeId' in target) return this.describe(target.nodeId);
+    await this.ensureInspector();
+    const found = this.locator(target.probe).nth(target.index);
+    return (await found.evaluate((el) => (globalThis as unknown as { __heapqa: { describeElement(el: unknown): unknown } }).__heapqa.describeElement(el))) as RecordedTarget;
+  }
+
+  async health(): Promise<PageHealth> {
+    await this.ensureInspector();
+    return this.page.evaluate(() => (globalThis as unknown as { __heapqa: { health(): PageHealth } }).__heapqa.health());
+  }
+
+  async watch(): Promise<void> {
+    await this.ensureInspector();
+    this.watchStart = { requests: this.requestCount, navigations: this.navigations };
+    await this.page.evaluate(() => (globalThis as unknown as { __heapqa: { watch(): void } }).__heapqa.watch());
+  }
+
+  async watched(): Promise<Activity> {
+    const start = this.watchStart ?? { requests: this.requestCount, navigations: this.navigations };
+    this.watchStart = undefined;
+    const navigated = this.navigations > start.navigations;
+    // After a navigation the counter lived on the old page; the new page is change enough.
+    const mutations = navigated
+      ? 0
+      : await this.page.evaluate(() => (globalThis as unknown as { __heapqa?: { watched(): number } }).__heapqa?.watched() ?? 0).catch(() => 0);
+    return { mutations, requests: this.requestCount - start.requests, navigated };
+  }
+
+  /**
+   * Chrome's own screencast over CDP: a frame each time the page repaints,
+   * acknowledged one at a time so a slow viewer slows the stream instead of
+   * queueing it.
+   */
+  async screencast(onFrame: (jpegBase64: string) => void): Promise<() => Promise<void>> {
+    const cdp = await this.context.newCDPSession(this.page);
+    let stopped = false;
+    cdp.on('Page.screencastFrame', (frame: { data: string; sessionId: number }) => {
+      if (stopped) return;
+      onFrame(frame.data);
+      void cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
+    });
+    await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 900 });
+    return async () => {
+      stopped = true;
+      await cdp.send('Page.stopScreencast').catch(() => {});
+      await cdp.detach().catch(() => {});
+    };
+  }
+
+  async markedScreenshot(nodeIds: number[]): Promise<Uint8Array> {
+    await this.ensureInspector();
+    type Marks = { __heapqa: { mark(ids: number[]): number; unmark(): void } };
+    await this.page.evaluate((ids) => (globalThis as unknown as Marks).__heapqa.mark(ids), nodeIds);
+    try {
+      return await this.page.screenshot({ type: 'png' });
+    } finally {
+      await this.page.evaluate(() => (globalThis as unknown as Marks).__heapqa.unmark()).catch(() => {});
+    }
+  }
+
+  async capture(target?: Target): Promise<Uint8Array> {
+    const options = { type: 'png' as const, animations: 'disabled' as const, caret: 'hide' as const };
+    if (!target) return this.page.screenshot(options);
+    return this.withTarget(target, (t) => t.screenshot(options));
+  }
+
+  async viewport(size?: { width: number; height: number }): Promise<void> {
+    await this.page.setViewportSize(size ?? this.defaultViewport);
+  }
+
+  async settle(): Promise<void> {
+    // A click's navigation starts a moment after the click returns; give it
+    // that moment, then wait for whatever it started to load.
+    await new Promise((r) => setTimeout(r, 200));
+    await this.page.waitForLoadState('load').catch(() => {});
+  }
+
+  async describe(nodeId: number): Promise<RecordedTarget | undefined> {
+    await this.ensureInspector();
+    const target = await this.page.evaluate(
+      (id) => (globalThis as unknown as { __heapqa: { describe(id: number): unknown } }).__heapqa.describe(id),
+      nodeId,
+    );
+    return (target ?? undefined) as RecordedTarget | undefined;
+  }
+
+  async record(listener: RecordListener): Promise<() => Promise<void>> {
+    let total = 0;
+    let stopped = false;
+    // A binding survives navigations, and the init script re-installs the
+    // recorder on every page, so recording follows the person across the site.
+    await this.context.exposeBinding('__heapqaRecord', (_source, event: { kind: string }) => {
+      if (stopped) return total;
+      if (event.kind === 'count') return total;
+      total = listener.event(event as Parameters<RecordListener['event']>[0]);
+      return total;
+    });
+    await this.context.addInitScript({ content: RECORDER_BUNDLE });
+    const onNavigate = (frame: import('playwright-core').Frame): void => {
+      if (!stopped && frame === this.page.mainFrame()) listener.navigated(frame.url());
+    };
+    const onClose = (): void => {
+      if (!stopped) listener.closed();
+    };
+    this.page.on('framenavigated', onNavigate);
+    this.page.on('close', onClose);
+    return async () => {
+      stopped = true;
+      this.page.off('framenavigated', onNavigate);
+      this.page.off('close', onClose);
+    };
+  }
+
+  async close(): Promise<void> {
+    await this.context.close().catch(() => {});
+    await this.browser.close().catch(() => {});
+  }
+
+  /** A Playwright locator for one strategy. Exact matching: a test means the words it recorded. */
+  locator(probe: Probe): Locator {
+    switch (probe.strategy) {
+      case 'testId':
+        return this.page.locator(TEST_ID_ATTRS.map((a) => `[${a}="${cssString(probe.testId)}"]`).join(', '));
+      case 'role':
+        return this.page.getByRole(probe.role as Parameters<Page['getByRole']>[0], {
+          ...(probe.name !== undefined ? { name: probe.name, exact: true } : {}),
+        });
+      case 'label':
+        return this.page.getByLabel(probe.label, { exact: true });
+      case 'placeholder':
+        return this.page.getByPlaceholder(probe.placeholder, { exact: true });
+      case 'text':
+        return this.page.getByText(probe.text, { exact: true });
+      case 'css':
+        return this.page.locator(probe.css);
+    }
+  }
+
+  private async withTarget<T>(target: Target, act: (t: Locator | ElementHandle) => Promise<T>): Promise<T> {
+    if ('probe' in target) return act(this.locator(target.probe).nth(target.index));
+    await this.ensureInspector();
+    const handle = await this.page.evaluateHandle(
+      (id) => (globalThis as unknown as { __heapqa: { element(id: number): unknown } }).__heapqa.element(id),
+      target.nodeId,
+    );
+    const element = handle.asElement();
+    if (!element) {
+      await handle.dispose();
+      throw new Error(`Node ${target.nodeId} is no longer on the page — inspect it again.`);
+    }
+    try {
+      return await act(element);
+    } finally {
+      await element.dispose();
+    }
+  }
+
+  /** The init script covers every navigation; this covers a page opened before it was added. */
+  private async ensureInspector(): Promise<void> {
+    const present = await this.page.evaluate(() => '__heapqa' in globalThis);
+    if (!present) await this.page.addScriptTag({ content: INSPECT_BUNDLE });
+  }
+}
+
+/**
+ * Which browser, in order. Unset means "whatever works": hidden runs try
+ * Playwright's own windowless build first — the full Chrome app, even with
+ * --headless, puts an icon in the macOS Dock and can take focus, which reads
+ * as a window opening when the person asked for none. A visible run, or a
+ * browser the person chose in heapqa.yaml, starts that browser first.
+ */
+async function launchBrowser(chosen: 'chrome' | 'msedge' | 'chromium' | undefined, headless: boolean, handleSIGINT: boolean): Promise<Browser> {
+  // Loaded on first launch, not at import: the CLI carries Heap QA in the same
+  // bundle as everything else, and playwright-core is an optional dependency
+  // there — a static import would make every `heapcode` command need it.
+  let chromium: typeof import('playwright-core').chromium;
+  try {
+    ({ chromium } = await import('playwright-core'));
+  } catch {
+    throw new Error('Heap QA needs the playwright-core package, which is not installed. Reinstall Heap Code, or run `npm install -g playwright-core`.');
+  }
+  if (chosen === undefined && headless) {
+    try {
+      return await chromium.launch({ headless, handleSIGINT });
+    } catch {
+      // Not downloaded (`heapcode qa install`): the installed Chrome, hidden, will do.
+    }
+  }
+  const channel = chosen ?? 'chrome';
+  let installedError: string | undefined;
+  if (channel !== 'chromium') {
+    try {
+      return await chromium.launch({ channel, headless, handleSIGINT });
+    } catch (err) {
+      // Not installed, or would not start — fall back to Playwright's own build below.
+      installedError = `${channel}: ${(err instanceof Error ? err.message : String(err)).split('\n')[0]}`;
+    }
+  }
+  try {
+    return await chromium.launch({ headless, handleSIGINT });
+  } catch (err) {
+    const own = `Heap QA's Chromium: ${(err instanceof Error ? err.message : String(err)).split('\n')[0]}`;
+    throw new BrowserMissingError(installedError ? `${installedError}\n${own}` : own);
+  }
+}
+
+function isFavicon(url: string): boolean {
+  try {
+    return new URL(url).pathname === '/favicon.ico';
+  } catch {
+    return false;
+  }
+}
+
+function cssString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}

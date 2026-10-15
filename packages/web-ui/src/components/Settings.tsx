@@ -65,6 +65,25 @@ export interface SettingsProps {
    * page that renders an empty section is worse than one that is not there.
    */
   pages?: readonly string[];
+  /**
+   * A product's own pages, listed first under its name — Heap QA's test
+   * settings. Built from the exported pieces below (`SettingsSection`,
+   * `SettingsGroup`, `SettingsRow`…) so they look like every other page.
+   */
+  extraPages?: ExtraSettingsPage[];
+  /** The page to open on, when not the first. */
+  initialPage?: string;
+}
+
+export interface ExtraSettingsPage {
+  id: string;
+  label: string;
+  /** The group heading it sits under in the nav. */
+  group: string;
+  icon: JSX.Element;
+  keywords?: string;
+  /** `go` switches the dialog to another page — "change the model" goes to Providers. */
+  render(go: (page: string) => void): React.ReactNode;
 }
 
 export interface UiProfileDraft {
@@ -78,6 +97,8 @@ export interface UiProfileDraft {
   promptDetail?: string;
   maxTokens?: number | null;
   temperature?: number | null;
+  /** Seconds in the editor; the profile stores ms. */
+  timeoutSecs?: number | null;
   /** `<role>Model` / `<role>Profile`; '' clears back to the inherited value. */
   roles?: Record<string, string>;
 }
@@ -143,7 +164,6 @@ const ICONS: Record<string, JSX.Element> = {
   ),
 };
 
-type PageId = (typeof PAGES)[number]['id'];
 
 /**
  * Settings as a two-column dialog: a filterable list of pages on the left, one
@@ -159,9 +179,13 @@ export function Settings(props: SettingsProps): JSX.Element {
   const s = props.settings;
   // `/context` and the context meter both land on the profile editor, which is
   // where the window size actually lives.
-  const available = props.pages ? PAGES.filter((p) => props.pages!.includes(p.id)) : PAGES;
-  const [page, setPage] = useState<PageId>(
-    props.focus === 'context' ? 'providers' : (available[0]?.id ?? 'general'),
+  const extra = props.extraPages ?? [];
+  const available: Array<{ id: string; group: string; label: string; icon: string | JSX.Element; keywords: string }> = [
+    ...extra.map((p) => ({ id: p.id, group: p.group, label: p.label, icon: p.icon, keywords: p.keywords ?? '' })),
+    ...(props.pages ? PAGES.filter((p) => props.pages!.includes(p.id)) : PAGES),
+  ];
+  const [page, setPage] = useState<string>(
+    props.focus === 'context' ? 'providers' : (props.initialPage ?? available[0]?.id ?? 'general'),
   );
   const [query, setQuery] = useState('');
 
@@ -169,7 +193,7 @@ export function Settings(props: SettingsProps): JSX.Element {
   const shown = q
     ? available.filter((p) => `${p.label} ${p.keywords}`.toLowerCase().includes(q))
     : available;
-  const groups = ['General', 'Workspace'] as const;
+  const groups = [...new Set([...extra.map((p) => p.group), 'General', 'Workspace'])];
   const dialog = useRef<HTMLDivElement>(null);
   useModal(dialog, props.onClose);
 
@@ -205,7 +229,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                     onClick={() => setPage(p.id)}
                     aria-current={page === p.id}
                   >
-                    <span className="settings-nav-icon">{ICONS[p.icon]}</span>
+                    <span className="settings-nav-icon">{typeof p.icon === 'string' ? ICONS[p.icon] : p.icon}</span>
                     {p.label}
                   </button>
                 ))}
@@ -234,6 +258,7 @@ export function Settings(props: SettingsProps): JSX.Element {
             </div>
           ) : (
             <div className="modal-body">
+              {extra.find((p) => p.id === page)?.render(setPage)}
               {page === 'general' && (
                 <Section description="How the agent behaves on every task.">
                   <Group>
@@ -617,6 +642,7 @@ function NumberField({
   placeholder,
   onChange,
   step = 1,
+  zero = false,
 }: {
   label: string;
   hint?: string;
@@ -625,6 +651,8 @@ function NumberField({
   onChange(v: number | null): void;
   /** 0.1 for temperature; whole numbers everywhere else. */
   step?: number;
+  /** 0 is a value here (a timeout of 0 waits forever), not the same as empty — as it is for a token count. */
+  zero?: boolean;
 }): JSX.Element {
   return (
     <Field label={label} hint={hint}>
@@ -643,7 +671,9 @@ function NumberField({
           if (!Number.isFinite(n) || n < 0) return onChange(null);
           // Fractional values are meaningful for temperature and nonsense for
           // token counts, so the step decides whether to round.
-          onChange(step < 1 ? n : Math.floor(n) || null);
+          if (step < 1) return onChange(n);
+          const whole = Math.floor(n);
+          onChange(whole === 0 && !zero ? null : whole);
         }}
       />
     </Field>
@@ -729,6 +759,7 @@ function ProfileRow({
     promptDetail: profile.promptTier ?? '',
     maxTokens: profile.maxTokens ?? null,
     temperature: profile.temperature ?? null,
+    timeoutSecs: profile.timeoutMs === undefined ? null : profile.timeoutMs / 1000,
   });
 
   return (
@@ -857,6 +888,14 @@ function ProfileRow({
               placeholder="provider default"
               onChange={(temperature) => setDraft({ ...draft, temperature })}
               step={0.1}
+            />
+            <NumberField
+              label="Response timeout (seconds)"
+              hint="How long to wait for the model to start replying before giving up — a long reply that has started is never cut off. Raise it for slow or local models on big tasks; 0 waits as long as it takes. Empty is 300. Heap QA follows it too — finding a moved button gets three times it."
+              value={draft.timeoutSecs}
+              placeholder="300"
+              zero
+              onChange={(timeoutSecs) => setDraft({ ...draft, timeoutSecs })}
             />
           </div>
 
@@ -1523,12 +1562,17 @@ function RoleRow({
  * model.
  */
 function toSaveParams(draft: UiProfileDraft): UiSaveProfileParams['profile'] {
-  const { promptDetail, ...rest } = draft;
+  const { promptDetail, timeoutSecs, ...rest } = draft;
   return {
     ...rest,
+    // Only when the editor had the field: a draft without it says nothing about the timeout.
+    ...(timeoutSecs !== undefined ? { timeoutMs: timeoutSecs === null ? null : Math.round(timeoutSecs * 1000) } : {}),
     // '' is the editor's default, which the host stores as the absence of the
     // field rather than as a written-out 'full' — `null` is how a patch says
     // "clear it", the same as the numeric overrides.
     promptTier: promptDetail === 'lean' || promptDetail === 'auto' ? promptDetail : null,
   };
 }
+
+/** The layout pieces, for a product's own page (`extraPages`). */
+export { Section as SettingsSection, Group as SettingsGroup, SettingRow as SettingsRow, Block as SettingsBlock, Toggle as SettingsToggle };

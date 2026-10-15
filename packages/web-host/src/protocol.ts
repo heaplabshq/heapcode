@@ -737,6 +737,8 @@ export interface UiProfile {
   effectiveContextWindow: number;
   /** Output cap per reply. Absent means the provider's own default. */
   maxTokens?: number;
+  /** Wait for the first token of a reply, in ms. Absent means the default (5 minutes); 0 waits forever. */
+  timeoutMs?: number;
   /** Unset = 'full'. */
   promptTier?: UiPromptDetail;
 }
@@ -862,6 +864,8 @@ export interface UiSaveProfileParams {
     contextWindow?: number | null;
     maxTokens?: number | null;
     temperature?: number | null;
+    /** How long to wait for the model to start replying, in ms; 0 waits forever; `null` back to the default. */
+    timeoutMs?: number | null;
     /** `null` clears the setting, which means 'full'. */
     promptTier?: UiPromptDetail | null;
   };

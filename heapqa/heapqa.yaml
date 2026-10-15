@@ -1,0 +1,18 @@
+# Heap QA settings for this folder.
+baseUrl: http://localhost:3000
+
+# Addresses other than localhost that tests may open, e.g. a staging site.
+# targets:
+#   - https://staging.example.com
+
+# Test passwords and keys, used in flows as {{secret:NAME}}. Never committed.
+# secretsFile: .env.test
+
+# browser:
+#   channel: chrome      # chrome | msedge | chromium
+#   headless: true
+# timeout: 10000         # how long a step may wait, in ms
+
+# When a step's element has moved or changed: ai (similarity first, then the
+# agent model looks), similarity (never calls a model), or off.
+# heal: ai

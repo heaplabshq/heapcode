@@ -1,0 +1,5 @@
+name: home page loads
+steps:
+  - goto: /
+    intent: open the home page
+  - expect: noConsoleErrors

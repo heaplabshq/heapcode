@@ -7,11 +7,8 @@ import {
   DEFAULT_MAX_ITERATIONS,
   McpManager,
   METHODS,
-  SEARCH_PRESETS,
   WEB_SEARCH_SECRET_NAME,
   askUserAnswerMessage,
-  describeRole,
-  providerPresets,
   resolveCapabilities,
   type AgentEvent,
   type AgentEventParams,
@@ -46,7 +43,6 @@ import {
   canonicalize,
   chatMemoryFile,
   createContextWindowResolver,
-  profileContextWindow,
   projectStateDir,
   trimHistoryForAgent,
   type ConfigStore,
@@ -62,8 +58,12 @@ import {
   acceptImages,
   isArtifactKind,
   listDirectory,
-  mergeProfile,
   readWorkspaceFile,
+  saveConnection,
+  deleteConnection,
+  setModelRole,
+  setWebSearch,
+  sharedSettings,
   clipArgs,
   describeCall,
   listFolders,
@@ -72,7 +72,6 @@ import {
   type HostSession,
   type WorkspaceStore,
 } from '@heapcode/web-host';
-import { UI_MODEL_ROLES } from '@heapcode/web-host/protocol';
 import type { Artifact } from '@heapcode/web-host';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from '@heapcode/web-host';
 import { connectionModels, probeConnection } from '@heapcode/web-host';
@@ -692,14 +691,12 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.saveProfile, async (raw) => {
       const { profile, apiKey } = raw as ChatSaveProfileParams;
-      const next = mergeProfile(await this.deps.config.getProfile(profile.name), profile);
-      await this.deps.config.saveProfile(next);
-      if (apiKey) await this.deps.secrets.setApiKey(profile.name, apiKey);
+      await saveConnection(this.deps.config, this.deps.secrets, { profile, ...(apiKey ? { apiKey } : {}) });
       // The connection just added may be the one this session was waiting
       // for, so the page comes alive where they are standing.
       if (!this.connection) await this.open();
       if (profile.name === this.profile?.name) {
-        this.profile = (await this.deps.config.getProfile(profile.name)) ?? next;
+        this.profile = (await this.deps.config.getProfile(profile.name)) ?? this.profile;
         // The daemon was handed the profile once, at hello, and reads its own
         // copy for the rest of the session — so an edit that is not followed
         // by a reconnect runs the profile as it was before the edit, with
@@ -712,8 +709,7 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.deleteProfile, async (raw) => {
       const { name } = raw as { name: string };
-      await this.deps.config.deleteProfile(name);
-      await this.deps.secrets.deleteApiKey(name).catch(() => undefined);
+      await deleteConnection(this.deps.config, this.deps.secrets, name);
       void this.pushState();
       return null;
     });
@@ -730,13 +726,10 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.setRole, async (raw) => {
       const { role, assignment } = raw as ChatSetRoleParams;
+      await setModelRole(this.deps.config, role, assignment);
       if (role === 'chat') {
-        if (!assignment) throw new Error('Chat is what the other roles inherit from, so it cannot be cleared.');
-        await this.deps.config.setChatModel(assignment.connection, assignment.model);
         this.profile = (await this.deps.config.getActiveProfile()) ?? this.profile;
         this.modelOverride = undefined;
-      } else {
-        await this.deps.config.setRole(role, assignment);
       }
       this.chatModel = (await this.deps.config.resolve('chat'))?.model ?? this.profile?.model ?? '';
       // The table crossed once, at hello; reconnecting is the only way to
@@ -770,12 +763,7 @@ export class ChatSession implements HostSession {
     );
 
     ui.onRequest(CHAT_METHODS.setWebSearch, async (raw) => {
-      const { provider, enabled, apiKey } = raw as { provider?: string; enabled?: boolean; apiKey?: string };
-      if (apiKey !== undefined) await this.deps.secrets.setApiKey(WEB_SEARCH_SECRET_NAME, apiKey);
-      const patch: Record<string, unknown> = {};
-      if (provider !== undefined) patch.provider = provider;
-      if (enabled !== undefined) patch.enabled = enabled;
-      if (Object.keys(patch).length) await this.deps.config.saveWebSearch(patch);
+      await setWebSearch(this.deps.config, this.deps.secrets, raw as { provider?: string; enabled?: boolean; apiKey?: string });
       return null;
     });
 
@@ -942,51 +930,13 @@ export class ChatSession implements HostSession {
    * permission grants. The dialog is told not to offer those pages.
    */
   private async settings(): Promise<ChatSettings> {
-    const cfg = await this.deps.config.load();
-    const modelConfig = await this.deps.config.modelConfig();
-    const profiles = await Promise.all(
-      (await this.deps.config.listProfiles()).map(async (p) => ({
-        name: p.name,
-        preset: p.preset,
-        baseUrl: p.baseUrl,
-        model: p.model,
-        temperature: p.temperature,
-        hasKey: Boolean(await this.deps.secrets.getApiKey(p.name).catch(() => undefined)),
-        active: p.name === this.profile?.name,
-        nativeToolCalls: resolveCapabilities(p).nativeToolCalls,
-        contextWindow: p.contextWindow,
-        effectiveContextWindow: profileContextWindow(p),
-        maxTokens: p.maxTokens,
-        promptTier: p.promptTier,
-      })),
-    );
     return {
       personas: [],
       persona: '',
       permissionMode: '',
       subAgents: false,
       nativeToolCalls: this.profile ? resolveCapabilities(this.profile).nativeToolCalls : true,
-      profiles,
-      roles: UI_MODEL_ROLES.map((role) => ({
-        role: role.key,
-        connection: modelConfig.roles[role.key]?.connection,
-        model: modelConfig.roles[role.key]?.model,
-        summary: describeRole(modelConfig, role.key),
-      })),
-      presets: providerPresets.map((p) => ({
-        id: p.id,
-        label: p.label,
-        defaultBaseUrl: p.defaultBaseUrl,
-        requiresApiKey: p.requiresApiKey,
-        local: p.local,
-        apiKeyUrl: p.apiKeyUrl,
-      })),
-      webSearch: {
-        providers: [...SEARCH_PRESETS],
-        provider: cfg.webSearch?.provider,
-        enabled: cfg.webSearch?.enabled ?? Boolean(cfg.webSearch?.provider),
-        hasKey: Boolean(await this.deps.secrets.getApiKey(WEB_SEARCH_SECRET_NAME).catch(() => undefined)),
-      },
+      ...(await sharedSettings(this.deps.config, this.deps.secrets, this.profile?.name ?? '')),
       mcpServers: await this.listMcpServers(),
       permissionGrants: [],
     };
@@ -1288,6 +1238,10 @@ export class ChatSession implements HostSession {
         this.lastDescription = this.verifying.text;
         return;
       }
+      // Only the run this session is running — see web-host's session.ts: a
+      // stopped run winding down in the daemon must not paint into, or be
+      // saved with, whatever conversation comes next.
+      if (params.runId !== this.activeRunId) return;
       this.recordForHistory(params.event);
       const buffer = this.buffers.get(params.runId);
       if (buffer) {

@@ -162,7 +162,7 @@ import { attachmentPath } from './attachmentRoute.js';
 import { connectionModels, probeConnection } from './models.js';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
-import { listFolders, type WorkspaceStore } from './workspaces.js';
+import { listFolders, type WorkspaceEvents, type WorkspaceStore } from './workspaces.js';
 import {
   BROWSER_TOOL_NAMES,
   classifyBrowserAction,
@@ -246,6 +246,8 @@ export interface WebSessionDeps {
    * rather than offering one that could not finish.
    */
   mcpLogins?: McpLoginRegistry;
+  /** Told when this session switches folder — see WorkspaceEvents. */
+  workspaceEvents?: WorkspaceEvents;
   /**
    * Opens the daemon connection. Injected rather than called directly so tests
    * can point at an in-process server, and so the CLI can supply the path to
@@ -626,6 +628,7 @@ export class WebSession {
     this.permissions = undefined;
 
     this.root = target;
+    this.deps.workspaceEvents?.changed(target);
     // A conversation belongs to the workspace it happened in — carrying one
     // across would file this repo's turns under the other one's history.
     this.conversation = undefined;
@@ -1182,6 +1185,7 @@ export class WebSession {
           // resolved where it matters — the run, the meter, the breakdown.
           effectiveContextWindow: profileContextWindow(p),
           maxTokens: p.maxTokens,
+          timeoutMs: p.timeoutMs,
           promptTier: p.promptTier,
         })),
       );
@@ -2190,6 +2194,12 @@ export class WebSession {
 
     peer.onNotification(METHODS.agentEvent, (raw) => {
       const params = raw as AgentEventParams;
+      // Only the run this session is running counts — on the page and in the
+      // history it writes. A run that was stopped (or abandoned) is no longer
+      // active here even if the daemon is still winding it down, and its
+      // stragglers used to land in whatever came next: a new chat filled with
+      // another run's step-limit questions, and the next turn's saved record.
+      if (params.runId !== this.activeRunId) return;
       this.recordForHistory(params.event);
       const buffer = this.buffers.get(params.runId);
       if (buffer) {
@@ -2523,6 +2533,13 @@ export function mergeProfile(
   if (patch.contextWindow !== undefined) next.contextWindow = patch.contextWindow ?? undefined;
   if (patch.maxTokens !== undefined) next.maxTokens = patch.maxTokens ?? undefined;
   if (patch.temperature !== undefined) next.temperature = patch.temperature ?? undefined;
+  if (patch.timeoutMs !== undefined) {
+    // Checked here, the one place every product's save goes through.
+    if (patch.timeoutMs !== null && (!Number.isInteger(patch.timeoutMs) || patch.timeoutMs < 0)) {
+      throw new Error('The response timeout must be a whole number of seconds, or 0 to wait as long as it takes.');
+    }
+    next.timeoutMs = patch.timeoutMs ?? undefined;
+  }
   return next;
 }
 

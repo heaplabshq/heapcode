@@ -1,4 +1,5 @@
-import type { ChatMessage, ChatResponse, Provider, TokenUsage } from '../providers/types.js';
+import { REPETITION_NOTICE, REPETITION_NUDGE, RepetitionError, RepetitionWatch } from './repetition.js';
+import type { ChatMessage, ChatRequest, ChatResponse, Provider, TokenUsage } from '../providers/types.js';
 import { isAbortError, isToolsUnsupported } from '../providers/errors.js';
 import {
   COMPACTION_THRESHOLD,
@@ -237,6 +238,12 @@ const CONTINUE_NUDGE =
  * Says what happened and how to make it stick, because the automatic recovery
  * costs a round trip on every run until the profile is changed.
  */
+/** Calls in a row that failed or changed nothing: the model is told at the first, the run ends at the second. */
+const FRUITLESS_NUDGE = 5;
+const FRUITLESS_STOP = 10;
+/** Changing calls that may succeed on a second identical try — they depend on the world outside the files. */
+const RETRYABLE_TOOLS = new Set(['run_command', 'run_tests']);
+
 const TOOL_PROTOCOL_FALLBACK_NOTICE =
   'This model rejected native tool calling, so heapcode switched to its text-based tool protocol ' +
   'for the rest of this run. Tool support comes from the model\'s chat template, so this is a ' +
@@ -463,18 +470,32 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   // sections the model has been told to follow.
   const promptTier = resolvePromptTier(opts);
 
+  /**
+   * Makes ids this loop invents unique to the run. Pages pair a result with
+   * its call by id across a whole conversation, and "steps_100" or "call_3"
+   * recurs in every run that gets that far.
+   */
+  const runTag = Math.random().toString(36).slice(2, 8);
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
   const toolsWithFinish = [...tools, FINISH_TOOL, TODO_TOOL];
 
   // Prefer streaming transport: reasoning models produce bytes immediately but
   // can exceed any sane non-streaming timeout on their full response.
-  const buildRequest = (msgs: ChatMessage[], withTools: boolean) => ({
+  const buildRequest = (
+    msgs: ChatMessage[],
+    withTools: boolean,
+    /** The retry after a reply looped: warmer, and steered away from repeating. */
+    unstick?: { penalties: boolean },
+    /** The run's signal joined with one that cuts this reply off (see `attempt`). */
+    watched?: AbortSignal,
+  ): ChatRequest => ({
     model,
     messages: msgs,
     tools: withTools && nativeToolCalls ? toolsWithFinish : undefined,
-    temperature: opts.temperature ?? 0.2,
+    temperature: unstick ? Math.max(0.7, (opts.temperature ?? 0.2) + 0.4) : (opts.temperature ?? 0.2),
     maxTokens: opts.maxTokens,
-    signal,
+    ...(unstick?.penalties ? { frequencyPenalty: 0.5, presencePenalty: 0.3 } : {}),
+    signal: watched ?? signal,
   });
 
   /**
@@ -527,30 +548,90 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     let streamed = false;
     let reasoned = false;
     let toolChars = 0;
-    const onDelta = (text: string, kind: 'text' | 'reasoning' | 'tool' = 'text'): void => {
-      if (kind === 'reasoning') {
-        reasoned = true;
-        events.onReasoningDelta?.(text);
-        return;
+
+    /**
+     * One streamed attempt, watched for a loop. A reply that starts repeating
+     * itself is cut off there (see repetition.ts) rather than left to run to
+     * its token limit; the caller decides what happens next.
+     */
+    const attempt = async (request: (stop: AbortSignal) => ChatRequest): Promise<ChatResponse> => {
+      const stop = new AbortController();
+      const watched = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
+      const thinking = new RepetitionWatch();
+      // Narration only: in the text protocol the reply carries tool calls —
+      // whole files among them — where repeated blocks are ordinary.
+      const saying = nativeToolCalls ? new RepetitionWatch() : undefined;
+      let looped: RepetitionError | undefined;
+      const onDelta = (text: string, kind: 'text' | 'reasoning' | 'tool' = 'text'): void => {
+        if (looped) return;
+        if (kind === 'reasoning') {
+          reasoned = true;
+          events.onReasoningDelta?.(text);
+          if (thinking.push(text)) looped = new RepetitionError('reasoning');
+        } else if (kind === 'tool') {
+          toolChars += text.length;
+          events.onToolStream?.(toolChars);
+          return;
+        } else {
+          if (liveText && nativeToolCalls) {
+            streamed = true;
+            events.onTextDelta?.(text);
+          }
+          if (saying?.push(text)) looped = new RepetitionError('text');
+        }
+        if (looped) stop.abort(looped);
+      };
+      let reply: ChatResponse;
+      try {
+        reply = await provider.chatStreamed!(request(watched), onDelta);
+      } catch (err) {
+        if (looped) throw looped;
+        throw err;
       }
-      if (kind === 'tool') {
-        toolChars += text.length;
-        events.onToolStream?.(toolChars);
-        return;
-      }
-      if (liveText && nativeToolCalls) {
-        streamed = true;
-        events.onTextDelta?.(text);
+      // A provider may hand back what it had when cut off instead of throwing.
+      if (looped) throw looped;
+      return reply;
+    };
+
+    const firstTry = async (): Promise<ChatResponse> => {
+      try {
+        return await attempt((watched) => buildRequest(msgs, withTools, undefined, watched));
+      } catch (err) {
+        if (!recoverFromUnsupportedTools(err)) throw err;
+        // withTools is now moot — nativeToolCalls is false, so buildRequest
+        // omits the array either way; passing false says so at the call site.
+        return attempt((watched) => buildRequest(msgs, false, undefined, watched));
       }
     };
+
     let response: ChatResponse;
     try {
-      response = await provider.chatStreamed(buildRequest(msgs, withTools), onDelta);
+      response = await firstTry();
     } catch (err) {
-      if (!recoverFromUnsupportedTools(err)) throw err;
-      // withTools is now moot — nativeToolCalls is false, so buildRequest
-      // omits the array either way; passing false says so at the call site.
-      response = await provider.chatStreamed(buildRequest(msgs, false), onDelta);
+      if (!(err instanceof RepetitionError)) throw err;
+      // Once: said so in the transcript, told so in the request, and sampled
+      // so as not to fall into the same groove. The looping reply is dropped.
+      if (reasoned) events.onReasoningEnd?.();
+      if (streamed) events.onTextEnd?.();
+      reasoned = false;
+      streamed = false;
+      events.onText(REPETITION_NOTICE);
+      const nudged: ChatMessage[] = [...msgs, { role: 'user', content: REPETITION_NUDGE }];
+      try {
+        response = await attempt((watched) => buildRequest(nudged, withTools, { penalties: true }, watched));
+      } catch (again) {
+        if (again instanceof RepetitionError) {
+          throw new Error('The model kept repeating itself, even when asked again. Try again, or a different model for this role.');
+        }
+        if (signal?.aborted) throw again;
+        // An endpoint that refuses the penalty settings still gets the nudge.
+        response = await attempt((watched) => buildRequest(nudged, withTools, { penalties: false }, watched)).catch((last: unknown) => {
+          if (last instanceof RepetitionError) {
+            throw new Error('The model kept repeating itself, even when asked again. Try again, or a different model for this role.');
+          }
+          throw last;
+        });
+      }
     }
     if (reasoned) events.onReasoningEnd?.();
     if (streamed) events.onTextEnd?.();
@@ -623,6 +704,22 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   const cacheableLookup = (tool: ToolDefinition): boolean =>
     tool.permission === 'read' || tool.name === 'web_search' || tool.name === 'fetch_url';
 
+  /**
+   * Calls that change things, and failed — so the same call is not sent again
+   * while nothing has changed. The look-up cache's counterpart: a model stuck
+   * on an edit whose search text is not in the file will send that exact edit
+   * thirty times, each failing the same way, each costing a turn.
+   */
+  const failedChanges = new Map<string, { at: number; result: ToolResult }>();
+  /** The last call that changed something successfully — what makes a failed call worth retrying. */
+  let lastChangeAt = -1;
+  /**
+   * Calls in a row that failed or changed nothing. Successful changes reset
+   * it; successful look-ups do not, since read-then-fail-to-edit is exactly
+   * the circle this watches for. A refusal by the person is not counted.
+   */
+  let fruitless = 0;
+
   const execTool = async (rawCall: ToolCall): Promise<ToolResult> => {
     // Loop-owned bookkeeping, handled before the host roundtrip: the list is
     // this run's state, not workspace state, so no host has an executor for
@@ -672,6 +769,25 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       return repeated;
     }
 
+    // Commands may depend on the outside world (a server coming up), so a
+    // failed one can fairly be tried again; an edit cannot.
+    const changeKey =
+      !cacheableLookup(tool) && !RETRYABLE_TOOLS.has(call.name) ? `${call.name}:${JSON.stringify(call.args ?? {})}` : undefined;
+    const failedBefore = changeKey ? failedChanges.get(changeKey) : undefined;
+    if (failedBefore && failedBefore.at > lastChangeAt) {
+      const again: ToolResult = {
+        id: call.id,
+        name: call.name,
+        isError: true,
+        content:
+          'You already made this exact call and it failed, and nothing has changed since — so it would fail ' +
+          'the same way, and it was not run again. Its error was:\n\n' +
+          failedBefore.result.content +
+          '\n\nChange the approach: re-read the file for its current text, or make a different change.',
+      };
+      return settleFruitless(again, false);
+    }
+
     let result: ToolResult;
     const decision =
       tool.permission === 'read' ? true : await opts.requestPermission(call, tool);
@@ -718,10 +834,42 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     // `tool_call_id`") on the *next* request, so every session died the first
     // time the agent ran a shell command. Restamp here, once, for every host.
     result = { ...result, id: call.id };
-    events.onToolResult(result);
-    return result;
+    if (!allowed) {
+      events.onToolResult(result);
+      return result;
+    }
+    if (changeKey && result.isError) failedChanges.set(changeKey, { at, result });
+    if (!cacheableLookup(tool) && !result.isError) lastChangeAt = at;
+    return settleFruitless(result, !cacheableLookup(tool) && !result.isError);
   };
 
+  /**
+   * Count a result toward the run of calls that got nowhere, telling the model
+   * at FRUITLESS_NUDGE and ending the run at FRUITLESS_STOP — a stuck agent
+   * otherwise spins until its step budget, minutes later.
+   */
+  const settleFruitless = (result: ToolResult, changedSomething: boolean): ToolResult => {
+    if (changedSomething) fruitless = 0;
+    else if (result.isError) fruitless += 1;
+    let shown = result;
+    if (result.isError && fruitless === FRUITLESS_NUDGE) {
+      shown = {
+        ...result,
+        content:
+          `${result.content}\n\nThat is ${FRUITLESS_NUDGE} calls in a row that failed or changed nothing. ` +
+          'Stop repeating the same kind of attempt. Re-read what you are changing, rethink the approach, ' +
+          'or ask the user if you are blocked.',
+      };
+    }
+    events.onToolResult(shown);
+    if (fruitless >= FRUITLESS_STOP) {
+      throw new Error(
+        `Stopped: ${FRUITLESS_STOP} tool calls in a row failed or changed nothing, so the agent was going in circles. ` +
+          'Look at the last error above, then ask again — perhaps with a hint, or with a different model for this role.',
+      );
+    }
+    return shown;
+  };
   let repairs = 0;
   let nudges = 0;
   let finishReminderSent = false;
@@ -972,7 +1120,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     const askForMoreSteps = async (used: number): Promise<boolean> => {
       if (!opts.askToContinueAtLimit || !toolsByName.has('ask_user')) return false;
       const result = await execTool({
-        id: `steps_${used}`,
+        id: `steps_${used}_${runTag}`,
         name: 'ask_user',
         args: {
           question:
@@ -1094,7 +1242,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           const call = textual.calls[0]!;
           if (!streamed && textual.narration.trim()) events.onText(textual.narration);
           messages.push({ role: 'assistant', content: response.content });
-          const result = await execTool({ id: `call_${iteration}`, name: call.name, args: call.args ?? {} });
+          const result = await execTool({ id: `call_${iteration}_${runTag}`, name: call.name, args: call.args ?? {} });
           messages.push({ role: 'user', content: formatToolResult(result.name, result.content) });
           continue;
         }
@@ -1221,7 +1369,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       }
 
       const result = await execTool({
-        id: `call_${iteration}`,
+        id: `call_${iteration}_${runTag}`,
         name: first.name,
         args: first.args ?? {},
       });

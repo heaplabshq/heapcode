@@ -37,6 +37,8 @@ export interface ComposerProps {
    */
   editing?: boolean;
   onCancelEdit?(): void;
+  /** What the empty box says, when the default does not fit the product. */
+  placeholder?: string;
 }
 
 /**
@@ -62,6 +64,7 @@ export function Composer({
   onSeedUsed,
   editing,
   onCancelEdit,
+  placeholder,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState('');
   const [images, setImages] = useState<string[]>([]);
@@ -274,7 +277,7 @@ export function Composer({
           value={text}
           disabled={disabled}
           placeholder={
-            disabled ? 'Connecting…' : busy ? 'Running — Esc to stop' : 'Ask anything, / for commands, paste an image'
+            disabled ? (placeholder ?? 'Connecting…') : busy ? 'Running — Esc to stop' : (placeholder ?? 'Ask anything, / for commands, paste an image')
           }
           aria-label="Message"
           // Combobox over the slash menu when it is up: the input keeps focus

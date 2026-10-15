@@ -67,7 +67,7 @@ import { MessageList } from './components/MessageList.js';
 import { useTransientNotice } from './notice.js';
 import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
-import { ProductToggle } from './components/ProductToggle.js';
+import { ProductToggle, servedProducts } from './components/ProductToggle.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { ChatTools } from './components/ChatTools.js';
@@ -155,6 +155,8 @@ const MUTATING_TOOLS = new Set([
  * the switcher is simply absent rather than offering a link to a 404.
  */
 const CHAT_MOUNTED = document.documentElement.dataset.chatMounted === 'true';
+/** Heap QA, mounted at /qa by the same host — see ProductToggle. */
+const QA_MOUNTED = servedProducts().includes('qa');
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
@@ -165,7 +167,7 @@ export function App(): JSX.Element {
   // Remembered, because it is a preference about screen width, and re-making
   // that choice on every reload is the kind of small friction that adds up.
   const [railCollapsed, setRailCollapsed] = useState(
-    () => localStorage.getItem('heapcode.rail') === 'collapsed',
+    () => (localStorage.getItem('heap.rail') ?? localStorage.getItem('heapcode.rail')) === 'collapsed',
   );
   const [permission, setPermission] = useState<PendingPermission>();
   const [ask, setAsk] = useState<PendingAsk>();
@@ -275,7 +277,10 @@ export function App(): JSX.Element {
     [rpc],
   );
 
+  /** Bumped on every workspace refresh, so the Files view re-reads what it shows. */
+  const [workspaceVersion, setWorkspaceVersion] = useState(0);
   const refreshWorkspace = useCallback(() => {
+    setWorkspaceVersion((v) => v + 1);
     void rpc
       .request<UiChangesResult>(UI_METHODS.changes)
       .then((r) => setChanges(r.files))
@@ -609,7 +614,7 @@ export function App(): JSX.Element {
         } else if (key === '\\') {
           e.preventDefault();
           setRailCollapsed((v) => {
-            localStorage.setItem('heapcode.rail', v ? 'expanded' : 'collapsed');
+            localStorage.setItem('heap.rail', v ? 'expanded' : 'collapsed');
             return !v;
           });
         } else if (e.shiftKey && key === 'n') {
@@ -1057,11 +1062,15 @@ export function App(): JSX.Element {
     <div className="app">
       <div className="body">
         <Sidebar
-          toggle={CHAT_MOUNTED ? <ProductToggle current="code" chatPath="/chat/" /> : undefined}
+          toggle={
+            CHAT_MOUNTED || QA_MOUNTED ? (
+              <ProductToggle current="code" {...(CHAT_MOUNTED ? { chatPath: '/chat/' } : {})} {...(QA_MOUNTED ? { qaPath: '/qa/' } : {})} />
+            ) : undefined
+          }
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
-              localStorage.setItem('heapcode.rail', v ? 'expanded' : 'collapsed');
+              localStorage.setItem('heap.rail', v ? 'expanded' : 'collapsed');
               return !v;
             })
           }
@@ -1252,6 +1261,7 @@ export function App(): JSX.Element {
               openPath={openPath}
               loadDiff={loadDiff}
               loadTree={loadTree}
+              workspaceVersion={workspaceVersion}
               loadFile={loadFile}
               onRevertFile={(path) => workspaceAct(UI_METHODS.revertFile, { path })}
               onRevertAll={() => workspaceAct(UI_METHODS.revertAll, undefined)}

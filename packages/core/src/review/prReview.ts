@@ -60,14 +60,17 @@ const NUDGE_EMPTY_MIN_CHARS = 20_000;
 // maxTokens (tuned for chat) starves the findings list mid-array.
 const MIN_MAX_TOKENS = 8_192;
 
-interface GhResult {
+export interface GhResult {
   stdout: string;
   stderr: string;
   code: number | null;
 }
 
-/** Runs `gh` directly (no shell) — an explicit argument array, never string-interpolated, so nothing here can be an injection surface. */
-function runGh(args: string[], cwd: string, stdin?: string): Promise<GhResult> {
+/**
+ * Runs `gh` directly (no shell) — an explicit argument array, never string-interpolated, so nothing here can be an injection surface.
+ * Exported for Heap QA's pull-request comment, which posts through the same `gh auth login` session.
+ */
+export function runGh(args: string[], cwd: string, stdin?: string): Promise<GhResult> {
   return new Promise((resolve) => {
     const child = spawn('gh', args, { cwd });
     let stdout = '';

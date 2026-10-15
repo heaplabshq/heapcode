@@ -123,3 +123,27 @@ async function isDirectory(path: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * "Heap Code moved to another folder", for the other products served beside
+ * it. Heap QA listens so its tests follow the project; Heap Chat keeps its own
+ * folder and does not. One per host, made by `startWebHost`.
+ */
+export class WorkspaceEvents {
+  private readonly listeners = new Set<(root: string) => void>();
+
+  on(listener: (root: string) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  changed(root: string): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(root);
+      } catch {
+        // One listener failing must not stop the switch or the others.
+      }
+    }
+  }
+}

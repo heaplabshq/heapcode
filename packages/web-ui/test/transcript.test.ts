@@ -392,3 +392,21 @@ describe('an open message is closed by whatever comes next', () => {
     expect((t.items[0] as { text: string }).text).toBe('still going');
   });
 });
+
+describe('pairing a result with its call across runs', () => {
+  it('gives a result to the latest call still waiting on that id, not the first ever made with it', () => {
+    // The step-limit question is "steps_100" in every run that gets that far;
+    // the second time, its answer went to the first run's chip, leaving the
+    // live one spinning with its question cut off.
+    let t = emptyTranscript;
+    t = reduce(t, { type: 'tool_call', id: 'steps_100', name: 'ask_user', args: { question: 'first run?' } }, 1);
+    t = reduce(t, { type: 'tool_result', id: 'steps_100', name: 'ask_user', content: 'Keep going' }, 2);
+    t = reduce(t, { type: 'tool_call', id: 'steps_100', name: 'ask_user', args: { question: 'second run?' } }, 3);
+    t = reduce(t, { type: 'tool_result', id: 'steps_100', name: 'ask_user', content: 'Stop here' }, 4);
+    const asks = t.items.filter((i) => i.kind === 'tool') as Array<{ done: boolean; result?: string }>;
+    expect(asks.map((a) => [a.done, a.result])).toEqual([
+      [true, 'Keep going'],
+      [true, 'Stop here'],
+    ]);
+  });
+});

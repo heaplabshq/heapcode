@@ -661,7 +661,7 @@ describe('runAgent — native tool calls', () => {
     expect(afterGrant.content).not.toMatch(/\bI said\b/);
     // A tool message paired to nothing is what makes strict providers reject
     // the whole transcript.
-    expect(provider.requests[1]!.messages.some((m) => m.toolCallId === 'steps_1')).toBe(false);
+    expect(provider.requests[1]!.messages.some((m) => m.toolCallId?.startsWith('steps_'))).toBe(false);
   });
 
   it('takes anything but a clear yes as a no, and never asks at all where nobody can answer', async () => {

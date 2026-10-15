@@ -1,0 +1,177 @@
+/*
+ * Only what is genuinely Heap QA's. The shell — rail, buttons, banners,
+ * modals, fields, the folder picker, the transcript, the composer, tokens —
+ * is `@heapcode/web-ui/styles.css`, imported first.
+ *
+ * The layout is a test runner's: a bar across the top (folder, app address,
+ * whether the browser window shows, what is running), then the whole width
+ * for work — the log or the AI on the left, the browser on the right.
+ */
+
+.qa-main { --gutter: 16px; }
+.qa-main > .banner { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qa-main > .banner .banner-action + .banner-action { margin-left: 0; }
+
+/* ---------- top strip: folder and app on the left, view toggles on the right (Heap Code's) ---------- */
+.qa-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 0 16px; flex: 0 0 auto; min-height: 36px; flex-wrap: wrap; }
+.qa-toolbar .chat-tools { padding: 0; }
+.qa-top-spacer { flex: 1 1 auto; }
+.qa-chip { font-family: var(--mono); font-size: 12px; color: var(--text-dim); background: transparent; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.qa-chip:hover { border-color: var(--accent); color: var(--text); }
+.qa-busy { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.qa-busy-label { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--ok); animation: qa-pulse 1.2s ease-in-out infinite; }
+.btn-sm { padding: 2px 10px; font-size: 12px; }
+
+/* ---------- full-width pages ---------- */
+.qa-page { flex: 1 1 auto; overflow-y: auto; padding: 24px 28px 48px; }
+.qa-hero { max-width: 640px; margin: 10vh auto 0; text-align: center; }
+.qa-empty { padding: 32px 28px; color: var(--text-dim); }
+.qa-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.qa-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+.qa-subtitle { font-size: 16px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.qa-muted { color: var(--text-dim); font-size: 13px; margin: 4px 0; overflow-wrap: anywhere; }
+.qa-row-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.qa-errors ul { margin: 4px 0 0; padding-left: 18px; }
+
+.qa-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); font-size: 13.5px; }
+.qa-table th { text-align: left; font-weight: 500; color: var(--text-dim); font-size: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.qa-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.qa-table tbody tr:last-child td { border-bottom: 0; }
+.qa-table tbody tr:hover { background: var(--hover); }
+.qa-name { font-weight: 500; overflow-wrap: anywhere; }
+.qa-file { font-family: var(--mono); font-size: 12px; }
+.qa-num { text-align: right; font-variant-numeric: tabular-nums; width: 1%; white-space: nowrap; }
+.qa-actions { text-align: right; white-space: nowrap; width: 1%; }
+.qa-actions .btn { margin-left: 4px; }
+.qa-status { display: inline-block; width: 20px; text-align: center; font-weight: 700; color: var(--text-dim); }
+.qa-passed { color: var(--ok); }
+.qa-failed { color: var(--danger); }
+
+.qa-source { margin-top: 16px; }
+.qa-source pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; overflow: auto; font-family: var(--mono); font-size: 12.5px; max-height: 50vh; margin: 0; }
+
+/* ---------- the work: one column, the browser in Heap Code's side panel ---------- */
+.qa-pane { flex: 1 1 auto; overflow-y: auto; padding: 20px 20px 32px; }
+.qa-pane > p { line-height: 1.5; }
+.qa-log-wrap { flex: 1 1 auto; overflow-y: auto; padding: 16px 0 24px; }
+.qa-log-wrap > .qa-muted, .qa-log-wrap > .qa-done { padding: 0 20px; }
+.qa-log-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 20px 10px; flex-wrap: wrap; }
+
+.qa-log { list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 12.5px; }
+.qa-row { padding-right: 12px; }
+.qa-row-btn { display: flex; gap: 8px; width: 100%; align-items: flex-start; text-align: left; background: none; border: 0; padding: 4px 8px 4px 0; color: inherit; font: inherit; border-radius: 4px; overflow-wrap: anywhere; }
+button.qa-row-btn { cursor: pointer; }
+button.qa-row-btn:hover { background: var(--hover); }
+.qa-row-pinned .qa-row-btn { background: var(--hover-strong); }
+.qa-log-text { flex: 1 1 auto; min-width: 0; }
+.qa-mark { width: 18px; flex: none; text-align: center; font-weight: 700; }
+.qa-shot-dot { width: 6px; height: 6px; margin-top: 6px; border-radius: 999px; background: var(--border-strong); flex: none; }
+button.qa-row-btn:hover .qa-shot-dot { background: var(--accent); }
+.qa-tone-head { font-family: var(--sans); font-weight: 600; font-size: 13.5px; margin-top: 10px; }
+.qa-tone-head:first-child { margin-top: 0; }
+.qa-tone-ok .qa-mark { color: var(--ok); }
+.qa-tone-bad { color: var(--danger); }
+.qa-tone-warn .qa-mark, .qa-tone-warn .qa-note { color: var(--warn); }
+.qa-tone-dim { color: var(--text-dim); }
+.qa-note { display: block; color: var(--text-dim); font-size: 12px; margin-top: 1px; }
+.qa-log-end { height: 1px; }
+.qa-done { font-weight: 600; margin-top: 14px; }
+.qa-bad { color: var(--danger); font-weight: 600; }
+.qa-working { animation: qa-pulse 1.4s ease-in-out infinite; }
+.qa-tip { font-size: 12px; }
+@keyframes qa-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .qa-working, .qa-dot { animation: none; } }
+
+/* Healing's AI, in Heap Code's own transcript. */
+.qa-heal { margin: 14px 20px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); }
+.qa-heal > summary { cursor: pointer; padding: 8px 12px; font-size: 13px; font-weight: 500; }
+.qa-heal .messages { --gutter: 12px; padding-top: 4px; max-height: 50vh; }
+
+/* ---------- the live browser ---------- */
+.qa-live { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.qa-live-bar:empty { display: none; }
+.qa-live-bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); min-height: 36px; }
+.qa-live-tag { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 999px; background: var(--chip-bg); color: var(--text-dim); flex: none; }
+.qa-live-tag-on { background: var(--danger); color: #fff; }
+.qa-live-tag-on::before { content: '● '; }
+.qa-live-tag-pinned { background: var(--accent); color: var(--accent-text); }
+.qa-live-title { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qa-live-view { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 16px; overflow: auto; }
+.qa-live-view img { max-width: 100%; max-height: 100%; object-fit: contain; border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 24px rgb(0 0 0 / 0.12); background: #fff; }
+.qa-live-empty { max-width: 44ch; text-align: center; color: var(--text-dim); font-size: 13.5px; line-height: 1.5; }
+
+/* ---------- Ask AI: Heap Code's transcript and composer ---------- */
+.qa-ask { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; --gutter: max(16px, calc((100% - var(--col)) / 2)); }
+.qa-ask-messages { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.qa-start { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.qa-start-input { font: inherit; font-family: var(--mono); width: 16ch; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
+
+/* ---------- report ---------- */
+.qa-detail { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: 16px 20px 20px; }
+.qa-detail-head { margin-bottom: 10px; }
+.qa-report { flex: 1 1 auto; min-height: 480px; width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
+
+.qa-check { display: flex; gap: 8px; align-items: baseline; margin: 8px 0 14px; font-size: 13.5px; }
+.qa-fieldset { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px 2px; margin: 0 0 14px; }
+
+.qa-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0 0 12px; }
+.qa-facts dt { color: var(--text-dim); }
+.qa-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Narrow windows: tighter padding, and the file column goes. */
+@media (max-width: 900px) {
+  .qa-page { padding: 16px; }
+  .qa-file { display: none; }
+}
+@media (max-width: 640px) {
+  .qa-toolbar { padding: 6px 8px 0 12px; }
+  .qa-busy-label { max-width: 14ch; }
+}
+
+/* Heap Code's picker sits at the bottom and opens upward; here it is in the top bar. */
+.qa-toolbar .wsp-pop { bottom: auto; top: calc(100% + 6px); }
+
+/* ---------- the Tests page in the shared Settings ---------- */
+.qa-textarea { min-height: 64px; width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--mono); font-size: 12.5px; }
+.setting-row-control .card-input { width: 100%; box-sizing: border-box; }
+.qa-num-input { max-width: 8ch; }
+.qa-settings-model { display: inline-flex; align-items: center; gap: 10px; font-size: 12.5px; }
+
+/* The column narrows when the browser panel opens: the table gives way by the same rule as a narrow window. */
+.qa-main { container-type: inline-size; }
+.qa-name { min-width: 16ch; }
+@container (max-width: 720px) {
+  .qa-file { display: none; }
+  .qa-page { padding: 16px; }
+}
+
+/* ---------- launch: Heap Code's empty conversation, with a composer-shaped start ---------- */
+.qa-launch { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; --gutter: max(16px, calc((100% - var(--col)) / 2)); }
+.qa-launch-box { align-items: center; padding: 6px 7px 6px 14px; flex-wrap: nowrap; }
+.qa-launch-url { flex: 1 1 auto; display: flex; align-items: center; min-width: 0; cursor: text; }
+.qa-launch-prefix { color: var(--text-dim); font-family: var(--mono); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; flex: 0 1 auto; }
+.qa-launch-input { font-family: var(--mono); font-size: 13px; min-width: 6ch; }
+.qa-launch-row { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+.qa-launch-fill { flex: 1 1 auto; }
+.qa-launch-options { flex-wrap: wrap; gap: 14px; }
+.qa-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); cursor: pointer; }
+.qa-opt input { margin: 0; }
+
+/* Logs, the save form and the report sit in the same reading column as Heap Code's transcript. */
+.qa-col { width: 100%; max-width: calc(var(--col) + 40px); margin: 0 auto; box-sizing: border-box; }
+.qa-pane { width: 100%; max-width: calc(var(--col) + 40px); margin: 0 auto; box-sizing: border-box; padding-top: 32px; }
+.qa-wide { width: 100%; max-width: 1040px; margin: 0 auto; box-sizing: border-box; }
+.qa-log-lead { padding: 0 20px 8px; margin: 0; }
+.qa-start { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-dim); }
+
+/* The desktop app pins the rail's collapse button beside the traffic lights;
+   with the rail collapsed that lands over this strip's left end, which Heap
+   Code keeps empty and Heap QA does not (the folder chip). */
+html[data-chrome="mac"] .rail-collapsed ~ .qa-main .qa-toolbar { padding-left: 64px; }
+
+/* The heading's second line is a long path: it shortens, so the action stays on the right. */
+.qa-head { flex-wrap: nowrap; align-items: center; }
+.qa-head > div { flex: 1 1 auto; min-width: 0; }
+.qa-head .qa-muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qa-building { color: var(--text); font-weight: 500; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

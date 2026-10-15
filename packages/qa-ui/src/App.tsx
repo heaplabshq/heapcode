@@ -9,6 +9,7 @@ import { Settings, SettingsGroup, SettingsRow, SettingsSection } from '@heapcode
 import { ICON_BROWSER, ICON_POP_OUT } from '@heapcode/web-ui/components/icons';
 import { usePanelWidth } from '@heapcode/web-ui/panelWidth';
 import { emptyTranscript, reduce, settle, withNotice, withUserMessage, type Transcript } from '@heapcode/web-ui/transcript';
+import { useTranscript } from '@heapcode/web-ui/useTranscript';
 import {
   QA_METHODS,
   QA_PROTOCOL_VERSION,
@@ -90,8 +91,6 @@ export function App(): JSX.Element {
   const [state, setState] = useState<QaState>();
   const [view, setView] = useState<View>('tests');
   const [job, setJob] = useState<Job>();
-  const [ai, setAi] = useState<Transcript>(emptyTranscript);
-  const [heal, setHeal] = useState<Transcript>(emptyTranscript);
   /** The test Ask AI's conversation is building in this folder, once it has one. */
   const [askTest, setAskTest] = useState<string>();
   const [askReload, setAskReload] = useState(0);
@@ -108,6 +107,9 @@ export function App(): JSX.Element {
   const { width: panelWidth, startDrag: startPanelDrag } = usePanelWidth('heapqa.panelWidth');
   const client = useMemo(() => new RpcClient(RPC_URL, setStatus), []);
   const seq = useRef(0);
+  // The AI's streamed events applied in batches, as in Heap Code (useTranscript).
+  const { transcript: ai, setTranscript: setAi, applyEvent: queueAi } = useTranscript(emptyTranscript, seq);
+  const { transcript: heal, setTranscript: setHeal, applyEvent: queueHeal } = useTranscript(emptyTranscript, seq);
 
   const addRow = useCallback((row: Omit<LogRow, 'key'>) => {
     setJob((j) => (j ? { ...j, rows: [...j.rows, { ...row, key: `r${seq.current++}` }] } : j));
@@ -122,8 +124,8 @@ export function App(): JSX.Element {
           setFrame(`data:image/jpeg;base64,${e.data}`);
           break;
         case 'agent':
-          if (e.job === 'do') setAi((t) => reduce(t, e.event, seq.current++));
-          else setHeal((t) => reduce(t, e.event, seq.current++));
+          if (e.job === 'do') queueAi(e.event);
+          else queueHeal(e.event);
           break;
         case 'flowStart':
           addRow({ mark: '', tone: 'head', text: e.name, depth: 0 });

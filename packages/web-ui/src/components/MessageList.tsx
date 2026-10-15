@@ -318,7 +318,8 @@ const Row = memo(function Row({
             className="msg-body"
             // Sanitized in renderMarkdown — model output is untrusted, and this
             // page holds the socket that runs commands.
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }}
+            // Highlighted once it has finished, not on every streamed chunk.
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, { highlight: !item.streaming }) }}
           />
           {/* The reply's toolbar, under the reply and aligned with it.
               Hidden while streaming — half a reply is not what someone means

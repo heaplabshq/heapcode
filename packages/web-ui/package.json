@@ -16,6 +16,10 @@
       "types": "./src/panelWidth.ts",
       "default": "./src/panelWidth.ts"
     },
+    "./useTranscript": {
+      "types": "./src/useTranscript.ts",
+      "default": "./src/useTranscript.ts"
+    },
     "./transcript": {
       "types": "./src/transcript.ts",
       "default": "./src/transcript.ts"

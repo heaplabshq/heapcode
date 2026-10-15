@@ -11,7 +11,6 @@ import {
   stampOrdinal,
   userTurnItemIndex,
   withUserMessage,
-  type Transcript,
 } from '@heapcode/web-ui/transcript';
 import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
@@ -21,6 +20,7 @@ import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/Produ
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
+import { useTranscript } from '@heapcode/web-ui/useTranscript';
 import { ChatTools } from '@heapcode/web-ui/components/ChatTools';
 import { desktopBridge } from '@heapcode/web-ui/desktop';
 import { answerBrowserRequest } from '@heapcode/web-ui/browserControl';
@@ -100,7 +100,9 @@ interface PendingPermission {
 export function App(): JSX.Element {
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
   const [state, setState] = useState<ChatState>();
-  const [transcript, setTranscript] = useState<Transcript>(emptyTranscript);
+  // Streamed events applied in batches — see useTranscript. `seq` is shared with the replay below.
+  const seqShared = useRef(0);
+  const { transcript, setTranscript, applyEvent: queueEvent } = useTranscript(emptyTranscript, seqShared);
   const [conversations, setConversations] = useState<ChatConversationMeta[]>([]);
   const [index, setIndex] = useState<ChatIndexStatus>();
   const [error, setError] = useState<string>();
@@ -154,7 +156,7 @@ export function App(): JSX.Element {
     setPanelOpen(true);
   }, []);
 
-  const seq = useRef(0);
+  const seq = seqShared;
   const runId = useRef<string>();
 
   const client = useMemo(() => new RpcClient(RPC_URL, setStatus), []);
@@ -202,7 +204,7 @@ export function App(): JSX.Element {
 
     client.onNotification(CHAT_METHODS.event, (raw) => {
       const { event } = raw as ChatEventParams;
-      setTranscript((t) => reduce(t, event, seq.current++));
+      queueEvent(event);
     });
 
     // The look-only browser_* tools (desktop app only): open the pane on the

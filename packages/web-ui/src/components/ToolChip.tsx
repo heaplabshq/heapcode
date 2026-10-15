@@ -32,6 +32,28 @@ export function ToolChip({
   const open = manual ?? diff;
   const stats = diff ? diffStats(tool.result!) : undefined;
 
+  // A question asked of the person reads in full, with their answer, rather
+  // than as an argument cut off at the edge: it is a sentence, not a path.
+  if (tool.name === 'ask_user' && typeof tool.args.question === 'string') {
+    return (
+      <div className={`chip chip-ask ${tool.parent ? 'chip-nested' : ''}`}>
+        <div className="chip-head chip-head-static">
+          <span className="chip-dot">{tool.done ? (tool.isError ? '✗' : '⏺') : '◌'}</span>
+          <span className="chip-name">ask_user</span>
+        </div>
+        {/* While it waits, the question card below asks it; the chip says only that. */}
+        {tool.done ? (
+          <>
+            <p className="chip-question">{tool.args.question}</p>
+            {tool.result && <p className="chip-answer">→ {tool.result}</p>}
+          </>
+        ) : (
+          <p className="chip-question">waiting for your answer…</p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className={`chip ${tool.parent ? 'chip-nested' : ''} ${tool.isError ? 'chip-error' : ''}`}>
       <button className="chip-head" onClick={() => setManual(!open)} aria-expanded={open}>

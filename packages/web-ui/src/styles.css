@@ -2192,3 +2192,8 @@ html[data-chrome="mac"] .rail-logo, html[data-chrome="mac"] .rail-brand { displa
 html[data-chrome="mac"] .rail-top > * { -webkit-app-region: no-drag; }
 /* Pinned beside the lights so it stays put when the rail collapses to 56px. */
 html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; z-index: 50; }
+
+/* An ask_user chip: the question in full and the answer, wrapped — a sentence, not an argument to ellipsise. */
+.chip-head-static { cursor: default; }
+.chip-question { margin: 0 0 2px 22px; color: var(--text-dim); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chip-answer { margin: 0 0 0 22px; color: var(--text); font-size: 13px; font-weight: 500; }

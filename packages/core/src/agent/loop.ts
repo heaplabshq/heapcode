@@ -470,6 +470,12 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
   // sections the model has been told to follow.
   const promptTier = resolvePromptTier(opts);
 
+  /**
+   * Makes ids this loop invents unique to the run. Pages pair a result with
+   * its call by id across a whole conversation, and "steps_100" or "call_3"
+   * recurs in every run that gets that far.
+   */
+  const runTag = Math.random().toString(36).slice(2, 8);
   const toolsByName = new Map(tools.map((t) => [t.name, t]));
   const toolsWithFinish = [...tools, FINISH_TOOL, TODO_TOOL];
 
@@ -1114,7 +1120,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
     const askForMoreSteps = async (used: number): Promise<boolean> => {
       if (!opts.askToContinueAtLimit || !toolsByName.has('ask_user')) return false;
       const result = await execTool({
-        id: `steps_${used}`,
+        id: `steps_${used}_${runTag}`,
         name: 'ask_user',
         args: {
           question:
@@ -1236,7 +1242,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
           const call = textual.calls[0]!;
           if (!streamed && textual.narration.trim()) events.onText(textual.narration);
           messages.push({ role: 'assistant', content: response.content });
-          const result = await execTool({ id: `call_${iteration}`, name: call.name, args: call.args ?? {} });
+          const result = await execTool({ id: `call_${iteration}_${runTag}`, name: call.name, args: call.args ?? {} });
           messages.push({ role: 'user', content: formatToolResult(result.name, result.content) });
           continue;
         }
@@ -1363,7 +1369,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentOutcome> {
       }
 
       const result = await execTool({
-        id: `call_${iteration}`,
+        id: `call_${iteration}_${runTag}`,
         name: first.name,
         args: first.args ?? {},
       });

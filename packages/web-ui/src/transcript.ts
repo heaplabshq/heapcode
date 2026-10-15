@@ -400,7 +400,21 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
     }
 
     case 'tool_result': {
-      const index = t.items.findIndex((i) => i.kind === 'tool' && i.id === event.id);
+      // The latest call still waiting on this id, not the first ever made with
+      // it: ids are only unique within a run ("steps_100" when a run hits its
+      // step limit, "call_3" in the text protocol), so an earlier run's chip
+      // with the same id used to take this result and leave the live one
+      // spinning, its question cut off with no way to open it.
+      let index = -1;
+      for (let i = t.items.length - 1; i >= 0; i--) {
+        const item = t.items[i]!;
+        if (item.kind !== 'tool' || item.id !== event.id) continue;
+        if (!item.done) {
+          index = i;
+          break;
+        }
+        if (index === -1) index = i;
+      }
       if (index === -1) return t;
       const tool = t.items[index] as ToolItem;
       const updated: ToolItem = { ...tool, result: event.content, isError: event.isError, done: true };

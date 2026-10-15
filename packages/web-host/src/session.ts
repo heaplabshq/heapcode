@@ -2194,6 +2194,12 @@ export class WebSession {
 
     peer.onNotification(METHODS.agentEvent, (raw) => {
       const params = raw as AgentEventParams;
+      // Only the run this session is running counts — on the page and in the
+      // history it writes. A run that was stopped (or abandoned) is no longer
+      // active here even if the daemon is still winding it down, and its
+      // stragglers used to land in whatever came next: a new chat filled with
+      // another run's step-limit questions, and the next turn's saved record.
+      if (params.runId !== this.activeRunId) return;
       this.recordForHistory(params.event);
       const buffer = this.buffers.get(params.runId);
       if (buffer) {

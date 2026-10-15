@@ -1238,6 +1238,10 @@ export class ChatSession implements HostSession {
         this.lastDescription = this.verifying.text;
         return;
       }
+      // Only the run this session is running — see web-host's session.ts: a
+      // stopped run winding down in the daemon must not paint into, or be
+      // saved with, whatever conversation comes next.
+      if (params.runId !== this.activeRunId) return;
       this.recordForHistory(params.event);
       const buffer = this.buffers.get(params.runId);
       if (buffer) {

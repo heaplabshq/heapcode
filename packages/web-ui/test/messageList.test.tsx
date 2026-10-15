@@ -9,13 +9,13 @@
  * string. Both look fine in a reducer snapshot.
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageList } from '../src/components/MessageList.js';
 import { emptyTranscript, reduce, withNotice, type Transcript } from '../src/transcript.js';
 import type { AgentEvent } from '@heapcode/core';
 
-// jsdom has no layout, so it has no scrollIntoView — the list's follow-the-
-// stream effect calls it on every render.
+// jsdom has no layout, so it has no scrollIntoView — kept as a no-op for any
+// component that still calls it.
 beforeEach(() => {
   Element.prototype.scrollIntoView = (): void => {};
 });
@@ -274,5 +274,71 @@ describe('the reply toolbar', () => {
     render(<MessageList transcript={turn} onEdit={(...args) => seen.push(args)} />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
     expect(seen).toEqual([[0, 'look', ['/attachment/a.png']]]);
+  });
+});
+
+
+/**
+ * Scrolling down to the end while a reply streams used to shake for a second
+ * or two: once near the bottom the list re-pinned and jumped to the end on
+ * every chunk, fighting the trackpad's glide still carrying it. It now waits
+ * for the person's own scrolling to settle before following again.
+ */
+describe('following the stream', () => {
+  function layout(el: HTMLElement, height: () => number): void {
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, get: height });
+    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 400 });
+  }
+  const say = (text: string, start?: Transcript): Transcript => fold([{ type: 'text_delta', text }], start);
+
+  it('does not move the list while the person is scrolling, then catches up once they stop', () => {
+    vi.useFakeTimers();
+    try {
+      let height = 1000;
+      let t = say('first');
+      const view = render(<MessageList transcript={t} busy />);
+      const list = view.container.querySelector<HTMLElement>('.messages')!;
+      layout(list, () => height);
+
+      // At the bottom, mid-glide: the wheel is still sending events.
+      list.scrollTop = 600;
+      fireEvent.scroll(list);
+      fireEvent.wheel(list, { deltaY: 30 });
+      height = 1100;
+      t = say(' more text', t);
+      view.rerender(<MessageList transcript={t} busy />);
+      expect(list.scrollTop).toBe(600); // left alone mid-gesture
+
+      vi.advanceTimersByTime(250);
+      expect(list.scrollTop).toBe(1100); // caught up once it settled
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('follows straight away when nobody is scrolling', () => {
+    let height = 1000;
+    let t = say('first');
+    const view = render(<MessageList transcript={t} busy />);
+    const list = view.container.querySelector<HTMLElement>('.messages')!;
+    layout(list, () => height);
+    height = 1300;
+    t = say(' more', t);
+    view.rerender(<MessageList transcript={t} busy />);
+    expect(list.scrollTop).toBe(1300);
+  });
+
+  it('stays put when the person has scrolled up to read', () => {
+    let height = 1000;
+    let t = say('first');
+    const view = render(<MessageList transcript={t} busy />);
+    const list = view.container.querySelector<HTMLElement>('.messages')!;
+    layout(list, () => height);
+    list.scrollTop = 100;
+    fireEvent.scroll(list);
+    height = 1300;
+    t = say(' more', t);
+    view.rerender(<MessageList transcript={t} busy />);
+    expect(list.scrollTop).toBe(100);
   });
 });

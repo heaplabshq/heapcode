@@ -72,6 +72,8 @@ export interface PanelProps {
   onSelectArtifact(id: string): void;
   loadArtifact(id: string, version?: number): Promise<UiArtifactResult>;
   onSaveArtifact(id: string, path: string, version?: number): void;
+  /** The desktop app's "Open in new tab" (see Preview). */
+  onOpenInBrowser?(title: string, html: string): void;
 }
 
 /*
@@ -201,6 +203,7 @@ export function Panel(props: PanelProps): JSX.Element {
             onSelect={props.onSelectArtifact}
             loadArtifact={props.loadArtifact}
             onSave={props.onSaveArtifact}
+            {...(props.onOpenInBrowser ? { onOpenInBrowser: props.onOpenInBrowser } : {})}
           />
         )}
       </div>

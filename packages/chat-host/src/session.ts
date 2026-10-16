@@ -59,6 +59,7 @@ import {
   isArtifactKind,
   listDirectory,
   readWorkspaceFile,
+  openPageRequest,
   saveConnection,
   deleteConnection,
   setModelRole,
@@ -810,6 +811,9 @@ export class ChatSession implements HostSession {
      * and it is theirs to take: they pick the name, they pick the moment. The
      * agent cannot do it, which is the whole point of artifacts here.
      */
+    // As in Heap Code's host: the desktop app's "Open in new tab", via a file.
+    ui.onRequest(CHAT_METHODS.openInBrowser, async (raw) => openPageRequest(raw, this.deps.lan, 'Heap Chat'));
+
     ui.onRequest(CHAT_METHODS.saveArtifact, async (raw): Promise<ChatSaveArtifactResult> => {
       const { id, path, version } = raw as { id: string; path: string; version?: number };
       const artifact = await this.artifacts.get(id);

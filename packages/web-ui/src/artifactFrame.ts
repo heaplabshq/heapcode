@@ -146,6 +146,23 @@ export function mountStandalone(win: Window, title: string, frameDocument: strin
   doc.body.appendChild(frame);
 }
 
+/**
+ * The same full-bleed page as `mountStandalone`, as a complete document — for
+ * the desktop app, which allows no windows of its own and opens it in the
+ * system browser from a file instead. The artifact keeps its sandboxed frame
+ * there too; the outer page is a `file:` origin with nothing of the app's in
+ * reach, which is safer still.
+ */
+export function standaloneDocument(title: string, frameDocument: string): string {
+  return (
+    '<!doctype html><html style="color-scheme:light dark"><head><meta charset="utf-8">' +
+    `<meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head>` +
+    '<body style="margin:0">' +
+    `<iframe title="${escapeHtml(title)}" sandbox="${SANDBOX}" style="display:block;border:0;width:100vw;height:100vh" srcdoc="${escapeHtml(frameDocument)}"></iframe>` +
+    '</body></html>'
+  );
+}
+
 export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')

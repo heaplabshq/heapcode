@@ -20,6 +20,13 @@ import { WorkingIndicator } from './WorkingIndicator.js';
 const WINDOW = 60;
 const STEP = 60;
 
+/** Within this many pixels of the end counts as "at the bottom", and the list follows the stream. */
+const PIN_PX = 60;
+/** How long after the person's own scrolling the list waits before following again. */
+const SETTLE_MS = 180;
+/** A scroll this soon after the person's own input is theirs; later ones are the page's. */
+const USER_SCROLL_MS = 400;
+
 export interface MessageListProps {
   transcript: Transcript;
   /** Clicking a path in a tool chip opens it in the workspace panel. */
@@ -58,10 +65,18 @@ export function MessageList({
   hideTaskId,
   empty,
 }: MessageListProps): JSX.Element {
-  const end = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
-  const [pinned, setPinned] = useState(true);
+  const [pinned, setPinnedState] = useState(true);
+  /** `pinned`, for callbacks that outlive a render (the size observer, timers). */
+  const pinnedRef = useRef(true);
+  const setPinned = (next: boolean): void => {
+    pinnedRef.current = next;
+    setPinnedState(next);
+  };
+  /** Everything below the empty state — what the size observer watches. */
+  const content = useRef<HTMLDivElement>(null);
+  const catchUp = useRef<ReturnType<typeof setTimeout>>();
   const [visible, setVisible] = useState(WINDOW);
 
   const total = transcript.items.length;
@@ -73,11 +88,59 @@ export function MessageList({
   // because the transcript is the record of what each turn set out to do.
   const shown = hideTaskId ? windowed.filter((item) => item.id !== hideTaskId) : windowed;
 
-  // Follow the stream, but stop fighting the user the moment they scroll up to
-  // read something — and resume when they come back to the bottom.
-  useEffect(() => {
-    if (pinned) end.current?.scrollIntoView({ block: 'end' });
+  /**
+   * When the person last moved the list themselves — wheel, trackpad, touch,
+   * keys or the scrollbar. A trackpad's glide keeps sending wheel events after
+   * the fingers lift, so this stays fresh for the whole gesture.
+   */
+  const lastUserScroll = useRef(0);
+  const touched = (): void => {
+    lastUserScroll.current = performance.now();
+  };
+
+  /**
+   * To the end, if following — now, or once the person's own scrolling has
+   * settled. Never mid-gesture: following on every streamed chunk while a
+   * glide was still carrying the list made the two fight, and the text shook.
+   * On this scroller alone (not scrollIntoView, which moves its containers).
+   */
+  const follow = (): void => {
+    const el = scroller.current;
+    if (!el || !pinnedRef.current) return;
+    const quiet = performance.now() - lastUserScroll.current;
+    clearTimeout(catchUp.current);
+    if (quiet >= SETTLE_MS) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    catchUp.current = setTimeout(() => {
+      const now = scroller.current;
+      if (now && pinnedRef.current) now.scrollTop = now.scrollHeight;
+    }, SETTLE_MS - quiet);
+  };
+  const followRef = useRef(follow);
+  followRef.current = follow;
+
+  // New messages: before paint, so no frame shows them in the wrong place.
+  useLayoutEffect(() => {
+    if (pinned) follow();
   }, [transcript, pinned, busy]);
+
+  // Anything else that changes the height — the window of older messages
+  // resetting when a run ends and the conversation reloads, thinking folding
+  // away, code finishing highlighting, an image loading — is followed by
+  // size, not by message: the list used to sit wherever the browser left it
+  // until the next message, sometimes thousands of pixels up.
+  useEffect(() => {
+    const node = content.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => followRef.current());
+    ro.observe(node);
+    return () => {
+      ro.disconnect();
+      clearTimeout(catchUp.current);
+    };
+  }, [total > 0 || Boolean(busy)]);
 
   // Opening a different conversation is a different transcript; the window has
   // to start at its tail rather than inheriting however far back the last one
@@ -131,10 +194,31 @@ export function MessageList({
       role="log"
       aria-label="Conversation"
       aria-live="off"
+      onWheel={touched}
+      onTouchMove={touched}
+      onPointerDown={touched}
+      onKeyDown={touched}
+      // While following, the browser's own scroll anchoring is off: it kept
+      // the view on an element above when content changed, pulling the list
+      // up; following the end is this component's job. Reading further up it
+      // is on, where holding the line in place is exactly right.
+      style={{ overflowAnchor: pinned ? 'none' : 'auto' }}
       onScroll={() => {
         const el = scroller.current;
         if (!el) return;
-        setPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
+        const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_PX;
+        if (atEnd) {
+          if (!pinnedRef.current) setPinned(true);
+          return;
+        }
+        // Only the person unpins it. A scroll they did not make — the browser
+        // clamping when content shrank, as at the end of a run — used to count
+        // as scrolling up, and the list stopped following the reply.
+        if (performance.now() - lastUserScroll.current < USER_SCROLL_MS) {
+          if (pinnedRef.current) setPinned(false);
+        } else if (pinnedRef.current) {
+          followRef.current();
+        }
       }}
     >
       {total === 0 && (
@@ -174,6 +258,8 @@ export function MessageList({
           </p>
         </div>
       )}
+      {(total > 0 || busy) && (
+      <div ref={content}>
       {hidden > 0 && (
         <div className="earlier" ref={top}>
           <button className="btn btn-quiet" onClick={() => setVisible((v) => v + STEP)}>
@@ -190,7 +276,8 @@ export function MessageList({
         </div>
       )}
       {busy && <WorkingIndicator activity={activityOf(transcript)} startedAt={runStartedAt} />}
-      <div ref={end} />
+      </div>
+      )}
     </div>
   );
 }
@@ -231,7 +318,8 @@ const Row = memo(function Row({
             className="msg-body"
             // Sanitized in renderMarkdown — model output is untrusted, and this
             // page holds the socket that runs commands.
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text) }}
+            // Highlighted once it has finished, not on every streamed chunk.
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, { highlight: !item.streaming }) }}
           />
           {/* The reply's toolbar, under the reply and aligned with it.
               Hidden while streaming — half a reply is not what someone means

@@ -13,6 +13,8 @@ const listen = (channel, id, cb) => {
 contextBridge.exposeInMainWorld('heapDesktop', {
   keepAwake: (on) => ipcRenderer.invoke('heap:keep-awake', Boolean(on)),
   keepAwakeState: () => ipcRenderer.sendSync('heap:keep-awake-state'),
+  /** Reload through the launch URL; the main process holds the token. */
+  signIn: () => ipcRenderer.send('heap:sign-in'),
   terminal: {
     open: (cwd, cols, rows) => ipcRenderer.invoke('heap:term-open', { cwd, cols, rows }),
     write: (id, data) => ipcRenderer.send('heap:term-write', id, String(data)),

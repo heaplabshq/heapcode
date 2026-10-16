@@ -12,6 +12,7 @@
 const { ipcMain } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
+const { createLocalUrlWatchers } = require('./localUrlWatchers.cjs');
 
 let pty = null;
 try { pty = require('node-pty'); } catch { /* reported to the page as unavailable */ }
@@ -28,7 +29,7 @@ const LOCAL_URL = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d{2
 // Colour codes land in the middle of URLs often enough to matter.
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 let localUrls = [];
-const urlListeners = new Set();
+const urlWatchers = createLocalUrlWatchers();
 function noteUrls(data) {
   const found = data.replace(ANSI, '').match(LOCAL_URL);
   if (!found) return;
@@ -39,7 +40,7 @@ function noteUrls(data) {
     localUrls = [...localUrls, url].slice(-8);
     changed = true;
   }
-  if (changed) for (const fn of urlListeners) fn(localUrls);
+  if (changed) urlWatchers.notify(localUrls);
 }
 /** cwd → { proc, buffer, exited } */
 const shells = new Map();
@@ -101,18 +102,7 @@ function registerTerminal(trusted) {
   ipcMain.on('heap:local-urls-watch', (e) => {
     if (!trusted(e)) return;
     const send = sendTo(e.sender);
-    const fn = (urls) => send('heap:local-urls', urls);
-    urlListeners.add(fn);
-    const sender = e.sender;
-    // A reload re-subscribes; the old page's listener must not pile up. Only a
-    // real page load counts — the app's own pushState routing is not one.
-    const onNav = (details) => {
-      if (!details.isMainFrame || details.isSameDocument) return;
-      urlListeners.delete(fn);
-      sender.off('did-start-navigation', onNav);
-    };
-    sender.on('did-start-navigation', onNav);
-    sender.once('destroyed', () => urlListeners.delete(fn));
+    urlWatchers.watch(e.sender, (urls) => send('heap:local-urls', urls));
   });
   ipcMain.on('heap:term-kill', (e, id) => {
     if (trusted(e)) killShell(id);

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AgentEvent } from '@heapcode/core';
 import {
   UI_METHODS,
   type UiMcpSignInResult,
@@ -51,7 +50,7 @@ import { Shortcuts } from './components/Shortcuts.js';
 import { Settings, type UiProfileDraft } from './components/Settings.js';
 import { Toasts } from './components/Toasts.js';
 import { usePanelWidth } from './panelWidth.js';
-import { RpcClient } from './rpc.js';
+import { RpcClient, signedOutMessage, type ConnectionStatus } from './rpc.js';
 import {
   abandonCards,
   AskUserCard,
@@ -68,6 +67,7 @@ import { useTransientNotice } from './notice.js';
 import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
 import { ProductToggle, servedProducts } from './components/ProductToggle.js';
+import { useTranscript } from './useTranscript.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
 import { ChatTools } from './components/ChatTools.js';
@@ -159,9 +159,11 @@ const CHAT_MOUNTED = document.documentElement.dataset.chatMounted === 'true';
 const QA_MOUNTED = servedProducts().includes('qa');
 
 export function App(): JSX.Element {
-  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
+  const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [state, setState] = useState<UiState>();
-  const [transcript, setTranscript] = useState<Transcript>(emptyTranscript);
+  // Streamed events are applied in batches (see useTranscript); `seq` is declared below and shared.
+  const seq = useRef(0);
+  const { transcript, setTranscript, applyEvent: queueEvent } = useTranscript(emptyTranscript, seq);
   const [conversations, setConversations] = useState<UiConversationMeta[]>([]);
   // The rail is always present now; this is only whether it shows labels.
   // Remembered, because it is a preference about screen width, and re-making
@@ -243,7 +245,6 @@ export function App(): JSX.Element {
   const [indexStatus, setIndexStatus] = useState<UiIndexStatus>();
   const [selectedArtifact, setSelectedArtifact] = useState<string>();
 
-  const seq = useRef(0);
   // `runCommand` needs to start a new conversation, but `newConversation` is
   // declared below it (it depends on things runCommand does not). A ref keeps
   // the ordering readable without a forward reference.
@@ -261,9 +262,7 @@ export function App(): JSX.Element {
     return new RpcClient(url.toString(), setStatus);
   }, []);
 
-  const applyEvent = useCallback((event: AgentEvent) => {
-    setTranscript((t) => reduce(t, event, seq.current++));
-  }, []);
+  const applyEvent = queueEvent;
 
   const refreshArtifacts = useCallback(() => {
     void rpc
@@ -1129,6 +1128,7 @@ export function App(): JSX.Element {
             </div>
           )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
+          {status === 'signed-out' && <div className="banner banner-error">{signedOutMessage()}</div>}
 
           {/* Above the scroller, not inside it: the list is about the run in
               flight, so it has to stay put while the transcript moves. And
@@ -1289,6 +1289,14 @@ export function App(): JSX.Element {
               selectedArtifact={selectedArtifact}
               onSelectArtifact={setSelectedArtifact}
               loadArtifact={loadArtifact}
+              // The desktop app opens no windows of its own: its system browser instead.
+              {...(desktopBridge()
+                ? {
+                    onOpenInBrowser: (title: string, html: string) => {
+                      void rpc.request(UI_METHODS.openInBrowser, { title, html }).catch((err: Error) => setError(err.message));
+                    },
+                  }
+                : {})}
               onSaveArtifact={(id, path, version) => {
                 void rpc
                   .request(UI_METHODS.saveArtifact, { id, path, version })

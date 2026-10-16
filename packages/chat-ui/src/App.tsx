@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { RpcClient } from '@heapcode/web-ui/rpc';
+import { RpcClient, signedOutMessage, type ConnectionStatus } from '@heapcode/web-ui/rpc';
 import { usePanelWidth } from '@heapcode/web-ui/panelWidth';
 import {
   concat,
@@ -98,7 +98,7 @@ interface PendingPermission {
 }
 
 export function App(): JSX.Element {
-  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
+  const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [state, setState] = useState<ChatState>();
   // Streamed events applied in batches — see useTranscript. `seq` is shared with the replay below.
   const seqShared = useRef(0);
@@ -471,6 +471,7 @@ export function App(): JSX.Element {
             </div>
           )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
+          {status === 'signed-out' && <div className="banner banner-error">{signedOutMessage()}</div>}
           {index?.missingParsers?.length ? (
             // Load-bearing: a skipped file type and an empty folder look
             // identical to whoever asked the question.

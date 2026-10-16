@@ -10,6 +10,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { registerTerminal, killAllShells } = require('./terminal.cjs');
 const { guardWebviews } = require('./browser.cjs');
+const { createSignIn } = require('./signIn.cjs');
 
 app.setName('Heap Code');
 
@@ -29,6 +30,8 @@ const writeState = (s) => {
 let server = null;
 let win = null;
 let origin = null;
+/** The tokened URL the server printed — the only way to sign the window back in. */
+let launchUrl = null;
 let quitting = false;
 
 const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
@@ -101,6 +104,12 @@ ipcMain.handle('heap:keep-awake', (e, on) => {
 });
 ipcMain.on('heap:keep-awake-state', (e) => { e.returnValue = isAwake(); });
 registerTerminal(fromLocalHost);
+const signIn = createSignIn({
+  launchUrl: () => launchUrl,
+  load: (url) => { if (win) win.loadURL(url).catch(() => {}); },
+});
+// The page's socket could not reconnect and the server says it is signed out.
+ipcMain.on('heap:sign-in', (e) => { if (fromLocalHost(e)) signIn.signIn(); });
 guardWebviews(() => origin, fromLocalHost);
 
 function createWindow() {
@@ -132,6 +141,9 @@ function createWindow() {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+  // ⌘R on a signed-out page lands on the server's refusal, which runs no script
+  // that could ask to sign in — so the window notices for it.
+  win.webContents.on('did-navigate', (_e, url, status) => { signIn.onNavigate(url, status); });
   win.webContents.on('will-navigate', (e, url) => {
     if (origin && new URL(url).origin === origin) return;
     e.preventDefault();
@@ -144,6 +156,7 @@ async function openFolder(folder) {
   writeState({ ...readState(), folder });
   try {
     const url = await startServer(folder);
+    launchUrl = url;
     origin = new URL(url).origin;
     if (!win) createWindow();
     win.setTitle(`Heap Code — ${path.basename(folder)}`);

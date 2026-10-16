@@ -63,7 +63,7 @@ describe('the left rail', () => {
   });
 
   it('shows the connection dot only when the connection is not fine', () => {
-    for (const status of ['connecting', 'closed'] as const) {
+    for (const status of ['connecting', 'closed', 'signed-out'] as const) {
       const { container } = render(<Sidebar {...railProps({ status })} />);
       expect(container.querySelector(`.dot-${status}`)).not.toBeNull();
       cleanup();

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { UiConversationMeta } from '@heapcode/web-host/protocol';
 import { markHue } from '../mark.js';
+import type { ConnectionStatus } from '../rpc.js';
 
 export interface SidebarProps {
   /** Collapsed shows the icon rail only; the labels come back on expand. */
@@ -18,7 +19,7 @@ export interface SidebarProps {
    * exactly the ways a shared design system exists to prevent.
    */
   state?: { model?: string; profile?: string };
-  status: 'connecting' | 'open' | 'closed';
+  status: ConnectionStatus;
   /** The product name in the rail's top row. */
   brand?: string;
   /**

@@ -100,6 +100,7 @@ body {
 .dot-open { background: var(--ok); }
 .dot-connecting { background: var(--warn); }
 .dot-closed { background: var(--danger); }
+.dot-signed-out { background: var(--danger); }
 
 /* ---------- layout ---------- */
 .body { display: flex; flex: 1 1 auto; min-height: 0; width: 100%; }

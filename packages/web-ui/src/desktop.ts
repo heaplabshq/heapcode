@@ -8,6 +8,12 @@ export interface DesktopBridge {
   keepAwake?(on: boolean): Promise<boolean>;
   /** The current state, synchronously, so a menu opens already correct. */
   keepAwakeState?(): boolean;
+  /**
+   * Reload the window through the server's launch URL, which signs it in
+   * again. For a page whose cookie the server stopped accepting — the desktop
+   * app knows the token; the page, by design, does not.
+   */
+  signIn?(): void;
   /** A real shell on a pty, run by the desktop app — see desktop/src/terminal.cjs. */
   terminal?: DesktopTerminal;
   /**

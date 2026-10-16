@@ -50,7 +50,7 @@ import { Shortcuts } from './components/Shortcuts.js';
 import { Settings, type UiProfileDraft } from './components/Settings.js';
 import { Toasts } from './components/Toasts.js';
 import { usePanelWidth } from './panelWidth.js';
-import { RpcClient } from './rpc.js';
+import { RpcClient, signedOutMessage, type ConnectionStatus } from './rpc.js';
 import {
   abandonCards,
   AskUserCard,
@@ -159,7 +159,7 @@ const CHAT_MOUNTED = document.documentElement.dataset.chatMounted === 'true';
 const QA_MOUNTED = servedProducts().includes('qa');
 
 export function App(): JSX.Element {
-  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
+  const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [state, setState] = useState<UiState>();
   // Streamed events are applied in batches (see useTranscript); `seq` is declared below and shared.
   const seq = useRef(0);
@@ -1128,6 +1128,7 @@ export function App(): JSX.Element {
             </div>
           )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
+          {status === 'signed-out' && <div className="banner banner-error">{signedOutMessage()}</div>}
 
           {/* Above the scroller, not inside it: the list is about the run in
               flight, so it has to stay put while the transcript moves. And

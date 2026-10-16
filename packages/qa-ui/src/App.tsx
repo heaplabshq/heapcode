@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { RpcClient } from '@heapcode/web-ui/rpc';
+import { RpcClient, signedOutMessage, type ConnectionStatus } from '@heapcode/web-ui/rpc';
 import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
 import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/ProductToggle';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
@@ -87,7 +87,7 @@ function remember(key: string, value: string): void {
 }
 
 export function App(): JSX.Element {
-  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting');
+  const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [state, setState] = useState<QaState>();
   const [view, setView] = useState<View>('tests');
   const [job, setJob] = useState<Job>();
@@ -424,6 +424,7 @@ export function App(): JSX.Element {
             </div>
           )}
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
+          {status === 'signed-out' && <div className="banner banner-error">{signedOutMessage()}</div>}
           {error && (
             <div className="banner banner-error" role="alert">
               {/* The command line's instructions say to edit heapqa.yaml; here there is a button for it. */}

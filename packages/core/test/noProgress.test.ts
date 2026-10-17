@@ -112,3 +112,47 @@ describe('the agent loop, when tool calls get nowhere', () => {
     expect(await runAgent(h.options)).not.toBe('error');
   });
 });
+
+
+/**
+ * The read-only circle, from a real run: App.tsx, OrderSuccess.tsx,
+ * OrderDetail.tsx, App.tsx… round and round. Every call succeeds, so the
+ * failure count never moved; the look-up cache answered each repeat but
+ * nothing ended it, and it ran to the step limit.
+ */
+describe('the agent loop, reading the same files round and round', () => {
+  const read = (path: string) => ({ name: 'read_file', args: { path } });
+  const cycle = (n: number) => Array.from({ length: n }, (_, i) => read(['src/App.tsx', 'src/pages/OrderSuccess.tsx', 'src/pages/OrderDetail.tsx'][i % 3]!));
+  const text = (call: ToolCall): ToolResult => ({ id: call.id, name: call.name, content: `contents of ${String(call.args.path)}` });
+
+  it('reads each file once, tells the model it is circling, then ends the run', async () => {
+    const h = harness(scripted(cycle(40)), text);
+    const outcome = await runAgent(h.options);
+    expect(outcome).toBe('error');
+    // Only the three real reads reached the files; the rest were answered from before.
+    expect(h.ran).toHaveLength(3);
+    expect(h.results[5]!.content).toMatch(/3 calls in a row that only repeated earlier ones/);
+    expect(h.texts.at(-1)).toMatch(/8 tool calls in a row only repeated earlier ones/);
+    expect(h.results).toHaveLength(3 + 8);
+  });
+
+  it('is reset by any call that is not a repeat', async () => {
+    const calls = [...cycle(6), read('src/new.tsx'), ...cycle(6)];
+    const h = harness(scripted(calls), text);
+    expect(await runAgent(h.options)).toBe('done');
+  });
+
+  it('lets reads happen again after a real change', async () => {
+    const calls = [read('a'), edit('x'), read('a')];
+    const h = harness(scripted(calls), (call) => (call.name === 'read_file' ? text(call) : { id: call.id, name: call.name, content: 'Edited.' }));
+    await runAgent(h.options);
+    expect(h.ran.filter((c) => c.name === 'read_file')).toHaveLength(2);
+  });
+
+  it('does not count a failed edit as a change — the earlier read still stands', async () => {
+    const calls = [read('a'), edit('x'), read('a')];
+    const h = harness(scripted(calls), (call) => (call.name === 'read_file' ? text(call) : notFound(call)));
+    await runAgent(h.options);
+    expect(h.ran.filter((c) => c.name === 'read_file')).toHaveLength(1);
+  });
+});

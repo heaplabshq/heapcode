@@ -588,9 +588,14 @@ describe('runAgent — native tool calls', () => {
   });
 
   it('lets an unspecified run go far past a single-digit-file task (25 turns used to cut real work off mid-task)', async () => {
-    const provider = scriptedProvider([
-      { content: '', toolCalls: [{ id: 'c', name: 'read_file', args: {} }] },
-    ]);
+    // A different file each turn: real work. The same call every turn would be
+    // a circle, which the loop now ends long before any step limit.
+    const provider = scriptedProvider(
+      Array.from({ length: DEFAULT_MAX_ITERATIONS + 5 }, (_, i) => ({
+        content: '',
+        toolCalls: [{ id: `c${i}`, name: 'read_file', args: { path: `src/file${i}.ts` } }],
+      })),
+    );
     const h = harness();
     const outcome = await runAgent({ ...h.options, provider, nativeToolCalls: true });
     expect(outcome).toBe('max-iterations');

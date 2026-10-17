@@ -100,6 +100,7 @@ body {
 .dot-open { background: var(--ok); }
 .dot-connecting { background: var(--warn); }
 .dot-closed { background: var(--danger); }
+.dot-signed-out { background: var(--danger); }
 
 /* ---------- layout ---------- */
 .body { display: flex; flex: 1 1 auto; min-height: 0; width: 100%; }
@@ -2197,3 +2198,9 @@ html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; 
 .chip-head-static { cursor: default; }
 .chip-question { margin: 0 0 2px 22px; color: var(--text-dim); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chip-answer { margin: 0 0 0 22px; color: var(--text); font-size: 13px; font-weight: 500; }
+
+/* "Save to workspace": a file name field under the preview bar (Electron has no window.prompt). */
+.preview-save { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.preview-save-label { font-size: 12.5px; color: var(--text-dim); }
+.preview-save .card-input { flex: 1 1 200px; font-family: var(--mono); font-size: 12.5px; }
+.preview-save-hint { flex-basis: 100%; margin: 0; font-size: 12px; }

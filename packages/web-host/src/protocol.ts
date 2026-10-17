@@ -92,6 +92,8 @@ export const UI_METHODS = {
   artifacts: 'ui/artifacts',
   artifact: 'ui/artifact',
   saveArtifact: 'ui/saveArtifact',
+  /** Open a page (an artifact, whole) in this computer's browser — the desktop app's "Open in new tab". */
+  openInBrowser: 'ui/openInBrowser',
 
   // workspace switching
   workspaces: 'ui/workspaces',
@@ -1121,4 +1123,10 @@ export interface UiSaveArtifactParams {
 
 export interface UiSaveArtifactResult {
   path: string;
+}
+
+export interface UiOpenInBrowserParams {
+  title: string;
+  /** The complete page to open, as the page built it. */
+  html: string;
 }

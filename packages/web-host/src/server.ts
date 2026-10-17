@@ -173,9 +173,20 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const peer = req.socket.remoteAddress;
 
-    // Checked before anything else that reads the request: a blocked peer gets
-    // one cheap answer, not a route.
-    if (limiter.blocked(peer)) {
+    // The launch URL carries ?token=… on `/`; every other request carries the
+    // cookie it was exchanged for. Worked out first so the block below can let
+    // a correct credential through.
+    const queryToken = url.searchParams.get('token');
+    const exchanging = Boolean(queryToken) && url.pathname === '/';
+    const authed = tokenMatches(exchanging ? queryToken : cookieToken(req, boundPort()), token);
+
+    // A blocked peer gets one cheap answer, not a route — unless it holds the
+    // right token. The block is there to stop guessing, and someone with the
+    // token is not guessing. Refusing them too is what locked the desktop app
+    // out of its own server: every window on this machine is the same peer,
+    // so one tab with an expired cookie retrying was enough to shut out all
+    // of them, the correct launch URL included, until a restart.
+    if (!authed && limiter.blocked(peer)) {
       res.writeHead(429, { 'content-type': 'text/plain', 'retry-after': '900' });
       res.end('too many failed attempts');
       return;
@@ -233,9 +244,8 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     // redirect to a clean path, so the token stops living in the address bar,
     // browser history, and any screenshot the user takes (§6.1). HttpOnly also
     // keeps it out of reach of scripts on the page.
-    const queryToken = url.searchParams.get('token');
-    if (queryToken && url.pathname === '/') {
-      if (!tokenMatches(queryToken, token)) {
+    if (exchanging) {
+      if (!authed) {
         limiter.fail(peer);
         res.writeHead(401, { 'content-type': 'text/plain' });
         res.end('unauthorized');
@@ -244,7 +254,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       limiter.succeed(peer);
       res.writeHead(302, {
         location: '/',
-        'set-cookie': `heapcode_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`,
+        'set-cookie': sessionCookie(token, boundPort()),
       });
       res.end();
       return;
@@ -253,13 +263,22 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     // Everything else needs the cookie. Without this an unauthenticated
     // request could still pull the bundle; more importantly it keeps one
     // answer to "is this request authorized" for both HTTP and WS.
-    if (!tokenMatches(cookieToken(req), token)) {
+    if (!authed) {
       limiter.fail(peer);
       res.writeHead(401, { 'content-type': 'text/plain' });
       res.end('unauthorized — open the URL printed by `heapcode web`');
       return;
     }
     limiter.succeed(peer);
+
+    // How a page tells "signed out" from "server down" after its socket fails
+    // to reconnect: a browser hides the status of a refused upgrade, but not
+    // of a fetch. Reached only past the check above, so 204 means signed in.
+    if (url.pathname === AUTH_CHECK_PATH) {
+      res.writeHead(204, { 'cache-control': 'no-store' });
+      res.end();
+      return;
+    }
 
     // Images sent with an earlier turn. After the cookie check, deliberately:
     // an attachment is as private as the conversation carrying it. Before the
@@ -327,9 +346,14 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     };
 
     const peer = req.socket.remoteAddress;
-    if (limiter.blocked(peer)) return reject(429, 'Too Many Requests');
-
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    // Query token for non-browser clients (wscat, tests); cookie for the SPA,
+    // which by then has exchanged its URL token and no longer has it in JS.
+    const presented = url.searchParams.get('token') ?? cookieToken(req, boundPort());
+    const authed = tokenMatches(presented, token);
+    // As for HTTP: the block stops guessing, not the holder of the token.
+    if (!authed && limiter.blocked(peer)) return reject(429, 'Too Many Requests');
+
     // `/rpc` is Heap Code's socket; `<mount>/rpc` is the mounted product's.
     // Which session a browser reaches is decided here, by path, and nowhere
     // else — a mode flag carried inside the connection would be the one thing
@@ -349,10 +373,7 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     const origin = req.headers.origin;
     if (origin && !allowedOrigins(host, boundPort()).has(origin)) return reject(403, 'Forbidden');
 
-    // Query token for non-browser clients (wscat, tests); cookie for the SPA,
-    // which by then has exchanged its URL token and no longer has it in JS.
-    const presented = url.searchParams.get('token') ?? cookieToken(req);
-    if (!tokenMatches(presented, token)) {
+    if (!authed) {
       limiter.fail(peer);
       return reject(401, 'Unauthorized');
     }
@@ -393,6 +414,38 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
   };
 }
 
+/** Answers 204 to a signed-in page and 401 otherwise — see the route. Mirrored in web-ui/src/rpc.ts. */
+export const AUTH_CHECK_PATH = '/auth-check';
+
+/**
+ * Chrome's ceiling for a cookie's lifetime (400 days). The token is minted
+ * fresh for every server start and dies with the server, so the cookie
+ * outliving it costs nothing — what matters is the reverse. A 24-hour cookie
+ * signed the desktop window out of a server still running the next day: the
+ * open socket hid it until the first reconnect, and then every retry was a
+ * failed attempt. Not a session cookie either: Electron keeps those only in
+ * its network process, and a crash of that process (seen in the wild) would
+ * sign the window out the same way.
+ */
+const COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
+
+/**
+ * The sign-in cookie's name, one per bound port. Browsers scope cookies by
+ * host, not port, so a single shared name let every `heapcode web` on
+ * 127.0.0.1 (the desktop app's, a terminal one, a worktree dev server)
+ * overwrite the others' sign-in — and the desktop app re-signs itself in, so
+ * two open servers would sign each other out in a loop. A cookie under the
+ * old plain `heapcode_token` name is ignored; the launch URL signs in again.
+ */
+export function cookieName(port: number): string {
+  return `heapcode_token_${port}`;
+}
+
+/** The cookie the launch URL's token is exchanged for. */
+export function sessionCookie(token: string, port: number): string {
+  return `${cookieName(port)}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_MAX_AGE_S}`;
+}
+
 /** Constant-time compare, so a wrong token leaks nothing through timing. */
 function tokenMatches(given: string | null | undefined, expected: string): boolean {
   if (!given) return false;
@@ -402,13 +455,14 @@ function tokenMatches(given: string | null | undefined, expected: string): boole
   return timingSafeEqual(a, b);
 }
 
-/** The token from the `heapcode_token` cookie, if present. */
-function cookieToken(req: IncomingMessage): string | undefined {
+/** The token from this server's sign-in cookie, if present. */
+function cookieToken(req: IncomingMessage, port: number): string | undefined {
   const header = req.headers.cookie;
   if (!header) return undefined;
+  const wanted = cookieName(port);
   for (const part of header.split(';')) {
     const [name, ...rest] = part.trim().split('=');
-    if (name === 'heapcode_token') return rest.join('=');
+    if (name === wanted) return rest.join('=');
   }
   return undefined;
 }

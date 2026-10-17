@@ -15,7 +15,7 @@ import {
 } from '@heapcode/core';
 import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { AuthLimiter } from '../src/authLimit.js';
-import { startWebHost, type RunningWebHost } from '../src/server.js';
+import { AUTH_CHECK_PATH, cookieName, startWebHost, type RunningWebHost } from '../src/server.js';
 import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs } from '../src/session.js';
 import type { DaemonHello } from '../src/hello.js';
 import { WorkspaceStore } from '../src/workspaces.js';
@@ -342,27 +342,79 @@ describe('web host — auth', () => {
    * the limiter is actually *wired into* both auth paths, which a test of the
    * class alone cannot show.
    */
-  it('stops answering after repeated bad tokens, and the right token no longer helps', async () => {
+  it('stops answering bad tokens after repeated failures, on both HTTP and the socket', async () => {
     const limiter = new AuthLimiter(3, 60_000, 60_000);
     const { host } = await boot(WRITE_THEN_FINISH, {}, { limiter });
+    const base = `http://127.0.0.1:${host.port}`;
 
     for (let i = 0; i < 3; i++) {
-      const res = await fetch(`http://127.0.0.1:${host.port}/`, {
-        headers: { cookie: 'heapcode_token=wrong' },
-      });
+      const res = await fetch(`${base}/`, { headers: { cookie: `${cookieName(host.port)}=wrong` } });
       expect(res.status).toBe(401);
     }
 
-    // Blocked now — and the block is on the peer, not on the credential, so
-    // even a correct token gets the door shut in its face.
-    const blocked = await fetch(`http://127.0.0.1:${host.port}/`, {
-      headers: { cookie: `heapcode_token=${host.token}` },
-    });
-    expect(blocked.status).toBe(429);
+    // Blocked now: a wrong cookie, no cookie, and a wrong launch token all get 429.
+    expect((await fetch(`${base}/`, { headers: { cookie: `${cookieName(host.port)}=wrong` } })).status).toBe(429);
+    expect((await fetch(`${base}/`)).status).toBe(429);
+    expect((await fetch(`${base}/?token=wrong`, { redirect: 'manual' })).status).toBe(429);
 
-    // And the WS upgrade is closed to it too, or the limit would only cover
-    // the half of the surface that cannot run commands.
-    await expect(openBrowser(host)).rejects.toThrow(/429|Too Many/);
+    // And the WS upgrade is closed to guesses too, or the limit would only
+    // cover the half of the surface that cannot run commands.
+    await expect(openBrowser(host, { token: 'wrong-token' })).rejects.toThrow(/429|Too Many/);
+  });
+
+  /**
+   * The desktop app's lockout: every window on the machine is one peer, so a
+   * tab retrying with an expired cookie blocked 127.0.0.1 — and with it the
+   * correct launch URL, until the app was restarted.
+   */
+  it('lets the right token through a block, so its holder is never locked out', async () => {
+    const limiter = new AuthLimiter(3, 60_000, 60_000);
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { limiter });
+    const base = `http://127.0.0.1:${host.port}`;
+
+    for (let i = 0; i < 3; i++) await fetch(`${base}/`); // an expired cookie is no cookie
+    expect((await fetch(`${base}/`)).status).toBe(429);
+
+    const cookie = await fetch(`${base}${AUTH_CHECK_PATH}`, { headers: { cookie: `${cookieName(host.port)}=${host.token}` } });
+    expect(cookie.status).toBe(204);
+
+    const launch = await fetch(`${base}/?token=${host.token}`, { redirect: 'manual' });
+    expect(launch.status).toBe(302);
+
+    const browser = await openBrowser(host);
+    browser.close();
+  });
+
+  it('a signed-in request lifts the block for that peer', async () => {
+    const limiter = new AuthLimiter(3, 60_000, 60_000);
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { limiter });
+    const base = `http://127.0.0.1:${host.port}`;
+
+    for (let i = 0; i < 3; i++) await fetch(`${base}/`);
+    expect((await fetch(`${base}/`)).status).toBe(429);
+
+    await fetch(`${base}/?token=${host.token}`, { redirect: 'manual' });
+    // Back to a fresh allowance: one more miss is a 401, not a 429.
+    expect((await fetch(`${base}/`)).status).toBe(401);
+  });
+
+  it('keeps the sign-in cookie for as long as the server could run, not a day', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const res = await fetch(`http://127.0.0.1:${host.port}/?token=${host.token}`, { redirect: 'manual' });
+    const setCookie = res.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain(`${cookieName(host.port)}=${host.token}`);
+    expect(setCookie).toMatch(/HttpOnly/);
+    expect(setCookie).toMatch(/SameSite=Strict/);
+    const maxAge = Number(/Max-Age=(\d+)/.exec(setCookie)?.[1]);
+    expect(maxAge).toBeGreaterThanOrEqual(400 * 24 * 60 * 60);
+  });
+
+  it('the sign-in check answers 204 when signed in and 401 when not', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const url = `http://127.0.0.1:${host.port}${AUTH_CHECK_PATH}`;
+    expect((await fetch(url, { headers: { cookie: `${cookieName(host.port)}=${host.token}` } })).status).toBe(204);
+    expect((await fetch(url)).status).toBe(401);
+    expect((await fetch(url, { headers: { cookie: `${cookieName(host.port)}=old` } })).status).toBe(401);
   });
 
   it('a good token before the limit is reached clears the count', async () => {
@@ -370,21 +422,84 @@ describe('web host — auth', () => {
     const { host } = await boot(WRITE_THEN_FINISH, {}, { limiter });
 
     for (let i = 0; i < 2; i++) {
-      await fetch(`http://127.0.0.1:${host.port}/`, { headers: { cookie: 'heapcode_token=wrong' } });
+      await fetch(`http://127.0.0.1:${host.port}/`, { headers: { cookie: `${cookieName(host.port)}=wrong` } });
     }
     const ok = await fetch(`http://127.0.0.1:${host.port}/`, {
-      headers: { cookie: `heapcode_token=${host.token}` },
+      headers: { cookie: `${cookieName(host.port)}=${host.token}` },
     });
     expect(ok.status).not.toBe(429);
 
     // Two more failures would have crossed the old count; they must not now.
     for (let i = 0; i < 2; i++) {
-      await fetch(`http://127.0.0.1:${host.port}/`, { headers: { cookie: 'heapcode_token=wrong' } });
+      await fetch(`http://127.0.0.1:${host.port}/`, { headers: { cookie: `${cookieName(host.port)}=wrong` } });
     }
     const still = await fetch(`http://127.0.0.1:${host.port}/`, {
-      headers: { cookie: `heapcode_token=${host.token}` },
+      headers: { cookie: `${cookieName(host.port)}=${host.token}` },
     });
     expect(still.status).not.toBe(429);
+  });
+  /**
+   * Browsers scope cookies by host, not port, so every server on 127.0.0.1
+   * sees every other one's cookies. A shared name meant signing in to one
+   * signed the other out; each server now reads only its own.
+   */
+  it('two servers on 127.0.0.1 each keep their own sign-in', async () => {
+    const { root, host: a } = await boot(WRITE_THEN_FINISH);
+    const b = await startWebHost({
+      root,
+      config: new ConfigStore(join(home, 'config.json')),
+      secrets: new SecretsStore(join(home, 'secrets.json')),
+      workspaces: new WorkspaceStore(join(home, 'workspaces.json')),
+      nativeToolCalls: false,
+      port: 0,
+      token: 'other-token',
+      connect: (hello) =>
+        connectToServer(
+          { client: { name: 'web-host-test' }, ...hello },
+          { address: daemon.address, token: daemon.token, autostart: false },
+        ),
+    });
+    try {
+      expect(b.port).not.toBe(a.port);
+
+      // Each launch URL hands out a cookie named for its own port.
+      const signIn = async (h: RunningWebHost): Promise<string> => {
+        const res = await fetch(h.url, { redirect: 'manual' });
+        expect(res.status).toBe(302);
+        const cookie = (res.headers.get('set-cookie') ?? '').split(';')[0]!;
+        expect(cookie).toBe(`${cookieName(h.port)}=${h.token}`);
+        return cookie;
+      };
+      const jar = `${await signIn(a)}; ${await signIn(b)}`;
+
+      // The browser sends both cookies to both servers; each still gets in.
+      for (const h of [a, b]) {
+        const res = await fetch(`http://127.0.0.1:${h.port}/`, { headers: { cookie: jar } });
+        expect(res.status).not.toBe(401);
+      }
+
+      // One server's cookie does not open the other.
+      const crossed = await fetch(`http://127.0.0.1:${b.port}/`, {
+        headers: { cookie: `${cookieName(a.port)}=${a.token}` },
+      });
+      expect(crossed.status).toBe(401);
+
+      // A cookie under the old shared name is ignored: the launch URL signs in again.
+      const legacy = await fetch(`http://127.0.0.1:${a.port}/`, {
+        headers: { cookie: `heapcode_token=${a.token}` },
+      });
+      expect(legacy.status).toBe(401);
+
+      // The socket reads the same per-server cookie.
+      const ws = new WebSocket(`ws://127.0.0.1:${b.port}/rpc`, { headers: { cookie: jar } });
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      ws.close();
+    } finally {
+      await b.close();
+    }
   });
 });
 

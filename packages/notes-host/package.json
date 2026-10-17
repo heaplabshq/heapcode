@@ -9,6 +9,14 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./protocol": {
+      "types": "./src/protocol.ts",
+      "default": "./src/protocol.ts"
+    },
+    "./parse": {
+      "types": "./src/parse.ts",
+      "default": "./src/parse.ts"
     }
   },
   "scripts": {
@@ -17,6 +25,7 @@
   },
   "dependencies": {
     "@heapcode/core": "workspace:*",
+    "@heapcode/web-host": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "yaml": "^2.5.1"
   },

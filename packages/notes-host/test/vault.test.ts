@@ -1,4 +1,13 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync, utimesSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readdirSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -69,10 +78,16 @@ describe('create, read, write', () => {
   });
 
   it('creates a note named after its title, with an id and created date', async () => {
-    const n = await vault.create({ title: 'Trip: Kyoto/Osaka', text: 'Pack light.', tags: ['travel', 'plans 2026'] });
+    const n = await vault.create({
+      title: 'Trip: Kyoto/Osaka',
+      text: 'Pack light.',
+      tags: ['travel', 'plans 2026'],
+    });
     expect(n.path).toBe('Trip  Kyoto Osaka.md'.replace(/\s+/g, ' '));
     const file = read(n.path);
-    expect(file).toMatch(/^---\nid: [0-9A-F-]{36}\ncreated: 2026-10-18T10:00:00.000Z\n---\n# Trip: Kyoto\/Osaka\n#travel #plans 2026#\n\nPack light.\n$/);
+    expect(file).toMatch(
+      /^---\nid: [0-9A-F-]{36}\ncreated: 2026-10-18T10:00:00.000Z\n---\n# Trip: Kyoto\/Osaka\n#travel #plans 2026#\n\nPack light.\n$/,
+    );
     expect(n.tags).toEqual(['travel', 'plans 2026']);
     expect(n.created).toBe('2026-10-18T10:00:00.000Z');
   });
@@ -84,13 +99,20 @@ describe('create, read, write', () => {
   });
 
   it('reads the body only, by section or by range, with a hash', async () => {
-    const n = await vault.create({ title: 'Doc', text: 'lead\n\n## Setup\nsteps\n\n## Use\nuse it' });
+    const n = await vault.create({
+      title: 'Doc',
+      text: 'lead\n\n## Setup\nsteps\n\n## Use\nuse it',
+    });
     const whole = await vault.read({ id: n.id });
     expect(whole.content.startsWith('# Doc\n')).toBe(true);
     expect(whole.hash).toBe(n.hash);
     const section = await vault.read({ id: n.id }, { section: '## Setup' });
     expect(section.content).toBe('## Setup\nsteps\n\n');
-    expect(section.section).toEqual({ address: '## Setup', offset: whole.content.indexOf('## Setup'), length: section.content.length });
+    expect(section.section).toEqual({
+      address: '## Setup',
+      offset: whole.content.indexOf('## Setup'),
+      length: section.content.length,
+    });
     expect((await vault.read({ id: n.id }, { offset: 2, limit: 3 })).content).toBe('Doc');
   });
 
@@ -98,7 +120,9 @@ describe('create, read, write', () => {
     const n = await vault.create({ title: 'Doc', text: 'v1' });
     const { hash } = await vault.read({ id: n.id });
     await vault.append({ id: n.id }, 'v2', { base: hash });
-    await expect(vault.append({ id: n.id }, 'v3', { base: hash })).rejects.toMatchObject({ code: 'conflict' });
+    await expect(vault.append({ id: n.id }, 'v3', { base: hash })).rejects.toMatchObject({
+      code: 'conflict',
+    });
   });
 
   it('accepts a section hash as the base for a section write, even if another section changed', async () => {
@@ -111,7 +135,9 @@ describe('create, read, write', () => {
 
   it('refuses an edit whose text matches more than once, and says where', async () => {
     const n = await vault.create({ title: 'Doc', text: 'x\nx\n' });
-    await expect(vault.edit({ id: n.id }, { find: 'x', replace: 'y' })).rejects.toThrow(/appears 2 times \(lines 3, 4\)/);
+    await expect(vault.edit({ id: n.id }, { find: 'x', replace: 'y' })).rejects.toThrow(
+      /appears 2 times \(lines 3, 4\)/,
+    );
     const done = await vault.edit({ id: n.id }, { find: 'x', replace: 'y', occurrence: 2 });
     expect(done.replaced).toBe(1);
     expect((await vault.read({ id: n.id })).content).toBe('# Doc\n\nx\ny\n');
@@ -130,7 +156,9 @@ describe('create, read, write', () => {
     await vault.append({ id: n.id }, 'top', { position: 'start' });
     await vault.append({ id: n.id }, 'more a', { section: '## A' });
     await vault.append({ id: n.id }, 'bottom');
-    expect((await vault.read({ id: n.id })).content).toBe('# Doc\ntop\n\n## A\na\nmore a\n\n## B\nb\nbottom\n');
+    expect((await vault.read({ id: n.id })).content).toBe(
+      '# Doc\ntop\n\n## A\na\nmore a\n\n## B\nb\nbottom\n',
+    );
   });
 
   it('appends to a note that is only front matter', async () => {
@@ -173,11 +201,16 @@ describe('renames keep links working', () => {
 
   it('a title change renames the file and rewrites [[links]] to it', async () => {
     const target = await vault.create({ title: 'Old name' });
-    const linker = await vault.create({ title: 'Index', text: 'See [[Old name]], [[old name#Part|that bit]] and [[Other]].' });
+    const linker = await vault.create({
+      title: 'Index',
+      text: 'See [[Old name]], [[old name#Part|that bit]] and [[Other]].',
+    });
     await vault.edit({ id: target.id }, { find: '# Old name', replace: '# New name' });
     expect(existsSync(join(root, 'Old name.md'))).toBe(false);
     expect((await vault.get({ id: target.id })).path).toBe('New name.md');
-    expect((await vault.read({ id: linker.id })).content).toContain('See [[New name]], [[New name#Part|that bit]] and [[Other]].');
+    expect((await vault.read({ id: linker.id })).content).toContain(
+      'See [[New name]], [[New name#Part|that bit]] and [[Other]].',
+    );
     expect((await vault.backlinks({ id: target.id })).map((n) => n.id)).toEqual([linker.id]);
   });
 
@@ -197,14 +230,20 @@ describe('renames keep links working', () => {
     const [hub] = (await vault.search('@wikilinks')).notes;
     const got = await vault.get({ id: hub!.id });
     expect(got.links[0]!.id).toBe((await vault.get({ path: 'folder/My File.md' })).id);
-    expect((await vault.search('@backlinks')).notes.map((n) => n.path)).toEqual(['folder/My File.md']);
+    expect((await vault.search('@backlinks')).notes.map((n) => n.path)).toEqual([
+      'folder/My File.md',
+    ]);
   });
 });
 
 describe('search', () => {
   beforeEach(async () => {
     vault = await open();
-    await vault.create({ title: 'Meeting notes', text: 'Discussed the roadmap\n- [ ] send recap', tags: ['work/q3'] });
+    await vault.create({
+      title: 'Meeting notes',
+      text: 'Discussed the roadmap\n- [ ] send recap',
+      tags: ['work/q3'],
+    });
     await vault.create({ title: 'Groceries', text: '- [x] milk\n```\ncode\n```', tags: ['home'] });
     await vault.create({ title: 'Roadmap draft', text: 'meeting soon' });
   });
@@ -217,11 +256,15 @@ describe('search', () => {
 
   it('combines tags (subtags included), exclusions and tokens', async () => {
     expect((await vault.search('#work')).notes.map((n) => n.title)).toEqual(['Meeting notes']);
-    expect((await vault.search('roadmap -draft')).notes.map((n) => n.title)).toEqual(['Meeting notes']);
+    expect((await vault.search('roadmap -draft')).notes.map((n) => n.title)).toEqual([
+      'Meeting notes',
+    ]);
     expect((await vault.search('@todo')).notes.map((n) => n.title)).toEqual(['Meeting notes']);
     expect((await vault.search('@done @code')).notes.map((n) => n.title)).toEqual(['Groceries']);
     expect((await vault.search('@untagged')).notes.map((n) => n.title)).toEqual(['Roadmap draft']);
-    expect((await vault.search('@title roadmap')).notes.map((n) => n.title)).toEqual(['Roadmap draft']);
+    expect((await vault.search('@title roadmap')).notes.map((n) => n.title)).toEqual([
+      'Roadmap draft',
+    ]);
     expect((await vault.search('"send recap"')).total).toBe(1);
     expect((await vault.search('@today')).total).toBe(3);
   });
@@ -257,7 +300,9 @@ describe('pin, archive, trash', () => {
 
   it('trashes into .trash/ keeping the folder, restores, and deletes only from the trash', async () => {
     const n = await vault.create({ title: 'B', folder: 'projects' });
-    await expect(vault.deletePermanently({ id: n.id })).rejects.toMatchObject({ code: 'invalid_argument' });
+    await expect(vault.deletePermanently({ id: n.id })).rejects.toMatchObject({
+      code: 'invalid_argument',
+    });
     const trashed = await vault.trash({ id: n.id });
     expect(trashed.path).toBe('.trash/projects/B.md');
     expect(trashed.location).toBe('trash');
@@ -322,7 +367,9 @@ describe('scope (tags hidden from a connection)', () => {
     expect((await vault.list()).notes.map((n) => n.id)).toEqual(['O1']);
     expect((await vault.search('secret')).total).toBe(0);
     await expect(vault.read({ id: 'S1' })).rejects.toMatchObject({ code: 'not_found' });
-    await expect(vault.create({ title: 'X', tags: ['private'] })).rejects.toMatchObject({ code: 'out_of_scope' });
+    await expect(vault.create({ title: 'X', tags: ['private'] })).rejects.toMatchObject({
+      code: 'out_of_scope',
+    });
     expect(await vault.tags()).toEqual([{ tag: 'work', count: 1 }]);
   });
 
@@ -341,11 +388,20 @@ describe('attachments', () => {
     vault = await open();
     const n = await vault.create({ title: 'Pics', folder: 'trips' });
     const a = await vault.addAttachment({ id: n.id }, 'photo 1.png', new Uint8Array([1, 2, 3]));
-    expect(a).toEqual({ filename: 'photo 1.png', path: 'trips/assets/photo 1.png', size: 3, image: true });
+    expect(a).toEqual({
+      filename: 'photo 1.png',
+      path: 'trips/assets/photo 1.png',
+      size: 3,
+      image: true,
+    });
     expect((await vault.read({ id: n.id })).content).toContain('![](assets/photo%201.png)');
     expect((await vault.get({ id: n.id })).hasImages).toBe(true);
-    expect((await vault.readAttachment({ id: n.id }, 'photo 1.png')).data).toEqual(Buffer.from([1, 2, 3]));
-    expect(await vault.deleteAttachment({ id: n.id }, 'photo 1.png')).toEqual({ fileDeleted: true });
+    expect((await vault.readAttachment({ id: n.id }, 'photo 1.png')).data).toEqual(
+      Buffer.from([1, 2, 3]),
+    );
+    expect(await vault.deleteAttachment({ id: n.id }, 'photo 1.png')).toEqual({
+      fileDeleted: true,
+    });
     expect(readdirSync(join(root, 'trips/assets'))).toEqual([]);
     expect((await vault.read({ id: n.id })).content).not.toContain('photo');
   });

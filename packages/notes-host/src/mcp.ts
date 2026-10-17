@@ -1,6 +1,10 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type CallToolResult,
+} from '@modelcontextprotocol/sdk/types.js';
 import { COMMANDS, checkArgs } from './commands.js';
 import { NoteError } from './errors.js';
 import type { Vault } from './vault.js';
@@ -29,24 +33,36 @@ const MIME: Record<string, string> = {
  */
 export function createNotesMcpServer(vault: Vault, version: string): Server {
   const tools = COMMANDS.filter((c) => !c.cliOnly);
-  const server = new Server({ name: 'heapnotes', version }, { capabilities: { tools: {} }, instructions: INSTRUCTIONS });
+  const server = new Server(
+    { name: 'heapnotes', version },
+    { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
+  );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((c) => ({
       name: c.name,
       description: c.description,
       inputSchema: c.input,
-      annotations: { readOnlyHint: c.readOnly, destructiveHint: !c.readOnly && /overwrite|trash|delete|remove|rename/.test(c.name), openWorldHint: false },
+      annotations: {
+        readOnlyHint: c.readOnly,
+        destructiveHint: !c.readOnly && /overwrite|trash|delete|remove|rename/.test(c.name),
+        openWorldHint: false,
+      },
     })),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallToolResult> => {
     const cmd = tools.find((c) => c.name === req.params.name);
-    if (!cmd) return failure(new NoteError('invalid_argument', `No tool named ${req.params.name}.`));
+    if (!cmd)
+      return failure(new NoteError('invalid_argument', `No tool named ${req.params.name}.`));
     try {
       const result = await cmd.run(vault, checkArgs(cmd, req.params.arguments ?? {}));
-      if (cmd.name === 'read_attachment') return attachmentResult(result as { filename: string; base64: string; image: boolean });
-      return { content: [{ type: 'text', text: JSON.stringify(result ?? { ok: true }, null, 2) }], structuredContent: wrap(result) };
+      if (cmd.name === 'read_attachment')
+        return attachmentResult(result as { filename: string; base64: string; image: boolean });
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result ?? { ok: true }, null, 2) }],
+        structuredContent: wrap(result),
+      };
     } catch (err) {
       return failure(err);
     }
@@ -71,18 +87,27 @@ function attachmentResult(r: { filename: string; base64: string; image: boolean 
   const mime = MIME[ext];
   const { base64, ...meta } = r;
   if (r.image && mime) {
-    return { content: [{ type: 'text', text: JSON.stringify(meta) }, { type: 'image', data: base64, mimeType: mime }] };
+    return {
+      content: [
+        { type: 'text', text: JSON.stringify(meta) },
+        { type: 'image', data: base64, mimeType: mime },
+      ],
+    };
   }
   return { content: [{ type: 'text', text: JSON.stringify(r) }] };
 }
 
 function failure(err: unknown): CallToolResult {
-  const e = err instanceof NoteError ? err : new NoteError('io', err instanceof Error ? err.message : String(err));
+  const e =
+    err instanceof NoteError
+      ? err
+      : new NoteError('io', err instanceof Error ? err.message : String(err));
   return { isError: true, content: [{ type: 'text', text: JSON.stringify(e.toJSON()) }] };
 }
 
 /** structuredContent must be an object; lists come back as { items }. */
 function wrap(result: unknown): Record<string, unknown> {
-  if (result && typeof result === 'object' && !Array.isArray(result)) return result as Record<string, unknown>;
+  if (result && typeof result === 'object' && !Array.isArray(result))
+    return result as Record<string, unknown>;
   return { items: result ?? [] };
 }

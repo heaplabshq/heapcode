@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { findTags, parseNote, readFrontMatter, updateFrontMatter, findSection, outline, parseQuery } from '../src/index.js';
+import {
+  findTags,
+  parseNote,
+  readFrontMatter,
+  updateFrontMatter,
+  findSection,
+  outline,
+  parseQuery,
+} from '../src/index.js';
 
 describe('front matter', () => {
   it('reads keys and where the body starts', () => {
@@ -11,7 +19,9 @@ describe('front matter', () => {
 
   it('keeps other keys, order and comments when it changes one', () => {
     const text = '---\n# mine\naliases: [a]\nid: ABC\n---\nBody\n';
-    expect(updateFrontMatter(text, { pinned: true })).toBe('---\n# mine\naliases: [ a ]\nid: ABC\npinned: true\n---\nBody\n');
+    expect(updateFrontMatter(text, { pinned: true })).toBe(
+      '---\n# mine\naliases: [ a ]\nid: ABC\npinned: true\n---\nBody\n',
+    );
   });
 
   it('adds a block when there was none and drops it when it empties', () => {
@@ -21,7 +31,9 @@ describe('front matter', () => {
   });
 
   it('refuses to rewrite broken YAML', () => {
-    expect(() => updateFrontMatter('---\n: : bad\n  - x\n---\nBody', { pinned: true })).toThrow(/isn't valid YAML/);
+    expect(() => updateFrontMatter('---\n: : bad\n  - x\n---\nBody', { pinned: true })).toThrow(
+      /isn't valid YAML/,
+    );
   });
 
   it('is not front matter unless the very first line is ---', () => {
@@ -31,7 +43,9 @@ describe('front matter', () => {
 
 describe('parseNote', () => {
   it('takes the title from the first line and a preview from what follows', () => {
-    const p = parseNote('---\nid: X\n---\n\n# My **bold** note\n\nSome *lead* text\nand more.\n\n## Next\n');
+    const p = parseNote(
+      '---\nid: X\n---\n\n# My **bold** note\n\nSome *lead* text\nand more.\n\n## Next\n',
+    );
     expect(p.title).toBe('My bold note');
     expect(p.subtitle).toBe('Some lead text and more.');
   });
@@ -46,7 +60,9 @@ describe('parseNote', () => {
   });
 
   it('does not take headings, URL fragments, numbers or code as tags', () => {
-    const p = parseNote('# Heading\n## Sub\nSee https://x.com/#frag and issue #12 and a#b\n`#notatag`\n```\n#nope\n```\n');
+    const p = parseNote(
+      '# Heading\n## Sub\nSee https://x.com/#frag and issue #12 and a#b\n`#notatag`\n```\n#nope\n```\n',
+    );
     expect(p.tags).toEqual([]);
   });
 
@@ -62,7 +78,9 @@ describe('parseNote', () => {
 
   it('parses wiki links with aliases and headings', () => {
     const p = parseNote('[[Plain]] [[Target|shown]] [[Note#Part]] ![[pic.png]]\n');
-    expect(p.wikiLinks.map(({ target, heading, alias, embed }) => ({ target, heading, alias, embed }))).toEqual([
+    expect(
+      p.wikiLinks.map(({ target, heading, alias, embed }) => ({ target, heading, alias, embed })),
+    ).toEqual([
       { target: 'Plain', heading: undefined, alias: undefined, embed: false },
       { target: 'Target', heading: undefined, alias: 'shown', embed: false },
       { target: 'Note', heading: 'Part', alias: undefined, embed: false },
@@ -72,7 +90,9 @@ describe('parseNote', () => {
   });
 
   it('counts tasks, and sees code and local files', () => {
-    const p = parseNote('- [ ] one\n- [x] two\n* [X] three\n1. [ ] four\n[spec](assets/spec%20v2.pdf) ![](assets/a.png) [web](https://x.com)\nuse `x`\n');
+    const p = parseNote(
+      '- [ ] one\n- [x] two\n* [X] three\n1. [ ] four\n[spec](assets/spec%20v2.pdf) ![](assets/a.png) [web](https://x.com)\nuse `x`\n',
+    );
     expect([p.todoOpen, p.todoDone]).toEqual([2, 2]);
     expect(p.localLinks.map((l) => [l.path, l.image])).toEqual([
       ['assets/spec v2.pdf', false],
@@ -133,7 +153,10 @@ describe('parseQuery', () => {
   const now = new Date(2026, 9, 18, 15, 0, 0);
 
   it('splits words, phrases, exclusions, tags and tokens', () => {
-    const q = parseQuery('meeting "next steps" -draft #work -#work/old #multi word# @todo -@pinned @title', now);
+    const q = parseQuery(
+      'meeting "next steps" -draft #work -#work/old #multi word# @todo -@pinned @title',
+      now,
+    );
     expect(q.terms).toEqual([
       { text: 'meeting', phrase: false },
       { text: 'next steps', phrase: true },
@@ -151,9 +174,21 @@ describe('parseQuery', () => {
   it('turns date tokens into local-day ranges', () => {
     const today = new Date(2026, 9, 18).getTime();
     const tomorrow = new Date(2026, 9, 19).getTime();
-    expect(parseQuery('@today', now).filters[0]).toEqual({ kind: 'date', field: 'modified', from: today, to: tomorrow, negate: false });
-    expect(parseQuery('@last7days', now).filters[0]).toMatchObject({ field: 'modified', from: new Date(2026, 9, 12).getTime() });
-    expect(parseQuery('@cdate(<2026-01-02)', now).filters[0]).toMatchObject({ field: 'created', to: new Date(2026, 0, 2).getTime() });
+    expect(parseQuery('@today', now).filters[0]).toEqual({
+      kind: 'date',
+      field: 'modified',
+      from: today,
+      to: tomorrow,
+      negate: false,
+    });
+    expect(parseQuery('@last7days', now).filters[0]).toMatchObject({
+      field: 'modified',
+      from: new Date(2026, 9, 12).getTime(),
+    });
+    expect(parseQuery('@cdate(<2026-01-02)', now).filters[0]).toMatchObject({
+      field: 'created',
+      to: new Date(2026, 0, 2).getTime(),
+    });
     expect(parseQuery('@created30days', now).filters[0]).toMatchObject({ field: 'created' });
   });
 
@@ -165,5 +200,11 @@ describe('parseQuery', () => {
 describe('preview', () => {
   it('skips the tag line under the title', () => {
     expect(parseNote('# T\n#a #b c#\n\nReal text\n').subtitle).toBe('Real text');
+  });
+});
+
+describe('preview of a list', () => {
+  it('strips the list and task marks from every lead line', () => {
+    expect(parseNote('# T\n- [ ] milk\n- [x] eggs\n').subtitle).toBe('milk eggs');
   });
 });

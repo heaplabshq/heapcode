@@ -2153,6 +2153,9 @@ body {
   background: var(--surface-2, rgb(0 0 0 / 0.05));
 }
 .rail-collapsed .product-toggle { display: none; }
+/* Four products: narrower tabs, so the product's name still fits beside them. */
+.rail-top:has(.product-toggle > :nth-child(4)) { gap: 4px; }
+.product-toggle:has(> :nth-child(4)) .product-tab { width: 19px; }
 .product-tab {
   display: grid;
   place-items: center;
@@ -2164,7 +2167,9 @@ body {
 }
 .product-tab:hover { color: var(--text, inherit); }
 .product-tab-on {
-  background: var(--surface, #fff);
+  /* --surface is never defined, so this was always the white fallback — a
+     blank white chip with a white icon in dark mode. */
+  background: var(--bg-raised);
   color: var(--text, inherit);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
 }

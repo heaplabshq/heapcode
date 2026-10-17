@@ -1,8 +1,25 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, statSync, utimesSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  statSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Vault, importBear, importBearExport, importMarkdownFolder, importObsidian, readFrontMatter, type BearCli } from '../src/index.js';
+import {
+  Vault,
+  importBear,
+  importBearExport,
+  importMarkdownFolder,
+  importObsidian,
+  readFrontMatter,
+  type BearCli,
+} from '../src/index.js';
 
 let base: string;
 let src: string;
@@ -37,7 +54,9 @@ describe('Markdown folder', () => {
 
     const r = await importMarkdownFolder(vault, src);
     expect(r).toEqual({ notes: 2, attachments: 1, skipped: [] });
-    expect(readFileSync(join(src, 'Top.md'), 'utf8')).toBe('# Top\n![](img/a.png) [doc](../outside.pdf)\n');
+    expect(readFileSync(join(src, 'Top.md'), 'utf8')).toBe(
+      '# Top\n![](img/a.png) [doc](../outside.pdf)\n',
+    );
     const top = readFileSync(join(vault.root, 'Top.md'), 'utf8');
     expect(readFrontMatter(top).data.id).toMatch(/^[0-9A-F-]{36}$/);
     expect(existsSync(join(vault.root, 'img/a.png'))).toBe(true);
@@ -63,7 +82,11 @@ describe('Markdown folder', () => {
 describe('Obsidian', () => {
   it('brings every attachment and skips .obsidian', async () => {
     put(src, '.obsidian/app.json', '{}');
-    put(src, 'Daily/2026-10-18.md', '---\ntags: [journal]\n---\nToday ![[photo.jpg]] and [[Project]]\n');
+    put(
+      src,
+      'Daily/2026-10-18.md',
+      '---\ntags: [journal]\n---\nToday ![[photo.jpg]] and [[Project]]\n',
+    );
     put(src, 'Project.md', '# Project\n');
     put(src, 'attachments/photo.jpg', 'jpg');
     const r = await importObsidian(vault, src);
@@ -73,7 +96,9 @@ describe('Obsidian', () => {
     expect(daily.tags).toEqual(['journal']);
     expect(daily.hasImages).toBe(true);
     expect(daily.links[0]!.id).toBe((await vault.get({ title: 'Project' })).id);
-    expect((await vault.listAttachments({ id: daily.id })).map((a) => a.path)).toEqual(['attachments/photo.jpg']);
+    expect((await vault.listAttachments({ id: daily.id })).map((a) => a.path)).toEqual([
+      'attachments/photo.jpg',
+    ]);
   });
 });
 
@@ -90,8 +115,26 @@ describe('Bear', () => {
       attachments: ['My Pic.png'],
       content: '# Welcome\n#bear\n![](My%20Pic.png)\n',
     },
-    { id: 'B-2', title: 'Old', created: '2025-01-01T00:00:00Z', modified: '2025-01-01T00:00:00Z', pins: [], location: 'archive', attachments: [], content: '# Old\n' },
-    { id: 'B-3', title: 'Gone', created: '2025-01-01T00:00:00Z', modified: '2025-01-01T00:00:00Z', pins: [], location: 'trash', attachments: [], content: '# Gone\n' },
+    {
+      id: 'B-2',
+      title: 'Old',
+      created: '2025-01-01T00:00:00Z',
+      modified: '2025-01-01T00:00:00Z',
+      pins: [],
+      location: 'archive',
+      attachments: [],
+      content: '# Old\n',
+    },
+    {
+      id: 'B-3',
+      title: 'Gone',
+      created: '2025-01-01T00:00:00Z',
+      modified: '2025-01-01T00:00:00Z',
+      pins: [],
+      location: 'trash',
+      attachments: [],
+      content: '# Gone\n',
+    },
     { id: 'B-4', title: 'Secret', locked: 'yes', location: 'notes', content: '' },
   ];
   const cli: BearCli = async (args) => {
@@ -107,7 +150,13 @@ describe('Bear', () => {
     expect(r.skipped).toEqual([{ source: 'Secret', reason: 'locked in Bear' }]);
 
     const welcome = await vault.get({ id: 'B-1' });
-    expect(welcome).toMatchObject({ pinned: true, tags: ['bear'], created: '2025-01-01T00:00:00.000Z', modified: '2025-02-01T00:00:00.000Z', hasImages: true });
+    expect(welcome).toMatchObject({
+      pinned: true,
+      tags: ['bear'],
+      created: '2025-01-01T00:00:00.000Z',
+      modified: '2025-02-01T00:00:00.000Z',
+      hasImages: true,
+    });
     expect((await vault.read({ id: 'B-1' })).content).toContain('![](assets/My%20Pic.png)');
     expect(readFileSync(join(vault.root, 'assets/My Pic.png'), 'utf8')).toBe('bytes of My Pic.png');
     expect((await vault.get({ id: 'B-2' })).location).toBe('archive');
@@ -138,6 +187,8 @@ describe('Bear', () => {
     expect(r).toMatchObject({ notes: 2, attachments: 2 });
     expect((await vault.read({ title: 'Bundled' })).content).toContain('![](assets/pic%201.png)');
     expect(existsSync(join(vault.root, 'assets/pic 1.png'))).toBe(true);
-    expect((await vault.listAttachments({ title: 'Plain' })).map((a) => a.path)).toEqual(['Plain/x.png']);
+    expect((await vault.listAttachments({ title: 'Plain' })).map((a) => a.path)).toEqual([
+      'Plain/x.png',
+    ]);
   });
 });

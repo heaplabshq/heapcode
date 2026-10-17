@@ -8,3 +8,6 @@ export * from './vault.js';
 export * from './importers.js';
 export * from './commands.js';
 export * from './mcp.js';
+export * from './settings.js';
+export * from './session.js';
+export * from './protocol.js';

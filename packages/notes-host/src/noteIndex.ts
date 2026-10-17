@@ -11,7 +11,7 @@ import type { Filter, SearchQuery } from './query.js';
  * truth, and this is rebuilt from them whenever its schema version doesn't
  * match — so changing the schema is bumping SCHEMA_VERSION, never a migration.
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export type Location = 'notes' | 'archive' | 'trash';
 
@@ -80,7 +80,8 @@ export class NoteIndex {
     const sqlite = loadSqlite();
     if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
     let db = new sqlite.DatabaseSync(file);
-    const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+    const version = (db.prepare('PRAGMA user_version').get() as { user_version: number })
+      .user_version;
     if (version !== SCHEMA_VERSION && version !== 0 && file !== ':memory:') {
       db.close();
       for (const suffix of ['', '-wal', '-shm']) rmSync(file + suffix, { force: true });
@@ -111,12 +112,19 @@ export class NoteIndex {
 
   /** What's indexed, by path: enough to tell which files changed since. */
   fingerprints(): Map<string, { id: string; mtime: number; size: number }> {
-    const rows = this.db.prepare('SELECT path, id, mtime, size FROM notes').all() as { path: string; id: string; mtime: number; size: number }[];
+    const rows = this.db.prepare('SELECT path, id, mtime, size FROM notes').all() as {
+      path: string;
+      id: string;
+      mtime: number;
+      size: number;
+    }[];
     return new Map(rows.map((r) => [r.path, { id: r.id, mtime: r.mtime, size: r.size }]));
   }
 
   upsert(note: NoteRecord, { body, tags, links, files }: NoteExtras): void {
-    const existing = this.db.prepare('SELECT rowid FROM notes WHERE path = ? OR id = ?').all(note.path, note.id) as { rowid: number }[];
+    const existing = this.db
+      .prepare('SELECT rowid FROM notes WHERE path = ? OR id = ?')
+      .all(note.path, note.id) as { rowid: number }[];
     for (const r of existing) this.removeRow(r.rowid);
     const result = this.db
       .prepare(
@@ -150,8 +158,12 @@ export class NoteIndex {
         note.words,
       );
     const rowid = Number(result.lastInsertRowid);
-    this.db.prepare('INSERT INTO notes_fts (rowid, title, body) VALUES (?, ?, ?)').run(rowid, note.title, body);
-    const addTag = this.db.prepare('INSERT OR IGNORE INTO tags (note, tag, display) VALUES (?, ?, ?)');
+    this.db
+      .prepare('INSERT INTO notes_fts (rowid, title, body) VALUES (?, ?, ?)')
+      .run(rowid, note.title, body);
+    const addTag = this.db.prepare(
+      'INSERT OR IGNORE INTO tags (note, tag, display) VALUES (?, ?, ?)',
+    );
     for (const t of tags) addTag.run(rowid, t.tag, t.display);
     const addLink = this.db.prepare('INSERT INTO links (note, target, heading) VALUES (?, ?, ?)');
     for (const l of links) addLink.run(rowid, linkKey(l.target), l.heading ?? null);
@@ -161,12 +173,15 @@ export class NoteIndex {
 
   /** Notes (any location) that reference this vault file. */
   referencesTo(path: string): string[] {
-    const rows = this.db.prepare('SELECT n.id AS id FROM files f JOIN notes n ON n.rowid = f.note WHERE f.path = ?').all(path) as { id: string }[];
+    const rows = this.db
+      .prepare('SELECT n.id AS id FROM files f JOIN notes n ON n.rowid = f.note WHERE f.path = ?')
+      .all(path) as { id: string }[];
     return rows.map((r) => r.id);
   }
 
   remove(path: string): void {
-    const row = this.db.prepare('SELECT rowid FROM notes WHERE path = ?').get(path) as { rowid: number } | undefined;
+    const row = this.db.prepare('SELECT rowid FROM notes WHERE path = ?').get(path) as
+      { rowid: number } | undefined;
     if (row) this.removeRow(row.rowid);
   }
 
@@ -198,13 +213,18 @@ export class NoteIndex {
   }
 
   tagsOf(rowid: number): string[] {
-    const rows = this.db.prepare('SELECT display FROM tags WHERE note = ? ORDER BY rowid').all(rowid) as { display: string }[];
+    const rows = this.db
+      .prepare('SELECT display FROM tags WHERE note = ? ORDER BY rowid')
+      .all(rowid) as { display: string }[];
     return rows.map((r) => r.display);
   }
 
   /** Outgoing `[[links]]`, as written (lowercased). */
   linksOf(rowid: number): { target: string; heading: string | null }[] {
-    return this.db.prepare('SELECT target, heading FROM links WHERE note = ?').all(rowid) as { target: string; heading: string | null }[];
+    return this.db.prepare('SELECT target, heading FROM links WHERE note = ?').all(rowid) as {
+      target: string;
+      heading: string | null;
+    }[];
   }
 
   /** Notes whose `[[links]]` reach this one. */
@@ -217,14 +237,24 @@ export class NoteIndex {
   }
 
   private keysOf(rowid: number): [string, string, string] {
-    const r = this.db.prepare('SELECT title_key, stem_key, path_key FROM notes WHERE rowid = ?').get(rowid) as { title_key: string; stem_key: string; path_key: string };
+    const r = this.db
+      .prepare('SELECT title_key, stem_key, path_key FROM notes WHERE rowid = ?')
+      .get(rowid) as { title_key: string; stem_key: string; path_key: string };
     return [r.title_key, r.stem_key, r.path_key];
   }
 
-  list(opts: ListOptions & { where?: string; params?: SQLInputValue[] } = {}): { rows: NoteRow[]; total: number } {
+  list(opts: ListOptions & { where?: string; params?: SQLInputValue[] } = {}): {
+    rows: NoteRow[];
+    total: number;
+  } {
     const { clause, params } = this.baseWhere(opts);
     const where = [clause, opts.where].filter(Boolean).join(' AND ');
-    return this.page(`FROM notes n WHERE ${where}`, [...params, ...(opts.params ?? [])], orderBy(opts.sort), opts);
+    return this.page(
+      `FROM notes n WHERE ${where}`,
+      [...params, ...(opts.params ?? [])],
+      orderBy(opts.sort),
+      opts,
+    );
   }
 
   search(q: SearchQuery, opts: ListOptions = {}): { rows: NoteRow[]; total: number } {
@@ -253,7 +283,9 @@ export class NoteIndex {
     }
 
     if (match) {
-      const order = opts.sort?.length ? orderBy(opts.sort) : 'bm25(notes_fts, 10.0, 1.0), n.modified DESC';
+      const order = opts.sort?.length
+        ? orderBy(opts.sort)
+        : 'bm25(notes_fts, 10.0, 1.0), n.modified DESC';
       return this.page(
         `FROM notes_fts JOIN notes n ON n.rowid = notes_fts.rowid WHERE notes_fts MATCH ? AND ${where.join(' AND ')}`,
         [match, ...all],
@@ -285,7 +317,11 @@ export class NoteIndex {
   isVisible(rowid: number, vis: Visibility): boolean {
     const { clause, params } = visibilitySql(vis);
     if (!clause) return true;
-    return this.db.prepare(`SELECT 1 FROM notes n WHERE n.rowid = ? AND ${clause}`).get(rowid, ...params) !== undefined;
+    return (
+      this.db
+        .prepare(`SELECT 1 FROM notes n WHERE n.rowid = ? AND ${clause}`)
+        .get(rowid, ...params) !== undefined
+    );
   }
 
   private baseWhere(opts: ListOptions): { clause: string; params: SQLInputValue[] } {
@@ -304,25 +340,37 @@ export class NoteIndex {
     return { clause: parts.length ? parts.join(' AND ') : '1', params };
   }
 
-  private page(from: string, params: SQLInputValue[], order: string, opts: ListOptions, extra?: string): { rows: NoteRow[]; total: number } {
-    const total = (this.db.prepare(`SELECT COUNT(*) AS c ${from}`).get(...params) as { c: number }).c;
+  private page(
+    from: string,
+    params: SQLInputValue[],
+    order: string,
+    opts: ListOptions,
+    extra?: string,
+  ): { rows: NoteRow[]; total: number } {
+    const total = (this.db.prepare(`SELECT COUNT(*) AS c ${from}`).get(...params) as { c: number })
+      .c;
     const limit = opts.limit ?? -1;
     const offset = opts.offset ?? 0;
     const rows = this.db
-      .prepare(`SELECT ${COLUMNS}${extra ? `, ${extra}` : ''} ${from} ORDER BY ${order} LIMIT ? OFFSET ?`)
+      .prepare(
+        `SELECT ${COLUMNS}${extra ? `, ${extra}` : ''} ${from} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      )
       .all(...params, limit, offset) as Row[];
     return { rows: rows.map(toNote), total };
   }
 
   private one(where: string, params: SQLInputValue[]): NoteRow | undefined {
-    const row = this.db.prepare(`SELECT ${COLUMNS} FROM notes n WHERE ${where}`).get(...params) as Row | undefined;
+    const row = this.db.prepare(`SELECT ${COLUMNS} FROM notes n WHERE ${where}`).get(...params) as
+      Row | undefined;
     return row ? toNote(row) : undefined;
   }
 
   private many(where: string, params: SQLInputValue[], vis: Visibility): NoteRow[] {
     const v = visibilitySql(vis);
     const clause = v.clause ? `${where} AND ${v.clause}` : where;
-    const rows = this.db.prepare(`SELECT ${COLUMNS} FROM notes n WHERE ${clause} ORDER BY n.modified DESC`).all(...params, ...v.params) as Row[];
+    const rows = this.db
+      .prepare(`SELECT ${COLUMNS} FROM notes n WHERE ${clause} ORDER BY n.modified DESC`)
+      .all(...params, ...v.params) as Row[];
     return rows.map(toNote);
   }
 }
@@ -340,7 +388,10 @@ function loadSqlite(): typeof import('node:sqlite') {
     mod = undefined;
   }
   if (!mod?.DatabaseSync) {
-    throw new NoteError('io', `Heapnotes needs Node.js 22.13 or newer (it uses Node's built-in SQLite). This is Node ${process.versions.node}.`);
+    throw new NoteError(
+      'io',
+      `Heapnotes needs Node.js 22.13 or newer (it uses Node's built-in SQLite). This is Node ${process.versions.node}.`,
+    );
   }
   return mod;
 }

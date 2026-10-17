@@ -37,18 +37,40 @@ export interface Schema {
 const ref = {
   id: { type: 'string', description: 'The note id (from list_notes / search_notes).' },
   title: { type: 'string', description: 'Or the note title, case-insensitive; must be unique.' },
-  path: { type: 'string', description: 'Or the vault-relative file path, e.g. "Projects/Plan.md".' },
+  path: {
+    type: 'string',
+    description: 'Or the vault-relative file path, e.g. "Projects/Plan.md".',
+  },
 } satisfies Record<string, Schema>;
 
 const guard = {
-  base: { type: 'string', description: 'The hash from your last read. The write is refused if the note (or the section) changed since — read again and retry.' },
-  section: { type: 'string', description: 'Limit to one section: a heading line like "## Setup", a nested path "# Guide\\n## Setup", or "preamble". See outline_note.' },
-  index: { type: 'integer', description: 'Which match, when the section address repeats (1-based).' },
+  base: {
+    type: 'string',
+    description:
+      'The hash from your last read. The write is refused if the note (or the section) changed since — read again and retry.',
+  },
+  section: {
+    type: 'string',
+    description:
+      'Limit to one section: a heading line like "## Setup", a nested path "# Guide\\n## Setup", or "preamble". See outline_note.',
+  },
+  index: {
+    type: 'integer',
+    description: 'Which match, when the section address repeats (1-based).',
+  },
 } satisfies Record<string, Schema>;
 
 const paging = {
-  location: { type: 'string', enum: ['notes', 'archive', 'trash', 'all'], description: 'Where to look. Default: notes (not archived, not trashed).' },
-  sort: { type: 'string', description: 'Comma-separated fields with :asc/:desc — modified, created, title. Default: pinned first, then newest modified.' },
+  location: {
+    type: 'string',
+    enum: ['notes', 'archive', 'trash', 'all'],
+    description: 'Where to look. Default: notes (not archived, not trashed).',
+  },
+  sort: {
+    type: 'string',
+    description:
+      'Comma-separated fields with :asc/:desc — modified, created, title. Default: pinned first, then newest modified.',
+  },
   limit: { type: 'integer', description: 'At most this many (default 100).' },
   offset: { type: 'integer', description: 'Skip this many, for paging.' },
 } satisfies Record<string, Schema>;
@@ -59,25 +81,40 @@ export const COMMANDS: Command[] = [
   {
     name: 'list_notes',
     cli: 'list',
-    description: 'List notes, newest first with pinned on top. Filter by tag (subtags included) or a smart section. Returns { notes, total }.',
+    description:
+      'List notes, newest first with pinned on top. Filter by tag (subtags included) or a smart section. Returns { notes, total }.',
     input: {
       type: 'object',
       properties: {
         tag: { type: 'string', description: 'Only notes with this tag or one of its subtags.' },
-        section: { type: 'string', enum: ['all', 'untagged', 'todo', 'today', 'pinned'], description: 'A smart section: untagged, todo (has open tasks), today (modified today), pinned.' },
+        section: {
+          type: 'string',
+          enum: ['all', 'untagged', 'todo', 'today', 'pinned'],
+          description:
+            'A smart section: untagged, todo (has open tasks), today (modified today), pinned.',
+        },
         ...paging,
       },
     },
     readOnly: true,
     fields: LIST_FIELDS,
-    run: (v, a) => v.list({ ...pageArgs(a), ...(str(a.tag) ? { tag: str(a.tag)! } : {}), ...(a.section ? { section: a.section as 'all' } : {}) }),
+    run: (v, a) =>
+      v.list({
+        ...pageArgs(a),
+        ...(str(a.tag) ? { tag: str(a.tag)! } : {}),
+        ...(a.section ? { section: a.section as 'all' } : {}),
+      }),
   },
   {
     name: 'search_notes',
     cli: 'search',
     description:
       'Search notes with Bear\'s syntax: words (prefix-matched), "exact phrase", -exclude, #tag (subtags included), and tokens — @today @yesterday @last7days @date(YYYY-MM-DD) @date(<YYYY-MM-DD) @ctoday @created7days @cdate(…) @todo @done @task @tagged @untagged @title @pinned @images @files @attachments @code @wikilinks @backlinks. All combine with AND; -@token negates. Results with words carry a snippet. Returns { notes, total }.',
-    input: { type: 'object', properties: { query: { type: 'string', description: 'The search.' }, ...paging }, required: ['query'] },
+    input: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'The search.' }, ...paging },
+      required: ['query'],
+    },
     positional: ['query'],
     readOnly: true,
     fields: LIST_FIELDS,
@@ -86,7 +123,8 @@ export const COMMANDS: Command[] = [
   {
     name: 'get_note',
     cli: 'show',
-    description: "A note's details without its text: title, tags, dates, task counts, pin and location, its [[links]] (with the id each resolves to) and how many notes link to it, plus the hash for writes.",
+    description:
+      "A note's details without its text: title, tags, dates, task counts, pin and location, its [[links]] (with the id each resolves to) and how many notes link to it, plus the hash for writes.",
     input: { type: 'object', properties: { ...ref } },
     positional: ['id'],
     readOnly: true,
@@ -109,12 +147,19 @@ export const COMMANDS: Command[] = [
     },
     positional: ['id'],
     readOnly: true,
-    run: (v, a) => v.read(refOf(a), { ...opt(a, 'section', str), ...opt(a, 'index', int), ...opt(a, 'offset', int), ...opt(a, 'limit', int) }),
+    run: (v, a) =>
+      v.read(refOf(a), {
+        ...opt(a, 'section', str),
+        ...opt(a, 'index', int),
+        ...opt(a, 'offset', int),
+        ...opt(a, 'limit', int),
+      }),
   },
   {
     name: 'outline_note',
     cli: 'outline',
-    description: "A note's headings as sections, each with the address that reaches it, its offset, length and hash. Use an address with read_note, append_to_note, overwrite_note or edit_note to work on one section.",
+    description:
+      "A note's headings as sections, each with the address that reaches it, its offset, length and hash. Use an address with read_note, append_to_note, overwrite_note or edit_note to work on one section.",
     input: { type: 'object', properties: { ...ref } },
     positional: ['id'],
     readOnly: true,
@@ -123,15 +168,21 @@ export const COMMANDS: Command[] = [
   {
     name: 'search_in_note',
     cli: 'search-in',
-    description: 'Find every occurrence of exact text in one note, with line, column and the line it is on. Use it before edit_note to make sure the text you will replace is unique.',
+    description:
+      'Find every occurrence of exact text in one note, with line, column and the line it is on. Use it before edit_note to make sure the text you will replace is unique.',
     input: {
       type: 'object',
-      properties: { ...ref, text: { type: 'string', description: 'The text to find.' }, caseSensitive: { type: 'boolean', description: 'Match case exactly (default: no).' } },
+      properties: {
+        ...ref,
+        text: { type: 'string', description: 'The text to find.' },
+        caseSensitive: { type: 'boolean', description: 'Match case exactly (default: no).' },
+      },
       required: ['text'],
     },
     positional: ['id', 'text'],
     readOnly: true,
-    run: (v, a) => v.searchInNote(refOf(a), need(a, 'text'), { caseSensitive: a.caseSensitive === true }),
+    run: (v, a) =>
+      v.searchInNote(refOf(a), need(a, 'text'), { caseSensitive: a.caseSensitive === true }),
   },
   {
     name: 'list_backlinks',
@@ -161,27 +212,47 @@ export const COMMANDS: Command[] = [
     positional: ['text'],
     readOnly: false,
     run: (v, a) =>
-      v.create({ ...opt(a, 'title', str), ...opt(a, 'text', str), ...opt(a, 'folder', str), ...(Array.isArray(a.tags) ? { tags: a.tags.map(String) } : {}), pinned: a.pinned === true }),
+      v.create({
+        ...opt(a, 'title', str),
+        ...opt(a, 'text', str),
+        ...opt(a, 'folder', str),
+        ...(Array.isArray(a.tags) ? { tags: a.tags.map(String) } : {}),
+        pinned: a.pinned === true,
+      }),
   },
   {
     name: 'append_to_note',
     cli: 'append',
-    description: 'Add text to the end of a note or of one section — or with position "start", just under the title (or the section heading).',
+    description:
+      'Add text to the end of a note or of one section — or with position "start", just under the title (or the section heading).',
     input: {
       type: 'object',
-      properties: { ...ref, text: { type: 'string', description: 'What to add, in Markdown.' }, position: { type: 'string', enum: ['end', 'start'], description: 'Default: end.' }, ...guard },
+      properties: {
+        ...ref,
+        text: { type: 'string', description: 'What to add, in Markdown.' },
+        position: { type: 'string', enum: ['end', 'start'], description: 'Default: end.' },
+        ...guard,
+      },
       required: ['text'],
     },
     positional: ['id', 'text'],
     readOnly: false,
-    run: (v, a) => v.append(refOf(a), need(a, 'text'), { ...guardOf(a), ...(a.position === 'start' ? { position: 'start' as const } : {}) }),
+    run: (v, a) =>
+      v.append(refOf(a), need(a, 'text'), {
+        ...guardOf(a),
+        ...(a.position === 'start' ? { position: 'start' as const } : {}),
+      }),
   },
   {
     name: 'overwrite_note',
     cli: 'overwrite',
     description:
       "Replace a note's text — or one section of it, heading included — with new Markdown. The note keeps its id, pins and dates. Prefer edit_note for small changes; pass base so you can't clobber an edit you haven't seen.",
-    input: { type: 'object', properties: { ...ref, text: { type: 'string', description: 'The new Markdown.' }, ...guard }, required: ['text'] },
+    input: {
+      type: 'object',
+      properties: { ...ref, text: { type: 'string', description: 'The new Markdown.' }, ...guard },
+      required: ['text'],
+    },
     positional: ['id', 'text'],
     readOnly: false,
     run: (v, a) => v.overwrite(refOf(a), need(a, 'text', true), guardOf(a)),
@@ -231,9 +302,24 @@ export const COMMANDS: Command[] = [
   },
   noteAction('pin_note', 'pin', 'Pin a note to the top of the list.', (v, r) => v.pin(r, true)),
   noteAction('unpin_note', 'unpin', 'Unpin a note.', (v, r) => v.pin(r, false)),
-  noteAction('archive_note', 'archive', 'Move a note to the archive: out of the list and search, kept.', (v, r) => v.archive(r)),
-  noteAction('trash_note', 'trash', 'Move a note to the trash (the vault\'s .trash/ folder). restore_note brings it back.', (v, r) => v.trash(r)),
-  noteAction('restore_note', 'restore', 'Bring a note back from the trash or the archive.', (v, r) => v.restore(r)),
+  noteAction(
+    'archive_note',
+    'archive',
+    'Move a note to the archive: out of the list and search, kept.',
+    (v, r) => v.archive(r),
+  ),
+  noteAction(
+    'trash_note',
+    'trash',
+    "Move a note to the trash (the vault's .trash/ folder). restore_note brings it back.",
+    (v, r) => v.trash(r),
+  ),
+  noteAction(
+    'restore_note',
+    'restore',
+    'Bring a note back from the trash or the archive.',
+    (v, r) => v.restore(r),
+  ),
   {
     name: 'delete_note',
     cli: 'delete',
@@ -259,19 +345,35 @@ export const COMMANDS: Command[] = [
   {
     name: 'list_tags',
     cli: 'tags',
-    description: 'Every tag on notes in the list, with how many notes carry it. Nested tags are written parent/child.',
+    description:
+      'Every tag on notes in the list, with how many notes carry it. Nested tags are written parent/child.',
     input: { type: 'object', properties: {} },
     readOnly: true,
     fields: ['tag', 'count'],
     run: (v) => v.tags(),
   },
-  tagAction('add_tag', 'tag-add', 'Add a tag to a note, on the tag line under its title.', (v, r, t) => v.addTag(r, t)),
-  tagAction('remove_tag', 'tag-remove', 'Remove a tag from a note (its subtags stay).', (v, r, t) => v.removeTag(r, t)),
+  tagAction(
+    'add_tag',
+    'tag-add',
+    'Add a tag to a note, on the tag line under its title.',
+    (v, r, t) => v.addTag(r, t),
+  ),
+  tagAction('remove_tag', 'tag-remove', 'Remove a tag from a note (its subtags stay).', (v, r, t) =>
+    v.removeTag(r, t),
+  ),
   {
     name: 'rename_tag',
     cli: 'tag-rename',
-    description: 'Rename a tag in every note, subtags included: work → job turns #work/q3 into #job/q3.',
-    input: { type: 'object', properties: { from: { type: 'string', description: 'The tag now.' }, to: { type: 'string', description: 'Its new name.' } }, required: ['from', 'to'] },
+    description:
+      'Rename a tag in every note, subtags included: work → job turns #work/q3 into #job/q3.',
+    input: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'The tag now.' },
+        to: { type: 'string', description: 'Its new name.' },
+      },
+      required: ['from', 'to'],
+    },
     positional: ['from', 'to'],
     readOnly: false,
     run: (v, a) => v.renameTag(need(a, 'from'), need(a, 'to')),
@@ -280,7 +382,11 @@ export const COMMANDS: Command[] = [
     name: 'delete_tag',
     cli: 'tag-delete',
     description: 'Remove a tag (and its subtags) from every note. The notes themselves stay.',
-    input: { type: 'object', properties: { tag: { type: 'string', description: 'The tag.' } }, required: ['tag'] },
+    input: {
+      type: 'object',
+      properties: { tag: { type: 'string', description: 'The tag.' } },
+      required: ['tag'],
+    },
     positional: ['tag'],
     readOnly: false,
     run: (v, a) => v.deleteTag(need(a, 'tag')),
@@ -288,7 +394,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'list_attachments',
     cli: 'attachments',
-    description: "Files a note links to or embeds: images, PDFs, anything in the vault.",
+    description: 'Files a note links to or embeds: images, PDFs, anything in the vault.',
     input: { type: 'object', properties: { ...ref } },
     positional: ['id'],
     readOnly: true,
@@ -298,21 +404,34 @@ export const COMMANDS: Command[] = [
   {
     name: 'add_attachment',
     cli: 'attach',
-    description: "Save a file into the note's assets/ folder and link it at the end of the note (an image shows inline).",
+    description:
+      "Save a file into the note's assets/ folder and link it at the end of the note (an image shows inline).",
     input: {
       type: 'object',
-      properties: { ...ref, filename: { type: 'string', description: 'File name, with extension.' }, base64: { type: 'string', description: 'The file, base64-encoded.' } },
+      properties: {
+        ...ref,
+        filename: { type: 'string', description: 'File name, with extension.' },
+        base64: { type: 'string', description: 'The file, base64-encoded.' },
+      },
       required: ['filename', 'base64'],
     },
     positional: ['id', 'filename'],
     readOnly: false,
-    run: (v, a) => v.addAttachment(refOf(a), need(a, 'filename'), Buffer.from(need(a, 'base64'), 'base64')),
+    run: (v, a) =>
+      v.addAttachment(refOf(a), need(a, 'filename'), Buffer.from(need(a, 'base64'), 'base64')),
   },
   {
     name: 'read_attachment',
     cli: 'attachment',
     description: "Read one of a note's attachments. Returns { filename, size, base64 }.",
-    input: { type: 'object', properties: { ...ref, filename: { type: 'string', description: 'Its file name (see list_attachments).' } }, required: ['filename'] },
+    input: {
+      type: 'object',
+      properties: {
+        ...ref,
+        filename: { type: 'string', description: 'Its file name (see list_attachments).' },
+      },
+      required: ['filename'],
+    },
     positional: ['id', 'filename'],
     readOnly: true,
     run: async (v, a) => {
@@ -323,8 +442,13 @@ export const COMMANDS: Command[] = [
   {
     name: 'delete_attachment',
     cli: 'detach',
-    description: "Remove a note's links to an attachment, and the file itself once no other note uses it.",
-    input: { type: 'object', properties: { ...ref, filename: { type: 'string', description: 'Its file name.' } }, required: ['filename'] },
+    description:
+      "Remove a note's links to an attachment, and the file itself once no other note uses it.",
+    input: {
+      type: 'object',
+      properties: { ...ref, filename: { type: 'string', description: 'Its file name.' } },
+      required: ['filename'],
+    },
     positional: ['id', 'filename'],
     readOnly: false,
     run: (v, a) => v.deleteAttachment(refOf(a), need(a, 'filename')),
@@ -340,16 +464,38 @@ export const COMMANDS: Command[] = [
   },
 ];
 
-function noteAction(name: string, cli: string, description: string, fn: (v: Vault, r: NoteRef) => Promise<unknown>): Command {
-  return { name, cli, description, input: { type: 'object', properties: { ...ref } }, positional: ['id'], readOnly: false, run: (v, a) => fn(v, refOf(a)) };
-}
-
-function tagAction(name: string, cli: string, description: string, fn: (v: Vault, r: NoteRef, tag: string) => Promise<unknown>): Command {
+function noteAction(
+  name: string,
+  cli: string,
+  description: string,
+  fn: (v: Vault, r: NoteRef) => Promise<unknown>,
+): Command {
   return {
     name,
     cli,
     description,
-    input: { type: 'object', properties: { ...ref, tag: { type: 'string', description: 'The tag, without #.' } }, required: ['tag'] },
+    input: { type: 'object', properties: { ...ref } },
+    positional: ['id'],
+    readOnly: false,
+    run: (v, a) => fn(v, refOf(a)),
+  };
+}
+
+function tagAction(
+  name: string,
+  cli: string,
+  description: string,
+  fn: (v: Vault, r: NoteRef, tag: string) => Promise<unknown>,
+): Command {
+  return {
+    name,
+    cli,
+    description,
+    input: {
+      type: 'object',
+      properties: { ...ref, tag: { type: 'string', description: 'The tag, without #.' } },
+      required: ['tag'],
+    },
     positional: ['id', 'tag'],
     readOnly: false,
     run: (v, a) => fn(v, refOf(a), need(a, 'tag')),
@@ -357,7 +503,10 @@ function tagAction(name: string, cli: string, description: string, fn: (v: Vault
 }
 
 export function findCommand(by: { name?: string; cli?: string }): Command | undefined {
-  return COMMANDS.find((c) => (by.name !== undefined && c.name === by.name) || (by.cli !== undefined && c.cli === by.cli));
+  return COMMANDS.find(
+    (c) =>
+      (by.name !== undefined && c.name === by.name) || (by.cli !== undefined && c.cli === by.cli),
+  );
 }
 
 /**
@@ -370,30 +519,46 @@ export function checkArgs(cmd: Command, raw: Record<string, unknown>): Record<st
   for (const [key, value] of Object.entries(raw)) {
     if (value === undefined) continue;
     const schema = cmd.input.properties[key];
-    if (!schema) throw new NoteError('invalid_argument', `${cmd.name} has no argument "${key}". It takes: ${Object.keys(cmd.input.properties).join(', ') || 'nothing'}.`);
+    if (!schema)
+      throw new NoteError(
+        'invalid_argument',
+        `${cmd.name} has no argument "${key}". It takes: ${Object.keys(cmd.input.properties).join(', ') || 'nothing'}.`,
+      );
     out[key] = coerce(key, schema, value);
   }
   for (const key of cmd.input.required ?? []) {
-    if (out[key] === undefined) throw new NoteError('invalid_argument', `${cmd.name} needs "${key}".`);
+    if (out[key] === undefined)
+      throw new NoteError('invalid_argument', `${cmd.name} needs "${key}".`);
   }
   return out;
 }
 
 function coerce(key: string, schema: Schema, value: unknown): unknown {
   const bad = (): never => {
-    throw new NoteError('invalid_argument', `"${key}" should be ${schema.type === 'integer' ? 'a whole number' : `a ${schema.type}`}.`);
+    throw new NoteError(
+      'invalid_argument',
+      `"${key}" should be ${schema.type === 'integer' ? 'a whole number' : `a ${schema.type}`}.`,
+    );
   };
   switch (schema.type) {
     case 'string':
       if (typeof value !== 'string') bad();
       if (schema.enum && !schema.enum.includes(value as string)) {
-        throw new NoteError('invalid_argument', `"${key}" must be one of ${schema.enum.join(', ')}.`);
+        throw new NoteError(
+          'invalid_argument',
+          `"${key}" must be one of ${schema.enum.join(', ')}.`,
+        );
       }
       return value;
     case 'integer':
     case 'number': {
       const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
-      if (typeof n !== 'number' || Number.isNaN(n) || (schema.type === 'integer' && !Number.isInteger(n))) bad();
+      if (
+        typeof n !== 'number' ||
+        Number.isNaN(n) ||
+        (schema.type === 'integer' && !Number.isInteger(n))
+      )
+        bad();
       return n;
     }
     case 'boolean':
@@ -410,8 +575,11 @@ function coerce(key: string, schema: Schema, value: unknown): unknown {
 }
 
 function refOf(a: Record<string, unknown>): NoteRef {
-  const given = (['id', 'path', 'title'] as const).filter((k) => typeof a[k] === 'string' && (a[k] as string) !== '');
-  if (given.length !== 1) throw new NoteError('invalid_argument', 'Say which note: exactly one of id, title or path.');
+  const given = (['id', 'path', 'title'] as const).filter(
+    (k) => typeof a[k] === 'string' && (a[k] as string) !== '',
+  );
+  if (given.length !== 1)
+    throw new NoteError('invalid_argument', 'Say which note: exactly one of id, title or path.');
   const k = given[0]!;
   return { [k]: a[k] as string } as NoteRef;
 }
@@ -436,15 +604,21 @@ export function parseSort(s: string): { field: SortField; direction: 'asc' | 'de
     .filter(Boolean)
     .map((p) => {
       const [field, dir] = p.split(':') as [string, string | undefined];
-      if (!['modified', 'created', 'title'].includes(field)) throw new NoteError('invalid_argument', `Can't sort by "${field}". Use modified, created or title.`);
-      if (dir !== undefined && dir !== 'asc' && dir !== 'desc') throw new NoteError('invalid_argument', `Sort direction is asc or desc, not "${dir}".`);
+      if (!['modified', 'created', 'title'].includes(field))
+        throw new NoteError(
+          'invalid_argument',
+          `Can't sort by "${field}". Use modified, created or title.`,
+        );
+      if (dir !== undefined && dir !== 'asc' && dir !== 'desc')
+        throw new NoteError('invalid_argument', `Sort direction is asc or desc, not "${dir}".`);
       return { field: field as SortField, direction: dir ?? (field === 'title' ? 'asc' : 'desc') };
     });
 }
 
 function need(a: Record<string, unknown>, key: string, allowEmpty = false): string {
   const v = a[key];
-  if (typeof v !== 'string' || (!allowEmpty && v.trim() === '')) throw new NoteError('invalid_argument', `"${key}" is required.`);
+  if (typeof v !== 'string' || (!allowEmpty && v.trim() === ''))
+    throw new NoteError('invalid_argument', `"${key}" is required.`);
   return v;
 }
 
@@ -460,7 +634,11 @@ function int(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isInteger(v) ? v : undefined;
 }
 
-function opt<K extends string, T>(a: Record<string, unknown>, key: K, read: (v: unknown) => T | undefined): { [P in K]?: T } {
+function opt<K extends string, T>(
+  a: Record<string, unknown>,
+  key: K,
+  read: (v: unknown) => T | undefined,
+): { [P in K]?: T } {
   const v = read(a[key]);
   return (v === undefined ? {} : { [key]: v }) as { [P in K]?: T };
 }

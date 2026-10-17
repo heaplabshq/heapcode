@@ -105,7 +105,12 @@ export function parseNote(text: string): ParsedNote {
   for (const { line, start } of lines(text, fm.end)) {
     if (fence) {
       const close = FENCE.exec(line);
-      if (close && close[1]![0] === fence.char && close[1]!.length >= fence.length && line.slice(close[0].length).trim() === '') {
+      if (
+        close &&
+        close[1]![0] === fence.char &&
+        close[1]!.length >= fence.length &&
+        line.slice(close[0].length).trim() === ''
+      ) {
         fence = null;
       }
       continue;
@@ -122,7 +127,12 @@ export function parseNote(text: string): ParsedNote {
     out.words += countWords(line);
     const heading = HEADING.exec(line);
     if (heading) {
-      out.headings.push({ level: heading[1]!.length, text: (heading[2] ?? '').trim(), start, lineEnd: start + line.length });
+      out.headings.push({
+        level: heading[1]!.length,
+        text: (heading[2] ?? '').trim(),
+        start,
+        lineEnd: start + line.length,
+      });
     }
     const task = TASK.exec(line);
     if (task) {
@@ -138,15 +148,26 @@ export function parseNote(text: string): ParsedNote {
         out.title = heading ? (heading[2] ?? '').trim() : line.trim();
         out.titleEnd = lineEndWithBreak(text, start + line.length);
       }
-    } else if (leadLines.length < 2 && line.trim() !== '' && !heading && !isTagOnly(line, start, out.tags)) {
+    } else if (
+      leadLines.length < 2 &&
+      line.trim() !== '' &&
+      !heading &&
+      !isTagOnly(line, start, out.tags)
+    ) {
       leadLines.push(line);
     }
   }
 
   out.title = plain(out.title).slice(0, 200);
-  out.subtitle = plain(leadLines.join(' ')).slice(0, 160);
-  out.hasImages = out.localLinks.some((l) => l.image) || out.wikiLinks.some((w) => w.embed && IMAGE_EXT.test(w.target));
-  out.hasFiles = out.localLinks.some((l) => !l.image) || out.wikiLinks.some((w) => w.embed && !IMAGE_EXT.test(w.target) && /\.[a-z0-9]{1,5}$/i.test(w.target));
+  out.subtitle = leadLines.map(plain).join(' ').slice(0, 160);
+  out.hasImages =
+    out.localLinks.some((l) => l.image) ||
+    out.wikiLinks.some((w) => w.embed && IMAGE_EXT.test(w.target));
+  out.hasFiles =
+    out.localLinks.some((l) => !l.image) ||
+    out.wikiLinks.some(
+      (w) => w.embed && !IMAGE_EXT.test(w.target) && /\.[a-z0-9]{1,5}$/i.test(w.target),
+    );
   return out;
 }
 
@@ -168,7 +189,9 @@ export function* lines(text: string, from = 0): Generator<{ line: string; start:
 function isTagOnly(line: string, start: number, tags: TagRef[]): boolean {
   let rest = line;
   for (const t of tags) {
-    if (t.start >= start && t.end <= start + line.length) rest = rest.slice(0, t.start - start) + ' '.repeat(t.end - t.start) + rest.slice(t.end - start);
+    if (t.start >= start && t.end <= start + line.length)
+      rest =
+        rest.slice(0, t.start - start) + ' '.repeat(t.end - t.start) + rest.slice(t.end - start);
   }
   return rest.trim() === '';
 }
@@ -211,14 +234,26 @@ function scanInline(line: string, lineStart: number, out: ParsedNote): void {
   for (let m = link.exec(masked); m; m = link.exec(masked)) {
     let target = m[3]!;
     if (target.startsWith('<')) target = target.slice(1, -1);
-    if (!URL_SCHEME.test(target) && !target.startsWith('#') && !target.startsWith('/') && target !== '') {
-      out.localLinks.push({ path: safeDecode(target), image: m[1] === '!', start: lineStart + m.index, end: lineStart + m.index + m[0].length });
+    if (
+      !URL_SCHEME.test(target) &&
+      !target.startsWith('#') &&
+      !target.startsWith('/') &&
+      target !== ''
+    ) {
+      out.localLinks.push({
+        path: safeDecode(target),
+        image: m[1] === '!',
+        start: lineStart + m.index,
+        end: lineStart + m.index + m[0].length,
+      });
     }
     // Only the target goes: a tag in a link's text is still a tag.
     const targetAt = m.index + m[0].indexOf('](') + 1;
     masked = blank(masked, targetAt, m.index + m[0].length);
   }
-  masked = masked.replace(/<[a-z][a-z0-9+.-]*:[^>\s]*>|\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (s) => ' '.repeat(s.length));
+  masked = masked.replace(/<[a-z][a-z0-9+.-]*:[^>\s]*>|\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (s) =>
+    ' '.repeat(s.length),
+  );
 
   for (const tag of findTags(masked)) {
     out.tags.push({ name: tag.name, start: lineStart + tag.start, end: lineStart + tag.end });
@@ -244,7 +279,11 @@ export function findTags(line: string): { name: string; start: number; end: numb
     if (close > i + 1) {
       const inner = line.slice(i + 1, close);
       const after = line[close + 1];
-      if (!/^\s|\s$/.test(inner) && (after === undefined || /[\s.,;:!?)]/.test(after)) && isTagName(inner)) {
+      if (
+        !/^\s|\s$/.test(inner) &&
+        (after === undefined || /[\s.,;:!?)]/.test(after)) &&
+        isTagName(inner)
+      ) {
         found.push({ name: normalizeTagName(inner), start: i, end: close + 1 });
         i = close;
         continue;
@@ -257,7 +296,8 @@ export function findTags(line: string): { name: string; start: number; end: numb
     const trimmed = name.replace(/[./-]+$/, '');
     j -= name.length - trimmed.length;
     name = trimmed;
-    if (name && !name.startsWith('/') && isTagName(name)) found.push({ name: normalizeTagName(name), start: i, end: j });
+    if (name && !name.startsWith('/') && isTagName(name))
+      found.push({ name: normalizeTagName(name), start: i, end: j });
     i = j - 1;
   }
   return found;

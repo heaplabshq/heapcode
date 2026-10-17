@@ -38,7 +38,8 @@ export function readFrontMatter(text: string): FrontMatter {
     if (doc.errors.length > 0) return { ...block, data: {}, invalid: true };
     const value: unknown = doc.toJS();
     if (value === null || value === undefined) return { ...block, data: {}, invalid: false };
-    if (typeof value !== 'object' || Array.isArray(value)) return { ...block, data: {}, invalid: true };
+    if (typeof value !== 'object' || Array.isArray(value))
+      return { ...block, data: {}, invalid: true };
     return { ...block, data: value as Record<string, unknown>, invalid: false };
   } catch {
     return { ...block, data: {}, invalid: true };
@@ -53,7 +54,10 @@ export function readFrontMatter(text: string): FrontMatter {
 export function updateFrontMatter(text: string, patch: Record<string, unknown>): string {
   const fm = readFrontMatter(text);
   if (fm.invalid) {
-    throw new NoteError('bad_front_matter', "This note's front matter isn't valid YAML, so Heapnotes won't rewrite it. Fix it by hand first.");
+    throw new NoteError(
+      'bad_front_matter',
+      "This note's front matter isn't valid YAML, so Heapnotes won't rewrite it. Fix it by hand first.",
+    );
   }
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const body = text.slice(fm.end);

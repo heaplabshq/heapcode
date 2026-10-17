@@ -1,11 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { join, posix, relative, resolve, sep } from 'node:path';
 import { projectStateDir } from '@heapcode/core/node';
 import { NoteError } from './errors.js';
 import { readFrontMatter, updateFrontMatter } from './frontMatter.js';
-import { NoteIndex, linkKey, type ListOptions, type Location, type NoteRecord, type NoteRow, type SortField, type Visibility } from './noteIndex.js';
+import {
+  NoteIndex,
+  linkKey,
+  type ListOptions,
+  type Location,
+  type NoteRecord,
+  type NoteRow,
+  type SortField,
+  type Visibility,
+} from './noteIndex.js';
 import { formatTag, lines, normalizeTagName, parseNote, type ParsedNote } from './parse.js';
 import { parseQuery } from './query.js';
 import { contentHash, findSection, outline, type Section } from './sections.js';
@@ -125,6 +144,7 @@ export class Vault {
   private queue: Promise<unknown> = Promise.resolve();
   /** Non-note files by lowercase basename, for Obsidian's `![[file.png]]`. */
   private filesByName = new Map<string, string[]>();
+  private readonly changeListeners = new Set<(ids: string[]) => void>();
 
   private constructor(opts: VaultOptions, index: NoteIndex) {
     this.root = resolve(opts.root);
@@ -186,7 +206,8 @@ export class Vault {
       this.filesByName.set(key, [...(this.filesByName.get(key) ?? []), f]);
     }
     const known = this.index.fingerprints();
-    const changed: { path: string; text: string; mtime: number; size: number; birth: number }[] = [];
+    const changed: { path: string; text: string; mtime: number; size: number; birth: number }[] =
+      [];
     for (const [path, st] of notes) {
       const fp = known.get(path);
       if (fp && fp.mtime === st.mtime && fp.size === st.size) continue;
@@ -198,9 +219,11 @@ export class Vault {
     }
     const removed = [...known.keys()].filter((p) => !notes.has(p));
     if (changed.length === 0 && removed.length === 0) return;
+    const touched = removed.map((p) => known.get(p)!.id);
 
     const takenIds = new Map<string, string>();
-    for (const [path, fp] of known) if (notes.has(path) && !changed.some((c) => c.path === path)) takenIds.set(fp.id, path);
+    for (const [path, fp] of known)
+      if (notes.has(path) && !changed.some((c) => c.path === path)) takenIds.set(fp.id, path);
     this.index.transaction(() => {
       for (const path of removed) this.index.remove(path);
       for (const c of changed) {
@@ -210,15 +233,31 @@ export class Vault {
         if (owner && owner !== c.path) entry.record.id = derivedId(c.path);
         takenIds.set(entry.record.id, c.path);
         this.index.upsert(entry.record, entry.extras);
+        touched.push(entry.record.id);
       }
     });
+    for (const listener of this.changeListeners) listener(touched);
+  }
+
+  /**
+   * Told the ids of notes a rescan found changed, added or gone — edits made
+   * outside Heapnotes. Its own writes update the index directly and don't
+   * come back through here. Returns the unsubscribe.
+   */
+  onChange(listener: (ids: string[]) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
   }
 
   private entryFor(path: string, text: string, st: { mtime: number; size: number; birth: number }) {
     const parsed = parseNote(text);
     const fm = parsed.frontMatter;
     const stem = posix.basename(path).replace(/\.md$/i, '');
-    const location: Location = path.startsWith(`${TRASH}/`) ? 'trash' : fm.archived === true ? 'archive' : 'notes';
+    const location: Location = path.startsWith(`${TRASH}/`)
+      ? 'trash'
+      : fm.archived === true
+        ? 'archive'
+        : 'notes';
     const tags = new Map<string, string>();
     for (const t of [...parsed.tags.map((t) => t.name), ...frontMatterTags(fm)]) {
       const key = tagKey(t);
@@ -236,12 +275,20 @@ export class Vault {
         const hit = this.filesByName.get(posix.basename(w.target).toLowerCase())?.[0];
         if (hit) files.add(hit);
       } else {
-        links.push({ target: w.target.replace(/\.md$/i, ''), ...(w.heading ? { heading: w.heading } : {}) });
+        links.push({
+          target: w.target.replace(/\.md$/i, ''),
+          ...(w.heading ? { heading: w.heading } : {}),
+        });
       }
     }
     const body = text.slice(parsed.bodyStart);
     const record: NoteRecord = {
-      id: typeof fm.id === 'string' && fm.id.trim() ? fm.id.trim() : typeof fm.id === 'number' ? String(fm.id) : derivedId(path),
+      id:
+        typeof fm.id === 'string' && fm.id.trim()
+          ? fm.id.trim()
+          : typeof fm.id === 'number'
+            ? String(fm.id)
+            : derivedId(path),
       path,
       location,
       title: parsed.title || stem,
@@ -262,13 +309,25 @@ export class Vault {
       hasCode: parsed.hasCode,
       words: parsed.words,
     };
-    return { record, extras: { body, tags: [...tags].map(([tag, display]) => ({ tag, display })), links, files: [...files] } };
+    return {
+      record,
+      extras: {
+        body,
+        tags: [...tags].map(([tag, display]) => ({ tag, display })),
+        links,
+        files: [...files],
+      },
+    };
   }
 
   private async reindex(path: string): Promise<void> {
     const text = await readFile(this.abs(path), 'utf8');
     const st = await stat(this.abs(path));
-    const entry = this.entryFor(path, text, { mtime: st.mtimeMs, size: st.size, birth: st.birthtimeMs || st.mtimeMs });
+    const entry = this.entryFor(path, text, {
+      mtime: st.mtimeMs,
+      size: st.size,
+      birth: st.birthtimeMs || st.mtimeMs,
+    });
     this.index.transaction(() => this.index.upsert(entry.record, entry.extras));
   }
 
@@ -276,12 +335,17 @@ export class Vault {
 
   async list(args: ListArgs = {}): Promise<{ notes: NoteSummary[]; total: number }> {
     await this.refresh();
-    const opts: ListOptions & { where?: string; params?: (string | number)[] } = { ...this.scope, ...pageOf(args) };
+    const opts: ListOptions & { where?: string; params?: (string | number)[] } = {
+      ...this.scope,
+      ...pageOf(args),
+    };
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (args.tag) {
       const key = tagKey(args.tag);
-      where.push(`EXISTS (SELECT 1 FROM tags t WHERE t.note = n.rowid AND (t.tag = ? OR substr(t.tag, 1, ?) = ?))`);
+      where.push(
+        `EXISTS (SELECT 1 FROM tags t WHERE t.note = n.rowid AND (t.tag = ? OR substr(t.tag, 1, ?) = ?))`,
+      );
       params.push(key, key.length + 1, `${key}/`);
     }
     switch (args.section) {
@@ -307,40 +371,74 @@ export class Vault {
     return { notes: rows.map((r) => this.summary(r)), total };
   }
 
-  async search(query: string, args: Omit<ListArgs, 'section' | 'tag'> = {}): Promise<{ notes: NoteSummary[]; total: number }> {
+  async search(
+    query: string,
+    args: Omit<ListArgs, 'section' | 'tag'> = {},
+  ): Promise<{ notes: NoteSummary[]; total: number }> {
     await this.refresh();
     const q = parseQuery(query, this.now());
     const { rows, total } = this.index.search(q, { ...this.scope, ...pageOf(args) });
     return { notes: rows.map((r) => this.summary(r)), total };
   }
 
-  async get(ref: NoteRef): Promise<NoteSummary & { backlinks: number; links: { target: string; heading?: string; id?: string }[] }> {
+  async get(
+    ref: NoteRef,
+  ): Promise<
+    NoteSummary & { backlinks: number; links: { target: string; heading?: string; id?: string }[] }
+  > {
     const row = await this.resolve(ref);
     const links = this.index.linksOf(row.rowid).map((l) => {
       const hits = this.index.resolveLink(l.target, this.scope);
-      return { target: l.target, ...(l.heading ? { heading: l.heading } : {}), ...(hits.length === 1 ? { id: hits[0]!.id } : {}) };
+      return {
+        target: l.target,
+        ...(l.heading ? { heading: l.heading } : {}),
+        ...(hits.length === 1 ? { id: hits[0]!.id } : {}),
+      };
     });
     return { ...this.summary(row), backlinks: this.index.backlinks(row, this.scope).length, links };
   }
 
-  async read(ref: NoteRef, opts: { section?: string; index?: number; offset?: number; limit?: number } = {}): Promise<ReadResult> {
+  async read(
+    ref: NoteRef,
+    opts: { section?: string; index?: number; offset?: number; limit?: number } = {},
+  ): Promise<ReadResult> {
     const row = await this.resolve(ref);
     const { text, parsed } = await this.load(row);
     const body = text.slice(parsed.bodyStart);
     const base = { id: row.id, title: row.title, totalLength: body.length };
     if (opts.section !== undefined) {
-      if (opts.offset !== undefined || opts.limit !== undefined) throw new NoteError('invalid_argument', 'Read a section or a range (offset/limit), not both.');
+      if (opts.offset !== undefined || opts.limit !== undefined)
+        throw new NoteError(
+          'invalid_argument',
+          'Read a section or a range (offset/limit), not both.',
+        );
       const s = findSection(text, parsed, opts.section, opts.index);
       const content = text.slice(s.start, s.end);
-      return { ...base, content, hash: contentHash(content), offset: s.start - parsed.bodyStart, section: { address: s.address, offset: s.start - parsed.bodyStart, length: content.length } };
+      return {
+        ...base,
+        content,
+        hash: contentHash(content),
+        offset: s.start - parsed.bodyStart,
+        section: { address: s.address, offset: s.start - parsed.bodyStart, length: content.length },
+      };
     }
     const offset = Math.max(0, opts.offset ?? 0);
-    const content = opts.limit !== undefined ? body.slice(offset, offset + Math.max(0, opts.limit)) : body.slice(offset);
+    const content =
+      opts.limit !== undefined
+        ? body.slice(offset, offset + Math.max(0, opts.limit))
+        : body.slice(offset);
     // A partial read can't be a receipt for the whole note, so it hands out the whole note's hash.
     return { ...base, content, hash: contentHash(body), offset };
   }
 
-  async outline(ref: NoteRef): Promise<{ id: string; title: string; hash: string; sections: (Omit<Section, 'start' | 'end'> & { offset: number; length: number; hash: string })[] }> {
+  async outline(
+    ref: NoteRef,
+  ): Promise<{
+    id: string;
+    title: string;
+    hash: string;
+    sections: (Omit<Section, 'start' | 'end'> & { offset: number; length: number; hash: string })[];
+  }> {
     const row = await this.resolve(ref);
     const { text, parsed } = await this.load(row);
     return {
@@ -356,7 +454,11 @@ export class Vault {
     };
   }
 
-  async searchInNote(ref: NoteRef, needle: string, opts: { caseSensitive?: boolean } = {}): Promise<{ line: number; column: number; offset: number; text: string }[]> {
+  async searchInNote(
+    ref: NoteRef,
+    needle: string,
+    opts: { caseSensitive?: boolean } = {},
+  ): Promise<{ line: number; column: number; offset: number; text: string }[]> {
     if (!needle) throw new NoteError('invalid_argument', 'Give the text to look for.');
     const row = await this.resolve(ref);
     const { text, parsed } = await this.load(row);
@@ -366,7 +468,11 @@ export class Vault {
     const out: { line: number; column: number; offset: number; text: string }[] = [];
     let lineNo = 1;
     let lineStart = 0;
-    for (let at = hay.indexOf(find); at !== -1; at = hay.indexOf(find, at + Math.max(1, find.length))) {
+    for (
+      let at = hay.indexOf(find);
+      at !== -1;
+      at = hay.indexOf(find, at + Math.max(1, find.length))
+    ) {
       while (true) {
         const nl = body.indexOf('\n', lineStart);
         if (nl === -1 || nl >= at) break;
@@ -374,9 +480,21 @@ export class Vault {
         lineNo++;
       }
       const lineEnd = body.indexOf('\n', at);
-      out.push({ line: lineNo, column: at - lineStart + 1, offset: at, text: body.slice(lineStart, lineEnd === -1 ? body.length : lineEnd).replace(/\r$/, '') });
+      out.push({
+        line: lineNo,
+        column: at - lineStart + 1,
+        offset: at,
+        text: body.slice(lineStart, lineEnd === -1 ? body.length : lineEnd).replace(/\r$/, ''),
+      });
     }
     return out;
+  }
+
+  /** The note a `[[target]]` means, if exactly one. */
+  async resolveLink(target: string): Promise<NoteSummary | undefined> {
+    await this.refresh();
+    const hits = this.index.resolveLink(target.replace(/#.*$/, '').trim(), this.scope);
+    return hits.length === 1 ? this.summary(hits[0]!) : undefined;
   }
 
   async backlinks(ref: NoteRef): Promise<NoteSummary[]> {
@@ -386,12 +504,22 @@ export class Vault {
 
   async tags(): Promise<{ tag: string; count: number }[]> {
     await this.refresh();
-    return this.index.tags({ ...this.scope, location: 'notes' }).map((t) => ({ tag: t.name, count: t.count }));
+    return this.index
+      .tags({ ...this.scope, location: 'notes' })
+      .map((t) => ({ tag: t.name, count: t.count }));
   }
 
   // ── Writing ─────────────────────────────────────────────────────────────
 
-  async create(args: { title?: string; text?: string; tags?: string[]; folder?: string; pinned?: boolean } = {}): Promise<NoteSummary> {
+  async create(
+    args: {
+      title?: string;
+      text?: string;
+      tags?: string[];
+      folder?: string;
+      pinned?: boolean;
+    } = {},
+  ): Promise<NoteSummary> {
     return this.exclusive(async () => {
       const tags = (args.tags ?? []).map(normalizeTagName).filter(Boolean);
       this.checkCreateScope(tags, args.text ?? '');
@@ -400,22 +528,45 @@ export class Vault {
       if (title) parts.push(`# ${title}`);
       if (tags.length) parts.push(tags.map(formatTag).join(' '));
       if (args.text?.trim()) parts.push((parts.length ? '\n' : '') + args.text.replace(/\s+$/, ''));
-      const body = parts.join('\n') + '\n';
-      const id = randomUUID().toUpperCase();
-      const text = updateFrontMatter(body, { id, created: this.now().toISOString(), ...(args.pinned ? { pinned: true } : {}) });
-
-      const folder = args.folder ? this.relPath(args.folder) : '';
-      const stem = fileStem(parseNote(text).title);
-      const path = await this.uniquePath(folder, stem);
-      await mkdir(this.abs(posix.dirname(path)), { recursive: true });
-      await atomicWrite(this.abs(path), text);
-      await this.reindex(path);
-      return this.summary(this.index.byPath(path)!);
+      return this.createBody(parts.join('\n') + '\n', args);
     });
   }
 
+  /** A new note with exactly this Markdown as its body — the app's empty `# ` note. */
+  async createRaw(body: string, args: { folder?: string } = {}): Promise<NoteSummary> {
+    return this.exclusive(async () => {
+      this.checkCreateScope([], body);
+      return this.createBody(body, args);
+    });
+  }
+
+  /** The caller holds the lock and has checked the scope. */
+  private async createBody(
+    body: string,
+    args: { folder?: string; pinned?: boolean },
+  ): Promise<NoteSummary> {
+    const id = randomUUID().toUpperCase();
+    const text = updateFrontMatter(body, {
+      id,
+      created: this.now().toISOString(),
+      ...(args.pinned ? { pinned: true } : {}),
+    });
+
+    const folder = args.folder ? this.relPath(args.folder) : '';
+    const stem = fileStem(parseNote(text).title);
+    const path = await this.uniquePath(folder, stem);
+    await mkdir(this.abs(posix.dirname(path)), { recursive: true });
+    await atomicWrite(this.abs(path), text);
+    await this.reindex(path);
+    return this.summary(this.index.byPath(path)!);
+  }
+
   /** Add text at the end (or start: just after the title line) of a note or one section. */
-  async append(ref: NoteRef, addition: string, opts: WriteGuard & { position?: 'end' | 'start' } = {}): Promise<NoteSummary> {
+  async append(
+    ref: NoteRef,
+    addition: string,
+    opts: WriteGuard & { position?: 'end' | 'start' } = {},
+  ): Promise<NoteSummary> {
     return this.modify(ref, opts, (text, parsed, range) => {
       const eol = eolOf(text);
       const add = addition.replace(/\r?\n/g, eol).replace(/\s+$/, '');
@@ -453,7 +604,8 @@ export class Vault {
         // A full file came in: its front matter wins, but the note keeps its identity.
         const old = parsed.frontMatter;
         const keep: Record<string, unknown> = {};
-        for (const key of ['id', 'created']) if (old[key] !== undefined && given.data[key] === undefined) keep[key] = old[key];
+        for (const key of ['id', 'created'])
+          if (old[key] !== undefined && given.data[key] === undefined) keep[key] = old[key];
         return updateFrontMatter(next, keep);
       }
       return text.slice(0, parsed.bodyStart) + next;
@@ -466,25 +618,56 @@ export class Vault {
    * pick of the wrong one is how edits corrupt files.
    */
   async edit(ref: NoteRef, args: EditArgs): Promise<NoteSummary & { replaced: number }> {
-    const ops = [args.replace !== undefined, args.insertBefore !== undefined, args.insertAfter !== undefined, args.delete === true].filter(Boolean).length;
-    if (ops !== 1) throw new NoteError('invalid_argument', 'Say exactly one of: replace, insertBefore, insertAfter, delete.');
-    if (!args.find) throw new NoteError('invalid_argument', 'find must be non-empty text that appears in the note.');
+    const ops = [
+      args.replace !== undefined,
+      args.insertBefore !== undefined,
+      args.insertAfter !== undefined,
+      args.delete === true,
+    ].filter(Boolean).length;
+    if (ops !== 1)
+      throw new NoteError(
+        'invalid_argument',
+        'Say exactly one of: replace, insertBefore, insertAfter, delete.',
+      );
+    if (!args.find)
+      throw new NoteError(
+        'invalid_argument',
+        'find must be non-empty text that appears in the note.',
+      );
     let replaced = 0;
     const summary = await this.modify(ref, args, (text, parsed, range) => {
       const from = range ? range.start : parsed.bodyStart;
       const to = range ? range.end : text.length;
       const scope = text.slice(from, to);
       const hits: number[] = [];
-      for (let at = scope.indexOf(args.find); at !== -1; at = scope.indexOf(args.find, at + args.find.length)) hits.push(at);
-      if (hits.length === 0) throw new NoteError('not_found', `${JSON.stringify(clip(args.find))} isn't in ${range ? 'that section' : 'the note'}. Read it again; the text must match exactly.`);
+      for (
+        let at = scope.indexOf(args.find);
+        at !== -1;
+        at = scope.indexOf(args.find, at + args.find.length)
+      )
+        hits.push(at);
+      if (hits.length === 0)
+        throw new NoteError(
+          'not_found',
+          `${JSON.stringify(clip(args.find))} isn't in ${range ? 'that section' : 'the note'}. Read it again; the text must match exactly.`,
+        );
       let chosen = hits;
       if (args.occurrence !== undefined) {
         const one = hits[args.occurrence - 1];
-        if (one === undefined) throw new NoteError('not_found', `Asked for match ${args.occurrence}, but there are ${hits.length}.`);
+        if (one === undefined)
+          throw new NoteError(
+            'not_found',
+            `Asked for match ${args.occurrence}, but there are ${hits.length}.`,
+          );
         chosen = [one];
       } else if (!args.all && hits.length > 1) {
-        const where = hits.map((h) => lineOf(text, from + h) - lineOf(text, parsed.bodyStart) + 1).join(', ');
-        throw new NoteError('ambiguous', `${JSON.stringify(clip(args.find))} appears ${hits.length} times (lines ${where}). Include more surrounding text, or pass occurrence or all.`);
+        const where = hits
+          .map((h) => lineOf(text, from + h) - lineOf(text, parsed.bodyStart) + 1)
+          .join(', ');
+        throw new NoteError(
+          'ambiguous',
+          `${JSON.stringify(clip(args.find))} appears ${hits.length} times (lines ${where}). Include more surrounding text, or pass occurrence or all.`,
+        );
       }
       let out = scope;
       for (const at of [...chosen].reverse()) {
@@ -509,9 +692,21 @@ export class Vault {
     const row = await this.resolve(ref);
     const { text, parsed } = await this.load(row);
     return this.exclusive(async () => {
-      const copy = updateFrontMatter(text, { id: randomUUID().toUpperCase(), created: this.now().toISOString(), pinned: undefined, archived: undefined, trashed: undefined });
-      const folder = row.location === 'trash' ? posix.dirname(row.path.slice(TRASH.length + 1)) : posix.dirname(row.path);
-      const path = await this.uniquePath(folder === '.' ? '' : folder, fileStem(parsed.title || row.title));
+      const copy = updateFrontMatter(text, {
+        id: randomUUID().toUpperCase(),
+        created: this.now().toISOString(),
+        pinned: undefined,
+        archived: undefined,
+        trashed: undefined,
+      });
+      const folder =
+        row.location === 'trash'
+          ? posix.dirname(row.path.slice(TRASH.length + 1))
+          : posix.dirname(row.path);
+      const path = await this.uniquePath(
+        folder === '.' ? '' : folder,
+        fileStem(parsed.title || row.title),
+      );
       await atomicWrite(this.abs(path), copy);
       await this.reindex(path);
       return this.summary(this.index.byPath(path)!);
@@ -524,7 +719,8 @@ export class Vault {
 
   async archive(ref: NoteRef): Promise<NoteSummary> {
     const row = await this.resolve(ref);
-    if (row.location === 'trash') throw new NoteError('invalid_argument', 'That note is in the trash. Restore it first.');
+    if (row.location === 'trash')
+      throw new NoteError('invalid_argument', 'That note is in the trash. Restore it first.');
     return this.setMeta(ref, { archived: true });
   }
 
@@ -534,7 +730,10 @@ export class Vault {
     if (row.location === 'trash') return this.summary(row);
     return this.exclusive(async () => {
       await this.setMetaNow(row, { trashed: this.now().toISOString() });
-      const dest = await this.uniquePath(posix.dirname(`${TRASH}/${row.path}`), posix.basename(row.path).replace(/\.md$/i, ''));
+      const dest = await this.uniquePath(
+        posix.dirname(`${TRASH}/${row.path}`),
+        posix.basename(row.path).replace(/\.md$/i, ''),
+      );
       await this.move(row.path, dest);
       return this.summary(this.index.byPath(dest)!);
     });
@@ -548,7 +747,10 @@ export class Vault {
         await this.setMetaNow(row, { trashed: undefined, archived: undefined });
         const original = row.path.slice(TRASH.length + 1);
         const dir = posix.dirname(original);
-        const dest = await this.uniquePath(dir === '.' ? '' : dir, posix.basename(original).replace(/\.md$/i, ''));
+        const dest = await this.uniquePath(
+          dir === '.' ? '' : dir,
+          posix.basename(original).replace(/\.md$/i, ''),
+        );
         await this.move(row.path, dest);
         return this.summary(this.index.byPath(dest)!);
       }
@@ -560,7 +762,11 @@ export class Vault {
   /** Delete one trashed note for good. Only from the trash, so nothing is lost by one call. */
   async deletePermanently(ref: NoteRef): Promise<void> {
     const row = await this.resolve(ref);
-    if (row.location !== 'trash') throw new NoteError('invalid_argument', 'Only a note in the trash can be deleted for good. Trash it first.');
+    if (row.location !== 'trash')
+      throw new NoteError(
+        'invalid_argument',
+        'Only a note in the trash can be deleted for good. Trash it first.',
+      );
     await this.exclusive(async () => {
       await unlink(this.abs(row.path));
       this.index.transaction(() => this.index.remove(row.path));
@@ -581,7 +787,8 @@ export class Vault {
   async addTag(ref: NoteRef, tag: string): Promise<NoteSummary> {
     const name = normalizeTagName(tag.replace(/^#|#$/g, ''));
     if (!name) throw new NoteError('invalid_argument', 'Give a tag name.');
-    if (this.scope.excludeTags?.some((t) => under(tagKey(name), t))) throw new NoteError('out_of_scope', `#${name} is hidden from this connection.`);
+    if (this.scope.excludeTags?.some((t) => under(tagKey(name), t)))
+      throw new NoteError('out_of_scope', `#${name} is hidden from this connection.`);
     return this.modify(ref, {}, (text, parsed) => {
       if (parsed.tags.some((t) => tagKey(t.name) === tagKey(name))) return text;
       const eol = eolOf(text);
@@ -606,7 +813,8 @@ export class Vault {
   async renameTag(from: string, to: string): Promise<{ notes: number }> {
     const oldKey = tagKey(from);
     const newName = normalizeTagName(to.replace(/^#|#$/g, ''));
-    if (!oldKey || !newName) throw new NoteError('invalid_argument', 'Give both the old and the new tag name.');
+    if (!oldKey || !newName)
+      throw new NoteError('invalid_argument', 'Give both the old and the new tag name.');
     return this.forEachTagged(oldKey, (text, parsed) => {
       let out = text;
       for (const t of [...parsed.tags].reverse()) {
@@ -622,10 +830,15 @@ export class Vault {
   async deleteTag(tag: string): Promise<{ notes: number }> {
     const key = tagKey(tag);
     if (!key) throw new NoteError('invalid_argument', 'Give a tag name.');
-    return this.forEachTagged(key, (text, parsed) => removeTags(text, parsed, (k) => under(k, key)));
+    return this.forEachTagged(key, (text, parsed) =>
+      removeTags(text, parsed, (k) => under(k, key)),
+    );
   }
 
-  private async forEachTagged(key: string, change: (text: string, parsed: ParsedNote) => string): Promise<{ notes: number }> {
+  private async forEachTagged(
+    key: string,
+    change: (text: string, parsed: ParsedNote) => string,
+  ): Promise<{ notes: number }> {
     await this.refresh(true);
     const rows = this.index.withTag(key, { ...this.scope, location: 'all' });
     let n = 0;
@@ -646,22 +859,50 @@ export class Vault {
       const p = posix.normalize(posix.join(posix.dirname(row.path), l.path));
       if (p.startsWith('..') || /\.md$/i.test(p) || out.has(p)) continue;
       const st = await stat(this.abs(p)).catch(() => null);
-      if (st?.isFile()) out.set(p, { filename: posix.basename(p), path: p, size: st.size, image: l.image || IMAGE_EXT.test(p) });
+      if (st?.isFile())
+        out.set(p, {
+          filename: posix.basename(p),
+          path: p,
+          size: st.size,
+          image: l.image || IMAGE_EXT.test(p),
+        });
     }
     for (const w of parsed.wikiLinks) {
       if (!w.embed) continue;
       const p = this.filesByName.get(posix.basename(w.target).toLowerCase())?.[0];
       if (!p || out.has(p)) continue;
       const st = await stat(this.abs(p)).catch(() => null);
-      if (st?.isFile()) out.set(p, { filename: posix.basename(p), path: p, size: st.size, image: IMAGE_EXT.test(p) });
+      if (st?.isFile())
+        out.set(p, {
+          filename: posix.basename(p),
+          path: p,
+          size: st.size,
+          image: IMAGE_EXT.test(p),
+        });
     }
     return [...out.values()];
   }
 
   /** Save a file into `assets/` beside the note and link it at the end. */
   async addAttachment(ref: NoteRef, filename: string, data: Uint8Array): Promise<Attachment> {
+    const { attachment, markdown } = await this.saveAttachmentFile(ref, filename, data);
+    await this.append(ref, markdown);
+    return attachment;
+  }
+
+  /**
+   * Save a file into `assets/` beside the note without touching the note —
+   * for an editor that puts the link where the cursor is. Returns the
+   * Markdown that links it, relative to the note.
+   */
+  async saveAttachmentFile(
+    ref: NoteRef,
+    filename: string,
+    data: Uint8Array,
+  ): Promise<{ attachment: Attachment; markdown: string }> {
     const name = posix.basename(filename.replace(/\\/g, '/')).replace(/[\0/]/g, '').trim();
-    if (!name || name === '.' || name === '..') throw new NoteError('invalid_argument', 'Give the attachment a file name.');
+    if (!name || name === '.' || name === '..')
+      throw new NoteError('invalid_argument', 'Give the attachment a file name.');
     const row = await this.resolve(ref);
     const noteDir = posix.dirname(row.path);
     const dir = noteDir === '.' ? 'assets' : `${noteDir}/assets`;
@@ -670,12 +911,31 @@ export class Vault {
     await writeFile(this.abs(path), data);
     const rel = `assets/${posix.basename(path)}`;
     const image = IMAGE_EXT.test(path);
-    const link = image ? `![](${encodeLink(rel)})` : `[${posix.basename(path)}](${encodeLink(rel)})`;
-    await this.append({ id: row.id }, link);
-    return { filename: posix.basename(path), path, size: data.byteLength, image };
+    const markdown = image
+      ? `![](${encodeLink(rel)})`
+      : `[${posix.basename(path)}](${encodeLink(rel)})`;
+    return {
+      attachment: { filename: posix.basename(path), path, size: data.byteLength, image },
+      markdown,
+    };
   }
 
-  async readAttachment(ref: NoteRef, filename: string): Promise<{ attachment: Attachment; data: Buffer }> {
+  /** A file inside the vault, for the app to show — never one outside it, and never a note. */
+  async readVaultFile(rel: string): Promise<Buffer | undefined> {
+    let path: string;
+    try {
+      path = this.relPath(rel);
+    } catch {
+      return undefined;
+    }
+    if (/\.md$/i.test(path) || path.split('/').some((p) => p.startsWith('.'))) return undefined;
+    return readFile(this.abs(path)).catch(() => undefined);
+  }
+
+  async readAttachment(
+    ref: NoteRef,
+    filename: string,
+  ): Promise<{ attachment: Attachment; data: Buffer }> {
     const attachment = await this.findAttachment(ref, filename);
     return { attachment, data: await readFile(this.abs(attachment.path)) };
   }
@@ -687,8 +947,13 @@ export class Vault {
     await this.modify({ id: row.id }, {}, (text, parsed) => {
       let out = text;
       const spans = [
-        ...parsed.localLinks.filter((l) => posix.normalize(posix.join(posix.dirname(row.path), l.path)) === attachment.path),
-        ...parsed.wikiLinks.filter((w) => w.embed && posix.basename(w.target).toLowerCase() === attachment.filename.toLowerCase()),
+        ...parsed.localLinks.filter(
+          (l) => posix.normalize(posix.join(posix.dirname(row.path), l.path)) === attachment.path,
+        ),
+        ...parsed.wikiLinks.filter(
+          (w) =>
+            w.embed && posix.basename(w.target).toLowerCase() === attachment.filename.toLowerCase(),
+        ),
       ].sort((a, b) => b.start - a.start);
       for (const s of spans) out = removeSpan(out, s.start, s.end);
       return out;
@@ -702,8 +967,14 @@ export class Vault {
   private async findAttachment(ref: NoteRef, filename: string): Promise<Attachment> {
     const all = await this.listAttachments(ref);
     const want = filename.toLowerCase();
-    const hit = all.find((a) => a.path.toLowerCase() === want) ?? all.find((a) => a.filename.toLowerCase() === want);
-    if (!hit) throw new NoteError('not_found', `No attachment ${JSON.stringify(filename)} on that note.${all.length ? ` It has: ${all.map((a) => a.filename).join(', ')}.` : ''}`);
+    const hit =
+      all.find((a) => a.path.toLowerCase() === want) ??
+      all.find((a) => a.filename.toLowerCase() === want);
+    if (!hit)
+      throw new NoteError(
+        'not_found',
+        `No attachment ${JSON.stringify(filename)} on that note.${all.length ? ` It has: ${all.map((a) => a.filename).join(', ')}.` : ''}`,
+      );
     return hit;
   }
 
@@ -727,7 +998,10 @@ export class Vault {
     rows = rows.filter((r) => this.index.isVisible(r.rowid, this.scope));
     if (rows.length === 0) throw new NoteError('not_found', `No note ${describe(ref)}.`);
     if (rows.length > 1) {
-      throw new NoteError('ambiguous', `${rows.length} notes are titled ${JSON.stringify((ref as { title: string }).title)}: ${rows.map((r) => `${r.id} (${r.path})`).join(', ')}. Use an id.`);
+      throw new NoteError(
+        'ambiguous',
+        `${rows.length} notes are titled ${JSON.stringify((ref as { title: string }).title)}: ${rows.map((r) => `${r.id} (${r.path})`).join(', ')}. Use an id.`,
+      );
     }
     return rows[0]!;
   }
@@ -750,17 +1024,25 @@ export class Vault {
   private async modify(
     ref: NoteRef,
     guard: WriteGuard,
-    change: (text: string, parsed: ParsedNote, range: { start: number; end: number } | null) => string,
+    change: (
+      text: string,
+      parsed: ParsedNote,
+      range: { start: number; end: number } | null,
+    ) => string,
   ): Promise<NoteSummary> {
     const row = await this.resolve(ref);
     return this.exclusive(async () => {
       const { text, parsed } = await this.load(row);
-      const range = guard.section !== undefined ? findSection(text, parsed, guard.section, guard.index) : null;
+      const range =
+        guard.section !== undefined ? findSection(text, parsed, guard.section, guard.index) : null;
       if (guard.base !== undefined) {
         const body = contentHash(text.slice(parsed.bodyStart));
         const part = range ? contentHash(text.slice(range.start, range.end)) : body;
         if (guard.base !== body && guard.base !== part) {
-          throw new NoteError('conflict', `The ${range ? 'section' : 'note'} changed since it was read (now ${part}). Read it again and retry.`);
+          throw new NoteError(
+            'conflict',
+            `The ${range ? 'section' : 'note'} changed since it was read (now ${part}). Read it again and retry.`,
+          );
         }
       }
       let next = change(text, parsed, range);
@@ -771,7 +1053,8 @@ export class Vault {
       let path = row.path;
       const oldTitle = parsed.title;
       const newTitle = nextParsed.title;
-      if (newTitle && oldTitle !== newTitle) path = await this.followRename(row, oldTitle, newTitle);
+      if (newTitle && oldTitle !== newTitle)
+        path = await this.followRename(row, oldTitle, newTitle);
       await this.reindex(path);
       return this.summary(this.index.byPath(path)!);
     });
@@ -845,13 +1128,20 @@ export class Vault {
     await rename(this.abs(from), this.abs(to));
     this.index.transaction(() => this.index.remove(from));
     await this.reindex(to);
-    if (from.startsWith(`${TRASH}/`)) await pruneEmptyDirs(this.abs(TRASH), posix.dirname(from.slice(TRASH.length + 1)));
+    if (from.startsWith(`${TRASH}/`))
+      await pruneEmptyDirs(this.abs(TRASH), posix.dirname(from.slice(TRASH.length + 1)));
   }
 
   private checkCreateScope(tags: string[], text: string): void {
     const all = [...tags, ...parseNote(text).tags.map((t) => t.name)].map(tagKey);
-    if (this.scope.onlyTags?.length && !all.some((k) => this.scope.onlyTags!.some((o) => under(k, o)))) {
-      throw new NoteError('out_of_scope', `This connection only sees notes tagged ${this.scope.onlyTags.map((t) => `#${t}`).join(', ')}; give the new note one of them.`);
+    if (
+      this.scope.onlyTags?.length &&
+      !all.some((k) => this.scope.onlyTags!.some((o) => under(k, o)))
+    ) {
+      throw new NoteError(
+        'out_of_scope',
+        `This connection only sees notes tagged ${this.scope.onlyTags.map((t) => `#${t}`).join(', ')}; give the new note one of them.`,
+      );
     }
     const hidden = all.find((k) => this.scope.excludeTags?.some((x) => under(k, x)));
     if (hidden) throw new NoteError('out_of_scope', `#${hidden} is hidden from this connection.`);
@@ -895,7 +1185,8 @@ export class Vault {
   private relPath(p: string): string {
     const abs = resolve(this.root, p);
     const rel = relative(this.root, abs);
-    if (rel.startsWith('..') || resolve(rel) === rel) throw new NoteError('invalid_argument', `${p} is outside the vault.`);
+    if (rel.startsWith('..') || resolve(rel) === rel)
+      throw new NoteError('invalid_argument', `${p} is outside the vault.`);
     return rel.split(sep).join('/');
   }
 
@@ -921,7 +1212,12 @@ export class Vault {
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /** Notes and other files under the vault, skipping dot-folders (but the trash) and node_modules. */
-async function walk(root: string): Promise<{ notes: Map<string, { mtime: number; size: number; birth: number }>; files: string[] }> {
+async function walk(
+  root: string,
+): Promise<{
+  notes: Map<string, { mtime: number; size: number; birth: number }>;
+  files: string[];
+}> {
   const notes = new Map<string, { mtime: number; size: number; birth: number }>();
   const files: string[] = [];
   async function visit(dir: string, rel: string): Promise<void> {
@@ -934,13 +1230,22 @@ async function walk(root: string): Promise<{ notes: Map<string, { mtime: number;
     for (const e of entries) {
       const childRel = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if ((e.name.startsWith('.') && !(rel === '' && e.name === TRASH)) || e.name === 'node_modules') continue;
+        if (
+          (e.name.startsWith('.') && !(rel === '' && e.name === TRASH)) ||
+          e.name === 'node_modules'
+        )
+          continue;
         await visit(join(dir, e.name), childRel);
       } else if (e.isFile()) {
         if (e.name.startsWith('.')) continue;
         if (/\.md$/i.test(e.name)) {
           const st = await stat(join(dir, e.name)).catch(() => null);
-          if (st) notes.set(childRel, { mtime: st.mtimeMs, size: st.size, birth: st.birthtimeMs || st.mtimeMs });
+          if (st)
+            notes.set(childRel, {
+              mtime: st.mtimeMs,
+              size: st.size,
+              birth: st.birthtimeMs || st.mtimeMs,
+            });
         } else {
           files.push(childRel);
         }
@@ -1003,19 +1308,33 @@ function under(key: string, parent: string): boolean {
 function frontMatterTags(fm: Record<string, unknown>): string[] {
   const raw = fm.tags ?? fm.tag;
   const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[,\s]+/) : [];
-  return list.filter((t): t is string => typeof t === 'string').map((t) => normalizeTagName(t.replace(/^#/, ''))).filter(Boolean);
+  return list
+    .filter((t): t is string => typeof t === 'string')
+    .map((t) => normalizeTagName(t.replace(/^#/, '')))
+    .filter(Boolean);
 }
 
-function renameFrontMatterTags(text: string, parsed: ParsedNote, oldKey: string, newName: string): string {
+function renameFrontMatterTags(
+  text: string,
+  parsed: ParsedNote,
+  oldKey: string,
+  newName: string,
+): string {
   const raw = parsed.frontMatter.tags;
-  if (!Array.isArray(raw) || !raw.some((t) => typeof t === 'string' && under(tagKey(t), oldKey))) return text;
-  const next = raw.map((t) => (typeof t === 'string' && under(tagKey(t), oldKey) ? newName + normalizeTagName(t.replace(/^#/, '')).slice(oldKey.length) : t));
+  if (!Array.isArray(raw) || !raw.some((t) => typeof t === 'string' && under(tagKey(t), oldKey)))
+    return text;
+  const next = raw.map((t) =>
+    typeof t === 'string' && under(tagKey(t), oldKey)
+      ? newName + normalizeTagName(t.replace(/^#/, '')).slice(oldKey.length)
+      : t,
+  );
   return updateFrontMatter(text, { tags: next });
 }
 
 function removeTags(text: string, parsed: ParsedNote, match: (key: string) => boolean): string {
   let out = text;
-  for (const t of [...parsed.tags].reverse()) if (match(tagKey(t.name))) out = removeSpan(out, t.start, t.end);
+  for (const t of [...parsed.tags].reverse())
+    if (match(tagKey(t.name))) out = removeSpan(out, t.start, t.end);
   const raw = parsed.frontMatter.tags;
   if (Array.isArray(raw) && raw.some((t) => typeof t === 'string' && match(tagKey(t)))) {
     const kept = raw.filter((t) => !(typeof t === 'string' && match(tagKey(t))));
@@ -1041,7 +1360,10 @@ function removeSpan(text: string, start: number, end: number): string {
 }
 
 function isTagLine(line: string): boolean {
-  return line.trim() !== '' && line.replace(/(^|\s)#(?:[^\s#][^#\n]*?[^\s#]#|[^\s#]+)/g, '').trim() === '';
+  return (
+    line.trim() !== '' &&
+    line.replace(/(^|\s)#(?:[^\s#][^#\n]*?[^\s#]#|[^\s#]+)/g, '').trim() === ''
+  );
 }
 
 function splice(s: string, from: number, to: number, insert: string): string {
@@ -1090,7 +1412,12 @@ function startOfToday(now: Date): number {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 }
 
-function pageOf(args: { location?: Location | 'all'; sort?: ListArgs['sort']; limit?: number; offset?: number }): ListOptions {
+function pageOf(args: {
+  location?: Location | 'all';
+  sort?: ListArgs['sort'];
+  limit?: number;
+  offset?: number;
+}): ListOptions {
   return {
     ...(args.location ? { location: args.location } : {}),
     ...(args.sort ? { sort: args.sort } : {}),

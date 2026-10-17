@@ -81,6 +81,7 @@ const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
 const HAS_CODE = document.documentElement.dataset.sibling === 'code';
 /** Heap QA, mounted beside this page by `heapcode web`. */
 const HAS_QA = servedProducts().includes('qa');
+const HAS_NOTES = servedProducts().includes('notes');
 /** The mount prefix, derived from the socket path — `/chat/rpc` → `/chat`. */
 const BASE = RPC_PATH.replace(/\/rpc$/, '');
 
@@ -415,7 +416,7 @@ export function App(): JSX.Element {
           brand="Heap Chat"
           // Absent when Heap Code is not served here: a switcher with one
           // working half teaches people the control is broken.
-          toggle={HAS_CODE ? <ProductToggle current="chat" chatPath={`${BASE}/`} {...(HAS_QA ? { qaPath: '/qa/' } : {})} /> : undefined}
+          toggle={HAS_CODE ? <ProductToggle current="chat" chatPath={`${BASE}/`} {...(HAS_QA ? { qaPath: '/qa/' } : {})} {...(HAS_NOTES ? { notesPath: '/notes/' } : {})} /> : undefined}
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {

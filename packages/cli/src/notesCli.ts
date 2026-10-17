@@ -1,18 +1,17 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { globalDir } from '@heapcode/host';
+import { resolve } from 'node:path';
 import {
   COMMANDS,
   NoteError,
   Vault,
   checkArgs,
+  defaultVaultRoot,
   findCommand,
   importBear,
   importBearExport,
   importMarkdownFolder,
   importObsidian,
   serveNotesMcp,
+  writeNotesSettings,
   type Command,
   type ImportResult,
 } from '@heapcode/notes-host';
@@ -41,7 +40,8 @@ export async function runNotes(argv: string[]): Promise<number> {
   }
 
   const format = flagString(parsed, 'format') ?? 'tsv';
-  if (!['tsv', 'csv', 'json'].includes(format)) return usage(`--format is tsv, csv or json, not "${format}".`);
+  if (!['tsv', 'csv', 'json'].includes(format))
+    return usage(`--format is tsv, csv or json, not "${format}".`);
 
   if (sub === 'vault') return vaultCommand(positionals[0], parsed);
 
@@ -121,7 +121,12 @@ function parseArgv(argv: string[]): Parsed {
       const name = (eq > 0 ? a.slice(0, eq) : a).replace(/^--?/, '');
       let value: string | true;
       if (eq > 0) value = a.slice(eq + 1);
-      else if (BOOLEAN_FLAGS.has(name) || argv[i + 1] === undefined || (argv[i + 1]!.startsWith('--') && argv[i + 1]!.length > 2)) value = true;
+      else if (
+        BOOLEAN_FLAGS.has(name) ||
+        argv[i + 1] === undefined ||
+        (argv[i + 1]!.startsWith('--') && argv[i + 1]!.length > 2)
+      )
+        value = true;
       else value = argv[++i]!;
       (out.flags[name] ??= []).push(value);
       continue;
@@ -141,7 +146,11 @@ const ALIASES: Record<string, string> = { n: 'limit', t: 'title' };
 const GLOBAL_FLAGS = new Set(['vault', 'format', 'fields', 'only-tags', 'exclude-tags', 'into']);
 
 /** Flags become the command's arguments: `--insert-before` → `insertBefore`, `--tag a --tag b` → `tags`. */
-async function argsFor(cmd: Command, positionals: string[], p: Parsed): Promise<Record<string, unknown>> {
+async function argsFor(
+  cmd: Command,
+  positionals: string[],
+  p: Parsed,
+): Promise<Record<string, unknown>> {
   const args: Record<string, unknown> = {};
   const props = cmd.input.properties;
   for (const [flag, values] of Object.entries(p.flags)) {
@@ -150,16 +159,30 @@ async function argsFor(cmd: Command, positionals: string[], p: Parsed): Promise<
     if (!props[key] && key === 'tag' && props.tags?.type === 'array') key = 'tags';
     const schema = props[key];
     if (!schema) throw new UsageError(`\`heapcode notes ${cmd.cli}\` has no --${flag}.`);
-    if (schema.type === 'array') args[key] = values.flatMap((v) => (v === true ? [] : v.split(',').map((s) => s.trim()).filter(Boolean)));
+    if (schema.type === 'array')
+      args[key] = values.flatMap((v) =>
+        v === true
+          ? []
+          : v
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean),
+      );
     else args[key] = values.at(-1);
   }
   const names = cmd.positional ?? [];
   // `heapcode notes search meeting notes` means one query, not two arguments.
   const last = names.at(-1);
   if ((last === 'query' || last === 'text') && positionals.length > names.length) {
-    positionals = [...positionals.slice(0, names.length - 1), positionals.slice(names.length - 1).join(' ')];
+    positionals = [
+      ...positionals.slice(0, names.length - 1),
+      positionals.slice(names.length - 1).join(' '),
+    ];
   }
-  if (positionals.length > names.length) throw new UsageError(`Too many arguments for \`heapcode notes ${cmd.cli}\`: it takes ${names.map((n) => `<${n}>`).join(' ') || 'none'}.`);
+  if (positionals.length > names.length)
+    throw new UsageError(
+      `Too many arguments for \`heapcode notes ${cmd.cli}\`: it takes ${names.map((n) => `<${n}>`).join(' ') || 'none'}.`,
+    );
   names.forEach((name, i) => {
     const v = positionals[i];
     if (v !== undefined) args[name] = v;
@@ -168,11 +191,17 @@ async function argsFor(cmd: Command, positionals: string[], p: Parsed): Promise<
   for (const name of ['text', 'base64'] as const) {
     if (!(name in props)) continue;
     // Only when asked for (`-`) or required — never a surprise wait on a stdin nobody closes.
-    const wanted = args[name] === '-' || (args[name] === undefined && cmd.input.required?.includes(name));
-    if (wanted && !process.stdin.isTTY) args[name] = name === 'base64' ? (await readStdin()).toString('base64') : (await readStdin()).toString('utf8');
+    const wanted =
+      args[name] === '-' || (args[name] === undefined && cmd.input.required?.includes(name));
+    if (wanted && !process.stdin.isTTY)
+      args[name] =
+        name === 'base64'
+          ? (await readStdin()).toString('base64')
+          : (await readStdin()).toString('utf8');
     else if (args[name] === '-') args[name] = undefined;
   }
-  if (cmd.cli === 'attach' && args.base64 === undefined) throw new UsageError('Pipe the file in: `heapcode notes attach <id> photo.png < photo.png`.');
+  if (cmd.cli === 'attach' && args.base64 === undefined)
+    throw new UsageError('Pipe the file in: `heapcode notes attach <id> photo.png < photo.png`.');
   return args;
 }
 
@@ -186,26 +215,17 @@ class UsageError extends Error {}
 
 // ── Vault ─────────────────────────────────────────────────────────────────
 
-function settingsFile(): string {
-  return join(globalDir(), 'notes.json');
-}
-
-function savedVault(): string | undefined {
-  try {
-    const v = (JSON.parse(readFileSync(settingsFile(), 'utf8')) as { vault?: unknown }).vault;
-    return typeof v === 'string' && v ? v : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function vaultRoot(p: Parsed): string {
-  const given = flagString(p, 'vault') ?? process.env.HEAPNOTES_VAULT ?? savedVault();
-  return resolve(given ?? join(homedir(), 'Heapnotes'));
+  const given = flagString(p, 'vault');
+  return given ? resolve(given) : defaultVaultRoot();
 }
 
 function scopeOf(p: Parsed): { onlyTags: string[]; excludeTags: string[] } {
-  const list = (name: string) => (p.flags[name] ?? []).flatMap((v) => (v === true ? [] : v.split(','))).map((s) => s.trim()).filter(Boolean);
+  const list = (name: string) =>
+    (p.flags[name] ?? [])
+      .flatMap((v) => (v === true ? [] : v.split(',')))
+      .map((s) => s.trim())
+      .filter(Boolean);
   return { onlyTags: list('only-tags'), excludeTags: list('exclude-tags') };
 }
 
@@ -215,21 +235,17 @@ function vaultCommand(folder: string | undefined, p: Parsed): number {
     return 0;
   }
   const root = resolve(folder);
-  mkdirSync(dirname(settingsFile()), { recursive: true });
-  let settings: Record<string, unknown> = {};
-  if (existsSync(settingsFile())) {
-    try {
-      settings = JSON.parse(readFileSync(settingsFile(), 'utf8')) as Record<string, unknown>;
-    } catch {
-      settings = {};
-    }
-  }
-  writeFileSync(settingsFile(), `${JSON.stringify({ ...settings, vault: root }, null, 2)}\n`);
+  writeNotesSettings({ vault: root });
   console.log(`Default vault: ${root}`);
   return 0;
 }
 
-async function importCommand(vault: Vault, positionals: string[], p: Parsed, format: string): Promise<number> {
+async function importCommand(
+  vault: Vault,
+  positionals: string[],
+  p: Parsed,
+  format: string,
+): Promise<number> {
   const [kind, source] = positionals;
   const into = flagString(p, 'into');
   const opts = into ? { into } : {};
@@ -247,12 +263,16 @@ async function importCommand(vault: Vault, positionals: string[], p: Parsed, for
       result = source ? await importBearExport(vault, source, opts) : await importBear(vault, opts);
       break;
     default:
-      return usage('Import from markdown, obsidian or bear: `heapcode notes import markdown <folder>`.');
+      return usage(
+        'Import from markdown, obsidian or bear: `heapcode notes import markdown <folder>`.',
+      );
   }
   if (format === 'json') {
     console.log(JSON.stringify(result, null, 2));
   } else {
-    console.log(`Imported ${result.notes} note${result.notes === 1 ? '' : 's'} and ${result.attachments} attachment${result.attachments === 1 ? '' : 's'} into ${vault.root}.`);
+    console.log(
+      `Imported ${result.notes} note${result.notes === 1 ? '' : 's'} and ${result.attachments} attachment${result.attachments === 1 ? '' : 's'} into ${vault.root}.`,
+    );
     for (const s of result.skipped) console.log(`  skipped ${s.source}: ${s.reason}`);
   }
   return 0;
@@ -260,13 +280,20 @@ async function importCommand(vault: Vault, positionals: string[], p: Parsed, for
 
 // ── Output ────────────────────────────────────────────────────────────────
 
-function print(cmd: Command, result: unknown, format: string, fieldsFlag: string | undefined): void {
+function print(
+  cmd: Command,
+  result: unknown,
+  format: string,
+  fieldsFlag: string | undefined,
+): void {
   if (format === 'json') {
     // Lists print as bare arrays, like bearcli.
     let value = isPage(result) ? result.notes : result;
     if (fieldsFlag && fieldsFlag !== 'all' && Array.isArray(value)) {
       const fields = pickFields(value as Record<string, unknown>[], fieldsFlag, undefined);
-      value = (value as Record<string, unknown>[]).map((r) => Object.fromEntries(fields.map((f) => [f, r[f]])));
+      value = (value as Record<string, unknown>[]).map((r) =>
+        Object.fromEntries(fields.map((f) => [f, r[f]])),
+      );
     }
     console.log(JSON.stringify(value ?? null, null, 2));
     return;
@@ -275,18 +302,32 @@ function print(cmd: Command, result: unknown, format: string, fieldsFlag: string
     process.stdout.write(String((result as { content: string }).content));
     return;
   }
-  const rows = isPage(result) ? result.notes : Array.isArray(result) ? result : cmd.cli === 'outline' ? (result as { sections: unknown[] }).sections : null;
+  const rows = isPage(result)
+    ? result.notes
+    : Array.isArray(result)
+      ? result
+      : cmd.cli === 'outline'
+        ? (result as { sections: unknown[] }).sections
+        : null;
   if (rows) {
-    const fields = pickFields(rows as Record<string, unknown>[], fieldsFlag, cmd.fields ?? (cmd.cli === 'outline' ? ['address', 'offset', 'length'] : undefined));
+    const fields = pickFields(
+      rows as Record<string, unknown>[],
+      fieldsFlag,
+      cmd.fields ?? (cmd.cli === 'outline' ? ['address', 'offset', 'length'] : undefined),
+    );
     printTable(rows as Record<string, unknown>[], fields, format);
     if (rows.length === 0 && format === 'tsv') console.error('No results.');
     return;
   }
   if (!cmd.readOnly) {
     // A write says which note it touched; nothing more.
-    const id = result && typeof result === 'object' && 'id' in result ? (result as { id: unknown }).id : undefined;
+    const id =
+      result && typeof result === 'object' && 'id' in result
+        ? (result as { id: unknown }).id
+        : undefined;
     if (typeof id === 'string') console.log(id);
-    else if (result && typeof result === 'object') printKeyValues(result as Record<string, unknown>, format);
+    else if (result && typeof result === 'object')
+      printKeyValues(result as Record<string, unknown>, format);
     return;
   }
   printKeyValues(result as Record<string, unknown>, format);
@@ -296,10 +337,18 @@ function isPage(r: unknown): r is { notes: Record<string, unknown>[]; total: num
   return !!r && typeof r === 'object' && Array.isArray((r as { notes?: unknown }).notes);
 }
 
-function pickFields(rows: Record<string, unknown>[], flag: string | undefined, defaults: string[] | undefined): string[] {
+function pickFields(
+  rows: Record<string, unknown>[],
+  flag: string | undefined,
+  defaults: string[] | undefined,
+): string[] {
   const all = [...new Set(rows.flatMap((r) => Object.keys(r)))];
   if (flag === 'all') return all;
-  if (flag) return flag.split(',').map((f) => f.trim()).filter(Boolean);
+  if (flag)
+    return flag
+      .split(',')
+      .map((f) => f.trim())
+      .filter(Boolean);
   return defaults ?? all;
 }
 
@@ -309,7 +358,8 @@ function printTable(rows: Record<string, unknown>[], fields: string[], format: s
     for (const r of rows) console.log(fields.map((f) => csvCell(cell(r[f]))).join(','));
     return;
   }
-  for (const r of rows) console.log(fields.map((f) => cell(r[f]).replace(/[\t\r\n]+/g, ' ')).join('\t'));
+  for (const r of rows)
+    console.log(fields.map((f) => cell(r[f]).replace(/[\t\r\n]+/g, ' ')).join('\t'));
 }
 
 function printKeyValues(obj: Record<string, unknown>, format: string): void {
@@ -324,7 +374,8 @@ function printKeyValues(obj: Record<string, unknown>, format: string): void {
 
 function cell(v: unknown): string {
   if (v === undefined || v === null) return '';
-  if (Array.isArray(v)) return v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(',');
+  if (Array.isArray(v))
+    return v.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(',');
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
 }
@@ -335,7 +386,10 @@ function csvCell(s: string): string {
 
 function fail(err: unknown, format: string): number {
   if (err instanceof UsageError) return usage(err.message, format);
-  const e = err instanceof NoteError ? err : new NoteError('io', err instanceof Error ? err.message : String(err));
+  const e =
+    err instanceof NoteError
+      ? err
+      : new NoteError('io', err instanceof Error ? err.message : String(err));
   if (format === 'json') console.log(JSON.stringify(e.toJSON()));
   else console.error(e.message);
   return 1;

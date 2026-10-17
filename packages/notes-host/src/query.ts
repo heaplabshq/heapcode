@@ -53,7 +53,14 @@ const FLAGS: Record<string, Flag> = {
 };
 
 export function parseQuery(input: string, now: Date = new Date()): SearchQuery {
-  const q: SearchQuery = { terms: [], excludeTerms: [], tags: [], excludeTags: [], titleOnly: false, filters: [] };
+  const q: SearchQuery = {
+    terms: [],
+    excludeTerms: [],
+    tags: [],
+    excludeTags: [],
+    titleOnly: false,
+    filters: [],
+  };
   for (const raw of tokenize(input)) {
     const negate = raw.negate;
     const t = raw.text;
@@ -82,7 +89,10 @@ export function parseQuery(input: string, now: Date = new Date()): SearchQuery {
         q.filters.push({ ...date, negate });
         continue;
       }
-      throw new NoteError('invalid_argument', `Unknown search token ${t}. Known: @today, @yesterday, @last7days, @date(…), @ctoday, @created7days, @cdate(…), @todo, @done, @task, @tagged, @untagged, @title, @pinned, @images, @files, @attachments, @code, @wikilinks, @backlinks.`);
+      throw new NoteError(
+        'invalid_argument',
+        `Unknown search token ${t}. Known: @today, @yesterday, @last7days, @date(…), @ctoday, @created7days, @cdate(…), @todo, @done, @task, @tagged, @untagged, @title, @pinned, @images, @files, @attachments, @code, @wikilinks, @backlinks.`,
+      );
     }
     (negate ? q.excludeTerms : q.terms).push({ text: t, phrase: false });
   }
@@ -119,7 +129,11 @@ function tokenize(input: string): RawToken[] {
     if (input[i] === '#') {
       // `#multi word tag#`: closed by a `#` that ends a word.
       const close = input.indexOf('#', i + 1);
-      if (close > i + 1 && /\s/.test(input.slice(i + 1, close)) && (close + 1 >= input.length || /\s/.test(input[close + 1]!))) {
+      if (
+        close > i + 1 &&
+        /\s/.test(input.slice(i + 1, close)) &&
+        (close + 1 >= input.length || /\s/.test(input[close + 1]!))
+      ) {
         out.push({ text: input.slice(i, close + 1), quoted: false, negate });
         i = close + 1;
         continue;
@@ -140,14 +154,24 @@ function tokenize(input: string): RawToken[] {
   return out;
 }
 
-function parseDateToken(token: string, now: Date): Omit<Extract<Filter, { kind: 'date' }>, 'negate'> | null {
+function parseDateToken(
+  token: string,
+  now: Date,
+): Omit<Extract<Filter, { kind: 'date' }>, 'negate'> | null {
   const today = startOfDay(now);
-  const day = (field: 'modified' | 'created', from: number, to: number) => ({ kind: 'date' as const, field, from, to });
+  const day = (field: 'modified' | 'created', from: number, to: number) => ({
+    kind: 'date' as const,
+    field,
+    from,
+    to,
+  });
 
   let m = /^(c?)(today|yesterday)$/.exec(token);
   if (m) {
     const field = m[1] ? 'created' : 'modified';
-    return m[2] === 'today' ? day(field, today, shift(today, 1)) : day(field, shift(today, -1), today);
+    return m[2] === 'today'
+      ? day(field, today, shift(today, 1))
+      : day(field, shift(today, -1), today);
   }
   // @last7days / @created7days, any number of days, today included.
   m = /^(last|created)(\d{1,4})days?$/.exec(token);
@@ -160,7 +184,8 @@ function parseDateToken(token: string, now: Date): Omit<Extract<Filter, { kind: 
   if (m) {
     const field = m[1] ? 'created' : 'modified';
     const d = localDay(m[3]!);
-    if (d === null) throw new NoteError('invalid_argument', `@${token}: not a date. Use YYYY-MM-DD.`);
+    if (d === null)
+      throw new NoteError('invalid_argument', `@${token}: not a date. Use YYYY-MM-DD.`);
     switch (m[2]) {
       case '<':
         return { kind: 'date', field, to: d };

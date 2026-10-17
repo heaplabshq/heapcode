@@ -30,7 +30,11 @@ export interface ImportOptions {
  * A folder of `.md` files, layout kept. Files the notes link to by relative
  * path come along to the same relative place, so the links keep working.
  */
-export async function importMarkdownFolder(vault: Vault, source: string, opts: ImportOptions = {}): Promise<ImportResult> {
+export async function importMarkdownFolder(
+  vault: Vault,
+  source: string,
+  opts: ImportOptions = {},
+): Promise<ImportResult> {
   return importFolder(vault, source, opts, { allFiles: false });
 }
 
@@ -40,16 +44,28 @@ export async function importMarkdownFolder(vault: Vault, source: string, opts: I
  * it sits — and `.obsidian/` settings stay behind. Heapnotes reads `[[links]]`,
  * `![[embeds]]` and front-matter `tags:` as they are, so nothing is rewritten.
  */
-export async function importObsidian(vault: Vault, source: string, opts: ImportOptions = {}): Promise<ImportResult> {
+export async function importObsidian(
+  vault: Vault,
+  source: string,
+  opts: ImportOptions = {},
+): Promise<ImportResult> {
   return importFolder(vault, source, opts, { allFiles: true });
 }
 
-async function importFolder(vault: Vault, source: string, opts: ImportOptions, mode: { allFiles: boolean }): Promise<ImportResult> {
+async function importFolder(
+  vault: Vault,
+  source: string,
+  opts: ImportOptions,
+  mode: { allFiles: boolean },
+): Promise<ImportResult> {
   const src = resolve(source);
   const st = await stat(src).catch(() => null);
   if (!st?.isDirectory()) throw new NoteError('not_found', `${source} isn't a folder.`);
   if (isInside(vault.root, src) || isInside(src, vault.root)) {
-    throw new NoteError('invalid_argument', 'Import from a folder outside the vault (and not one that contains it).');
+    throw new NoteError(
+      'invalid_argument',
+      'Import from a folder outside the vault (and not one that contains it).',
+    );
   }
   const into = intoFolder(vault, opts.into);
   const result: ImportResult = { notes: 0, attachments: 0, skipped: [] };
@@ -71,7 +87,13 @@ async function importFolder(vault: Vault, source: string, opts: ImportOptions, m
     }
     const times = await stat(from);
     const dir = posix.dirname(rel);
-    const placed = await placeNote(vault.root, joinRel(into, dir === '.' ? '' : dir), basename(rel, extname(rel)), withIdentity(text, times.birthtime), times);
+    const placed = await placeNote(
+      vault.root,
+      joinRel(into, dir === '.' ? '' : dir),
+      basename(rel, extname(rel)),
+      withIdentity(text, times.birthtime),
+      times,
+    );
     if (!placed) result.skipped.push({ source: rel, reason: "front matter isn't valid YAML" });
     else result.notes++;
   }
@@ -121,12 +143,19 @@ interface BearNote {
  * here instead of duplicating it. Encrypted notes stay in Bear — bearcli never
  * hands them out.
  */
-export async function importBear(vault: Vault, opts: ImportOptions & { cli?: BearCli } = {}): Promise<ImportResult> {
+export async function importBear(
+  vault: Vault,
+  opts: ImportOptions & { cli?: BearCli } = {},
+): Promise<ImportResult> {
   const cli = opts.cli ?? bearCli();
   const into = intoFolder(vault, opts.into);
   let notes: BearNote[];
   try {
-    notes = JSON.parse((await cli(['list', '--location', 'all', '--format', 'json', '--fields', 'all,content'])).toString('utf8')) as BearNote[];
+    notes = JSON.parse(
+      (
+        await cli(['list', '--location', 'all', '--format', 'json', '--fields', 'all,content'])
+      ).toString('utf8'),
+    ) as BearNote[];
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     throw new NoteError(
@@ -156,7 +185,10 @@ export async function importBear(vault: Vault, opts: ImportOptions & { cli?: Bea
       try {
         data = await cli(['attachments', 'save', note.id, '--filename', filename]);
       } catch (err) {
-        result.skipped.push({ source: `${note.title ?? note.id} / ${filename}`, reason: (err as Error).message });
+        result.skipped.push({
+          source: `${note.title ?? note.id} / ${filename}`,
+          reason: (err as Error).message,
+        });
         continue;
       }
       const saved = await uniqueFile(vault.root, assetsDir, filename);
@@ -175,7 +207,13 @@ export async function importBear(vault: Vault, opts: ImportOptions & { cli?: Bea
       ...(trashed ? { trashed: (modified ?? new Date()).toISOString() } : {}),
     });
     const times = modified ? { atime: modified, mtime: modified } : undefined;
-    await placeNote(vault.root, folder, fileStem(parseNote(text).title || note.title || 'Untitled'), text, times);
+    await placeNote(
+      vault.root,
+      folder,
+      fileStem(parseNote(text).title || note.title || 'Untitled'),
+      text,
+      times,
+    );
     result.notes++;
   }
   await vault.refresh(true);
@@ -187,7 +225,11 @@ export async function importBear(vault: Vault, opts: ImportOptions & { cli?: Bea
  * images in a folder named after each note, or TextBundles. TextBundles are
  * unpacked — their `assets/` become the note's attachments.
  */
-export async function importBearExport(vault: Vault, source: string, opts: ImportOptions = {}): Promise<ImportResult> {
+export async function importBearExport(
+  vault: Vault,
+  source: string,
+  opts: ImportOptions = {},
+): Promise<ImportResult> {
   const src = resolve(source);
   const st = await stat(src).catch(() => null);
   if (!st?.isDirectory()) throw new NoteError('not_found', `${source} isn't a folder.`);
@@ -195,7 +237,9 @@ export async function importBearExport(vault: Vault, source: string, opts: Impor
   const result = await importFolder(vault, src, opts, { allFiles: false });
 
   for (const bundle of await findBundles(src)) {
-    const textFile = ['text.md', 'text.markdown', 'text.txt'].map((f) => join(bundle, f)).find((f) => existsSync(f));
+    const textFile = ['text.md', 'text.markdown', 'text.txt']
+      .map((f) => join(bundle, f))
+      .find((f) => existsSync(f));
     const name = basename(bundle).replace(/\.textbundle$/i, '');
     if (!textFile) {
       result.skipped.push({ source: name, reason: 'TextBundle has no text file' });
@@ -211,7 +255,13 @@ export async function importBearExport(vault: Vault, source: string, opts: Impor
       result.attachments++;
     }
     const times = await stat(textFile);
-    await placeNote(vault.root, into, fileStem(parseNote(text).title || name), withIdentity(text, times.birthtime), times);
+    await placeNote(
+      vault.root,
+      into,
+      fileStem(parseNote(text).title || name),
+      withIdentity(text, times.birthtime),
+      times,
+    );
     result.notes++;
   }
   await vault.refresh(true);
@@ -235,11 +285,18 @@ function withIdentity(text: string, birth: Date): string | null {
   if (fm.invalid) return null;
   const patch: Record<string, unknown> = {};
   if (fm.data.id === undefined) patch.id = randomUUID().toUpperCase();
-  if (fm.data.created === undefined && !Number.isNaN(birth.getTime())) patch.created = birth.toISOString();
+  if (fm.data.created === undefined && !Number.isNaN(birth.getTime()))
+    patch.created = birth.toISOString();
   return Object.keys(patch).length ? updateFrontMatter(text, patch) : text;
 }
 
-async function placeNote(root: string, folder: string, stem: string, text: string | null, times?: { atime: Date; mtime: Date }): Promise<string | null> {
+async function placeNote(
+  root: string,
+  folder: string,
+  stem: string,
+  text: string | null,
+  times?: { atime: Date; mtime: Date },
+): Promise<string | null> {
   if (text === null) return null;
   const path = await uniqueFile(root, folder, `${stem}.md`);
   const abs = join(root, ...path.split('/'));
@@ -261,9 +318,14 @@ async function uniqueFile(root: string, folder: string, name: string): Promise<s
 /** Point links at a file's new place — written encoded or not. */
 function relink(text: string, from: string, to: string): string {
   const encodedTo = to.split('/').map(encodeURIComponent).join('/');
-  const variants = new Set([from, encodeURI(from), from.split('/').map(encodeURIComponent).join('/')]);
+  const variants = new Set([
+    from,
+    encodeURI(from),
+    from.split('/').map(encodeURIComponent).join('/'),
+  ]);
   let out = text;
-  for (const v of variants) out = out.split(`](${v})`).join(`](${encodedTo})`).split(`](<${v}>)`).join(`](${encodedTo})`);
+  for (const v of variants)
+    out = out.split(`](${v})`).join(`](${encodedTo})`).split(`](<${v}>)`).join(`](${encodedTo})`);
   return out;
 }
 
@@ -302,7 +364,8 @@ async function findBundles(root: string): Promise<string[]> {
 function intoFolder(vault: Vault, into: string | undefined): string {
   if (!into) return '';
   const abs = resolve(vault.root, into);
-  if (!isInside(vault.root, abs)) throw new NoteError('invalid_argument', `${into} is outside the vault.`);
+  if (!isInside(vault.root, abs))
+    throw new NoteError('invalid_argument', `${into} is outside the vault.`);
   return relative(vault.root, abs).split(sep).join('/');
 }
 

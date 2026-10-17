@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   NOTES_METHODS,
   NotesSession,
+  pendingFocus,
+  requestFocus,
   type NoteOpenResult,
   type NoteSaveResult,
 } from '../src/index.js';
@@ -96,5 +98,24 @@ describe('NotesSession', () => {
     for (let i = 0; i < 40 && notified.length === 0; i++)
       await new Promise((r) => setTimeout(r, 100));
     expect(notified[0]).toEqual({ method: NOTES_METHODS.changed, params: { ids: [n.note.id] } });
+  });
+
+  it('shows a note an agent asked for with open_note, and says so', async () => {
+    const n = await ask<NoteOpenResult>(NOTES_METHODS.create, { text: '# Shown\n' });
+    const shown = await requestFocus(root, n.note.id, 3000);
+    expect(shown).toBe(true);
+    expect(notified).toContainEqual({ method: NOTES_METHODS.focus, params: { id: n.note.id } });
+    // Answered once: a page opened later doesn't jump to it.
+    expect(pendingFocus(root)).toBeUndefined();
+  });
+});
+
+describe('open_note with no app', () => {
+  it('reports not shown, and the request goes stale', async () => {
+    const lone = mkdtempSync(join(tmpdir(), 'heapnotes-focus-'));
+    expect(await requestFocus(lone, 'X', 300)).toBe(false);
+    expect(pendingFocus(lone)?.id).toBe('X');
+    expect(pendingFocus(lone, Date.now() + 60_000)).toBeUndefined();
+    rmSync(lone, { recursive: true, force: true });
   });
 });

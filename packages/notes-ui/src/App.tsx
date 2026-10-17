@@ -303,8 +303,16 @@ export function App(): JSX.Element {
   loadListRef.current = loadList;
   const loadSideRef = useRef(loadSide);
   loadSideRef.current = loadSide;
+  const openNoteRef = useRef(openNote);
+  openNoteRef.current = openNote;
 
   useEffect(() => {
+    // An agent's open_note: show it, and bring the window forward if the browser lets us.
+    client.onNotification(NOTES_METHODS.focus, (raw) => {
+      const { id } = raw as { id: string };
+      void openNoteRef.current(id);
+      window.focus();
+    });
     client.onNotification(NOTES_METHODS.changed, (raw) => {
       const { ids } = raw as NotesChanged;
       void loadListRef.current();

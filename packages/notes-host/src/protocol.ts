@@ -36,6 +36,8 @@ export const NOTES_METHODS = {
   saveSettings: 'notes/saveSettings',
   /** Host → page: something in the vault changed on disk. */
   changed: 'notes/changed',
+  /** Host → page: show this note — an agent called open_note. */
+  focus: 'notes/focus',
 } as const;
 
 export type NotesLocation = 'notes' | 'archive' | 'trash';

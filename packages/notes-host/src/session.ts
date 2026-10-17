@@ -18,6 +18,7 @@ import {
 } from './protocol.js';
 import { defaultVaultRoot, readNotesSettings, writeNotesSettings } from './settings.js';
 import { Vault, type NoteRef } from './vault.js';
+import { pendingFocus } from './focus.js';
 
 export interface NotesSessionDeps {
   /** The URL prefix it's mounted at, e.g. `/notes`, for the image URLs it hands out. */
@@ -53,6 +54,7 @@ export class NotesSession implements HostSession {
   private watcher: FSWatcher | undefined;
   private debounce: ReturnType<typeof setTimeout> | undefined;
   private unsubscribe: (() => void) | undefined;
+  private focusPoll: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly deps: NotesSessionDeps) {
     this.vault = this.openVault(deps.vault ?? defaultVaultRoot());
@@ -86,6 +88,9 @@ export class NotesSession implements HostSession {
 
   attach(ui: RpcPeer): void {
     this.peers.add(ui);
+    // open_note from an MCP server: a file in the vault's state folder, read
+    // three times a second while a page is here to show the note.
+    this.focusPoll ??= setInterval(() => void this.checkFocus(), 300);
     const v = () => this.vault;
     const on = (method: string, fn: (p: Record<string, unknown>) => Promise<unknown>) =>
       ui.onRequest(method, (raw) => fn((raw ?? {}) as Record<string, unknown>));
@@ -180,10 +185,26 @@ export class NotesSession implements HostSession {
 
   detach(ui: RpcPeer): void {
     this.peers.delete(ui);
+    if (this.peers.size === 0) this.stopFocusPoll();
   }
 
   async close(): Promise<void> {
+    this.stopFocusPoll();
     await this.closeVault();
+  }
+
+  private stopFocusPoll(): void {
+    clearInterval(this.focusPoll);
+    this.focusPoll = undefined;
+  }
+
+  private async checkFocus(): Promise<void> {
+    if (this.peers.size === 0) return;
+    const vault = await this.vault.catch(() => undefined);
+    const req = vault && pendingFocus(vault.root);
+    if (!req) return;
+    for (const peer of this.peers) peer.notify(NOTES_METHODS.focus, { id: req.id });
+    req.markShown();
   }
 
   /** `<base>/attachment/<vault-relative path>`: an image or file a note shows. */

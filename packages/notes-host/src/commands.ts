@@ -1,6 +1,7 @@
 import { NoteError } from './errors.js';
 import type { SortField } from './noteIndex.js';
 import type { NoteRef, Vault } from './vault.js';
+import { requestFocus } from './focus.js';
 
 /**
  * Every Heapnotes command, defined once. `heapcode notes <cli>` and the MCP
@@ -452,6 +453,28 @@ export const COMMANDS: Command[] = [
     positional: ['id', 'filename'],
     readOnly: false,
     run: (v, a) => v.deleteAttachment(refOf(a), need(a, 'filename')),
+  },
+  {
+    name: 'open_note',
+    cli: 'open',
+    description:
+      'Show a note to the user in the Heapnotes app (heapcode web, at /notes). Says whether an open app showed it; when none is open, tell the user where the note is instead.',
+    input: { type: 'object', properties: { ...ref } },
+    positional: ['id'],
+    readOnly: true,
+    run: async (v, a) => {
+      const note = await v.get(refOf(a));
+      const shown = await requestFocus(v.root, note.id);
+      return {
+        id: note.id,
+        title: note.title,
+        path: note.path,
+        shown,
+        message: shown
+          ? 'Shown in Heapnotes.'
+          : 'No Heapnotes app has this vault open. Run `heapcode web` and open /notes to see it.',
+      };
+    },
   },
   {
     name: 'reindex',

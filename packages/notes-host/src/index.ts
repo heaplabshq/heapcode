@@ -11,3 +11,4 @@ export * from './mcp.js';
 export * from './settings.js';
 export * from './session.js';
 export * from './protocol.js';
+export * from './focus.js';

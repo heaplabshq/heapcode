@@ -18,6 +18,7 @@ import {
   type UiWorkspacesResult,
 } from '@heapcode/notes-host/protocol';
 import { Editor, type EditorHandle } from './Editor.js';
+import { AskPanel } from './AskPanel.js';
 import type { NoteContext } from './editor/live.js';
 import {
   ImportDialog,
@@ -103,6 +104,10 @@ export function App(): JSX.Element {
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
   const [quick, setQuick] = useState<'notes' | 'tags'>();
   const [dialog, setDialog] = useState<'settings' | 'import'>();
+  const [askOpen, setAskOpen] = useState(() => remembered('heapnotes.ask') === 'open');
+  const [askQuestion, setAskQuestion] = useState<{ text: string; seq: number }>();
+  /** Bumped on every socket (re)connection; the Ask panel says hello again on it. */
+  const [connection, setConnection] = useState(0);
 
   const client = useMemo(() => new RpcClient(RPC_URL, setStatus), []);
   const editor = useRef<EditorHandle>(null);
@@ -330,6 +335,7 @@ export function App(): JSX.Element {
       }
     });
     client.onOpen = () => {
+      setConnection((n) => n + 1);
       void client
         .request<{ state: NotesState }>(NOTES_METHODS.hello, {
           protocolVersion: NOTES_PROTOCOL_VERSION,
@@ -404,6 +410,10 @@ export function App(): JSX.Element {
     setLayout(n);
     remember('heapnotes.layout', String(n));
   };
+  const showAsk = (on: boolean) => {
+    setAskOpen(on);
+    remember('heapnotes.ask', on ? 'open' : 'closed');
+  };
   const toggleInfo = () =>
     setInfoOpen((v) => {
       remember('heapnotes.info', v ? 'closed' : 'open');
@@ -440,6 +450,7 @@ export function App(): JSX.Element {
       if (e.shiftKey && k === 'p') return run(pin);
       if (e.shiftKey && k === 'r') return run(restore);
       if (e.shiftKey && (k === 'a' || k === 'b')) return run(toggleInfo);
+      if (e.shiftKey && k === 'j' && state?.ask) return run(() => showAsk(!askOpen));
       if (e.shiftKey && k === 'backspace') return run(emptyTrash);
       if (!e.shiftKey && k === 'backspace' && !inEditor) return run(trash);
       if (!e.shiftKey && e.key === '[') return run(goBack);
@@ -657,6 +668,14 @@ export function App(): JSX.Element {
                     if (e.key === 'Escape') {
                       setQuery('');
                       (e.target as HTMLInputElement).blur();
+                    } else if (e.key === 'Enter' && query.trim().startsWith('?') && state?.ask) {
+                      // `?question` hands the search to Ask.
+                      const text = query.trim().slice(1).trim();
+                      if (text) {
+                        showAsk(true);
+                        setAskQuestion({ text, seq: Date.now() });
+                        setQuery('');
+                      }
                     } else if (e.key === 'Enter' && notes[0]) void openNote(notes[0].id);
                   }}
                 />
@@ -729,6 +748,16 @@ export function App(): JSX.Element {
                     onCopyId={() => copy(current.id)}
                   />
                 </span>
+              )}
+              {state?.ask && (
+                <button
+                  className={askOpen ? 'btn btn-quiet btn-sm notes-on' : 'btn btn-quiet btn-sm'}
+                  onClick={() => showAsk(!askOpen)}
+                  title="Ask your notes (⇧⌘J) — or type ?question in search"
+                  aria-pressed={askOpen}
+                >
+                  Ask
+                </button>
               )}
             </div>
             {error && (
@@ -810,6 +839,17 @@ export function App(): JSX.Element {
               </div>
             )}
           </section>
+          {state?.ask && (
+            <div className="notes-ask-wrap" hidden={!askOpen}>
+              <AskPanel
+                client={client}
+                connection={connection}
+                {...(askQuestion ? { question: askQuestion } : {})}
+                onOpenLink={(target) => void followLink(target)}
+                onClose={() => showAsk(false)}
+              />
+            </div>
+          )}
           {open && infoOpen && (
             <InfoPanel
               headings={headings}

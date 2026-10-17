@@ -16,7 +16,11 @@ export interface NotesSettings {
   vault?: string;
   /** Editor text size in px. */
   fontSize?: number;
+  /** Tags the in-app assistant can't see. Unset means `private`; empty means none. */
+  aiHiddenTags?: string[];
 }
+
+export const DEFAULT_AI_HIDDEN_TAGS = ['private'];
 
 export function readNotesSettings(): NotesSettings {
   try {
@@ -24,6 +28,9 @@ export function readNotesSettings(): NotesSettings {
     return {
       ...(typeof raw.vault === 'string' && raw.vault ? { vault: raw.vault } : {}),
       ...(typeof raw.fontSize === 'number' ? { fontSize: raw.fontSize } : {}),
+      ...(Array.isArray(raw.aiHiddenTags)
+        ? { aiHiddenTags: raw.aiHiddenTags.filter((t): t is string => typeof t === 'string') }
+        : {}),
     };
   } catch {
     return {};

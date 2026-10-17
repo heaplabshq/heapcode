@@ -110,3 +110,19 @@ describe('quick open matching', () => {
     expect(fuzzyFilter('xyz', items, (s) => s)).toEqual([]);
   });
 });
+
+describe('the Apply card diff', () => {
+  it('marks added and removed lines and folds long unchanged runs', async () => {
+    const { lineDiff } = await import('../src/diff.js');
+    const before = ['# T', 'a', 'b', 'c', 'd', 'e', 'f', 'old'].join('\n');
+    const after = ['# T', 'a', 'b', 'c', 'd', 'e', 'f', 'new', 'more'].join('\n');
+    expect(lineDiff(before, after, 1)).toEqual([
+      { kind: 'fold', count: 6 },
+      { kind: 'same', text: 'f' },
+      { kind: 'del', text: 'old' },
+      { kind: 'add', text: 'new' },
+      { kind: 'add', text: 'more' },
+    ]);
+    expect(lineDiff('', 'x\n')).toEqual([{ kind: 'add', text: 'x' }]);
+  });
+});

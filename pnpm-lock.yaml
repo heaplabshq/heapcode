@@ -301,9 +301,15 @@ importers:
 
   packages/notes-host:
     dependencies:
+      '@heapcode/chat-host':
+        specifier: workspace:*
+        version: link:../chat-host
       '@heapcode/core':
         specifier: workspace:*
         version: link:../core
+      '@heapcode/host':
+        specifier: workspace:*
+        version: link:../host
       '@heapcode/web-host':
         specifier: workspace:*
         version: link:../web-host
@@ -350,6 +356,9 @@ importers:
       '@codemirror/view':
         specifier: ^6.34.0
         version: 6.43.14
+      '@heapcode/chat-host':
+        specifier: workspace:*
+        version: link:../chat-host
       '@heapcode/notes-host':
         specifier: workspace:*
         version: link:../notes-host

@@ -141,14 +141,30 @@ export class Vault {
   private lastRefresh = 0;
   private closed = false;
   private refreshing: Promise<void> | undefined;
-  private queue: Promise<unknown> = Promise.resolve();
+  /** Shared with scoped views, so two of them never interleave a write to one file. */
+  private readonly lock: { tail: Promise<unknown> };
+  /** A scoped view borrows its parent's index and must not close it. */
+  private readonly ownsIndex: boolean;
   /** Non-note files by lowercase basename, for Obsidian's `![[file.png]]`. */
   private filesByName = new Map<string, string[]>();
   private readonly changeListeners = new Set<(ids: string[]) => void>();
+  /**
+   * Each note file as this object last saw it. The index can't answer "what
+   * changed since I looked": another process (the MCP server, the CLI) updates
+   * it too, so by the time this object rescans, the index already agrees with
+   * the files and the change would go unreported. Undefined until the first scan.
+   */
+  private seen: Map<string, { key: string; id: string }> | undefined;
 
-  private constructor(opts: VaultOptions, index: NoteIndex) {
+  private constructor(
+    private readonly opts: VaultOptions,
+    index: NoteIndex,
+    shared?: { lock: { tail: Promise<unknown> } },
+  ) {
     this.root = resolve(opts.root);
     this.index = index;
+    this.lock = shared?.lock ?? { tail: Promise.resolve() };
+    this.ownsIndex = !shared;
     this.scope = {
       onlyTags: (opts.scope?.onlyTags ?? []).map(tagKey).filter(Boolean),
       excludeTags: (opts.scope?.excludeTags ?? []).map(tagKey).filter(Boolean),
@@ -169,7 +185,16 @@ export class Vault {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.index.close();
+    if (this.ownsIndex) this.index.close();
+  }
+
+  /**
+   * The same vault seen through a different tag scope — the in-app AI's view,
+   * with `#private` hidden. Shares the index and the write lock; closing it
+   * closes nothing, so it lives as long as the vault it came from.
+   */
+  scoped(scope: Visibility): Vault {
+    return new Vault({ ...this.opts, scope }, this.index, { lock: this.lock });
   }
 
   // ── Indexing ────────────────────────────────────────────────────────────
@@ -218,7 +243,6 @@ export class Vault {
       }
     }
     const removed = [...known.keys()].filter((p) => !notes.has(p));
-    if (changed.length === 0 && removed.length === 0) return;
     const touched = removed.map((p) => known.get(p)!.id);
 
     const takenIds = new Map<string, string>();
@@ -236,13 +260,26 @@ export class Vault {
         touched.push(entry.record.id);
       }
     });
-    for (const listener of this.changeListeners) listener(touched);
+
+    const before = this.seen;
+    this.seen = new Map();
+    for (const [path, st] of notes) {
+      const id = this.index.byPath(path)?.id;
+      if (!id) continue;
+      const key = `${st.mtime}:${st.size}`;
+      this.seen.set(path, { key, id });
+      if (before && before.get(path)?.key !== key) touched.push(id);
+    }
+    if (before) for (const [path, was] of before) if (!notes.has(path)) touched.push(was.id);
+    const ids = [...new Set(touched)];
+    if (before && ids.length > 0) for (const listener of this.changeListeners) listener(ids);
   }
 
   /**
-   * Told the ids of notes a rescan found changed, added or gone — edits made
-   * outside Heapnotes. Its own writes update the index directly and don't
-   * come back through here. Returns the unsubscribe.
+   * Told the ids of notes a rescan found changed, added or gone since this
+   * object last looked — edits from another app, the CLI, the MCP server, or
+   * another view of the vault. Its own writes don't come back through here.
+   * Returns the unsubscribe.
    */
   onChange(listener: (ids: string[]) => void): () => void {
     this.changeListeners.add(listener);
@@ -329,6 +366,8 @@ export class Vault {
       birth: st.birthtimeMs || st.mtimeMs,
     });
     this.index.transaction(() => this.index.upsert(entry.record, entry.extras));
+    // Its own write: seen, so the next scan doesn't report it back.
+    this.seen?.set(path, { key: `${st.mtimeMs}:${st.size}`, id: entry.record.id });
   }
 
   // ── Reading ─────────────────────────────────────────────────────────────
@@ -431,9 +470,7 @@ export class Vault {
     return { ...base, content, hash: contentHash(body), offset };
   }
 
-  async outline(
-    ref: NoteRef,
-  ): Promise<{
+  async outline(ref: NoteRef): Promise<{
     id: string;
     title: string;
     hash: string;
@@ -567,49 +604,12 @@ export class Vault {
     addition: string,
     opts: WriteGuard & { position?: 'end' | 'start' } = {},
   ): Promise<NoteSummary> {
-    return this.modify(ref, opts, (text, parsed, range) => {
-      const eol = eolOf(text);
-      const add = addition.replace(/\r?\n/g, eol).replace(/\s+$/, '');
-      if (opts.position === 'start') {
-        const at = range ? lineEndAfter(text, range.start) : parsed.titleEnd;
-        // A title (or heading) on the file's last line, with no line break after it.
-        const lead = at > parsed.bodyStart && !text.slice(0, at).endsWith('\n') ? eol : '';
-        return splice(text, at, at, `${lead}${add}${eol}`);
-      }
-      const end = range ? range.end : text.length;
-      const trimmed = text.slice(0, end).replace(/\s+$/, '');
-      // Never trim into the front matter's closing fence.
-      const before = trimmed.length < parsed.bodyStart ? text.slice(0, parsed.bodyStart) : trimmed;
-      const sep = before.length <= parsed.bodyStart ? '' : eol;
-      const after = text.slice(end);
-      return `${before}${sep}${add}${eol}${after ? eol + after.replace(/^\s+/, '') : ''}`;
-    });
+    return this.modify(ref, opts, appendChange(addition, opts.position));
   }
 
   /** Replace the body (or one section). The front matter — id, pins — is kept. */
   async overwrite(ref: NoteRef, content: string, opts: WriteGuard = {}): Promise<NoteSummary> {
-    return this.modify(ref, opts, (text, parsed, range) => {
-      const eol = eolOf(text);
-      let next = content.replace(/\r?\n/g, eol);
-      if (range) {
-        // Keep the spacing the section had before the next heading.
-        if (range.end < text.length) {
-          const gap = /\s*$/.exec(text.slice(range.start, range.end))![0];
-          next = next.replace(/\s+$/, '') + (gap.includes('\n') ? gap : eol);
-        }
-        return splice(text, range.start, range.end, next);
-      }
-      const given = readFrontMatter(next);
-      if (given.present && !given.invalid) {
-        // A full file came in: its front matter wins, but the note keeps its identity.
-        const old = parsed.frontMatter;
-        const keep: Record<string, unknown> = {};
-        for (const key of ['id', 'created'])
-          if (old[key] !== undefined && given.data[key] === undefined) keep[key] = old[key];
-        return updateFrontMatter(next, keep);
-      }
-      return text.slice(0, parsed.bodyStart) + next;
-    });
+    return this.modify(ref, opts, overwriteChange(content));
   }
 
   /**
@@ -618,74 +618,47 @@ export class Vault {
    * pick of the wrong one is how edits corrupt files.
    */
   async edit(ref: NoteRef, args: EditArgs): Promise<NoteSummary & { replaced: number }> {
-    const ops = [
-      args.replace !== undefined,
-      args.insertBefore !== undefined,
-      args.insertAfter !== undefined,
-      args.delete === true,
-    ].filter(Boolean).length;
-    if (ops !== 1)
-      throw new NoteError(
-        'invalid_argument',
-        'Say exactly one of: replace, insertBefore, insertAfter, delete.',
-      );
-    if (!args.find)
-      throw new NoteError(
-        'invalid_argument',
-        'find must be non-empty text that appears in the note.',
-      );
-    let replaced = 0;
-    const summary = await this.modify(ref, args, (text, parsed, range) => {
-      const from = range ? range.start : parsed.bodyStart;
-      const to = range ? range.end : text.length;
-      const scope = text.slice(from, to);
-      const hits: number[] = [];
-      for (
-        let at = scope.indexOf(args.find);
-        at !== -1;
-        at = scope.indexOf(args.find, at + args.find.length)
-      )
-        hits.push(at);
-      if (hits.length === 0)
-        throw new NoteError(
-          'not_found',
-          `${JSON.stringify(clip(args.find))} isn't in ${range ? 'that section' : 'the note'}. Read it again; the text must match exactly.`,
-        );
-      let chosen = hits;
-      if (args.occurrence !== undefined) {
-        const one = hits[args.occurrence - 1];
-        if (one === undefined)
-          throw new NoteError(
-            'not_found',
-            `Asked for match ${args.occurrence}, but there are ${hits.length}.`,
-          );
-        chosen = [one];
-      } else if (!args.all && hits.length > 1) {
-        const where = hits
-          .map((h) => lineOf(text, from + h) - lineOf(text, parsed.bodyStart) + 1)
-          .join(', ');
-        throw new NoteError(
-          'ambiguous',
-          `${JSON.stringify(clip(args.find))} appears ${hits.length} times (lines ${where}). Include more surrounding text, or pass occurrence or all.`,
-        );
-      }
-      let out = scope;
-      for (const at of [...chosen].reverse()) {
-        const end = at + args.find.length;
-        const piece =
-          args.replace !== undefined
-            ? args.replace
-            : args.insertBefore !== undefined
-              ? args.insertBefore + args.find
-              : args.insertAfter !== undefined
-                ? args.find + args.insertAfter
-                : '';
-        out = out.slice(0, at) + piece + out.slice(end);
-      }
-      replaced = chosen.length;
-      return text.slice(0, from) + out + text.slice(to);
-    });
-    return { ...summary, replaced };
+    const counter = { replaced: 0 };
+    const summary = await this.modify(ref, args, editChange(args, counter));
+    return { ...summary, replaced: counter.replaced };
+  }
+
+  /**
+   * What a write would make of the note, without writing it — the Apply
+   * card's diff. Runs the same change, with the same checks (stale base,
+   * ambiguous match), on the text as it is now; bodies only, no front matter.
+   */
+  async preview(
+    ref: NoteRef,
+    op: ProposedWrite,
+  ): Promise<{
+    id: string;
+    title: string;
+    path: string;
+    hash: string;
+    before: string;
+    after: string;
+  }> {
+    const row = await this.resolve(ref);
+    const change =
+      op.kind === 'append'
+        ? appendChange(op.text, op.position)
+        : op.kind === 'overwrite'
+          ? overwriteChange(op.text)
+          : editChange(op.args, { replaced: 0 });
+    const { text, parsed, next } = await this.compute(
+      row,
+      op.guard ?? (op.kind === 'edit' ? op.args : {}),
+      change,
+    );
+    return {
+      id: row.id,
+      title: row.title,
+      path: row.path,
+      hash: contentHash(text.slice(parsed.bodyStart)),
+      before: text.slice(parsed.bodyStart),
+      after: next.slice(readFrontMatter(next).end),
+    };
   }
 
   async duplicate(ref: NoteRef): Promise<NoteSummary> {
@@ -770,6 +743,7 @@ export class Vault {
     await this.exclusive(async () => {
       await unlink(this.abs(row.path));
       this.index.transaction(() => this.index.remove(row.path));
+      this.seen?.delete(row.path);
       await pruneEmptyDirs(this.abs(TRASH), posix.dirname(row.path.slice(TRASH.length + 1)));
     });
   }
@@ -1021,33 +995,12 @@ export class Vault {
    * The one write path: re-read from disk, check `base`, apply, write
    * atomically, and keep the index and every `[[link]]` to it in step.
    */
-  private async modify(
-    ref: NoteRef,
-    guard: WriteGuard,
-    change: (
-      text: string,
-      parsed: ParsedNote,
-      range: { start: number; end: number } | null,
-    ) => string,
-  ): Promise<NoteSummary> {
+  private async modify(ref: NoteRef, guard: WriteGuard, change: Change): Promise<NoteSummary> {
     const row = await this.resolve(ref);
     return this.exclusive(async () => {
-      const { text, parsed } = await this.load(row);
-      const range =
-        guard.section !== undefined ? findSection(text, parsed, guard.section, guard.index) : null;
-      if (guard.base !== undefined) {
-        const body = contentHash(text.slice(parsed.bodyStart));
-        const part = range ? contentHash(text.slice(range.start, range.end)) : body;
-        if (guard.base !== body && guard.base !== part) {
-          throw new NoteError(
-            'conflict',
-            `The ${range ? 'section' : 'note'} changed since it was read (now ${part}). Read it again and retry.`,
-          );
-        }
-      }
-      let next = change(text, parsed, range);
-      if (next === text) return this.summary(row);
-      next = this.withId(next, row);
+      const { parsed, next: changed, text } = await this.compute(row, guard, change);
+      if (changed === text) return this.summary(row);
+      const next = this.withId(changed, row);
       const nextParsed = parseNote(next);
       await atomicWrite(this.abs(row.path), next);
       let path = row.path;
@@ -1058,6 +1011,28 @@ export class Vault {
       await this.reindex(path);
       return this.summary(this.index.byPath(path)!);
     });
+  }
+
+  /** Re-read from disk, check `base`, apply the change — everything a write does but write. */
+  private async compute(
+    row: NoteRow,
+    guard: WriteGuard,
+    change: Change,
+  ): Promise<{ text: string; parsed: ParsedNote; next: string }> {
+    const { text, parsed } = await this.load(row);
+    const range =
+      guard.section !== undefined ? findSection(text, parsed, guard.section, guard.index) : null;
+    if (guard.base !== undefined) {
+      const body = contentHash(text.slice(parsed.bodyStart));
+      const part = range ? contentHash(text.slice(range.start, range.end)) : body;
+      if (guard.base !== body && guard.base !== part) {
+        throw new NoteError(
+          'conflict',
+          `The ${range ? 'section' : 'note'} changed since it was read (now ${part}). Read it again and retry.`,
+        );
+      }
+    }
+    return { text, parsed, next: change(text, parsed, range) };
   }
 
   private async setMeta(ref: NoteRef, patch: Record<string, unknown>): Promise<NoteSummary> {
@@ -1127,6 +1102,7 @@ export class Vault {
     await mkdir(this.abs(posix.dirname(to)), { recursive: true });
     await rename(this.abs(from), this.abs(to));
     this.index.transaction(() => this.index.remove(from));
+    this.seen?.delete(from);
     await this.reindex(to);
     if (from.startsWith(`${TRASH}/`))
       await pruneEmptyDirs(this.abs(TRASH), posix.dirname(from.slice(TRASH.length + 1)));
@@ -1149,8 +1125,8 @@ export class Vault {
 
   /** Serialize writes, so two calls never interleave a read-modify-write on one file. */
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn);
-    this.queue = run.catch(() => undefined);
+    const run = this.lock.tail.then(fn, fn);
+    this.lock.tail = run.catch(() => undefined);
     return run;
   }
 
@@ -1212,9 +1188,7 @@ export class Vault {
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /** Notes and other files under the vault, skipping dot-folders (but the trash) and node_modules. */
-async function walk(
-  root: string,
-): Promise<{
+async function walk(root: string): Promise<{
   notes: Map<string, { mtime: number; size: number; birth: number }>;
   files: string[];
 }> {
@@ -1423,5 +1397,133 @@ function pageOf(args: {
     ...(args.sort ? { sort: args.sort } : {}),
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
     ...(args.offset !== undefined ? { offset: args.offset } : {}),
+  };
+}
+
+// ── The changes a write makes ─────────────────────────────────────────────
+
+type Change = (
+  text: string,
+  parsed: ParsedNote,
+  range: { start: number; end: number } | null,
+) => string;
+
+/** A write the in-app AI proposes, for `preview` before it is applied. */
+export type ProposedWrite =
+  | { kind: 'append'; text: string; position?: 'end' | 'start'; guard?: WriteGuard }
+  | { kind: 'overwrite'; text: string; guard?: WriteGuard }
+  | { kind: 'edit'; args: EditArgs; guard?: WriteGuard };
+
+function appendChange(addition: string, position?: 'end' | 'start'): Change {
+  return (text, parsed, range) => {
+    const eol = eolOf(text);
+    const add = addition.replace(/\r?\n/g, eol).replace(/\s+$/, '');
+    if (position === 'start') {
+      const at = range ? lineEndAfter(text, range.start) : parsed.titleEnd;
+      // A title (or heading) on the file's last line, with no line break after it.
+      const lead = at > parsed.bodyStart && !text.slice(0, at).endsWith('\n') ? eol : '';
+      return splice(text, at, at, `${lead}${add}${eol}`);
+    }
+    const end = range ? range.end : text.length;
+    const trimmed = text.slice(0, end).replace(/\s+$/, '');
+    // Never trim into the front matter's closing fence.
+    const before = trimmed.length < parsed.bodyStart ? text.slice(0, parsed.bodyStart) : trimmed;
+    const sep = before.length <= parsed.bodyStart ? '' : eol;
+    const after = text.slice(end);
+    return `${before}${sep}${add}${eol}${after ? eol + after.replace(/^\s+/, '') : ''}`;
+  };
+}
+
+function overwriteChange(content: string): Change {
+  return (text, parsed, range) => {
+    const eol = eolOf(text);
+    let next = content.replace(/\r?\n/g, eol);
+    if (range) {
+      // Keep the spacing the section had before the next heading.
+      if (range.end < text.length) {
+        const gap = /\s*$/.exec(text.slice(range.start, range.end))![0];
+        next = next.replace(/\s+$/, '') + (gap.includes('\n') ? gap : eol);
+      }
+      return splice(text, range.start, range.end, next);
+    }
+    const given = readFrontMatter(next);
+    if (given.present && !given.invalid) {
+      // A full file came in: its front matter wins, but the note keeps its identity.
+      const old = parsed.frontMatter;
+      const keep: Record<string, unknown> = {};
+      for (const key of ['id', 'created'])
+        if (old[key] !== undefined && given.data[key] === undefined) keep[key] = old[key];
+      return updateFrontMatter(next, keep);
+    }
+    return text.slice(0, parsed.bodyStart) + next;
+  };
+}
+
+function editChange(args: EditArgs, counter: { replaced: number }): Change {
+  const ops = [
+    args.replace !== undefined,
+    args.insertBefore !== undefined,
+    args.insertAfter !== undefined,
+    args.delete === true,
+  ].filter(Boolean).length;
+  if (ops !== 1)
+    throw new NoteError(
+      'invalid_argument',
+      'Say exactly one of: replace, insertBefore, insertAfter, delete.',
+    );
+  if (!args.find)
+    throw new NoteError(
+      'invalid_argument',
+      'find must be non-empty text that appears in the note.',
+    );
+  return (text, parsed, range) => {
+    const from = range ? range.start : parsed.bodyStart;
+    const to = range ? range.end : text.length;
+    const scope = text.slice(from, to);
+    const hits: number[] = [];
+    for (
+      let at = scope.indexOf(args.find);
+      at !== -1;
+      at = scope.indexOf(args.find, at + args.find.length)
+    )
+      hits.push(at);
+    if (hits.length === 0)
+      throw new NoteError(
+        'not_found',
+        `${JSON.stringify(clip(args.find))} isn't in ${range ? 'that section' : 'the note'}. Read it again; the text must match exactly.`,
+      );
+    let chosen = hits;
+    if (args.occurrence !== undefined) {
+      const one = hits[args.occurrence - 1];
+      if (one === undefined)
+        throw new NoteError(
+          'not_found',
+          `Asked for match ${args.occurrence}, but there are ${hits.length}.`,
+        );
+      chosen = [one];
+    } else if (!args.all && hits.length > 1) {
+      const where = hits
+        .map((h) => lineOf(text, from + h) - lineOf(text, parsed.bodyStart) + 1)
+        .join(', ');
+      throw new NoteError(
+        'ambiguous',
+        `${JSON.stringify(clip(args.find))} appears ${hits.length} times (lines ${where}). Include more surrounding text, or pass occurrence or all.`,
+      );
+    }
+    let out = scope;
+    for (const at of [...chosen].reverse()) {
+      const end = at + args.find.length;
+      const piece =
+        args.replace !== undefined
+          ? args.replace
+          : args.insertBefore !== undefined
+            ? args.insertBefore + args.find
+            : args.insertAfter !== undefined
+              ? args.find + args.insertAfter
+              : '';
+      out = out.slice(0, at) + piece + out.slice(end);
+    }
+    counter.replaced = chosen.length;
+    return text.slice(0, from) + out + text.slice(to);
   };
 }

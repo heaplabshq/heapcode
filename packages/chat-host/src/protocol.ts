@@ -41,6 +41,8 @@ import type {
  * and re-asking is not checkpoint-shaped — only the workspace restore inside
  * Heap Code's version is, and this host simply omits that part.
  */
+import type { ChatChangePreview } from './persona.js';
+
 export const CHAT_PROTOCOL_VERSION = 1;
 
 export const CHAT_METHODS = {
@@ -307,6 +309,8 @@ export interface ChatPermissionParams {
   server: string;
   /** Arguments, rendered for review. */
   args: Record<string, unknown>;
+  /** A persona's proposed change, shown as a diff to Apply or Discard. */
+  change?: ChatChangePreview;
 }
 
 export interface ChatPermissionResult {

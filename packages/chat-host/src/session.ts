@@ -29,6 +29,7 @@ import {
   type DocumentExtractResult,
   type ToolExecuteParams,
   type ToolResult,
+  type ToolDefinition,
 } from '@heapcode/core';
 import {
   JsonConversationStore,
@@ -137,8 +138,15 @@ import type {
   ChatState,
 } from './protocol.js';
 import { chatSystemPrompt } from './prompt.js';
+import type { ChatChangePreview, ChatPersona } from './persona.js';
 import { withNow } from './now.js';
-import { CHAT_TOOL_NAMES, chatToolsFor, folderToolDefinitions, permissionFor } from './tools.js';
+import {
+  CHAT_TOOL_NAMES,
+  chatToolsFor,
+  folderToolDefinitions,
+  generalToolDefinitions,
+  permissionFor,
+} from './tools.js';
 import { BROWSER_READ_TOOL_NAMES, browserTools, runBrowserTool } from '@heapcode/web-host/browserTools';
 import type { UiBrowserResult } from '@heapcode/web-host/protocol';
 
@@ -239,6 +247,11 @@ export interface ChatSessionDeps {
    * results depend on the operator's own memory is not a baseline.
    */
   memoryFile?: string;
+  /**
+   * Another product's assistant on this session — its tools, prompt and
+   * approvals instead of Heap Chat's folder roster. See persona.ts.
+   */
+  persona?: ChatPersona;
 }
 
 /**
@@ -260,6 +273,8 @@ export class ChatSession implements HostSession {
   private connection?: ServerConnection;
   private executor?: WorkspaceToolExecutor;
   private mcp?: McpManager;
+  /** Persona changes whose preview failed: answered with the reason, never run. */
+  private readonly failedPreviews = new Map<string, string>();
   /** Connector tools allowed for the rest of this conversation. Never stored. */
   private allowedTools = new Set<string>();
   /**
@@ -362,7 +377,9 @@ export class ChatSession implements HostSession {
 
     // Ahead of the model check, because the sidebar asks for the conversation
     // list as soon as the page loads.
-    this.history ??= new JsonConversationStore(chatConversationsFile(this.root));
+    this.history ??= new JsonConversationStore(
+      this.deps.persona?.conversationsFile?.(this.root) ?? chatConversationsFile(this.root),
+    );
     this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
 
     const profile = await config.getActiveProfile();
@@ -531,6 +548,16 @@ export class ChatSession implements HostSession {
    * forgotten, because a first build is minutes of embedding and `start()`
    * has a page waiting on it.
    */
+  /**
+   * Bring the meaning index up to date after the folder changed — Heapnotes
+   * calls this as notes are saved. Incremental: unchanged files keep their
+   * vectors. A no-op until the session has connected.
+   */
+  async refreshIndex(): Promise<void> {
+    if (!this.connection || !this.root) return;
+    await this.startIndexing();
+  }
+
   private async startIndexing(): Promise<void> {
     await this.connection?.peer.request(METHODS.ragIndex, { full: true }).catch(() => undefined);
     void this.indexStatus()
@@ -1048,14 +1075,16 @@ export class ChatSession implements HostSession {
           // file tools are not offered, so the model is not reaching for
           // something that cannot work and explaining the failure.
           tools: [
-            ...chatToolsFor(Boolean(this.root)),
+            ...this.roster(),
             // Look, never touch: the desktop Browser pane's read tools only.
             ...browserTools({ clientHasBrowser: this.clientHasBrowser, vision: resolveCapabilities(profile).vision, actions: false }),
             ...(this.mcp?.getToolDefinitions() ?? []),
           ],
           // Composed per run rather than cached: a fact remembered during this
           // conversation should be in scope for the next question in it.
-          systemPrompt: chatSystemPrompt(Boolean(this.root)) + memorySection(await this.memory.list().catch(() => [])),
+          systemPrompt:
+            (this.deps.persona?.systemPrompt() ?? chatSystemPrompt(Boolean(this.root))) +
+            memorySection(await this.memory.list().catch(() => [])),
           nativeToolCalls: this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls,
           contextWindow,
           maxTokens: profile.maxTokens,
@@ -1184,6 +1213,13 @@ export class ChatSession implements HostSession {
       const { call } = raw as { call: ToolCall };
       // Nothing on this roster changes the folder, so there is nothing to ask
       // about.
+      const persona = this.deps.persona;
+      if (persona && this.isPersonaTool(call.name)) {
+        if (persona.permission(call) === 'grant') return { granted: true };
+        return { granted: await this.askToChange(call) };
+      }
+      // A folder tool the persona does not offer: never, whatever its class.
+      if (persona && !this.onRoster(call.name) && !this.mcp?.isMcpTool(call.name)) return { granted: false };
       const outcome = permissionFor(
         call.name,
         Boolean(this.mcp?.isMcpTool(call.name)),
@@ -1275,6 +1311,40 @@ export class ChatSession implements HostSession {
         request: (params) =>
           ui!.request<UiBrowserResult>(CHAT_METHODS.browser, { ...params, runId: this.activeRunId ?? '' }, signal),
       });
+    }
+    const persona = this.deps.persona;
+    if (persona && this.isPersonaTool(call.name)) {
+      const failed = this.failedPreviews.get(call.id);
+      if (failed !== undefined) {
+        this.failedPreviews.delete(call.id);
+        return { id: call.id, name: call.name, content: failed, isError: true };
+      }
+      return persona.execute(
+        call,
+        {
+          // The daemon's index itself — not the executor's `semantic_search`,
+          // which the daemon normally answers before it ever reaches a host,
+          // and which here would degrade to a word grep the persona can't use.
+          semanticSearch: async (query, s) => {
+            if (!this.connection) return { id: call.id, name: call.name, content: 'Not connected.', isError: true };
+            const r = await this.connection.peer.request<{ formatted: string }>(
+              METHODS.ragQuery,
+              { text: query },
+              s ?? signal,
+            );
+            return { id: call.id, name: call.name, content: r.formatted ?? '' };
+          },
+        },
+        signal,
+      );
+    }
+    if (persona && !this.onRoster(call.name) && !this.mcp?.isMcpTool(call.name)) {
+      return {
+        id: call.id,
+        name: call.name,
+        content: `\`${call.name}\` is not available in ${persona.name}. Use the tools you were given.`,
+        isError: true,
+      };
     }
     if (!CHAT_TOOL_NAMES.has(call.name) && !this.mcp?.isMcpTool(call.name)) {
       return {
@@ -1526,6 +1596,56 @@ export class ChatSession implements HostSession {
     return this.send(text, runId, images);
   }
 
+  /**
+   * The tools this run offers. With a persona: its own, then the general ones
+   * except `create_artifact` (the persona's product makes real things, not
+   * side documents); Heap Chat's folder tools are never offered.
+   */
+  private roster(): ToolDefinition[] {
+    const persona = this.deps.persona;
+    if (!persona) return chatToolsFor(Boolean(this.root));
+    return [...persona.tools, ...generalToolDefinitions.filter((t) => t.name !== CREATE_ARTIFACT_TOOL.name)];
+  }
+
+  private isPersonaTool(name: string): boolean {
+    return Boolean(this.deps.persona?.tools.some((t) => t.name === name));
+  }
+
+  private onRoster(name: string): boolean {
+    return this.roster().some((t) => t.name === name) || BROWSER_READ_TOOL_NAMES.has(name);
+  }
+
+  /**
+   * A persona's change, put to the person with what it would do. Asked every
+   * time — "always allow" makes no sense for an edit whose content differs on
+   * every call. A preview that fails (a stale or ambiguous edit) is a refusal,
+   * and its reason goes back to the model through the denied call.
+   */
+  private async askToChange(call: ToolCall): Promise<boolean> {
+    if (!this.ui) return false;
+    let preview: ChatChangePreview | undefined;
+    try {
+      preview = await this.deps.persona?.preview?.(call);
+    } catch (err) {
+      // Nothing to approve: the change can't be made as asked. Let the call
+      // through to come back as that error — `executeTool` answers it without
+      // running anything — so the model reads why, not a bare "denied".
+      this.failedPreviews.set(call.id, err instanceof Error ? err.message : String(err));
+      return true;
+    }
+    const answer = await this.ui
+      .request<ChatPermissionResult>(CHAT_METHODS.permission, {
+        runId: this.activeRunId ?? '',
+        callId: call.id,
+        tool: call.name,
+        server: '',
+        args: call.args,
+        ...(preview ? { change: preview } : {}),
+      } satisfies ChatPermissionParams)
+      .catch(() => undefined);
+    return answer?.granted === true;
+  }
+
   private async askPermission(call: ToolCall): Promise<boolean> {
     if (this.allowedTools.has(call.name)) return true;
     if (!this.ui) return false;
@@ -1577,6 +1697,10 @@ export class ChatSession implements HostSession {
    */
   private collectEvidence(name: string, args: Record<string, unknown> | undefined, content: string): void {
     if (!content.trim()) return;
+    if (this.deps.persona && this.isPersonaTool(name)) {
+      for (const row of this.deps.persona.evidence?.(name, args, content) ?? []) this.pushEvidence(row);
+      return;
+    }
     let source: string | undefined;
     switch (name) {
       case 'read_file':

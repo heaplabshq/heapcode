@@ -53,6 +53,8 @@ export interface MessageListProps {
    * the layout to drift while the rest of the shell stayed identical.
    */
   empty?: { title: string; body: string; hint?: ReactNode };
+  /** Render `[[Note title]]` as a link (`a[data-wikilink]`) — Heapnotes' citations. */
+  wikiLinks?: boolean;
 }
 
 export function MessageList({
@@ -64,6 +66,7 @@ export function MessageList({
   onRestore,
   hideTaskId,
   empty,
+  wikiLinks,
 }: MessageListProps): JSX.Element {
   const scroller = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
@@ -268,7 +271,15 @@ export function MessageList({
         </div>
       )}
       {shown.map((item) => (
-        <Row key={item.id} item={item} onOpenPath={onOpenPath} busy={busy} onEdit={onEdit} onRestore={onRestore} />
+        <Row
+          key={item.id}
+          item={item}
+          onOpenPath={onOpenPath}
+          busy={busy}
+          onEdit={onEdit}
+          onRestore={onRestore}
+          wikiLinks={wikiLinks}
+        />
       ))}
       {transcript.compacted && (
         <div className="notice">
@@ -296,12 +307,14 @@ const Row = memo(function Row({
   busy,
   onEdit,
   onRestore,
+  wikiLinks,
 }: {
   item: Item;
   onOpenPath?(path: string): void;
   busy?: boolean;
   onEdit?(ordinal: number, text: string, images?: string[]): void;
   onRestore?(ordinal: number): void;
+  wikiLinks?: boolean | undefined;
 }): JSX.Element | null {
   switch (item.kind) {
     case 'text':
@@ -319,7 +332,7 @@ const Row = memo(function Row({
             // Sanitized in renderMarkdown — model output is untrusted, and this
             // page holds the socket that runs commands.
             // Highlighted once it has finished, not on every streamed chunk.
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, { highlight: !item.streaming }) }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, { highlight: !item.streaming, wikiLinks }) }}
           />
           {/* The reply's toolbar, under the reply and aligned with it.
               Hidden while streaming — half a reply is not what someone means

@@ -141,7 +141,20 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
         {
           path: '/notes',
           staticDir: notesStaticDir,
-          createSession: () => new NotesSession({ basePath: '/notes' }),
+          createSession: (deps) =>
+            new NotesSession({
+              basePath: '/notes',
+              // "Ask your notes" runs on Heap Chat's engine, with the same
+              // connections, roles and sign-ins as everything else here.
+              ai: {
+                config: deps.config,
+                secrets: deps.secrets,
+                connect: deps.connect,
+                ...(deps.mcpLogins ? { mcpLogins: deps.mcpLogins } : {}),
+                ...(deps.clientVersion ? { clientVersion: deps.clientVersion } : {}),
+                lan: deps.lan,
+              },
+            }),
         },
       ],
     });

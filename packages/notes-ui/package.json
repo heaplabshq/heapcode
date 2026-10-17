@@ -17,6 +17,7 @@
     "@codemirror/search": "^6.5.0",
     "@codemirror/state": "^6.4.0",
     "@codemirror/view": "^6.34.0",
+    "@heapcode/chat-host": "workspace:*",
     "@heapcode/notes-host": "workspace:*",
     "@heapcode/web-ui": "workspace:*",
     "@lezer/highlight": "^1.2.0",

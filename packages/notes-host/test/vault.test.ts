@@ -431,3 +431,49 @@ describe('the index on disk', () => {
     rmSync(`${indexFile}-shm`, { force: true });
   });
 });
+
+describe('change reports', () => {
+  it('reports a write made by another process sharing the index', async () => {
+    const indexFile = join(root, '..', `${root.split('/').pop()}-shared.db`);
+    vault = await open({ indexFile });
+    const other = await Vault.open({ root, indexFile, staleMs: 0 });
+    const n = await vault.create({ title: 'Shared' });
+    const seen: string[][] = [];
+    vault.onChange((ids) => seen.push(ids));
+    await new Promise((r) => setTimeout(r, 20));
+    await other.append({ id: n.id }, 'from the MCP server');
+    await vault.refresh(true);
+    expect(seen).toEqual([[n.id]]);
+    // Its own writes aren't echoed back.
+    await vault.append({ id: n.id }, 'mine');
+    await vault.refresh(true);
+    expect(seen).toHaveLength(1);
+    other.close();
+    for (const s of ['', '-wal', '-shm']) rmSync(indexFile + s, { force: true });
+  });
+
+  it('a scoped view shares the index but hides the tag', async () => {
+    write('P.md', '---\nid: P\n---\n# P\n#private\n');
+    write('O.md', '---\nid: O\n---\n# O\n');
+    vault = await open();
+    const view = vault.scoped({ excludeTags: ['private'] });
+    expect((await view.list()).notes.map((n) => n.id)).toEqual(['O']);
+    await expect(view.read({ id: 'P' })).rejects.toMatchObject({ code: 'not_found' });
+    view.close();
+    expect((await vault.list()).total).toBe(2);
+  });
+
+  it('previews an edit without writing it', async () => {
+    vault = await open();
+    const n = await vault.create({ title: 'Doc', text: 'old words' });
+    const p = await vault.preview(
+      { id: n.id },
+      { kind: 'edit', args: { find: 'old', replace: 'new' } },
+    );
+    expect(p.after).toBe('# Doc\n\nnew words\n');
+    expect((await vault.read({ id: n.id })).content).toContain('old words');
+    await expect(
+      vault.preview({ id: n.id }, { kind: 'edit', args: { find: 'nope', replace: 'x' } }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+});

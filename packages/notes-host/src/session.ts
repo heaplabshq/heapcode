@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { RpcPeer } from '@heapcode/core';
 import { listFolders, type HostSession } from '@heapcode/web-host';
+import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
+import { notesPersona } from './ask.js';
 import { NoteError } from './errors.js';
 import { importBear, importBearExport, importMarkdownFolder, importObsidian } from './importers.js';
 import { formatTag } from './parse.js';
@@ -16,7 +18,12 @@ import {
   type NotesListParams,
   type NotesState,
 } from './protocol.js';
-import { defaultVaultRoot, readNotesSettings, writeNotesSettings } from './settings.js';
+import {
+  DEFAULT_AI_HIDDEN_TAGS,
+  defaultVaultRoot,
+  readNotesSettings,
+  writeNotesSettings,
+} from './settings.js';
 import { Vault, type NoteRef } from './vault.js';
 import { pendingFocus } from './focus.js';
 
@@ -27,6 +34,11 @@ export interface NotesSessionDeps {
   vault?: string;
   /** Tests pass `:memory:`. */
   indexFile?: string;
+  /**
+   * Models and connections for "Ask your notes" — what `heapcode web` gives
+   * Heap Chat. Without it the page simply has no Ask panel.
+   */
+  ai?: Omit<ChatSessionDeps, 'root' | 'persona' | 'basePath'>;
 }
 
 const MIME: Record<string, string> = {
@@ -55,9 +67,28 @@ export class NotesSession implements HostSession {
   private debounce: ReturnType<typeof setTimeout> | undefined;
   private unsubscribe: (() => void) | undefined;
   private focusPoll: ReturnType<typeof setInterval> | undefined;
+  /** The open vault, once it is — the assistant's tools need it synchronously. */
+  private current: Vault | undefined;
+  /** The assistant's view of it, with the hidden tags scoped out. */
+  private aiView: Vault | undefined;
+  /** "Ask your notes": Heap Chat's session with the notes persona. */
+  private readonly ask: ChatSession | undefined;
+  private reindexTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly deps: NotesSessionDeps) {
-    this.vault = this.openVault(deps.vault ?? defaultVaultRoot());
+    const root = deps.vault ?? defaultVaultRoot();
+    this.vault = this.openVault(root);
+    this.ask = deps.ai
+      ? new ChatSession({
+          ...deps.ai,
+          root,
+          basePath: deps.basePath,
+          persona: notesPersona({
+            vault: () => this.assistantVault(),
+            hiddenTags: () => this.hiddenTags(),
+          }),
+        })
+      : undefined;
   }
 
   private async openVault(root: string): Promise<Vault> {
@@ -67,8 +98,11 @@ export class NotesSession implements HostSession {
     });
     this.unsubscribe = vault.onChange((ids) => {
       for (const peer of this.peers) peer.notify(NOTES_METHODS.changed, { ids });
+      this.scheduleReindex();
     });
     this.watch(vault);
+    this.current = vault;
+    this.aiView = undefined;
     return vault;
   }
 
@@ -88,6 +122,8 @@ export class NotesSession implements HostSession {
 
   attach(ui: RpcPeer): void {
     this.peers.add(ui);
+    // Heap Chat's chat/* methods on the same socket: the Ask panel.
+    this.ask?.attach(ui);
     // open_note from an MCP server: a file in the vault's state folder, read
     // three times a second while a page is here to show the note.
     this.focusPoll ??= setInterval(() => void this.checkFocus(), 300);
@@ -174,23 +210,62 @@ export class NotesSession implements HostSession {
       this.vault = this.openVault(path);
       await this.vault;
       writeNotesSettings({ vault: path });
+      // Its history, index and tools follow the vault.
+      await this.ask?.setFolder(path).catch(() => undefined);
       return this.state();
     });
     on(NOTES_METHODS.saveSettings, async (p) => {
       if (typeof p.fontSize === 'number' && p.fontSize >= 10 && p.fontSize <= 32)
         writeNotesSettings({ fontSize: Math.round(p.fontSize) });
+      if (Array.isArray(p.aiHiddenTags)) {
+        writeNotesSettings({
+          aiHiddenTags: p.aiHiddenTags
+            .map((t) => String(t).replace(/^#|#$/g, '').trim())
+            .filter(Boolean),
+        });
+        this.aiView = undefined;
+      }
       return this.state();
     });
   }
 
   detach(ui: RpcPeer): void {
     this.peers.delete(ui);
+    this.ask?.detach(ui);
     if (this.peers.size === 0) this.stopFocusPoll();
   }
 
   async close(): Promise<void> {
     this.stopFocusPoll();
+    clearTimeout(this.reindexTimer);
+    await this.ask?.close();
     await this.closeVault();
+  }
+
+  /**
+   * Keep Ask's meaning search current: a few seconds after notes stop
+   * changing, re-embed what changed. Debounced, because a note being typed
+   * saves every half second.
+   */
+  private scheduleReindex(): void {
+    if (!this.ask) return;
+    clearTimeout(this.reindexTimer);
+    this.reindexTimer = setTimeout(
+      () => void this.ask?.refreshIndex().catch(() => undefined),
+      5_000,
+    );
+  }
+
+  private hiddenTags(): string[] {
+    return readNotesSettings().aiHiddenTags ?? DEFAULT_AI_HIDDEN_TAGS;
+  }
+
+  /** The vault as the assistant sees it: hidden tags scoped out. */
+  private assistantVault(): Vault {
+    if (!this.current)
+      throw new NoteError('io', 'The notes are still opening; try again in a moment.');
+    this.aiView ??= this.current.scoped({ excludeTags: this.hiddenTags() });
+    return this.aiView;
   }
 
   private stopFocusPoll(): void {
@@ -221,6 +296,8 @@ export class NotesSession implements HostSession {
     this.watcher?.close();
     this.watcher = undefined;
     this.unsubscribe?.();
+    this.current = undefined;
+    this.aiView = undefined;
     const vault = await this.vault.catch(() => undefined);
     vault?.close();
   }
@@ -232,6 +309,8 @@ export class NotesSession implements HostSession {
       vault: vault.root,
       count: total,
       fontSize: readNotesSettings().fontSize ?? 16,
+      aiHiddenTags: this.hiddenTags(),
+      ask: Boolean(this.ask),
       attachmentBase: `${this.deps.basePath}/attachment/`,
     };
   }
@@ -285,6 +364,7 @@ export class NotesSession implements HostSession {
     content: string,
     base: string | undefined,
   ): Promise<NoteSaveResult> {
+    this.scheduleReindex();
     try {
       const note = await vault.overwrite({ id }, content, base ? { base } : {});
       return { ok: true, note, hash: note.hash };

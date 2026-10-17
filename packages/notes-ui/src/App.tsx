@@ -90,6 +90,9 @@ export function App(): JSX.Element {
     () => (remembered('heapnotes.sort') as 'modified') ?? 'modified',
   );
   const [notes, setNotes] = useState<NoteListItem[]>([]);
+  const [related, setRelated] = useState<NoteListItem[]>([]);
+  const notesRef = useRef<NoteListItem[]>([]);
+  notesRef.current = notes;
   const [tags, setTags] = useState<{ tag: string; count: number }[]>([]);
   const [titles, setTitles] = useState<{ id: string; title: string; tags: string[] }[]>([]);
   const [open, setOpen] = useState<OpenNote>();
@@ -151,6 +154,29 @@ export function App(): JSX.Element {
     );
     if (page) setNotes(page.notes);
   }, [call, listParams]);
+
+  // Search by meaning (HEAPNOTES_PHASE2_PLAN §2B): once typing pauses, the
+  // notes close in meaning to the words — tokens like #tag and @today are
+  // filters, not meaning, so they stay out of it.
+  useEffect(() => {
+    setRelated([]);
+    const words = query
+      .replace(/(^|\s)[@#-]\S*/g, ' ')
+      .replace(/["?]/g, ' ')
+      .trim();
+    if (!state?.ask || words.length < 3 || query.trim().startsWith('?')) return;
+    const timer = setTimeout(() => {
+      void client
+        .request<NoteListItem[]>(NOTES_METHODS.related, {
+          query: words,
+          exclude: notesRef.current.map((n) => n.id),
+        })
+        .then(setRelated, () => setRelated([]));
+    }, 450);
+    return () => clearTimeout(timer);
+    // The keyword hits are read when the pause ends (by then they're this
+    // query's); re-asking on every list refresh would re-embed the same words.
+  }, [query, state?.ask, client]);
 
   const loadSide = useCallback(async () => {
     const [t, ti] = await Promise.all([
@@ -682,6 +708,7 @@ export function App(): JSX.Element {
               </div>
               <NoteList
                 notes={notes}
+                related={related}
                 selected={current?.id}
                 onSelect={(id) => void openNote(id)}
                 empty={emptyText}

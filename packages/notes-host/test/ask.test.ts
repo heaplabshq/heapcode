@@ -114,3 +114,26 @@ describe('the notes persona', () => {
     expect(prompt).toContain('[[Note title]]');
   });
 });
+
+describe('closeEnough (related by meaning)', () => {
+  it('keeps what stands out, on any model’s scale', async () => {
+    const { closeEnough } = await import('../src/session.js');
+    const hits = (s: number[]) => s.map((score, i) => ({ score, i }));
+    // nomic-like: the right note well above a bunch near 0.4.
+    expect(closeEnough(hits([0.658, 0.479, 0.41, 0.399, 0.391])).map((h) => h.i)).toEqual([0]);
+    // Same shape, a lower scale.
+    expect(closeEnough(hits([0.33, 0.18, 0.12, 0.11, 0.1])).map((h) => h.i)).toEqual([0]);
+    // Two that both stand out.
+    expect(closeEnough(hits([0.68, 0.62, 0.4, 0.35, 0.33])).map((h) => h.i)).toEqual([0, 1]);
+    // Too few to average: near the best.
+    expect(closeEnough(hits([0.6, 0.55, 0.3])).map((h) => h.i)).toEqual([0, 1]);
+  });
+
+  it('drops front matter from a passage', async () => {
+    const out = await visibleHits(
+      view,
+      '--- Plan.md:1-6 (score 0.9) ---\n---\nid: PLAN\n---\n# Plan\nLaunch on Friday.',
+    );
+    expect(out).toBe('--- Plan (id PLAN, lines 1-6) ---\n# Plan\nLaunch on Friday.');
+  });
+});

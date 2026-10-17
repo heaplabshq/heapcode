@@ -13,6 +13,8 @@ export const NOTES_METHODS = {
   tags: 'notes/tags',
   /** Every note's id and title, for Quick Open and [[link]] completion. */
   titles: 'notes/titles',
+  /** Notes close in meaning to a search, beyond its keyword hits. Empty without an embeddings model. */
+  related: 'notes/related',
   open: 'notes/open',
   /** Save the editor's text. Answers `{ conflict }` rather than failing, so the page can offer a choice. */
   save: 'notes/save',

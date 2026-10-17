@@ -22,6 +22,7 @@ import {
   type ChatState,
 } from '@heapcode/chat-host/protocol';
 import { lineDiff } from './diff.js';
+import { describeSteps } from './steps.js';
 
 /**
  * "Ask your notes" (HEAPNOTES_PHASE2_PLAN §2A): Heap Chat's conversation, on
@@ -201,6 +202,8 @@ export function AskPanel({
           busy={busy}
           {...(busy && startedAt ? { runStartedAt: startedAt } : {})}
           wikiLinks
+          // The answer up front; the searches and reads behind one line.
+          foldSteps={{ describe: describeSteps }}
           empty={{
             title: 'Ask about your notes',
             body: 'It searches your notes by words and by meaning, reads what it finds, and answers with links to the notes it used. It can also draft changes — you see each one and apply it or not. Notes tagged #private are hidden from it.',

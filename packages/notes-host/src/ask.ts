@@ -4,8 +4,9 @@ import { projectStateDir } from '@heapcode/core/node';
 import type { ChatChangePreview, ChatPersona, Evidence } from '@heapcode/chat-host';
 import { COMMANDS, checkArgs, type Command } from './commands.js';
 import { NoteError } from './errors.js';
+import { readFrontMatter } from './frontMatter.js';
 import { formatTag, normalizeTagName } from './parse.js';
-import type { EditArgs, NoteRef, Vault } from './vault.js';
+import type { EditArgs, NoteRef, NoteSummary, Vault } from './vault.js';
 
 /**
  * "Ask your notes": Heapnotes' assistant, as a persona on Heap Chat's session
@@ -215,35 +216,45 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
   };
 }
 
+/** One meaning-search passage, tied to the note it came from. */
+export interface NoteHit {
+  note: NoteSummary;
+  lines: string;
+  passage: string;
+  score: number;
+}
+
 /**
- * The index's hits, kept only where the note is one the assistant may see:
- * a Markdown note, in the list (not the trash), not hidden by tag. Headed by
- * the note's title and id so the model can cite and open it.
+ * The index's hits, kept only where the note is one this vault view may see:
+ * a Markdown note, not in the trash, not hidden by tag. In the index's order
+ * (best first). Shared by the assistant and the note list's "related" group.
  */
-export async function visibleHits(vault: Vault, content: string): Promise<string> {
-  const blocks = content.split(/\n(?=--- )/);
-  const out: string[] = [];
-  for (const block of blocks) {
-    const head = /^--- (.+?):(\d+)-(\d+) \(score [\d.]+\) ---\n?/.exec(block);
+export async function noteHits(vault: Vault, content: string): Promise<NoteHit[]> {
+  const out: NoteHit[] = [];
+  for (const block of content.split(/\n(?=--- )/)) {
+    const head = /^--- (.+?):(\d+)-(\d+) \(score (-?[\d.]+)\) ---\n?/.exec(block);
     if (!head) continue;
     const path = head[1]!;
     if (!/\.md$/i.test(path)) continue;
-    let title: string;
-    let id: string;
     try {
       const note = await vault.get({ path });
       if (note.location === 'trash') continue;
-      title = note.title;
-      id = note.id;
+      // The index embeds whole files, so a note's first passage carries its front matter.
+      const raw = block.slice(head[0].length);
+      const passage = raw.slice(readFrontMatter(raw).end).trim();
+      out.push({ note, lines: `${head[2]}-${head[3]}`, passage, score: Number(head[4]) });
     } catch {
       // Not visible to this view (hidden tag), or gone since it was indexed.
-      continue;
     }
-    out.push(
-      `--- ${title} (id ${id}, lines ${head[2]}-${head[3]}) ---\n${block.slice(head[0].length).trim()}`,
-    );
   }
-  return out.join('\n\n');
+  return out;
+}
+
+/** Hits headed by the note's title and id, so the model can cite and open it. */
+export async function visibleHits(vault: Vault, content: string): Promise<string> {
+  return (await noteHits(vault, content))
+    .map((h) => `--- ${h.note.title} (id ${h.note.id}, lines ${h.lines}) ---\n${h.passage}`)
+    .join('\n\n');
 }
 
 function refOf(a: Record<string, unknown>): NoteRef | undefined {
@@ -279,7 +290,7 @@ Keep their voice: edit the words they asked about and leave the rest alone. Use 
 
 ## Ending a turn
 
-Say the answer once. The run ends by calling \`finish\`, and whatever you put in its summary is what the person reads — so either write the answer as prose and let \`finish\` carry a one-line note, or say nothing first and put the whole answer in \`finish\`. Doing both prints your answer to them twice.
+Your last message is the answer the person sees; everything before it — searches, reads, remarks on the way — is folded out of sight. So make that last message stand alone: the whole answer, with its [[Note title]] links, short and plain. Say it once: either write it as prose and let \`finish\` carry a one-line note, or put all of it in \`finish\` — not both.
 
 ## Tone
 

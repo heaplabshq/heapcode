@@ -24,11 +24,14 @@ export function when(iso: string, now = new Date()): string {
 
 export function NoteList({
   notes,
+  related = [],
   selected,
   onSelect,
   empty,
 }: {
   notes: NoteListItem[];
+  /** Close in meaning to the search, not among its keyword hits (HEAPNOTES_PHASE2_PLAN §2B). */
+  related?: NoteListItem[];
   selected?: string;
   onSelect(id: string): void;
   empty: string;
@@ -37,36 +40,43 @@ export function NoteList({
   useEffect(() => {
     box.current?.querySelector('.note-row-on')?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
-  if (notes.length === 0) return <p className="notes-empty">{empty}</p>;
+  if (notes.length === 0 && related.length === 0) return <p className="notes-empty">{empty}</p>;
+  const row = (n: NoteListItem) => (
+    <li key={n.id}>
+      <button
+        className={n.id === selected ? 'note-row note-row-on' : 'note-row'}
+        role="option"
+        aria-selected={n.id === selected}
+        onClick={() => onSelect(n.id)}
+      >
+        <span className="note-row-top">
+          <span className="note-row-title">{n.title || 'Untitled'}</span>
+          {n.pinned && <span className="note-pin" title="Pinned" aria-label="Pinned" />}
+        </span>
+        {n.snippet ? (
+          <span className="note-row-sub">{renderSnippet(n.snippet)}</span>
+        ) : (
+          n.subtitle && <span className="note-row-sub">{n.subtitle}</span>
+        )}
+        <span className="note-row-meta">
+          <span>{when(n.modified)}</span>
+          {n.todos > 0 && <span className="note-meta-chip">{n.todos} to do</span>}
+          {(n.hasImages || n.hasFiles) && (
+            <span className="note-meta-chip">{n.hasImages ? 'image' : 'file'}</span>
+          )}
+        </span>
+      </button>
+    </li>
+  );
   return (
     <ul className="note-rows" ref={box} role="listbox" aria-label="Notes">
-      {notes.map((n) => (
-        <li key={n.id}>
-          <button
-            className={n.id === selected ? 'note-row note-row-on' : 'note-row'}
-            role="option"
-            aria-selected={n.id === selected}
-            onClick={() => onSelect(n.id)}
-          >
-            <span className="note-row-top">
-              <span className="note-row-title">{n.title || 'Untitled'}</span>
-              {n.pinned && <span className="note-pin" title="Pinned" aria-label="Pinned" />}
-            </span>
-            {n.snippet ? (
-              <span className="note-row-sub">{renderSnippet(n.snippet)}</span>
-            ) : (
-              n.subtitle && <span className="note-row-sub">{n.subtitle}</span>
-            )}
-            <span className="note-row-meta">
-              <span>{when(n.modified)}</span>
-              {n.todos > 0 && <span className="note-meta-chip">{n.todos} to do</span>}
-              {(n.hasImages || n.hasFiles) && (
-                <span className="note-meta-chip">{n.hasImages ? 'image' : 'file'}</span>
-              )}
-            </span>
-          </button>
+      {notes.map(row)}
+      {related.length > 0 && (
+        <li className="note-group" role="presentation">
+          {notes.length === 0 ? 'No exact matches — close in meaning' : 'Related by meaning'}
         </li>
-      ))}
+      )}
+      {related.map(row)}
     </ul>
   );
 }

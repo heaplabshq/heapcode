@@ -2209,3 +2209,20 @@ html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; 
 .preview-save-label { font-size: 12.5px; color: var(--text-dim); }
 .preview-save .card-input { flex: 1 1 200px; font-family: var(--mono); font-size: 12.5px; }
 .preview-save-hint { flex-basis: 100%; margin: 0; font-size: 12px; }
+
+/* ---- folded steps (MessageList foldSteps) ----
+   A turn's working shown as one quiet line before its answer; the full
+   detail is a click away and looks exactly as it does unfolded. */
+.steps { margin: 4px var(--gutter, 16px) 6px; }
+.steps-summary {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  background: none; border: 0; padding: 2px 6px 2px 2px; border-radius: 6px;
+  color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left;
+}
+.steps-summary:hover { background: var(--hover); color: var(--text); }
+.steps-caret { width: 10px; flex: 0 0 auto; font-size: 10px; }
+.steps-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps-live { animation: steps-pulse 1.4s ease-in-out infinite; }
+@keyframes steps-pulse { 50% { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .steps-live { animation: none; } }
+.steps-body { border-left: 2px solid var(--border); margin: 4px 0 0 6px; }

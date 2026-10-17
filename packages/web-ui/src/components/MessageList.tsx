@@ -3,7 +3,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CopyButton } from './CopyButton.js';
 import { ICON_EDIT, ICON_RESTORE } from './icons.js';
 import { renderMarkdown } from '../markdown.js';
-import { activityOf, type Item, type Transcript } from '../transcript.js';
+import { activityOf, foldTurns, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
 import { WorkingIndicator } from './WorkingIndicator.js';
 
@@ -55,6 +55,12 @@ export interface MessageListProps {
   empty?: { title: string; body: string; hint?: ReactNode };
   /** Render `[[Note title]]` as a link (`a[data-wikilink]`) — Heapnotes' citations. */
   wikiLinks?: boolean;
+  /**
+   * Fold each turn's working steps — thinking, tool calls, remarks on the
+   * way — into one collapsed line before its answer (see `foldTurns`).
+   * `describe` writes that line, e.g. "Searched twice · read 2 notes".
+   */
+  foldSteps?: { describe(items: Item[], live: boolean): string };
 }
 
 export function MessageList({
@@ -67,6 +73,7 @@ export function MessageList({
   hideTaskId,
   empty,
   wikiLinks,
+  foldSteps,
 }: MessageListProps): JSX.Element {
   const scroller = useRef<HTMLDivElement>(null);
   const top = useRef<HTMLDivElement>(null);
@@ -270,17 +277,25 @@ export function MessageList({
           </button>
         </div>
       )}
-      {shown.map((item) => (
-        <Row
-          key={item.id}
-          item={item}
-          onOpenPath={onOpenPath}
-          busy={busy}
-          onEdit={onEdit}
-          onRestore={onRestore}
-          wikiLinks={wikiLinks}
-        />
-      ))}
+      {(foldSteps ? foldTurns(shown, busy) : shown.map((item) => ({ kind: 'item' as const, item }))).map((row) =>
+        row.kind === 'steps' ? (
+          <Steps key={row.id} label={foldSteps!.describe(row.items, row.live)} live={row.live}>
+            {row.items.map((item) => (
+              <Row key={item.id} item={item} onOpenPath={onOpenPath} busy={busy} wikiLinks={wikiLinks} />
+            ))}
+          </Steps>
+        ) : (
+          <Row
+            key={row.item.id}
+            item={row.item}
+            onOpenPath={onOpenPath}
+            busy={busy}
+            onEdit={onEdit}
+            onRestore={onRestore}
+            wikiLinks={wikiLinks}
+          />
+        ),
+      )}
       {transcript.compacted && (
         <div className="notice">
           Context compacted — {fmt(transcript.compacted.before)} → {fmt(transcript.compacted.after)} tokens
@@ -301,6 +316,22 @@ export function MessageList({
  * re-ran `renderMarkdown` — highlight.js and all — for every message on screen,
  * which is what made a long conversation stutter while the model typed.
  */
+/** One turn's folded steps: a quiet line that opens to the full detail. Closed by default, live or not. */
+function Steps({ label, live, children }: { label: string; live: boolean; children: ReactNode }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={open ? 'steps steps-open' : 'steps'}>
+      <button className="steps-summary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <span className="steps-caret" aria-hidden="true">
+          {open ? '▾' : '▸'}
+        </span>
+        <span className={live ? 'steps-label steps-live' : 'steps-label'}>{label}</span>
+      </button>
+      {open && <div className="steps-body">{children}</div>}
+    </div>
+  );
+}
+
 const Row = memo(function Row({
   item,
   onOpenPath,

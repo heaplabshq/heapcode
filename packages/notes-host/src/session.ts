@@ -5,13 +5,14 @@ import { resolve } from 'node:path';
 import type { RpcPeer } from '@heapcode/core';
 import { listFolders, type HostSession } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
-import { notesPersona } from './ask.js';
+import { noteHits, notesPersona } from './ask.js';
 import { NoteError } from './errors.js';
 import { importBear, importBearExport, importMarkdownFolder, importObsidian } from './importers.js';
 import { formatTag } from './parse.js';
 import {
   NOTES_METHODS,
   NOTES_PROTOCOL_VERSION,
+  type NoteListItem,
   type NoteOpenResult,
   type NoteSaveResult,
   type NotesImportKind,
@@ -137,6 +138,13 @@ export class NotesSession implements HostSession {
     }));
     on(NOTES_METHODS.list, async (p) => this.list(await v(), p as NotesListParams));
     on(NOTES_METHODS.tags, async () => (await v()).tags());
+    on(NOTES_METHODS.related, async (p) =>
+      this.related(
+        await v(),
+        String(p.query ?? ''),
+        Array.isArray(p.exclude) ? p.exclude.map(String) : [],
+      ),
+    );
     on(NOTES_METHODS.titles, async () =>
       (
         await (
@@ -337,6 +345,34 @@ export class NotesSession implements HostSession {
     });
   }
 
+  /**
+   * "Related by meaning" for the note list (HEAPNOTES_PHASE2_PLAN §2B): the
+   * index's closest passages, one row per note, best first, minus notes the
+   * keyword search already listed. The person's own view — nothing is hidden
+   * here; the hidden tags only apply to the assistant.
+   */
+  private async related(vault: Vault, query: string, exclude: string[]): Promise<NoteListItem[]> {
+    if (!this.ask || query.trim().length < 3) return [];
+    // Plain similarity, no keyword fusion or reranking: fusion scores are only
+    // ranks, and the list needs "how close", to leave out the merely nearest.
+    const formatted = await this.ask
+      .semanticQuery(query, undefined, { k: 20, hybridSearch: false, rerank: false })
+      .catch(() => '');
+    if (!formatted) return [];
+    const skip = new Set(exclude);
+    const out: NoteListItem[] = [];
+    for (const hit of closeEnough(await noteHits(vault, formatted))) {
+      if (skip.has(hit.note.id) || hit.note.location !== 'notes') continue;
+      skip.add(hit.note.id);
+      out.push({
+        ...hit.note,
+        snippet: hit.passage.replace(/\*\*/g, '').replace(/\s+/g, ' ').slice(0, 160),
+      });
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
   private async open(vault: Vault, ref: NoteRef): Promise<NoteOpenResult> {
     const [note, read, outline, backlinks] = await Promise.all([
       vault.get(ref),
@@ -376,6 +412,22 @@ export class NotesSession implements HostSession {
       throw err;
     }
   }
+}
+
+/**
+ * The hits that stand out from the rest. Embedding models put unrelated text
+ * at different similarities — around 0.4 for one, 0.2 for another — so the
+ * cut is relative: well above (three quarters of a standard deviation) the average of what
+ * came back. With too few hits to have an average, those near the best.
+ */
+export function closeEnough<T extends { score: number }>(hits: T[]): T[] {
+  if (hits.length === 0) return [];
+  const scores = hits.map((h) => h.score);
+  const best = Math.max(...scores);
+  if (hits.length < 4) return hits.filter((h) => h.score >= best - 0.1);
+  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const sd = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / scores.length);
+  return hits.filter((h) => h.score > mean + 0.75 * sd);
 }
 
 function str(v: unknown): string {

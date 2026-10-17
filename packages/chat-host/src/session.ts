@@ -549,6 +549,21 @@ export class ChatSession implements HostSession {
    * has a page waiting on it.
    */
   /**
+   * The folder's meaning search, straight from the daemon's index — the same
+   * `--- path:from-to (score n) ---` blocks `semantic_search` returns. Empty
+   * before the session has connected, or with no embeddings model.
+   */
+  async semanticQuery(
+    text: string,
+    signal?: AbortSignal,
+    opts: { k?: number; hybridSearch?: boolean; rerank?: boolean } = {},
+  ): Promise<string> {
+    if (!this.connection || !text.trim()) return '';
+    const r = await this.connection.peer.request<{ formatted?: string }>(METHODS.ragQuery, { text, ...opts }, signal);
+    return r.formatted ?? '';
+  }
+
+  /**
    * Bring the meaning index up to date after the folder changed — Heapnotes
    * calls this as notes are saved. Incremental: unchanged files keep their
    * vectors. A no-op until the session has connected.
@@ -1327,12 +1342,7 @@ export class ChatSession implements HostSession {
           // and which here would degrade to a word grep the persona can't use.
           semanticSearch: async (query, s) => {
             if (!this.connection) return { id: call.id, name: call.name, content: 'Not connected.', isError: true };
-            const r = await this.connection.peer.request<{ formatted: string }>(
-              METHODS.ragQuery,
-              { text: query },
-              s ?? signal,
-            );
-            return { id: call.id, name: call.name, content: r.formatted ?? '' };
+            return { id: call.id, name: call.name, content: await this.semanticQuery(query, s ?? signal) };
           },
         },
         signal,

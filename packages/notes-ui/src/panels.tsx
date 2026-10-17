@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   NoteListItem,
   NotesImportKind,
+  RelatedNote,
   UiBrowseFoldersResult,
 } from '@heapcode/notes-host/protocol';
 import { fuzzyFilter } from './fuzzy.js';
@@ -98,13 +99,19 @@ export interface Heading {
 export function InfoPanel({
   headings,
   backlinks,
+  related,
   text,
   onJump,
   onOpen,
+  onLink,
   onClose,
 }: {
   headings: Heading[];
   backlinks: { id: string; title: string; subtitle: string }[];
+  /** Undefined while loading. */
+  related?: RelatedNote[];
+  /** Put a [[link]] to this note at the cursor. */
+  onLink?(title: string): void;
   text: string;
   onJump(offset: number): void;
   onOpen(id: string): void;
@@ -146,6 +153,34 @@ export function InfoPanel({
                   <span className="backlink-title">{b.title}</span>
                   {b.subtitle && <span className="backlink-sub">{b.subtitle}</span>}
                 </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section>
+        <h3>Related</h3>
+        {related === undefined ? (
+          <p className="notes-dim">Looking…</p>
+        ) : related.length === 0 ? (
+          <p className="notes-dim">Nothing related that isn’t already linked.</p>
+        ) : (
+          <ul className="backlinks related">
+            {related.map((r) => (
+              <li key={r.id} className="related-row">
+                <button onClick={() => onOpen(r.id)} title={r.subtitle}>
+                  <span className="backlink-title">{r.title}</span>
+                  <span className="backlink-sub">{r.reason}</span>
+                </button>
+                {onLink && (
+                  <button
+                    className="btn btn-quiet btn-sm related-link"
+                    onClick={() => onLink(r.title)}
+                    title={`Insert [[${r.title}]] at the cursor`}
+                  >
+                    Link it
+                  </button>
+                )}
               </li>
             ))}
           </ul>

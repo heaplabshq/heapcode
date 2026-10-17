@@ -6,6 +6,7 @@ import type { RpcPeer } from '@heapcode/core';
 import { listFolders, type HostSession } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
 import { noteHits, notesPersona } from './ask.js';
+import { closeEnough, relatedNotes } from './related.js';
 import { NoteError } from './errors.js';
 import { importBear, importBearExport, importMarkdownFolder, importObsidian } from './importers.js';
 import { formatTag } from './parse.js';
@@ -138,6 +139,15 @@ export class NotesSession implements HostSession {
     }));
     on(NOTES_METHODS.list, async (p) => this.list(await v(), p as NotesListParams));
     on(NOTES_METHODS.tags, async () => (await v()).tags());
+    on(NOTES_METHODS.relatedTo, async (p) => {
+      const ask = this.ask;
+      // Plain similarity, as for the list's search: the cut needs real scores.
+      const semantic = ask
+        ? (text: string) =>
+            ask.semanticQuery(text, undefined, { k: 20, hybridSearch: false, rerank: false })
+        : undefined;
+      return relatedNotes(await v(), str(p.id), semantic);
+    });
     on(NOTES_METHODS.related, async (p) =>
       this.related(
         await v(),
@@ -412,22 +422,6 @@ export class NotesSession implements HostSession {
       throw err;
     }
   }
-}
-
-/**
- * The hits that stand out from the rest. Embedding models put unrelated text
- * at different similarities — around 0.4 for one, 0.2 for another — so the
- * cut is relative: well above (three quarters of a standard deviation) the average of what
- * came back. With too few hits to have an average, those near the best.
- */
-export function closeEnough<T extends { score: number }>(hits: T[]): T[] {
-  if (hits.length === 0) return [];
-  const scores = hits.map((h) => h.score);
-  const best = Math.max(...scores);
-  if (hits.length < 4) return hits.filter((h) => h.score >= best - 0.1);
-  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
-  const sd = Math.sqrt(scores.reduce((a, b) => a + (b - mean) ** 2, 0) / scores.length);
-  return hits.filter((h) => h.score > mean + 0.75 * sd);
 }
 
 function str(v: unknown): string {

@@ -14,6 +14,7 @@ import {
   type NotesImportKind,
   type NotesSection,
   type NotesState,
+  type RelatedNote,
   type UiBrowseFoldersResult,
   type UiWorkspacesResult,
 } from '@heapcode/notes-host/protocol';
@@ -91,6 +92,8 @@ export function App(): JSX.Element {
   );
   const [notes, setNotes] = useState<NoteListItem[]>([]);
   const [related, setRelated] = useState<NoteListItem[]>([]);
+  /** The open note's related notes, for the Info panel; undefined while loading. */
+  const [relatedTo, setRelatedTo] = useState<RelatedNote[]>();
   const notesRef = useRef<NoteListItem[]>([]);
   notesRef.current = notes;
   const [tags, setTags] = useState<{ tag: string; count: number }[]>([]);
@@ -154,6 +157,29 @@ export function App(): JSX.Element {
     );
     if (page) setNotes(page.notes);
   }, [call, listParams]);
+
+  // Related notes for the Info panel (HEAPNOTES_PHASE2_PLAN §2C): on opening
+  // a note, and again once its text has settled — the meaning of a note
+  // changes as it's written, and one look per pause costs one embedding.
+  const openId = open?.note.id;
+  /** The note the related list was last loaded for: a different one loads at once. */
+  const relatedFor = useRef<string>();
+  useEffect(() => {
+    if (!openId || !infoOpen) return;
+    const first = relatedFor.current !== openId;
+    if (first) setRelatedTo(undefined);
+    const timer = setTimeout(
+      () => {
+        relatedFor.current = openId;
+        void client
+          .request<RelatedNote[]>(NOTES_METHODS.relatedTo, { id: openId })
+          .then(setRelatedTo, () => setRelatedTo([]));
+      },
+      first ? 0 : 3000,
+    );
+    return () => clearTimeout(timer);
+    // Re-runs as the text changes: the 3s pause after typing is the point.
+  }, [openId, infoOpen, text, client]);
 
   // Search by meaning (HEAPNOTES_PHASE2_PLAN §2B): once typing pauses, the
   // notes close in meaning to the words — tokens like #tag and @today are
@@ -881,6 +907,15 @@ export function App(): JSX.Element {
             <InfoPanel
               headings={headings}
               backlinks={open.backlinks}
+              {...(relatedTo ? { related: relatedTo } : {})}
+              {...(inTrash
+                ? {}
+                : {
+                    onLink: (title: string) => {
+                      editor.current?.insert(`[[${title}]]`);
+                      setRelatedTo((list) => list?.filter((r) => r.title !== title));
+                    },
+                  })}
               text={text}
               onJump={(offset) => editor.current?.reveal(offset)}
               onOpen={(id) => void openNote(id)}

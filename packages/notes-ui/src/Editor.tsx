@@ -53,6 +53,8 @@ export interface EditorHandle {
   focus(): void;
   /** Put the cursor at a body offset and bring it into view — the outline's jump. */
   reveal(offset: number): void;
+  /** Type text at the cursor, as if typed — "Link it" from the Info panel. On the title line, at the end instead. */
+  insert(text: string): void;
 }
 
 export interface EditorProps {
@@ -135,6 +137,31 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
       v.dispatch({
         selection: EditorSelection.cursor(pos),
         effects: EditorView.scrollIntoView(pos, { y: 'start', yMargin: 24 }),
+      });
+      v.focus();
+    },
+    insert: (text) => {
+      const v = view.current;
+      if (!v) return;
+      let { from, to } = v.state.selection.main;
+      let insert: string;
+      if (v.state.doc.lineAt(from).number === 1) {
+        // The cursor still on the title — where a note opens — is not a place
+        // anyone chose; a link there would rename the note. Add it at the end.
+        from = to = v.state.doc.length;
+        const tail = v.state.sliceDoc(Math.max(0, from - 2), from);
+        insert =
+          (tail.endsWith('\n\n') || from === 0 ? '' : tail.endsWith('\n') ? '\n' : '\n\n') + text;
+      } else {
+        // Never glued onto the end of a word.
+        const before = v.state.sliceDoc(from - 1, from);
+        insert = (before && !/\s/.test(before) ? ' ' : '') + text;
+      }
+      v.dispatch({
+        changes: { from, to, insert },
+        selection: EditorSelection.cursor(from + insert.length),
+        scrollIntoView: true,
+        userEvent: 'input',
       });
       v.focus();
     },

@@ -117,7 +117,7 @@ describe('the notes persona', () => {
 
 describe('closeEnough (related by meaning)', () => {
   it('keeps what stands out, on any model’s scale', async () => {
-    const { closeEnough } = await import('../src/session.js');
+    const { closeEnough } = await import('../src/related.js');
     const hits = (s: number[]) => s.map((score, i) => ({ score, i }));
     // nomic-like: the right note well above a bunch near 0.4.
     expect(closeEnough(hits([0.658, 0.479, 0.41, 0.399, 0.391])).map((h) => h.i)).toEqual([0]);

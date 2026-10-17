@@ -15,6 +15,8 @@ export const NOTES_METHODS = {
   titles: 'notes/titles',
   /** Notes close in meaning to a search, beyond its keyword hits. Empty without an embeddings model. */
   related: 'notes/related',
+  /** Notes related to one note — meaning, shared links, shared tags — minus ones already linked. */
+  relatedTo: 'notes/relatedTo',
   open: 'notes/open',
   /** Save the editor's text. Answers `{ conflict }` rather than failing, so the page can offer a choice. */
   save: 'notes/save',
@@ -95,6 +97,15 @@ export interface NoteOpenResult {
   hash: string;
   outline: { address: string; level: number; heading: string; offset: number }[];
   backlinks: { id: string; title: string; subtitle: string }[];
+}
+
+export interface RelatedNote {
+  id: string;
+  title: string;
+  subtitle: string;
+  /** Why it's suggested, in words: "Similar in meaning", "Also links to Plan", "Also tagged #work". */
+  reason: string;
+  kind: 'meaning' | 'links' | 'tags';
 }
 
 export type NoteSaveResult =

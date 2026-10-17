@@ -1,0 +1,28 @@
+{
+  "name": "@heapcode/notes-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Heapnotes' engine: a folder of Markdown notes, its search index, and the commands the CLI and the MCP server share.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@heapcode/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "yaml": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

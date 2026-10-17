@@ -27,7 +27,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "publishConfig": {
     "access": "public"
@@ -43,6 +43,7 @@
     "@heapcode/chat-host": "workspace:*",
     "@heapcode/core": "workspace:*",
     "@heapcode/host": "workspace:*",
+    "@heapcode/notes-host": "workspace:*",
     "@heapcode/qa": "workspace:*",
     "@heapcode/qa-host": "workspace:*",
     "@heapcode/qa-playwright": "workspace:*",

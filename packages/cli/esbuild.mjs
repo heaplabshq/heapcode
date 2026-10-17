@@ -75,7 +75,7 @@ const ctx = await esbuild.context({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node20',
+  target: 'node22',
   outdir: 'dist',
   // The createRequire line works around a well-known esbuild+ESM-output
   // limitation: bundled CJS deps that call require('some-builtin') (e.g.

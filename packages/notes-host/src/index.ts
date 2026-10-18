@@ -14,3 +14,4 @@ export * from './protocol.js';
 export * from './focus.js';
 export * from './ask.js';
 export * from './related.js';
+export * from './inline.js';

@@ -7,12 +7,14 @@ import { listFolders, type HostSession } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
 import { noteHits, notesPersona } from './ask.js';
 import { closeEnough, relatedNotes } from './related.js';
+import { cleanInline, inlineMessages } from './inline.js';
 import { NoteError } from './errors.js';
 import { importBear, importBearExport, importMarkdownFolder, importObsidian } from './importers.js';
 import { formatTag } from './parse.js';
 import {
   NOTES_METHODS,
   NOTES_PROTOCOL_VERSION,
+  type InlineRequest,
   type NoteListItem,
   type NoteOpenResult,
   type NoteSaveResult,
@@ -76,6 +78,8 @@ export class NotesSession implements HostSession {
   /** "Ask your notes": Heap Chat's session with the notes persona. */
   private readonly ask: ChatSession | undefined;
   private reindexTimer: ReturnType<typeof setTimeout> | undefined;
+  /** ⌘J requests in flight, so Discard can stop the model. */
+  private readonly inlineRuns = new Map<string, AbortController>();
 
   constructor(private readonly deps: NotesSessionDeps) {
     const root = deps.vault ?? defaultVaultRoot();
@@ -139,6 +143,28 @@ export class NotesSession implements HostSession {
     }));
     on(NOTES_METHODS.list, async (p) => this.list(await v(), p as NotesListParams));
     on(NOTES_METHODS.tags, async () => (await v()).tags());
+    on(NOTES_METHODS.inline, async (p) => {
+      if (!this.ask) throw new Error('No model is connected.');
+      const req = p as unknown as InlineRequest;
+      const abort = new AbortController();
+      this.inlineRuns.set(req.requestId, abort);
+      try {
+        const { text } = await this.ask.complete(inlineMessages(req), {
+          role: 'edit',
+          temperature: req.action === 'fix' ? 0 : 0.4,
+          signal: abort.signal,
+          onText: (chunk) =>
+            ui.notify(NOTES_METHODS.inlineText, { requestId: req.requestId, chunk }),
+        });
+        return { text: cleanInline(text, req.selection) };
+      } finally {
+        this.inlineRuns.delete(req.requestId);
+      }
+    });
+    on(NOTES_METHODS.inlineCancel, async (p) => {
+      this.inlineRuns.get(String(p.requestId ?? ''))?.abort();
+      return { ok: true };
+    });
     on(NOTES_METHODS.relatedTo, async (p) => {
       const ask = this.ask;
       // Plain similarity, as for the list's search: the cut needs real scores.

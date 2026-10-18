@@ -607,3 +607,31 @@ body {
 .related-link { flex: 0 0 auto; opacity: 0; }
 .related-row:hover .related-link, .related-link:focus-visible { opacity: 1; }
 @media (hover: none) { .related-link { opacity: 1; } }
+
+/* ---------- ⌘J ---------- */
+.cm-ai-target { background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 2px; }
+.inline-ai {
+  position: fixed; z-index: 40; width: min(430px, calc(100vw - 16px));
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18); padding: 6px; font-size: 13px;
+}
+.inline-ai-input { width: 100%; box-sizing: border-box; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 13.5px; padding: 6px 8px 8px; outline: none; }
+.inline-ai-list { list-style: none; margin: 4px 0 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.inline-ai-item { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 6px 8px; font: inherit; color: var(--text); cursor: pointer; }
+.inline-ai-item-on { background: var(--chip-bg); }
+.inline-ai-diff { max-height: 300px; margin: 2px 2px 8px; }
+.inline-ai-same { margin-right: auto; align-self: center; }
+.inline-ai-error { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 6px; }
+
+/* ---------- the editor keeps its room ----------
+   Ask (400px) and Info (250px) beside a list on a laptop left the editor
+   no width at all. The editor has a floor; the side columns give first,
+   and on a narrower window Info steps aside while Ask is open. */
+.notes-editor-pane { min-width: 340px; }
+.notes-list-pane { flex-shrink: 1; min-width: 200px; }
+.notes-ask-wrap { flex-shrink: 1; min-width: 280px; }
+.notes-ask { width: 400px; max-width: 100%; }
+.notes-info { flex-shrink: 1; min-width: 200px; }
+@media (max-width: 1280px) {
+  .notes-main:has(.notes-ask-wrap:not([hidden])) .notes-info { display: none; }
+}

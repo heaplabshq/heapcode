@@ -47,12 +47,33 @@ import {
 } from './editor/commands.js';
 import { liveRendering, noteContext, type NoteContext } from './editor/live.js';
 import { heapnotesMarkdown } from './editor/markup.js';
+import { aiTarget, setAiTarget, targetRange } from './editor/aiTarget.js';
 import { heapnotesTheme } from './editor/theme.js';
 
 export interface EditorHandle {
   focus(): void;
   /** Put the cursor at a body offset and bring it into view — the outline's jump. */
   reveal(offset: number): void;
+  /**
+   * What ⌘J works on (the selection, or the paragraph), highlighted until
+   * `clearTarget`, with where to put the menu. Undefined when there's nothing.
+   */
+  aiTarget():
+    | {
+        from: number;
+        to: number;
+        text: string;
+        before: string;
+        after: string;
+        rect: { left: number; top: number; bottom: number };
+      }
+    | undefined;
+  clearTarget(): void;
+  /**
+   * Replace `from..to` with `text` — only if it still holds `expected`, so an
+   * AI result never lands on text that was edited while it was being written.
+   */
+  replaceRange(from: number, to: number, expected: string, text: string): boolean;
   /** Type text at the cursor, as if typed — "Link it" from the Info panel. On the title line, at the end instead. */
   insert(text: string): void;
 }
@@ -71,6 +92,8 @@ export interface EditorProps {
   /** Save pasted or dropped files; returns the Markdown that links each. */
   onFiles(files: File[]): Promise<string[]>;
   readOnly?: boolean;
+  /** ⌘J pressed in the editor. */
+  onAi?(): void;
 }
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -140,6 +163,40 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
       });
       v.focus();
     },
+    aiTarget: () => {
+      const v = view.current;
+      if (!v) return undefined;
+      const range = targetRange(v.state);
+      if (!range) return undefined;
+      v.dispatch({ effects: setAiTarget.of(range) });
+      const start = v.coordsAtPos(range.from);
+      const end = v.coordsAtPos(range.to);
+      const rect =
+        start && end
+          ? { left: start.left, top: start.top, bottom: end.bottom }
+          : { left: 80, top: 80, bottom: 120 };
+      return {
+        ...range,
+        text: v.state.sliceDoc(range.from, range.to),
+        before: v.state.sliceDoc(0, range.from),
+        after: v.state.sliceDoc(range.to),
+        rect,
+      };
+    },
+    clearTarget: () => view.current?.dispatch({ effects: setAiTarget.of(null) }),
+    replaceRange: (from, to, expected, text) => {
+      const v = view.current;
+      if (!v || v.state.sliceDoc(from, to) !== expected) return false;
+      v.dispatch({
+        changes: { from, to, insert: text },
+        selection: EditorSelection.range(from, from + text.length),
+        effects: setAiTarget.of(null),
+        scrollIntoView: true,
+        userEvent: 'input.ai',
+      });
+      v.focus();
+      return true;
+    },
     insert: (text) => {
       const v = view.current;
       if (!v) return;
@@ -201,7 +258,11 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     extensions.current = () => [
       ctxSlot.current.of(noteContext.of(latest.current.context)),
       roSlot.current.of(EditorState.readOnly.of(latest.current.readOnly === true)),
+      keymap.of([
+        { key: 'Mod-j', run: () => (latest.current.onAi ? (latest.current.onAi(), true) : false) },
+      ]),
       formattingKeymap(),
+      aiTarget,
       history(),
       drawSelection(),
       dropCursor(),

@@ -20,6 +20,7 @@ import {
 } from '@heapcode/notes-host/protocol';
 import { Editor, type EditorHandle } from './Editor.js';
 import { AskPanel } from './AskPanel.js';
+import { InlineAI, type InlineTarget } from './InlineAI.js';
 import type { NoteContext } from './editor/live.js';
 import {
   ImportDialog,
@@ -110,6 +111,8 @@ export function App(): JSX.Element {
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
   const [quick, setQuick] = useState<'notes' | 'tags'>();
   const [dialog, setDialog] = useState<'settings' | 'import'>();
+  /** ⌘J's target while its menu is up. */
+  const [inline, setInline] = useState<InlineTarget>();
   const [askOpen, setAskOpen] = useState(() => remembered('heapnotes.ask') === 'open');
   const [askQuestion, setAskQuestion] = useState<{ text: string; seq: number }>();
   /** Bumped on every socket (re)connection; the Ask panel says hello again on it. */
@@ -162,6 +165,8 @@ export function App(): JSX.Element {
   // a note, and again once its text has settled — the meaning of a note
   // changes as it's written, and one look per pause costs one embedding.
   const openId = open?.note.id;
+  // A ⌘J menu belongs to the note it was opened on.
+  useEffect(() => setInline(undefined), [openId]);
   /** The note the related list was last loaded for: a different one loads at once. */
   const relatedFor = useRef<string>();
   useEffect(() => {
@@ -462,6 +467,33 @@ export function App(): JSX.Element {
     setLayout(n);
     remember('heapnotes.layout', String(n));
   };
+  const startInline = () => {
+    if (!state?.ask || !open || open.note.location === 'trash') return;
+    const t = editor.current?.aiTarget();
+    if (t) setInline(t);
+  };
+  const closeInline = () => {
+    editor.current?.clearTarget();
+    setInline(undefined);
+    editor.current?.focus();
+  };
+  const acceptInline = (result: string, mode: 'replace' | 'after') => {
+    const t = inline;
+    if (!t || !editor.current) return;
+    const ok =
+      mode === 'replace'
+        ? editor.current.replaceRange(t.from, t.to, t.text, result)
+        : editor.current.replaceRange(
+            t.to,
+            t.to,
+            '',
+            (/\s$/.test(t.text) ? '' : ' ') + result.replace(/^\s+/, ''),
+          );
+    if (!ok)
+      setError('The text changed while the AI was writing, so nothing was replaced. Try ⌘J again.');
+    setInline(undefined);
+  };
+
   const showAsk = (on: boolean) => {
     setAskOpen(on);
     remember('heapnotes.ask', on ? 'open' : 'closed');
@@ -802,6 +834,17 @@ export function App(): JSX.Element {
                   />
                 </span>
               )}
+              {state?.ask && current && !inTrash && (
+                <button
+                  className="btn btn-quiet btn-sm"
+                  // Keep the editor's selection: a click would otherwise take the focus first.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={startInline}
+                  title={`Edit the selection (or this paragraph) with AI (${IS_MAC ? '⌘' : 'Ctrl+'}J)`}
+                >
+                  ✦ AI
+                </button>
+              )}
               {state?.ask && (
                 <button
                   className={askOpen ? 'btn btn-quiet btn-sm notes-on' : 'btn btn-quiet btn-sm'}
@@ -871,6 +914,7 @@ export function App(): JSX.Element {
                 tags={() => tagList.current}
                 onChange={onChange}
                 onFiles={onFiles}
+                onAi={startInline}
                 readOnly={!open || inTrash}
               />
             </div>
@@ -924,6 +968,9 @@ export function App(): JSX.Element {
           )}
         </main>
       </div>
+      {inline && (
+        <InlineAI client={client} target={inline} onAccept={acceptInline} onClose={closeInline} />
+      )}
       {quick === 'notes' && (
         <QuickOpen
           items={titles}

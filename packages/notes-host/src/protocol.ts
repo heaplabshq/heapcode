@@ -17,6 +17,9 @@ export const NOTES_METHODS = {
   related: 'notes/related',
   /** Notes related to one note — meaning, shared links, shared tags — minus ones already linked. */
   relatedTo: 'notes/relatedTo',
+  /** ⌘J: rewrite a selection. Streams `inlineText`; answers with the final text. */
+  inline: 'notes/inline',
+  inlineCancel: 'notes/inlineCancel',
   open: 'notes/open',
   /** Save the editor's text. Answers `{ conflict }` rather than failing, so the page can offer a choice. */
   save: 'notes/save',
@@ -42,6 +45,8 @@ export const NOTES_METHODS = {
   changed: 'notes/changed',
   /** Host → page: show this note — an agent called open_note. */
   focus: 'notes/focus',
+  /** Host → page: more of a ⌘J result, as it streams. */
+  inlineText: 'notes/inlineText',
 } as const;
 
 export type NotesLocation = 'notes' | 'archive' | 'trash';
@@ -97,6 +102,19 @@ export interface NoteOpenResult {
   hash: string;
   outline: { address: string; level: number; heading: string; offset: number }[];
   backlinks: { id: string; title: string; subtitle: string }[];
+}
+
+export type InlineAction = 'improve' | 'shorten' | 'fix' | 'summarize' | 'list' | 'tasks' | 'continue' | 'custom';
+
+export interface InlineRequest {
+  /** The page's id for this request, echoed on each `inlineText`. */
+  requestId: string;
+  action: InlineAction;
+  /** For `custom`: what to do, in the person's words. */
+  instruction?: string;
+  selection: string;
+  before: string;
+  after: string;
 }
 
 export interface RelatedNote {

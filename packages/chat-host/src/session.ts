@@ -25,6 +25,8 @@ import {
   type StoredMessage,
   type ToolCall,
   type ChatSendParams,
+  type ChatMessage,
+  type ModelRole,
   type DocumentExtractParams,
   type DocumentExtractResult,
   type ToolExecuteParams,
@@ -273,6 +275,8 @@ export class ChatSession implements HostSession {
   private connection?: ServerConnection;
   private executor?: WorkspaceToolExecutor;
   private mcp?: McpManager;
+  /** `complete()` calls in flight, by runId: their text is theirs, never the transcript's. */
+  private readonly sideRuns = new Map<string, { text: string; onText?: (chunk: string) => void }>();
   /** Persona changes whose preview failed: answered with the reason, never run. */
   private readonly failedPreviews = new Map<string, string>();
   /** Connector tools allowed for the rest of this conversation. Never stored. */
@@ -443,6 +447,7 @@ export class ChatSession implements HostSession {
       documentExtensions: DOCUMENT_EXTENSIONS,
     });
     this.registerDaemonHandlers(this.connection.peer);
+    this.forgetConnectionWhenItCloses(this.connection);
     void this.warmContextWindow();
     // Only with a folder. This used to run unconditionally against a root that
     // defaulted to the home directory, so opening the standalone command began
@@ -558,7 +563,10 @@ export class ChatSession implements HostSession {
     signal?: AbortSignal,
     opts: { k?: number; hybridSearch?: boolean; rerank?: boolean } = {},
   ): Promise<string> {
-    if (!this.connection || !text.trim()) return '';
+    if (!text.trim()) return '';
+    // Reconnects if the daemon has gone away since — see forgetConnectionWhenItCloses.
+    if (!this.connection) await this.open().catch(() => undefined);
+    if (!this.connection) return '';
     const r = await this.connection.peer.request<{ formatted?: string }>(METHODS.ragQuery, { text, ...opts }, signal);
     return r.formatted ?? '';
   }
@@ -578,6 +586,24 @@ export class ChatSession implements HostSession {
     void this.indexStatus()
       .then((s) => this.ui?.notify(CHAT_METHODS.indexChanged, s))
       .catch(() => {});
+  }
+
+  /**
+   * Let go of a daemon link once it closes, so the next request reconnects.
+   *
+   * The daemon exits on its own — idle, or retiring because its bundle was
+   * rebuilt (an update does that). Holding the dead peer meant every later
+   * request failed with "connection closed" until the host was restarted;
+   * Heap Code's session learned this first (web-host session.ts). `start()`
+   * rebuilds from `this.connection` being undefined, so dropping the reference
+   * is the whole recovery. A run in flight is already lost with the socket.
+   */
+  private forgetConnectionWhenItCloses(connection: ServerConnection): void {
+    connection.peer.onClose(() => {
+      if (this.connection !== connection) return;
+      this.connection = undefined;
+      void this.pushState();
+    });
   }
 
   /**
@@ -1287,6 +1313,15 @@ export class ChatSession implements HostSession {
       // The verification pass streams over the same channel. Its text is a
       // JSON verdict about the answer, not part of it, so it is collected
       // here and never reaches the transcript or the browser.
+      const side = this.sideRuns.get(params.runId);
+      if (side) {
+        const { event } = params;
+        if (event.type === 'text' || event.type === 'text_delta') {
+          side.text += event.text;
+          side.onText?.(event.text);
+        }
+        return;
+      }
       if (this.verifying && params.runId === this.verifying.runId) {
         const { event } = params;
         if (event.type === 'text' || event.type === 'text_delta') this.verifying.text += event.text;
@@ -1805,6 +1840,48 @@ export class ChatSession implements HostSession {
       return parseVerification(this.verifying.text);
     } finally {
       this.verifying = undefined;
+    }
+  }
+
+  /**
+   * One model reply outside the conversation — no tools, no history, not
+   * shown in the transcript. Heapnotes' ⌘J rewrites a selection with it.
+   * Runs on `role`'s model (default `chat`), streaming text to `onText`.
+   */
+  async complete(
+    messages: ChatMessage[],
+    opts: {
+      role?: ModelRole;
+      maxTokens?: number;
+      temperature?: number;
+      onText?: (chunk: string) => void;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<{ text: string; finishReason?: string }> {
+    await this.start();
+    const profile = (opts.role ? await this.deps.config.resolve(opts.role) : undefined) ?? this.profile!;
+    const runId = `complete_${randomUUID()}`;
+    const side = { text: '', ...(opts.onText ? { onText: opts.onText } : {}) };
+    this.sideRuns.set(runId, side);
+    const stop = () => this.connection?.peer.notify(METHODS.agentCancel, { runId });
+    opts.signal?.addEventListener('abort', stop, { once: true });
+    try {
+      const r = await this.connection!.peer.request<{ finishReason?: string }>(
+        METHODS.chatSend,
+        {
+          runId,
+          profileName: profile.name,
+          model: opts.role ? profile.model : this.model,
+          maxTokens: opts.maxTokens ?? profile.maxTokens ?? 2000,
+          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+          messages,
+        } satisfies ChatSendParams,
+        opts.signal,
+      );
+      return { text: side.text, ...(r?.finishReason ? { finishReason: r.finishReason } : {}) };
+    } finally {
+      opts.signal?.removeEventListener('abort', stop);
+      this.sideRuns.delete(runId);
     }
   }
 

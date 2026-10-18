@@ -126,3 +126,18 @@ describe('the Apply card diff', () => {
     expect(lineDiff('', 'x\n')).toEqual([{ kind: 'add', text: 'x' }]);
   });
 });
+
+describe('what ⌘J works on', () => {
+  it('is the selection, the paragraph around the cursor, and never the title', async () => {
+    const { targetRange } = await import('../src/editor/aiTarget.js');
+    const doc = '# Title\nfirst para\nstill first\n\nsecond';
+    const at = (anchor: number, head = anchor) =>
+      targetRange(EditorState.create({ doc, selection: EditorSelection.range(anchor, head) }));
+    const slice = (r?: { from: number; to: number }) => (r ? doc.slice(r.from, r.to) : undefined);
+    expect(slice(at(10))).toBe('first para\nstill first');
+    expect(slice(at(doc.length - 2))).toBe('second');
+    expect(at(3)).toBeUndefined();
+    expect(slice(at(2, 14))).toBe('first ');
+    expect(at(doc.indexOf('\n\n') + 1)).toBeUndefined();
+  });
+});

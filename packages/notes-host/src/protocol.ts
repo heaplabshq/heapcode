@@ -37,6 +37,12 @@ export const NOTES_METHODS = {
   deleteForever: 'notes/deleteForever',
   emptyTrash: 'notes/emptyTrash',
   duplicate: 'notes/duplicate',
+  /** One action on several notes: `{ ids, action, tag? }` → `{ done, failed }`. */
+  bulk: 'notes/bulk',
+  /** Several notes into one, in order; the originals go to the trash. `{ ids }` → the merged note. */
+  merge: 'notes/merge',
+  /** Take a tag off every note: `{ tag }`. */
+  deleteTag: 'notes/deleteTag',
   renameTag: 'notes/renameTag',
   attach: 'notes/attach',
   import: 'notes/import',

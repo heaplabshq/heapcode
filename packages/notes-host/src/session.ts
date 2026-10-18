@@ -7,6 +7,7 @@ import { listFolders, type HostSession } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
 import { noteHits, notesPersona } from './ask.js';
 import { zip } from './zip.js';
+import { bulkAction, mergeNotes, type BulkAction } from './bulk.js';
 import { TEMPLATE_TAG, fillTemplate } from './templates.js';
 import { closeEnough, relatedNotes } from './related.js';
 import { cleanInline, inlineMessages } from './inline.js';
@@ -287,6 +288,20 @@ export class NotesSession implements HostSession {
       this.open(await v(), { id: (await (await v()).duplicate({ id: str(p.id) })).id }),
     );
     on(NOTES_METHODS.renameTag, async (p) => (await v()).renameTag(str(p.from), str(p.to)));
+    on(NOTES_METHODS.deleteTag, async (p) => (await v()).deleteTag(str(p.tag)));
+    on(NOTES_METHODS.bulk, async (p) =>
+      bulkAction(
+        await v(),
+        Array.isArray(p.ids) ? p.ids.map(String) : [],
+        str(p.action) as BulkAction,
+        typeof p.tag === 'string' ? p.tag : undefined,
+      ),
+    );
+    on(NOTES_METHODS.merge, async (p) => {
+      const vault = await v();
+      const merged = await mergeNotes(vault, Array.isArray(p.ids) ? p.ids.map(String) : []);
+      return this.open(vault, { id: merged.id });
+    });
     on(NOTES_METHODS.attach, async (p) => {
       const data = Buffer.from(str(p.base64), 'base64');
       return (await v()).saveAttachmentFile({ id: str(p.id) }, str(p.filename), data);
@@ -360,8 +375,18 @@ export class NotesSession implements HostSession {
     on(NOTES_METHODS.exportNotes, async (p) => {
       const vault = await v();
       const id = typeof p.id === 'string' && p.id ? p.id : undefined;
-      const files = await vault.exportFiles(id ? { id } : undefined);
       const stamp = new Date().toISOString().slice(0, 10);
+      // Several notes: each with its images, in one .zip; a file two share goes in once.
+      if (Array.isArray(p.ids) && p.ids.length) {
+        const seen = new Map<string, { path: string; data: Buffer; modified: Date }>();
+        for (const one of p.ids.map(String))
+          for (const f of await vault.exportFiles({ id: one })) seen.set(f.path, f);
+        return {
+          filename: `${p.ids.length} notes ${stamp}.zip`,
+          base64: zip([...seen.values()]).toString('base64'),
+        };
+      }
+      const files = await vault.exportFiles(id ? { id } : undefined);
       if (id) {
         const note = await vault.get({ id });
         const name = fileName(note.title || 'Untitled');

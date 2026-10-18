@@ -18,3 +18,4 @@ export * from './inline.js';
 export * from './zip.js';
 export * from './history.js';
 export * from './templates.js';
+export * from './bulk.js';

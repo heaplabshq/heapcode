@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import type {
   NoteListItem,
   NotesImportKind,
@@ -18,14 +18,21 @@ export function NoteList({
   notes,
   related = [],
   selected,
+  picked,
   onSelect,
+  onMenu,
   empty,
 }: {
   notes: NoteListItem[];
+  /** Several notes chosen with ⌘/⇧-click; the open note stays `selected`. */
+  picked?: ReadonlySet<string>;
+  /** Right-click on a row. */
+  onMenu?(note: NoteListItem, e: ReactMouseEvent): void;
   /** Close in meaning to the search, not among its keyword hits (HEAPNOTES_PHASE2_PLAN §2B). */
   related?: NoteListItem[];
   selected?: string;
-  onSelect(id: string): void;
+  /** `toggle`: ⌘-click (Ctrl elsewhere); `range`: ⇧-click. */
+  onSelect(id: string, how: { toggle: boolean; range: boolean }): void;
   empty: string;
 }): JSX.Element {
   const now = useNow();
@@ -37,10 +44,32 @@ export function NoteList({
   const row = (n: NoteListItem) => (
     <li key={n.id}>
       <button
-        className={n.id === selected ? 'note-row note-row-on' : 'note-row'}
+        className={
+          picked && picked.size > 1
+            ? picked.has(n.id)
+              ? 'note-row note-row-picked'
+              : 'note-row'
+            : n.id === selected
+              ? 'note-row note-row-on'
+              : 'note-row'
+        }
         role="option"
-        aria-selected={n.id === selected}
-        onClick={() => onSelect(n.id)}
+        aria-selected={picked && picked.size > 1 ? picked.has(n.id) : n.id === selected}
+        onClick={(e) =>
+          onSelect(n.id, {
+            toggle: /Mac|iPhone|iPad/.test(navigator.platform) ? e.metaKey : e.ctrlKey,
+            range: e.shiftKey,
+          })
+        }
+        // ⇧-click selects a range, not the text between.
+        onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+        onContextMenu={
+          onMenu &&
+          ((e) => {
+            e.preventDefault();
+            onMenu(n, e);
+          })
+        }
       >
         <span className="note-row-top">
           <span className="note-row-title">{n.title || 'Untitled'}</span>
@@ -62,7 +91,13 @@ export function NoteList({
     </li>
   );
   return (
-    <ul className="note-rows" ref={box} role="listbox" aria-label="Notes">
+    <ul
+      className="note-rows"
+      ref={box}
+      role="listbox"
+      aria-label="Notes"
+      aria-multiselectable="true"
+    >
       {notes.map(row)}
       {related.length > 0 && (
         <li className="note-group" role="presentation">

@@ -31,6 +31,8 @@ import {
   QuickOpen,
   type Heading,
 } from './panels.js';
+import { ContextMenu, type MenuEntry, type MenuState } from './menu.js';
+import { BulkPanel, type BulkRun } from './bulk.js';
 import { VersionsDialog } from './versions.js';
 import { base64Blob, download, noteHtml, printHtml } from './exporting.js';
 import { ago, fullDate, useNow } from './time.js';
@@ -122,6 +124,11 @@ export function App(): JSX.Element {
   const [infoOpen, setInfoOpen] = useState(() => remembered('heapnotes.info') === 'open');
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
   const [quick, setQuick] = useState<'notes' | 'tags' | 'templates'>();
+  /** Notes chosen with ⌘/⇧-click; two or more puts the list in bulk mode. */
+  const [picked, setPicked] = useState<string[]>([]);
+  const anchor = useRef<string>();
+  const [menu, setMenu] = useState<MenuState>();
+  const closeMenu = useCallback(() => setMenu(undefined), []);
   const [templates, setTemplates] = useState<{ id: string; title: string; tags: string[] }[]>([]);
   const [dialog, setDialog] = useState<'settings' | 'import' | 'versions'>();
   /** The shared Settings' contents (connections, roles, connectors), read when it opens. */
@@ -580,6 +587,302 @@ export function App(): JSX.Element {
   const isTemplate =
     current?.tags.some((t) => t === 'template' || t.startsWith('template/')) ?? false;
 
+  // ── Several notes at once (Bear's ⌘/⇧-click) ────────────────────────
+
+  const listed = useMemo(() => [...notes, ...related], [notes, related]);
+  const pickedSet = useMemo(() => new Set(picked), [picked]);
+  const bulkMode = picked.length > 1;
+  // A different list is a different selection.
+  useEffect(() => setPicked([]), [listParams]);
+
+  const select = (id: string, how: { toggle: boolean; range: boolean }) => {
+    const order = listed.map((n) => n.id);
+    if (how.range) {
+      const from = anchor.current ?? current?.id;
+      const a = from ? order.indexOf(from) : -1;
+      const b = order.indexOf(id);
+      if (a >= 0 && b >= 0) {
+        const range = order.slice(Math.min(a, b), Math.max(a, b) + 1);
+        if (range.length > 1) return setPicked(range);
+      }
+    } else if (how.toggle) {
+      const base = picked.length ? picked : current ? [current.id] : [];
+      const next = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+      anchor.current = id;
+      if (next.length > 1) return setPicked(order.filter((x) => next.includes(x)));
+      setPicked([]);
+      if (next[0] && next[0] !== current?.id) void openNote(next[0]);
+      return;
+    }
+    anchor.current = id;
+    setPicked([]);
+    void openNote(id);
+  };
+
+  const pickedNotes = listed.filter((n) => pickedSet.has(n.id));
+  const report = (r: { done: number; failed: { id: string; reason: string }[] } | undefined) => {
+    if (r?.failed.length)
+      setError(
+        `${r.failed.length} note${r.failed.length === 1 ? '' : 's'} couldn't be changed: ${r.failed[0]!.reason}`,
+      );
+  };
+  const runBulk = async (run: BulkRun, ids = picked) => {
+    if (run.kind === 'clear') return setPicked([]);
+    const chosen = listed.filter((n) => ids.includes(n.id));
+    if (run.kind === 'copyLinks') return copy(chosen.map((n) => `[[${n.title}]]`).join('\n'));
+    await flush();
+    if (run.kind === 'export') {
+      const r = await call<{ filename: string; base64: string }>(NOTES_METHODS.exportNotes, {
+        ids,
+      });
+      if (r) download(r.filename, base64Blob(r.base64, 'application/zip'));
+      return;
+    }
+    if (run.kind === 'merge') {
+      const r = await call<NoteOpenResult>(NOTES_METHODS.merge, { ids: chosen.map((n) => n.id) });
+      if (!r) return;
+      setPicked([]);
+      show(r);
+      void loadList();
+      void loadSide();
+      return;
+    }
+    if (
+      run.kind === 'delete' &&
+      !confirm(`Delete ${ids.length} notes for good? This can't be undone.`)
+    )
+      return;
+    const r = await call<{ done: number; failed: { id: string; reason: string }[] }>(
+      NOTES_METHODS.bulk,
+      { ids, action: run.kind, ...(run.kind === 'addTag' ? { tag: run.tag } : {}) },
+    );
+    report(r);
+    // What leaves the list leaves the selection; a tag or a pin keeps it.
+    if (['archive', 'restore', 'trash', 'delete'].includes(run.kind)) setPicked([]);
+    void loadList();
+    void loadSide();
+    const o = openRef.current;
+    if (o && ids.includes(o.note.id)) {
+      if (run.kind === 'delete') setOpen(undefined);
+      else void openNote(o.note.id, { fromHistory: true });
+    }
+  };
+
+  // ── Right-click menus ───────────────────────────────────────────────
+
+  const at = (e: { clientX: number; clientY: number }) => ({ x: e.clientX, y: e.clientY });
+  const m = IS_MAC;
+
+  /** One action on one note from its menu: the open note follows as it would from •••. */
+  const onNote = (id: string, method: string, params: Record<string, unknown>, leaves: boolean) =>
+    void act(
+      method,
+      { id, ...params },
+      id === current?.id ? (leaves ? 'close' : 'reopen') : undefined,
+    );
+
+  const noteMenu = (n: NoteListItem, e: { clientX: number; clientY: number }) => {
+    if (bulkMode && pickedSet.has(n.id)) return bulkMenu(e);
+    const isTpl = n.tags.some((t) => t === 'template' || t.startsWith('template/'));
+    const items: MenuEntry[] = [
+      { label: 'Open', run: () => select(n.id, { toggle: false, range: false }) },
+      'separator',
+    ];
+    if (n.location !== 'trash')
+      items.push(
+        {
+          label: n.pinned ? 'Unpin' : 'Pin to top',
+          run: () => onNote(n.id, NOTES_METHODS.pin, { pinned: !n.pinned }, false),
+        },
+        {
+          label: isTpl ? 'Stop using as template' : 'Use as template',
+          run: () => onNote(n.id, NOTES_METHODS.setTemplate, { on: !isTpl }, false),
+        },
+      );
+    items.push(
+      { label: 'Copy link', run: () => copy(`[[${n.title}]]`) },
+      { label: 'Copy ID', run: () => copy(n.id) },
+      {
+        label: 'Copy as Markdown',
+        run: () =>
+          void call<NoteOpenResult>(NOTES_METHODS.open, { id: n.id }).then(
+            (r) => r && copy(r.content),
+          ),
+      },
+      'separator',
+      {
+        label: 'Duplicate',
+        run: () =>
+          void flush()
+            .then(() => call<NoteOpenResult>(NOTES_METHODS.duplicate, { id: n.id }))
+            .then((r) => {
+              if (!r) return;
+              show(r);
+              void loadList();
+            }),
+      },
+      {
+        label: 'Version history…',
+        run: () => void openNote(n.id).then(() => setDialog('versions')),
+      },
+      { label: 'Export as Markdown', run: () => void exportFiles(n.id) },
+      'separator',
+    );
+    if (n.location === 'notes')
+      items.push(
+        { label: 'Archive', run: () => onNote(n.id, NOTES_METHODS.archive, {}, true) },
+        {
+          label: 'Move to trash',
+          hint: n.id === current?.id && m ? '⌘⌫' : undefined,
+          danger: true,
+          run: () => onNote(n.id, NOTES_METHODS.trash, {}, true),
+        },
+      );
+    else
+      items.push({
+        label: 'Restore',
+        run: () => onNote(n.id, NOTES_METHODS.restore, {}, false),
+      });
+    if (n.location === 'archive')
+      items.push({
+        label: 'Move to trash',
+        danger: true,
+        run: () => onNote(n.id, NOTES_METHODS.trash, {}, true),
+      });
+    if (n.location === 'trash')
+      items.push({
+        label: 'Delete for good…',
+        danger: true,
+        run: () => {
+          if (confirm(`Delete “${n.title || 'Untitled'}” for good? This can't be undone.`))
+            onNote(n.id, NOTES_METHODS.deleteForever, {}, true);
+        },
+      });
+    setMenu({ ...at(e), label: `${n.title || 'Untitled'} actions`, items });
+  };
+
+  const bulkMenu = (e: { clientX: number; clientY: number }) => {
+    const chosen = pickedNotes;
+    const anyTrash = chosen.some((n) => n.location === 'trash');
+    const allTrash = chosen.every((n) => n.location === 'trash');
+    const allPinned = chosen.every((n) => n.pinned);
+    const go = (run: BulkRun) => () => void runBulk(run);
+    const items: MenuEntry[] = [];
+    if (!anyTrash)
+      items.push(
+        {
+          label: allPinned ? 'Unpin' : 'Pin to top',
+          run: go({ kind: allPinned ? 'unpin' : 'pin' }),
+        },
+        { label: `Merge ${chosen.length} notes`, run: go({ kind: 'merge' }) },
+        'separator',
+      );
+    items.push(
+      { label: 'Copy links', run: go({ kind: 'copyLinks' }) },
+      { label: `Export ${chosen.length} notes…`, run: go({ kind: 'export' }) },
+      'separator',
+    );
+    if (chosen.some((n) => n.location !== 'notes'))
+      items.push({ label: 'Restore', run: go({ kind: 'restore' }) });
+    if (!anyTrash && chosen.every((n) => n.location === 'notes'))
+      items.push({ label: 'Archive', run: go({ kind: 'archive' }) });
+    if (allTrash)
+      items.push({ label: 'Delete for good…', danger: true, run: go({ kind: 'delete' }) });
+    else if (!anyTrash)
+      items.push({ label: 'Move to trash', danger: true, run: go({ kind: 'trash' }) });
+    items.push('separator', { label: 'Clear selection', hint: 'Esc', run: go({ kind: 'clear' }) });
+    setMenu({ ...at(e), label: `${chosen.length} notes`, items });
+  };
+
+  const renameTag = (from: string) => {
+    const to = prompt(`Rename #${from} (and its subtags) in every note to:`, from);
+    if (to && to !== from)
+      void call(NOTES_METHODS.renameTag, { from, to }).then(() => {
+        void loadSide();
+        void loadList();
+        if ('tag' in selection && selection.tag === from) setSelection({ tag: to });
+        if (openRef.current) void openNote(openRef.current.note.id, { fromHistory: true });
+      });
+  };
+
+  const tagMenu = (tag: string, e: { clientX: number; clientY: number }) => {
+    const goTag = () => {
+      setQuery('');
+      setSelection({ tag });
+    };
+    const items: MenuEntry[] = [
+      { label: 'Show notes', run: goTag },
+      {
+        label: 'New note in this tag',
+        run: () =>
+          void flush()
+            .then(() => call<NoteOpenResult>(NOTES_METHODS.create, { tag }))
+            .then((r) => {
+              if (!r) return;
+              goTag();
+              show(r);
+            }),
+      },
+    ];
+    if (state?.ask)
+      items.push({
+        label: 'Ask about this tag…',
+        run: () => {
+          goTag();
+          setScopeDismissed(undefined);
+          showAsk(true);
+        },
+      });
+    items.push(
+      'separator',
+      { label: 'Rename…', run: () => renameTag(tag) },
+      {
+        label: 'Export notes with this tag…',
+        run: () =>
+          void call<{ notes: NoteListItem[] }>(NOTES_METHODS.list, { tag }).then(
+            (page) =>
+              page?.notes.length &&
+              void runBulk(
+                { kind: 'export' },
+                page.notes.map((n) => n.id),
+              ),
+          ),
+      },
+      'separator',
+      {
+        label: 'Remove tag from all notes…',
+        danger: true,
+        run: () => {
+          if (!confirm(`Take #${tag} off every note? The notes stay; only the tag goes.`)) return;
+          void call(NOTES_METHODS.deleteTag, { tag }).then(() => {
+            if ('tag' in selection && selection.tag === tag) setSelection({ section: 'all' });
+            void loadList();
+            void loadSide();
+            const o = openRef.current;
+            if (o) void openNote(o.note.id, { fromHistory: true });
+          });
+        },
+      },
+    );
+    setMenu({ ...at(e), label: `#${tag} actions`, items });
+  };
+
+  const sectionMenu = (section: string, e: { clientX: number; clientY: number }) => {
+    const items: MenuEntry[] = [
+      {
+        label: 'Show',
+        run: () => {
+          setQuery('');
+          setSelection({ section: section as NotesSection });
+        },
+      },
+    ];
+    if (section === 'trash')
+      items.push('separator', { label: 'Empty trash…', danger: true, run: emptyTrash });
+    else items.push({ label: 'New note', hint: m ? '⌘N' : 'Ctrl+N', run: () => void newNote() });
+    setMenu({ ...at(e), label: 'Section actions', items });
+  };
+
   const setLayoutMode = (n: 1 | 2 | 3) => {
     setLayout(n);
     remember('heapnotes.layout', String(n));
@@ -670,7 +973,13 @@ export function App(): JSX.Element {
       };
       if (e.ctrlKey && !e.metaKey && !e.altKey && ['1', '2', '3'].includes(e.key) && IS_MAC)
         return run(() => setLayoutMode(Number(e.key) as 1 | 2 | 3));
+      const typing =
+        inEditor || /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement).tagName);
+      if (e.key === 'Escape' && bulkMode && !typing && !menu) return run(() => setPicked([]));
       if (!mod) return;
+      // ⌘A in the list: every note in it, as Bear does. In text it's still select-all text.
+      if (!e.shiftKey && !e.altKey && k === 'a' && !typing && listed.length > 1)
+        return run(() => setPicked(listed.map((n) => n.id)));
       if (e.altKey && !e.shiftKey && e.code === 'KeyO') return run(() => setQuick('tags'));
       if (e.altKey && e.shiftKey && e.code === 'KeyI')
         return run(() => current && copy(current.id));
@@ -855,6 +1164,7 @@ export function App(): JSX.Element {
                     setQuery('');
                     setSelection({ section: s.section });
                   }}
+                  onMenu={(e) => sectionMenu(s.section, e)}
                 />
               ))}
             </>
@@ -867,17 +1177,8 @@ export function App(): JSX.Element {
                 setQuery('');
                 setSelection({ tag });
               }}
-              onRename={(from) => {
-                const to = prompt(`Rename #${from} (and its subtags) in every note to:`, from);
-                if (to && to !== from)
-                  void call(NOTES_METHODS.renameTag, { from, to }).then(() => {
-                    void loadSide();
-                    void loadList();
-                    if ('tag' in selection && selection.tag === from) setSelection({ tag: to });
-                    if (openRef.current)
-                      void openNote(openRef.current.note.id, { fromHistory: true });
-                  });
-              }}
+              onRename={renameTag}
+              onMenu={tagMenu}
             />
           }
           footer={
@@ -973,7 +1274,9 @@ export function App(): JSX.Element {
                 notes={notes}
                 related={related}
                 selected={current?.id}
-                onSelect={(id) => void openNote(id)}
+                picked={pickedSet}
+                onSelect={select}
+                onMenu={noteMenu}
                 empty={emptyText}
               />
             </section>
@@ -991,7 +1294,8 @@ export function App(): JSX.Element {
                 >
                   <IconPanes />
                 </button>
-                {current && (
+                {bulkMode && <span className="notes-path">{picked.length} notes selected</span>}
+                {current && !bulkMode && (
                   <span className="notes-path" title={current.path}>
                     {current.path.replace(/\.md$/i, '')}
                   </span>
@@ -1005,7 +1309,7 @@ export function App(): JSX.Element {
                         ? 'Saved'
                         : ''}
                 </span>
-                {current && saving === 'idle' && (
+                {current && !bulkMode && saving === 'idle' && (
                   <span className="notes-edited" title={`Modified ${fullDate(current.modified)}`}>
                     Edited {ago(current.modified, now)}
                   </span>
@@ -1013,7 +1317,7 @@ export function App(): JSX.Element {
               </span>
               {/* One group, in order of use: the note's own state, then the
                   panels, then everything else behind •••. */}
-              <span className="notes-toolbar-right">
+              <span className="notes-toolbar-right" hidden={bulkMode}>
                 {current && !inTrash && (
                   <button
                     className={
@@ -1121,7 +1425,8 @@ export function App(): JSX.Element {
                 </button>
               </div>
             )}
-            <div className="notes-editor-wrap" hidden={!open}>
+            {bulkMode && <BulkPanel notes={pickedNotes} onRun={(r) => void runBulk(r)} />}
+            <div className="notes-editor-wrap" hidden={!open || bulkMode}>
               <Editor
                 ref={editor}
                 docKey={open?.key ?? 'none'}
@@ -1136,7 +1441,7 @@ export function App(): JSX.Element {
                 readOnly={!open || inTrash}
               />
             </div>
-            {!open && (
+            {!open && !bulkMode && (
               <div className="notes-blank">
                 <p>{notes.length ? 'Pick a note, or start a new one.' : 'No notes yet.'}</p>
                 <button className="btn btn-primary" onClick={() => void newNote()}>
@@ -1219,6 +1524,9 @@ export function App(): JSX.Element {
           }}
           onClose={() => setQuick(undefined)}
         />
+      )}
+      {menu && (
+        <ContextMenu key={`${menu.x},${menu.y},${menu.label}`} menu={menu} onClose={closeMenu} />
       )}
       {quick === 'templates' && (
         <QuickOpen
@@ -1386,11 +1694,13 @@ function TagTree({
   active,
   onPick,
   onRename,
+  onMenu,
 }: {
   tags: { tag: string; count: number }[];
   active?: string;
   onPick(tag: string): void;
   onRename(tag: string): void;
+  onMenu?(tag: string, e: { clientX: number; clientY: number }): void;
 }): JSX.Element {
   const [closed, setClosed] = useState<Set<string>>(() => new Set());
   const all = new Set(tags.map((t) => t.tag));
@@ -1424,6 +1734,13 @@ function TagTree({
                 style={{ paddingLeft: `${8 + depth * 14}px` }}
                 onClick={() => onPick(t)}
                 onDoubleClick={() => onRename(t)}
+                onContextMenu={
+                  onMenu &&
+                  ((e) => {
+                    e.preventDefault();
+                    onMenu(t, e);
+                  })
+                }
                 title={`#${t} — double-click to rename`}
               >
                 <span
@@ -1540,17 +1857,26 @@ function RailRow({
   collapsed,
   active,
   onClick,
+  onMenu,
 }: {
   label: string;
   icon: ReactNode;
   collapsed: boolean;
   active?: boolean;
   onClick(): void;
+  onMenu?(e: { clientX: number; clientY: number }): void;
 }): JSX.Element {
   return (
     <button
       className={`rail-item ${active ? 'rail-item-active' : ''}`}
       onClick={onClick}
+      onContextMenu={
+        onMenu &&
+        ((e) => {
+          e.preventDefault();
+          onMenu(e);
+        })
+      }
       aria-label={collapsed ? label : undefined}
       aria-current={active ? 'page' : undefined}
     >

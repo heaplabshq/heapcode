@@ -3,6 +3,7 @@ import { RangeSetBuilder, StateField, type EditorState } from '@codemirror/state
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 import { highlightTree, type Highlighter } from '@lezer/highlight';
 import { mermaidTheme, renderMermaid } from '@heapcode/web-ui/mermaid';
+import { TableWidget } from './table.js';
 
 /**
  * Code blocks and tables, drawn as what they are once the cursor is
@@ -43,7 +44,7 @@ function buildBlocks(state: EditorState, highlighter: Highlighter): DecorationSe
       const widget =
         node.name === 'FencedCode'
           ? codeWidget(state, node.node, highlighter)
-          : tableWidget(state, node.node);
+          : new TableWidget(state.sliceDoc(from, to));
       if (widget) builder.add(from, to, Decoration.replace({ widget, block: true }));
       return false;
     },
@@ -219,128 +220,6 @@ class MermaidWidget extends WidgetType {
       if (drawn.size > 200) drawn.delete(drawn.keys().next().value!);
     }
     editOnClick(view, wrap, this.cursor);
-    return wrap;
-  }
-  override ignoreEvent(): boolean {
-    return true;
-  }
-}
-
-// ── Tables ─────────────────────────────────────────────────────────────
-
-type Align = 'left' | 'center' | 'right' | '';
-
-function tableWidget(state: EditorState, node: SyntaxNode): WidgetType | null {
-  const header = node.getChild('TableHeader');
-  if (!header) return null;
-  // The delimiter row is a direct child: `|---|:---:|`.
-  let aligns: Align[] = [];
-  for (let c = node.firstChild; c; c = c.nextSibling) {
-    if (c.name === 'TableDelimiter') {
-      aligns = splitRow(state.sliceDoc(c.from, c.to)).map((cell) => {
-        const t = cell.trim();
-        const l = t.startsWith(':');
-        const r = t.endsWith(':');
-        return l && r ? 'center' : r ? 'right' : l ? 'left' : '';
-      });
-      break;
-    }
-  }
-  const rows = [header, ...node.getChildren('TableRow')].map((r) =>
-    cellsOf(state, r).map((c) => (c ? inline(state, c) : [])),
-  );
-  return new TableWidget(rows, aligns, state.sliceDoc(node.from, node.to));
-}
-
-/** `| a | b |` → [' a ', ' b '], leading and trailing pipes optional. */
-function splitRow(text: string): string[] {
-  let t = text.trim();
-  if (t.startsWith('|')) t = t.slice(1);
-  if (t.endsWith('|') && !t.endsWith('\\|')) t = t.slice(0, -1);
-  return t.split(/(?<!\\)\|/);
-}
-
-/** A row's cells in order, an empty cell as null — the parser leaves no node for one. */
-function cellsOf(state: EditorState, row: SyntaxNode): (SyntaxNode | null)[] {
-  const slots: (SyntaxNode | null)[][] = [[]];
-  for (let c = row.firstChild; c; c = c.nextSibling) {
-    if (c.name === 'TableDelimiter') slots.push([]);
-    else if (c.name === 'TableCell') slots[slots.length - 1]!.push(c);
-  }
-  const text = state.sliceDoc(row.from, row.to).trim();
-  if (text.startsWith('|')) slots.shift();
-  if (text.endsWith('|')) slots.pop();
-  return slots.map((s) => s[0] ?? null);
-}
-
-/** A cell's text with its bold, italics, code and links — what tables usually hold. */
-type Inline = string | { tag: string; kids: Inline[] };
-
-function inline(state: EditorState, node: SyntaxNode): Inline[] {
-  const out: Inline[] = [];
-  let at = node.from;
-  const text = (to: number) => {
-    if (to > at) out.push(state.sliceDoc(at, to).replace(/\\\|/g, '|'));
-  };
-  for (let c = node.firstChild; c; c = c.nextSibling) {
-    text(c.from);
-    at = c.to;
-    if (c.name.endsWith('Mark') || c.name === 'URL' || c.name === 'LinkTitle') continue;
-    const tag =
-      c.name === 'StrongEmphasis'
-        ? 'strong'
-        : c.name === 'Emphasis'
-          ? 'em'
-          : c.name === 'InlineCode'
-            ? 'code'
-            : c.name === 'Strikethrough'
-              ? 's'
-              : c.name === 'Link' || c.name === 'WikiLink'
-                ? 'u'
-                : 'span';
-    out.push({ tag, kids: c.firstChild ? inline(state, c) : [state.sliceDoc(c.from, c.to)] });
-  }
-  text(node.to);
-  return out;
-}
-
-function draw(parts: Inline[], into: HTMLElement): void {
-  for (const p of parts) {
-    if (typeof p === 'string') into.appendChild(document.createTextNode(p));
-    else draw(p.kids, into.appendChild(document.createElement(p.tag)));
-  }
-}
-
-class TableWidget extends WidgetType {
-  constructor(
-    readonly rows: Inline[][][],
-    readonly aligns: Align[],
-    readonly source: string,
-  ) {
-    super();
-  }
-  override eq(o: TableWidget): boolean {
-    return o.source === this.source;
-  }
-  toDOM(view: EditorView): HTMLElement {
-    const wrap = document.createElement('div');
-    wrap.className = 'cm-table';
-    const table = document.createElement('table');
-    const columns = Math.max(this.aligns.length, ...this.rows.map((r) => r.length));
-    this.rows.forEach((row, i) => {
-      const tr = document.createElement('tr');
-      for (let col = 0; col < columns; col++) {
-        const cell = document.createElement(i === 0 ? 'th' : 'td');
-        const align = this.aligns[col];
-        if (align) cell.style.textAlign = align;
-        draw(row[col] ?? [], cell);
-        tr.appendChild(cell);
-      }
-      if (i === 0) table.appendChild(document.createElement('thead')).appendChild(tr);
-      else (table.tBodies[0] ?? table.appendChild(document.createElement('tbody'))).appendChild(tr);
-    });
-    wrap.appendChild(table);
-    editOnClick(view, wrap, 2);
     return wrap;
   }
   override ignoreEvent(): boolean {

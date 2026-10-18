@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { insertWikiLink, setLineKind, toggleInline, toggleTask } from '../src/editor/commands.js';
 import { imageSrc } from '../src/editor/live.js';
 import { renderedBlocks } from '../src/editor/blocks.js';
+import { parseTable, serializeTable, tableOps } from '../src/editor/table.js';
 import { imagesInLine, widthOf, withWidth } from '../src/editor/images.js';
 import { noteHighlight } from '../src/editor/theme.js';
 import { heapnotesMarkdown, wikiTarget } from '../src/editor/markup.js';
@@ -194,5 +195,39 @@ describe('image sizes in the Markdown', () => {
     expect(withWidth('![[c.png]]', 420)).toBe('![[c.png|420]]');
     expect(withWidth('![[c.png|420]]', undefined)).toBe('![[c.png]]');
     expect(widthOf('![|100x80](c.png)')).toBe(100);
+  });
+});
+
+describe('tables edited as tables', () => {
+  const src = '| Resource | Link |\n|---|:--:|\n| MML | [Read](https://x.y/a\\|b) |\n| 3B1B |';
+
+  it('reads cells, alignment and short rows, and writes a tidy table back', () => {
+    const t = parseTable(src);
+    expect(t.aligns).toEqual(['', 'center']);
+    expect(t.rows).toEqual([
+      ['Resource', 'Link'],
+      ['MML', '[Read](https://x.y/a\\|b)'],
+      ['3B1B', ''],
+    ]);
+    expect(serializeTable(t)).toBe(
+      '| Resource | Link |\n| --- | :---: |\n| MML | [Read](https://x.y/a\\|b) |\n| 3B1B |  |',
+    );
+  });
+
+  it("keeps a cell's pipes and line breaks from breaking the table", () => {
+    const t = tableOps.setCell(parseTable(src), 2, 1, 'a | b\nc');
+    expect(serializeTable(t).split('\n')[3]).toBe('| 3B1B | a \\| b c |');
+  });
+
+  it('adds and removes rows and columns, never the header or the last column', () => {
+    let t = parseTable(src);
+    t = tableOps.insertRow(t, 0); // lands under the header, not above it
+    expect(t.rows[1]).toEqual(['', '']);
+    t = tableOps.insertColumn(t, 1);
+    expect(t.rows[0]).toEqual(['Resource', '', 'Link']);
+    expect(t.aligns).toEqual(['', '', 'center']);
+    expect(tableOps.deleteRow(t, 0)).toBe(t);
+    t = tableOps.deleteColumn(tableOps.deleteColumn(t, 2), 1);
+    expect(tableOps.deleteColumn(t, 0)).toBe(t);
   });
 });

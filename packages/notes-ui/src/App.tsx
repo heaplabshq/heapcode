@@ -26,10 +26,16 @@ import {
   ImportDialog,
   InfoPanel,
   NoteList,
+  NotesSettingsPage,
   QuickOpen,
-  SettingsDialog,
   type Heading,
 } from './panels.js';
+import { Settings } from '@heapcode/web-ui/components/Settings';
+import {
+  CHAT_METHODS,
+  type ChatMcpSignInResult,
+  type ChatSettings,
+} from '@heapcode/chat-host/protocol';
 
 /**
  * Heapnotes' page, inside `heapcode web` and the desktop app.
@@ -111,6 +117,11 @@ export function App(): JSX.Element {
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
   const [quick, setQuick] = useState<'notes' | 'tags'>();
   const [dialog, setDialog] = useState<'settings' | 'import'>();
+  /** The shared Settings' contents (connections, roles, connectors), read when it opens. */
+  const [settings, setSettings] = useState<ChatSettings>();
+  const [settingsPage, setSettingsPage] = useState('notes');
+  /** Bumped after each settings edit, so Ask re-reads its model. */
+  const [settingsVersion, setSettingsVersion] = useState(0);
   /** A note whose "About" chip was dismissed — Ask is then about all notes until another opens. */
   const [aboutDismissed, setAboutDismissed] = useState<string>();
   /** ⌘J's target while its menu is up. */
@@ -524,6 +535,29 @@ export function App(): JSX.Element {
     setInline(undefined);
   };
 
+  /** Re-read after every edit, so the dialog shows what was actually saved. */
+  const refreshSettings = useCallback(() => {
+    if (!state?.ask) return;
+    client
+      .request<ChatSettings>(CHAT_METHODS.settings)
+      .then(setSettings)
+      .catch(() => undefined);
+  }, [client, state?.ask]);
+  const openSettings = (page: string) => {
+    refreshSettings();
+    setSettingsPage(page);
+    setDialog('settings');
+  };
+  const editSettings = (method: string, params: unknown): void => {
+    client
+      .request(method, params)
+      .then(() => {
+        refreshSettings();
+        setSettingsVersion((n) => n + 1);
+      })
+      .catch((e: Error) => setError(e.message));
+  };
+
   const showAsk = (on: boolean) => {
     setAskOpen(on);
     remember('heapnotes.ask', on ? 'open' : 'closed');
@@ -682,7 +716,7 @@ export function App(): JSX.Element {
             onNew={() => void newNote()}
             busy={false}
             status={status}
-            onOpenSettings={() => setDialog('settings')}
+            onOpenSettings={() => openSettings('notes')}
             extraNav={
               <>
                 {SECTIONS.map((s) => (
@@ -724,7 +758,7 @@ export function App(): JSX.Element {
             footer={
               <button
                 className="notes-foot"
-                onClick={() => setDialog('settings')}
+                onClick={() => openSettings('notes')}
                 title={state?.vault}
               >
                 <span className="notes-foot-name">
@@ -974,6 +1008,8 @@ export function App(): JSX.Element {
                 {...(askQuestion ? { question: askQuestion } : {})}
                 onOpenLink={(target) => void followLink(target)}
                 onClose={() => showAsk(false)}
+                onOpenSettings={() => openSettings('providers')}
+                settingsVersion={settingsVersion}
                 {...(aboutId && open ? { about: { title: open.note.title } } : {})}
                 onClearAbout={() => setAboutDismissed(openId)}
               />
@@ -1037,22 +1073,77 @@ export function App(): JSX.Element {
         />
       )}
       {dialog === 'settings' && state && (
-        <SettingsDialog
-          fontSize={state.fontSize}
-          vault={state.vault}
-          picker={picker ?? <></>}
-          onFontSize={(size) => {
-            setState({ ...state, fontSize: size });
-            void call<NotesState>(NOTES_METHODS.saveSettings, { fontSize: size });
-          }}
-          {...(state.ask ? { hiddenTags: state.aiHiddenTags } : {})}
-          onHiddenTags={(tags) => {
-            void call<NotesState>(NOTES_METHODS.saveSettings, { aiHiddenTags: tags }).then(
-              (next) => next && setState(next),
-            );
-          }}
-          onImport={() => setDialog('import')}
+        <Settings
+          settings={settings}
           onClose={() => setDialog(undefined)}
+          initialPage={settingsPage}
+          // What Heapnotes shares with the other products — connections and
+          // model roles, web search, MCP connectors (which Ask can use) — and
+          // its own page first. Edits go through Ask's session, which answers
+          // Heap Chat's settings requests on this same socket.
+          pages={state.ask ? ['providers', 'search', 'connectors'] : []}
+          extraPages={[
+            {
+              id: 'notes',
+              group: 'Heapnotes',
+              label: 'Notes',
+              icon: <IconNotes />,
+              keywords: 'folder vault text size font import bear obsidian private hidden ai tags',
+              render: (go) => (
+                <NotesSettingsPage
+                  vault={state.vault}
+                  picker={picker ?? <></>}
+                  fontSize={state.fontSize}
+                  onFontSize={(size) => {
+                    setState({ ...state, fontSize: size });
+                    void call<NotesState>(NOTES_METHODS.saveSettings, { fontSize: size });
+                  }}
+                  {...(state.ask ? { hiddenTags: state.aiHiddenTags } : {})}
+                  onHiddenTags={(tags) => {
+                    void call<NotesState>(NOTES_METHODS.saveSettings, { aiHiddenTags: tags }).then(
+                      (next) => next && setState(next),
+                    );
+                  }}
+                  onImport={() => setDialog('import')}
+                  onChangeModel={() => go('providers')}
+                />
+              ),
+            },
+          ]}
+          onSaveProfile={(profile, apiKey) =>
+            editSettings(CHAT_METHODS.saveProfile, { profile, apiKey })
+          }
+          onDeleteProfile={(name) => editSettings(CHAT_METHODS.deleteProfile, { name })}
+          onUseProfile={(name) => editSettings(CHAT_METHODS.useProfile, { name })}
+          onSetRole={(role, assignment) => editSettings(CHAT_METHODS.setRole, { role, assignment })}
+          onSetWebSearch={(patch) => editSettings(CHAT_METHODS.setWebSearch, patch)}
+          listConnectionModels={(connection) =>
+            client
+              .request<{ models: string[] }>(CHAT_METHODS.listConnectionModels, { connection })
+              .then((r) => r.models)
+          }
+          listModels={(profileName) =>
+            client
+              .request<{ models: Array<{ id: string }> }>(CHAT_METHODS.listModels, { profileName })
+              .then((r) => r.models.map((m) => m.id))
+          }
+          probeProvider={(params) => client.request(CHAT_METHODS.probeProvider, params)}
+          // Not on the pages offered here, but required by the props.
+          onSetPersona={() => {}}
+          onToggleSubAgents={() => {}}
+          onToggleNativeTools={() => {}}
+          onResetPermissions={() => {}}
+          onSaveMcpServer={(name, spec, env) =>
+            editSettings(CHAT_METHODS.saveMcpServer, { name, spec, env })
+          }
+          onDeleteMcpServer={(name) => editSettings(CHAT_METHODS.deleteMcpServer, { name })}
+          onSignInMcpServer={async (name) => {
+            const res = (await client.request(CHAT_METHODS.signInMcpServer, {
+              name,
+            })) as ChatMcpSignInResult;
+            return res.authorizationUrl;
+          }}
+          onSignOutMcpServer={(name) => editSettings(CHAT_METHODS.signOutMcpServer, { name })}
         />
       )}
       {dialog === 'import' && (

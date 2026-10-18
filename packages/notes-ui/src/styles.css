@@ -639,3 +639,4 @@ body {
 .hidden-tags input { flex: 1 1 auto; font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
 .ask-about { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 0 12px 4px; padding: 3px 4px 3px 10px; border-radius: 999px; background: var(--chip-bg); font-size: 12px; color: var(--text-dim); }
 .ask-about strong { color: var(--text); font-weight: 600; }
+.ask-model { color: var(--text-dim); font-size: 12px; padding: 0 6px; }

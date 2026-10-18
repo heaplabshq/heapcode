@@ -6,6 +6,7 @@ import type {
   UiBrowseFoldersResult,
 } from '@heapcode/notes-host/protocol';
 import { fuzzyFilter } from './fuzzy.js';
+import { SettingsGroup, SettingsRow, SettingsSection } from '@heapcode/web-ui/components/Settings';
 
 /** "3:41 PM" today, "Yesterday", "Mon", then a date — how a list says when. */
 export function when(iso: string, now = new Date()): string {
@@ -442,75 +443,74 @@ export function ImportDialog({
   );
 }
 
-export function SettingsDialog({
-  fontSize,
+/**
+ * Heapnotes' own page in the shared Settings dialog — beside the pages it
+ * shares with Heap Code, Heap Chat and Heap QA (connections, model roles,
+ * web search, MCP connectors), so nothing needs setting up elsewhere.
+ */
+export function NotesSettingsPage({
   vault,
   picker,
+  fontSize,
   hiddenTags,
   onFontSize,
   onHiddenTags,
   onImport,
-  onClose,
+  onChangeModel,
 }: {
-  fontSize: number;
   vault: string;
   picker: JSX.Element;
-  /** Undefined when AI isn't available here — the field is then absent. */
+  fontSize: number;
+  /** Undefined when this host runs no AI — the AI rows are then absent. */
   hiddenTags?: string[];
   onFontSize(size: number): void;
   onHiddenTags(tags: string[]): void;
   onImport(): void;
-  onClose(): void;
+  onChangeModel(): void;
 }): JSX.Element {
   return (
-    <div className="modal-scrim" onMouseDown={onClose}>
-      <div
-        className="modal modal-sm"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Heapnotes settings"
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.key === 'Escape' && onClose()}
-      >
-        <div className="modal-head">
-          <h2>Heapnotes</h2>
-          <button className="btn btn-quiet btn-sm" onClick={onClose} aria-label="Close">
-            ✕
+    <SettingsSection description="Your notes are plain Markdown files in one folder — open them in any editor. These settings are this computer's.">
+      <SettingsGroup label="Notes">
+        <SettingsRow label="Notes folder" hint={vault} stacked>
+          {picker}
+        </SettingsRow>
+        <SettingsRow label={`Text size — ${fontSize}px`}>
+          <input
+            type="range"
+            min={12}
+            max={24}
+            value={fontSize}
+            aria-label="Text size"
+            onChange={(e) => onFontSize(Number(e.target.value))}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Bring notes in"
+          hint="From the Bear app, a Bear export, an Obsidian vault or any Markdown folder. Your originals are copied, never changed."
+        >
+          <button className="btn btn-sm" onClick={onImport}>
+            Import…
           </button>
-        </div>
-        <div className="modal-body settings-body">
-          <div className="setting">
-            <span className="setting-label">Notes folder</span>
-            <span className="setting-hint">{vault}</span>
-            {picker}
-          </div>
-          <div className="setting">
-            <label className="setting-label" htmlFor="font-size">
-              Text size — {fontSize}px
-            </label>
-            <input
-              id="font-size"
-              type="range"
-              min={12}
-              max={24}
-              value={fontSize}
-              onChange={(e) => onFontSize(Number(e.target.value))}
-            />
-          </div>
-          {hiddenTags && <HiddenTagsSetting tags={hiddenTags} onSave={onHiddenTags} />}
-          <div className="setting">
-            <span className="setting-label">Bring notes in</span>
-            <button className="btn" onClick={onImport}>
-              Import from Bear, Obsidian or a folder…
+        </SettingsRow>
+      </SettingsGroup>
+      {hiddenTags && (
+        <SettingsGroup label="AI">
+          <SettingsRow
+            label="Model"
+            hint="Ask and ⌘J use your chat model; ⌘J the edit model when one is set. Shared with Heap Code and Heap Chat."
+          >
+            <button className="btn btn-sm" onClick={onChangeModel}>
+              Connections and models
             </button>
-          </div>
-          <p className="notes-dim">
-            Notes are plain Markdown files in that folder — open them in any editor. The AI
-            connector: <code>heapcode notes mcp</code>.
-          </p>
-        </div>
-      </div>
-    </div>
+          </SettingsRow>
+          <HiddenTagsSetting tags={hiddenTags} onSave={onHiddenTags} />
+        </SettingsGroup>
+      )}
+      <p className="hint">
+        For an AI app outside Heapnotes (Claude Desktop and others): <code>heapcode notes mcp</code>
+        .
+      </p>
+    </SettingsSection>
   );
 }
 
@@ -529,14 +529,11 @@ function HiddenTagsSetting({
     .filter(Boolean);
   const changed = parsed.join(' ') !== tags.join(' ');
   return (
-    <div className="setting">
-      <label className="setting-label" htmlFor="hidden-tags">
-        Hidden from AI
-      </label>
-      <span className="notes-dim">
-        Notes with these tags never reach a model: Ask can't find them, ⌘J won't run on them, and
-        they're kept out of the search index.
-      </span>
+    <SettingsRow
+      label="Hidden from AI"
+      hint="Notes with these tags never reach a model: Ask can't find them, ⌘J won't run on them, and they're kept out of the search index."
+      stacked
+    >
       <form
         className="hidden-tags"
         onSubmit={(e) => {
@@ -545,15 +542,16 @@ function HiddenTagsSetting({
         }}
       >
         <input
-          id="hidden-tags"
+          className="card-input"
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="#private"
+          aria-label="Hidden from AI"
         />
         <button className="btn btn-sm" type="submit" disabled={!changed}>
           Save
         </button>
       </form>
-    </div>
+    </SettingsRow>
   );
 }

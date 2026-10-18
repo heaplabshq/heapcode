@@ -41,6 +41,10 @@ interface Props {
   question?: { text: string; seq: number };
   onOpenLink(target: string): void;
   onClose(): void;
+  /** Open Settings on connections and models. */
+  onOpenSettings(): void;
+  /** Bumped after a settings change: re-read the model, the setup banner. */
+  settingsVersion?: number;
   /** The open note, when questions are about it ("summarize this"). */
   about?: { title: string };
   onClearAbout?(): void;
@@ -62,6 +66,8 @@ export function AskPanel({
   question,
   onOpenLink,
   onClose,
+  onOpenSettings,
+  settingsVersion,
   about,
   onClearAbout,
 }: Props): JSX.Element {
@@ -130,6 +136,15 @@ export function AskPanel({
       .catch((e: Error) => setError(e.message));
   }, [client, connection, setTranscript]);
 
+  // A connection or model set up in Settings: show it now, not after a reload.
+  useEffect(() => {
+    if (!settingsVersion) return;
+    client
+      .request<ChatState>(CHAT_METHODS.state)
+      .then(setState)
+      .catch(() => undefined);
+  }, [client, settingsVersion]);
+
   const busy = Boolean(state?.runId);
 
   const send = (text: string): void => {
@@ -190,10 +205,10 @@ export function AskPanel({
       </div>
       {state?.setup && (
         <div className="notes-banner">
-          <span>{state.setup} Settings are under Customize in Heap Code.</span>
-          <a className="btn btn-sm" href="/">
-            Open Heap Code
-          </a>
+          <span>{state.setup.replace(/ in Settings.*$/, '.')}</span>
+          <button className="btn btn-sm" onClick={onOpenSettings}>
+            Set up a model
+          </button>
         </div>
       )}
       {error && (
@@ -239,7 +254,17 @@ export function AskPanel({
         busy={busy}
         disabled={Boolean(state?.setup) || !state}
         placeholder="Ask your notes…"
-        footer={state?.model ? <span className="notes-dim">{state.model}</span> : undefined}
+        footer={
+          state?.model ? (
+            <button
+              className="btn btn-quiet btn-sm ask-model"
+              onClick={onOpenSettings}
+              title="Connections and models"
+            >
+              {state.model}
+            </button>
+          ) : undefined
+        }
       />
     </aside>
   );

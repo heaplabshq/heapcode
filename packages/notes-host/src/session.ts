@@ -93,7 +93,7 @@ export class NotesSession implements HostSession {
 
   constructor(private readonly deps: NotesSessionDeps) {
     const root = deps.vault ?? defaultVaultRoot();
-    this.vault = this.openVault(root);
+    this.vault = this.openingVault(root);
     this.ask = deps.ai
       ? new ChatSession({
           ...deps.ai,
@@ -107,6 +107,18 @@ export class NotesSession implements HostSession {
           }),
         })
       : undefined;
+  }
+
+  /**
+   * Open a vault, marked as handled from the start. Nothing awaits it until a
+   * request arrives, and an unhandled rejection ends the whole process — so a
+   * vault that can't open (no built-in SQLite on this Node) took Heap Code
+   * down with it. Each request that needs it still gets the reason.
+   */
+  private openingVault(root: string): Promise<Vault> {
+    const opening = this.openVault(root);
+    opening.catch(() => undefined);
+    return opening;
   }
 
   private async openVault(root: string): Promise<Vault> {
@@ -279,7 +291,7 @@ export class NotesSession implements HostSession {
       const st = await stat(path).catch(() => null);
       if (!st?.isDirectory()) throw new Error(`Not a folder: ${path}`);
       await this.closeVault();
-      this.vault = this.openVault(path);
+      this.vault = this.openingVault(path);
       await this.vault;
       writeNotesSettings({ vault: path });
       // Its history, index and tools follow the vault.
@@ -410,7 +422,8 @@ export class NotesSession implements HostSession {
 
   /** `<base>/attachment/<vault-relative path>`: an image or file a note shows. */
   async attachment(id: string): Promise<{ bytes: Buffer; mediaType: string } | undefined> {
-    const vault = await this.vault;
+    const vault = await this.vault.catch(() => undefined);
+    if (!vault) return undefined;
     const bytes = await vault.readVaultFile(id);
     if (!bytes) return undefined;
     const ext = id.split('.').pop()?.toLowerCase() ?? '';

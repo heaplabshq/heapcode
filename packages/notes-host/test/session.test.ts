@@ -148,3 +148,27 @@ describe('the app’s saves', () => {
     rmSync(root2, { recursive: true, force: true });
   });
 });
+
+describe('a vault that cannot open', () => {
+  it('reports why to the page instead of taking the server down', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'heapnotes-broken-'));
+    writeFileSync(join(dir, 'not-a-folder'), 'x');
+    // The index can't be created under a file — as SQLite can't load on Node 20.
+    const s3 = new NotesSession({
+      basePath: '/notes',
+      vault: dir,
+      indexFile: join(dir, 'not-a-folder', 'index.db'),
+    });
+    const h = new Map<string, (p: unknown) => Promise<unknown>>();
+    s3.attach({
+      onRequest: (m: string, f: (p: unknown) => Promise<unknown>) => h.set(m, f),
+      notify() {},
+    } as unknown as RpcPeer);
+    // Nothing awaited yet: an unhandled rejection here would fail this test run.
+    await new Promise((r) => setTimeout(r, 50));
+    await expect(h.get(NOTES_METHODS.hello)!({})).rejects.toThrow();
+    expect(await s3.attachment('x.png')).toBeUndefined();
+    await s3.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

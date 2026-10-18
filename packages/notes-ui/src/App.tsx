@@ -111,6 +111,8 @@ export function App(): JSX.Element {
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
   const [quick, setQuick] = useState<'notes' | 'tags'>();
   const [dialog, setDialog] = useState<'settings' | 'import'>();
+  /** A note whose "About" chip was dismissed — Ask is then about all notes until another opens. */
+  const [aboutDismissed, setAboutDismissed] = useState<string>();
   /** ⌘J's target while its menu is up. */
   const [inline, setInline] = useState<InlineTarget>();
   const [askOpen, setAskOpen] = useState(() => remembered('heapnotes.ask') === 'open');
@@ -165,6 +167,15 @@ export function App(): JSX.Element {
   // a note, and again once its text has settled — the meaning of a note
   // changes as it's written, and one look per pause costs one embedding.
   const openId = open?.note.id;
+  // Which note "this" means in Ask: the open one, unless its chip was dismissed.
+  const aboutId =
+    openId && aboutDismissed !== openId && open?.note.location !== 'trash' ? openId : undefined;
+  useEffect(() => {
+    if (!state?.ask) return;
+    void client
+      .request(NOTES_METHODS.askAbout, aboutId ? { id: aboutId } : {})
+      .catch(() => undefined);
+  }, [aboutId, state?.ask, client, connection]);
   // A ⌘J menu belongs to the note it was opened on.
   useEffect(() => setInline(undefined), [openId]);
   /** The note the related list was last loaded for: a different one loads at once. */
@@ -382,10 +393,17 @@ export function App(): JSX.Element {
       const o = openRef.current;
       // Edited in another app: take the new text — unless there are unsaved
       // edits here, which the next save turns into the conflict banner.
-      if (o && ids.includes(o.note.id) && !dirty.current) {
+      if (o && ids.includes(o.note.id)) {
         void client.request<NoteOpenResult>(NOTES_METHODS.open, { id: o.note.id }).then(
           (r) => {
-            if (r.content !== textRef.current) show(r);
+            if (!dirty.current && r.content !== textRef.current) show(r);
+            // Same text, new details — a settled rename moved the file.
+            else
+              setOpen((cur) =>
+                cur && cur.note.id === r.note.id
+                  ? { ...cur, note: r.note, backlinks: r.backlinks }
+                  : cur,
+              );
           },
           () => setOpen(undefined),
         );
@@ -469,8 +487,20 @@ export function App(): JSX.Element {
   };
   const startInline = () => {
     if (!state?.ask || !open || open.note.location === 'trash') return;
+    const hidden = state.aiHiddenTags.find((h) =>
+      open.note.tags.some(
+        (t) =>
+          t.toLowerCase() === h.toLowerCase() || t.toLowerCase().startsWith(`${h.toLowerCase()}/`),
+      ),
+    );
+    if (hidden) {
+      setError(
+        `This note is tagged #${hidden}, which keeps AI out of it. Change that in Settings.`,
+      );
+      return;
+    }
     const t = editor.current?.aiTarget();
-    if (t) setInline(t);
+    if (t) setInline({ ...t, noteId: open.note.id });
   };
   const closeInline = () => {
     editor.current?.clearTarget();
@@ -944,6 +974,8 @@ export function App(): JSX.Element {
                 {...(askQuestion ? { question: askQuestion } : {})}
                 onOpenLink={(target) => void followLink(target)}
                 onClose={() => showAsk(false)}
+                {...(aboutId && open ? { about: { title: open.note.title } } : {})}
+                onClearAbout={() => setAboutDismissed(openId)}
               />
             </div>
           )}
@@ -1012,6 +1044,12 @@ export function App(): JSX.Element {
           onFontSize={(size) => {
             setState({ ...state, fontSize: size });
             void call<NotesState>(NOTES_METHODS.saveSettings, { fontSize: size });
+          }}
+          {...(state.ask ? { hiddenTags: state.aiHiddenTags } : {})}
+          onHiddenTags={(tags) => {
+            void call<NotesState>(NOTES_METHODS.saveSettings, { aiHiddenTags: tags }).then(
+              (next) => next && setState(next),
+            );
           }}
           onImport={() => setDialog('import')}
           onClose={() => setDialog(undefined)}

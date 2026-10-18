@@ -236,6 +236,16 @@ export class NoteIndex {
     );
   }
 
+  /** Notes (not trashed, not `except`) with a `[[link]]` whose target is one of these keys. */
+  linkingTo(keys: string[], except: number, vis: Visibility = {}): NoteRow[] {
+    if (keys.length === 0) return [];
+    return this.many(
+      `n.location != 'trash' AND n.rowid != ? AND EXISTS (SELECT 1 FROM links l WHERE l.note = n.rowid AND l.target IN (${keys.map(() => '?').join(', ')}))`,
+      [except, ...keys.map(linkKey)],
+      vis,
+    );
+  }
+
   private keysOf(rowid: number): [string, string, string] {
     const r = this.db
       .prepare('SELECT title_key, stem_key, path_key FROM notes WHERE rowid = ?')

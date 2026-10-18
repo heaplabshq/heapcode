@@ -52,4 +52,14 @@ describe('relatedNotes', () => {
     expect(r.map((n) => n.id)).not.toContain('TRIP');
     expect(r.map((n) => n.id)).not.toContain('OTHER');
   });
+
+  it('never sends a hidden note’s text to the meaning index', async () => {
+    put('Secret.md', '---\nid: SECRET\n---\n# Secret\n#private\nmy thoughts\n');
+    await vault.refresh(true);
+    let asked = false;
+    await relatedNotes(vault, 'SECRET', async () => ((asked = true), ''), {
+      hiddenTags: ['private'],
+    });
+    expect(asked).toBe(false);
+  });
 });

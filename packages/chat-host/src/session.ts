@@ -445,6 +445,8 @@ export class ChatSession implements HostSession {
       // selection by these and calls `document/extract` back for each one —
       // the parsers live here, the indexer lives there.
       documentExtensions: DOCUMENT_EXTENSIONS,
+      // Before the first index run, which starts as soon as this resolves.
+      ...(this.deps.persona?.indexExclude ? { indexExclude: await this.deps.persona.indexExclude() } : {}),
     });
     this.registerDaemonHandlers(this.connection.peer);
     this.forgetConnectionWhenItCloses(this.connection);
@@ -554,6 +556,17 @@ export class ChatSession implements HostSession {
    * has a page waiting on it.
    */
   /**
+   * Replace the paths the index must never read or embed, and drop any it
+   * already holds. A no-op before connecting: the next connect asks the
+   * persona for the list afresh.
+   */
+  async setIndexExclude(paths: string[]): Promise<void> {
+    // Not connected (the daemon retired): the next connect sends the
+    // persona's list in its hello, so there is nothing to push now.
+    await this.connection?.peer.request(METHODS.ragExclude, { paths });
+  }
+
+  /**
    * The folder's meaning search, straight from the daemon's index — the same
    * `--- path:from-to (score n) ---` blocks `semantic_search` returns. Empty
    * before the session has connected, or with no embeddings model.
@@ -574,10 +587,15 @@ export class ChatSession implements HostSession {
   /**
    * Bring the meaning index up to date after the folder changed — Heapnotes
    * calls this as notes are saved. Incremental: unchanged files keep their
-   * vectors. A no-op until the session has connected.
+   * vectors. Reconnects first if the daemon has gone away.
    */
   async refreshIndex(): Promise<void> {
-    if (!this.connection || !this.root) return;
+    if (!this.root) return;
+    // A fresh connect indexes on its own (open() → startIndexing).
+    if (!this.connection) {
+      await this.open();
+      return;
+    }
     await this.startIndexing();
   }
 
@@ -1103,7 +1121,7 @@ export class ChatSession implements HostSession {
           // whole argument. Only what is SENT is wrapped — `pendingDisplay`
           // and `persistTurn` above keep the person's own words, so the
           // transcript, the sidebar and chats.json never see this.
-          task: withNow(task),
+          task: await this.withTurnContext(withNow(task)),
           history,
           images,
           workspaceName: this.root ? basename(this.root) : '',
@@ -1184,6 +1202,17 @@ export class ChatSession implements HostSession {
     if (!target) return;
     this.connection?.peer.notify(METHODS.agentCancel, { runId: target });
     this.abort?.abort();
+  }
+
+  /** The persona's note about where the person is, ahead of their words — see ChatPersona.turnContext. */
+  private async withTurnContext(task: string): Promise<string> {
+    const context = await Promise.resolve(this.deps.persona?.turnContext?.()).catch(() => undefined);
+    if (!context) return task;
+    const at = task.lastIndexOf('</system-reminder>\n\n');
+    const reminder = `<system-reminder>\n${context}\n</system-reminder>\n\n`;
+    // After the clock's reminder, before the person's words.
+    const end = at === -1 ? 0 : at + '</system-reminder>\n\n'.length;
+    return task.slice(0, end) + reminder + task.slice(end);
   }
 
   /** The prose of the answer just produced — what grounding is computed against. */

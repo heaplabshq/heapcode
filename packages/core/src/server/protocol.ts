@@ -161,6 +161,18 @@ export interface HelloParams {
    * is the guard for when that does not hold.
    */
   documentExtensions?: string[];
+  /**
+   * Root-relative paths (`/`-separated) the server must never index: never
+   * read for the index, never sent to an embeddings model. Heapnotes passes
+   * the notes a person has hidden from AI by tag. Replaced later with
+   * `rag/exclude` as tags change.
+   */
+  indexExclude?: string[];
+}
+
+export interface RagExcludeParams {
+  /** The whole list, replacing the previous one. */
+  paths: string[];
 }
 
 export interface HelloResult {
@@ -649,6 +661,8 @@ export const METHODS = {
   reviewEvent: 'review/event',
   reviewConfirm: 'review/confirm',
   ragQuery: 'rag/query',
+  /** Replace the paths this session must never index (HelloParams.indexExclude). */
+  ragExclude: 'rag/exclude',
   ragIndex: 'rag/index',
   ragStatus: 'rag/status',
   ragEvent: 'rag/event',

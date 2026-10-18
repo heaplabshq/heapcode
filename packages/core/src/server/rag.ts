@@ -91,9 +91,12 @@ export class SessionRag {
         // rather than either host's private copy (decision 4: reuse whatever
         // repomap settled on rather than picking a third answer).
         exclude: DEFAULT_IGNORE_DIRS.map((dir) => `**/${dir}/**`),
+        // The project's ignore files, plus whatever the host said must
+        // never be indexed — Heapnotes' notes hidden from AI by tag.
         ignore: async () => {
           const matcher = await loadIgnoreMatcher(root);
-          return matcher && ((rel: string) => matcher.ignores(rel));
+          return (rel: string) =>
+            this.session.isIndexExcluded(rel) || Boolean(matcher?.ignores(rel));
         },
       }),
       // Decision 5: one location keyed by workspace root, the CLI's existing
@@ -169,7 +172,8 @@ export class SessionRag {
       this.emitState(indexer, 'indexing', params.runId);
       const result = await indexer.buildIndex({
         ...opts,
-        onProgress: (embedded, total) => this.host.emit({ kind: 'progress', embedded, total }, params.runId),
+        onProgress: (embedded, total) =>
+          this.host.emit({ kind: 'progress', embedded, total }, params.runId),
       });
       const status = await indexer.status();
       this.host.emit({ kind: 'state', ...status }, params.runId);
@@ -179,11 +183,25 @@ export class SessionRag {
     let embedded = 0;
     for (const path of params.paths ?? []) {
       if (signal?.aborted) break;
+      if (this.session.isIndexExcluded(path)) {
+        indexer.removeFile(path);
+        continue;
+      }
       if (await indexer.indexOne(path, opts)) embedded++;
     }
     const status = await indexer.status();
     this.host.emit({ kind: 'state', ...status }, params.runId);
     return { files: status.files, chunks: status.chunks, embedded };
+  }
+
+  /**
+   * Replace the paths that must never be indexed, and take any already in
+   * the index out of it — they were embedded before the host said otherwise.
+   */
+  async exclude(paths: readonly string[]): Promise<void> {
+    const excluded = this.session.setIndexExclude(paths);
+    const indexer = this.indexer ?? (await this.loading);
+    for (const rel of excluded) indexer?.removeFile(rel);
   }
 
   /**
@@ -199,6 +217,9 @@ export class SessionRag {
   }
 
   private emitState(indexer: RagIndexer, state: IndexState, runId?: string): void {
-    this.host.emit({ kind: 'state', state, files: indexer.fileCount, chunks: indexer.chunkCount }, runId);
+    this.host.emit(
+      { kind: 'state', state, files: indexer.fileCount, chunks: indexer.chunkCount },
+      runId,
+    );
   }
 }

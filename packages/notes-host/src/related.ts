@@ -17,9 +17,19 @@ export async function relatedNotes(
   vault: Vault,
   id: string,
   semantic?: (text: string) => Promise<string>,
-  limit = 8,
+  opts: { limit?: number; hiddenTags?: string[] } = {},
 ): Promise<RelatedNote[]> {
+  const limit = opts.limit ?? 8;
   const note = await vault.get({ id });
+  // A hidden note's text is never the query: it would go to the embeddings model.
+  const hidden = (opts.hiddenTags ?? []).map((t) => t.toLowerCase());
+  if (
+    note.tags.some((t) =>
+      hidden.some((h) => t.toLowerCase() === h || t.toLowerCase().startsWith(`${h}/`)),
+    )
+  ) {
+    semantic = undefined;
+  }
   const skip = new Set<string>([note.id]);
   for (const l of note.links) if (l.id) skip.add(l.id);
   for (const b of await vault.backlinks({ id })) skip.add(b.id);

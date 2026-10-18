@@ -20,6 +20,8 @@ export const NOTES_METHODS = {
   /** ⌘J: rewrite a selection. Streams `inlineText`; answers with the final text. */
   inline: 'notes/inline',
   inlineCancel: 'notes/inlineCancel',
+  /** Which note Ask's questions are about ("this note"), or none. */
+  askAbout: 'notes/askAbout',
   open: 'notes/open',
   /** Save the editor's text. Answers `{ conflict }` rather than failing, so the page can offer a choice. */
   save: 'notes/save',
@@ -104,11 +106,14 @@ export interface NoteOpenResult {
   backlinks: { id: string; title: string; subtitle: string }[];
 }
 
-export type InlineAction = 'improve' | 'shorten' | 'fix' | 'summarize' | 'list' | 'tasks' | 'continue' | 'custom';
+export type InlineAction =
+  'improve' | 'shorten' | 'fix' | 'summarize' | 'list' | 'tasks' | 'continue' | 'custom';
 
 export interface InlineRequest {
   /** The page's id for this request, echoed on each `inlineText`. */
   requestId: string;
+  /** The note it's in — refused when that note is hidden from AI. */
+  id: string;
   action: InlineAction;
   /** For `custom`: what to do, in the person's words. */
   instruction?: string;

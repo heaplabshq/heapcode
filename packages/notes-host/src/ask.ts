@@ -61,6 +61,10 @@ export interface NotesPersonaOptions {
   vault(): Vault;
   /** Tags hidden from the assistant, for its prompt. */
   hiddenTags(): string[];
+  /** Vault paths of the notes those tags hide — kept out of the meaning index entirely. */
+  hiddenPaths?(): Promise<string[]>;
+  /** The note open in the editor, when the person is asking about it. */
+  openNote?(): string | undefined;
 }
 
 export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
@@ -86,6 +90,20 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
     tools,
     systemPrompt: () => notesPrompt(opts.hiddenTags()),
     conversationsFile: (root) => join(projectStateDir(root), 'notes-ask.json'),
+    // Hidden notes are never read for the index — so never sent to an
+    // embeddings model, which may well be a cloud one.
+    ...(opts.hiddenPaths ? { indexExclude: () => opts.hiddenPaths!() } : {}),
+    async turnContext() {
+      const id = opts.openNote?.();
+      if (!id) return undefined;
+      // Through the assistant's own view: a hidden note isn't named, even here.
+      const note = await opts
+        .vault()
+        .get({ id })
+        .catch(() => undefined);
+      if (!note || note.location === 'trash') return undefined;
+      return `The person has the note "${note.title}" (id ${note.id}) open. "This note", "this", "here" and "it" mean that note unless they say otherwise — read it with read_note before answering about it.`;
+    },
     permission: (call) =>
       CHANGES.includes(call.name as (typeof CHANGES)[number]) ? 'ask' : 'grant',
 

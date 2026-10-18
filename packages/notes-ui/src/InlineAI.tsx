@@ -10,6 +10,8 @@ import { fuzzyFilter } from './fuzzy.js';
  * the text. Accept replaces it; Discard leaves the note exactly as it was.
  */
 export interface InlineTarget {
+  /** The note's id. */
+  noteId: string;
   from: number;
   to: number;
   text: string;
@@ -86,6 +88,7 @@ export function InlineAI({
     client
       .request<{ text: string }>(NOTES_METHODS.inline, {
         requestId,
+        id: target.noteId,
         action,
         ...(instruction ? { instruction } : {}),
         selection: target.text,

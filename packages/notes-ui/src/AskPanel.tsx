@@ -41,6 +41,9 @@ interface Props {
   question?: { text: string; seq: number };
   onOpenLink(target: string): void;
   onClose(): void;
+  /** The open note, when questions are about it ("summarize this"). */
+  about?: { title: string };
+  onClearAbout?(): void;
 }
 
 interface PendingChange {
@@ -59,6 +62,8 @@ export function AskPanel({
   question,
   onOpenLink,
   onClose,
+  about,
+  onClearAbout,
 }: Props): JSX.Element {
   const seq = useRef(0);
   const { transcript, setTranscript, applyEvent } = useTranscript(emptyTranscript, seq);
@@ -210,6 +215,22 @@ export function AskPanel({
           }}
         />
       </div>
+      {about && (
+        <div className="ask-about" title="Questions like “summarize this” mean this note">
+          <span>
+            About <strong>{about.title || 'Untitled'}</strong>
+          </span>
+          {onClearAbout && (
+            <button
+              className="btn btn-quiet btn-sm"
+              onClick={onClearAbout}
+              aria-label="Ask about all notes instead"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      )}
       {change && <ChangeCard pending={change} />}
       {asked && <QuestionCard pending={asked} />}
       <Composer

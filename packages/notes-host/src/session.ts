@@ -45,6 +45,9 @@ export interface NotesSessionDeps {
   ai?: Omit<ChatSessionDeps, 'root' | 'persona' | 'basePath'>;
 }
 
+/** How long a title has to stay the same before the file is renamed to match. */
+const TITLE_SETTLE_MS = 4_000;
+
 const MIME: Record<string, string> = {
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -78,6 +81,13 @@ export class NotesSession implements HostSession {
   /** "Ask your notes": Heap Chat's session with the notes persona. */
   private readonly ask: ChatSession | undefined;
   private reindexTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Title changes waiting to settle, by note id: the title before the edits began. */
+  private readonly titleSettles = new Map<
+    string,
+    { from: string; timer: ReturnType<typeof setTimeout> }
+  >();
+  /** The note Ask's questions are about, as the page last said. */
+  private askAboutId: string | undefined;
   /** ⌘J requests in flight, so Discard can stop the model. */
   private readonly inlineRuns = new Map<string, AbortController>();
 
@@ -92,6 +102,8 @@ export class NotesSession implements HostSession {
           persona: notesPersona({
             vault: () => this.assistantVault(),
             hiddenTags: () => this.hiddenTags(),
+            hiddenPaths: () => this.hiddenPaths(),
+            openNote: () => this.askAboutId,
           }),
         })
       : undefined;
@@ -146,6 +158,18 @@ export class NotesSession implements HostSession {
     on(NOTES_METHODS.inline, async (p) => {
       if (!this.ask) throw new Error('No model is connected.');
       const req = p as unknown as InlineRequest;
+      // Hidden from AI means hidden from this too, whoever asked.
+      if (
+        !(await this.assistantVault()
+          .get({ id: req.id })
+          .catch(() => undefined))
+      ) {
+        throw new Error(
+          `This note is tagged ${this.hiddenTags()
+            .map((t) => `#${t}`)
+            .join(' or ')}, which keeps AI out of it.`,
+        );
+      }
       const abort = new AbortController();
       this.inlineRuns.set(req.requestId, abort);
       try {
@@ -161,6 +185,10 @@ export class NotesSession implements HostSession {
         this.inlineRuns.delete(req.requestId);
       }
     });
+    on(NOTES_METHODS.askAbout, async (p) => {
+      this.askAboutId = typeof p.id === 'string' && p.id ? p.id : undefined;
+      return { ok: true };
+    });
     on(NOTES_METHODS.inlineCancel, async (p) => {
       this.inlineRuns.get(String(p.requestId ?? ''))?.abort();
       return { ok: true };
@@ -172,7 +200,7 @@ export class NotesSession implements HostSession {
         ? (text: string) =>
             ask.semanticQuery(text, undefined, { k: 20, hybridSearch: false, rerank: false })
         : undefined;
-      return relatedNotes(await v(), str(p.id), semantic);
+      return relatedNotes(await v(), str(p.id), semantic, { hiddenTags: this.hiddenTags() });
     });
     on(NOTES_METHODS.related, async (p) =>
       this.related(
@@ -268,6 +296,8 @@ export class NotesSession implements HostSession {
             .filter(Boolean),
         });
         this.aiView = undefined;
+        this.lastHidden = '';
+        await this.pushHiddenPaths().catch(() => undefined);
       }
       return this.state();
     });
@@ -280,6 +310,7 @@ export class NotesSession implements HostSession {
   }
 
   async close(): Promise<void> {
+    for (const id of [...this.titleSettles.keys()]) await this.settleTitle(id);
     this.stopFocusPoll();
     clearTimeout(this.reindexTimer);
     await this.ask?.close();
@@ -294,10 +325,61 @@ export class NotesSession implements HostSession {
   private scheduleReindex(): void {
     if (!this.ask) return;
     clearTimeout(this.reindexTimer);
-    this.reindexTimer = setTimeout(
-      () => void this.ask?.refreshIndex().catch(() => undefined),
-      5_000,
-    );
+    this.reindexTimer = setTimeout(() => {
+      // The hidden list first: a note just tagged #private must leave the
+      // index before the refresh, never be re-embedded by it.
+      void this.pushHiddenPaths()
+        .then(() => this.ask?.refreshIndex())
+        .catch(() => undefined);
+    }, 5_000);
+  }
+
+  /** Every note (any location) carrying a hidden tag, by vault path. */
+  private async hiddenPaths(): Promise<string[]> {
+    const vault = await this.vault;
+    const paths = new Set<string>();
+    for (const tag of this.hiddenTags()) {
+      for (const n of (await vault.list({ tag, location: 'all', limit: 1_000_000 })).notes)
+        paths.add(n.path);
+    }
+    return [...paths].sort();
+  }
+
+  private lastHidden = '';
+
+  /** Tell the index which notes are hidden, when that changed. */
+  private async pushHiddenPaths(): Promise<void> {
+    if (!this.ask) return;
+    const paths = await this.hiddenPaths();
+    const key = paths.join('\n');
+    if (key === this.lastHidden) return;
+    this.lastHidden = key;
+    await this.ask.setIndexExclude(paths);
+  }
+
+  /** (Re)start a note's settle timer, keeping the title it had before the first change. */
+  private settleLater(id: string, before: string): void {
+    const pending = this.titleSettles.get(id);
+    if (pending) clearTimeout(pending.timer);
+    const from = pending?.from ?? before;
+    this.titleSettles.set(id, {
+      from,
+      timer: setTimeout(() => void this.settleTitle(id), TITLE_SETTLE_MS),
+    });
+  }
+
+  /** Rename the file and fix links for a title that has stopped changing; tell the page. */
+  private async settleTitle(id: string): Promise<void> {
+    const pending = this.titleSettles.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.titleSettles.delete(id);
+    const vault = await this.vault.catch(() => undefined);
+    if (!vault) return;
+    const done = await vault.settleTitle({ id }, pending.from).catch(() => undefined);
+    if (!done) return;
+    for (const peer of this.peers)
+      peer.notify(NOTES_METHODS.changed, { ids: [id, ...done.relinked] });
   }
 
   private hiddenTags(): string[] {
@@ -438,7 +520,16 @@ export class NotesSession implements HostSession {
   ): Promise<NoteSaveResult> {
     this.scheduleReindex();
     try {
-      const note = await vault.overwrite({ id }, content, base ? { base } : {});
+      const before = await vault.get({ id });
+      // Saved every half second while typing: renaming on each save would
+      // walk the file through every partial title, rewriting every link to
+      // it each time. The rename waits until the title has settled.
+      const note = await vault.overwrite({ id }, content, {
+        ...(base ? { base } : {}),
+        deferRename: true,
+      });
+      if (note.title !== before.title || this.titleSettles.has(id))
+        this.settleLater(id, before.title);
       return { ok: true, note, hash: note.hash };
     } catch (err) {
       if (err instanceof NoteError && err.code === 'conflict') {

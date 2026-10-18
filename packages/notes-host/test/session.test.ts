@@ -49,7 +49,8 @@ describe('NotesSession', () => {
       content: '# Plan\n#work/q3\n',
       base: created.hash,
     });
-    expect(saved).toMatchObject({ ok: true, note: { title: 'Plan', path: 'Plan.md' } });
+    // The file is renamed once the title settles, not on this save.
+    expect(saved).toMatchObject({ ok: true, note: { title: 'Plan', path: 'Untitled.md' } });
     const page = await ask<{ notes: { title: string }[] }>(NOTES_METHODS.list, { tag: 'work' });
     expect(page.notes.map((n) => n.title)).toEqual(['Plan']);
   });
@@ -117,5 +118,33 @@ describe('open_note with no app', () => {
     expect(pendingFocus(lone)?.id).toBe('X');
     expect(pendingFocus(lone, Date.now() + 60_000)).toBeUndefined();
     rmSync(lone, { recursive: true, force: true });
+  });
+});
+
+describe('the app’s saves', () => {
+  it('rename the file only once the title settles', async () => {
+    const root2 = mkdtempSync(join(tmpdir(), 'heapnotes-settle-'));
+    const s2 = new NotesSession({ basePath: '/notes', vault: root2, indexFile: ':memory:' });
+    const h = new Map<string, (p: unknown) => Promise<unknown>>();
+    s2.attach({
+      onRequest: (m: string, f: (p: unknown) => Promise<unknown>) => h.set(m, f),
+      notify() {},
+    } as unknown as RpcPeer);
+    const created = (await h.get(NOTES_METHODS.create)!({})) as NoteOpenResult;
+    let base = created.hash;
+    for (const t of ['P', 'Pa', 'Packing list']) {
+      const r = (await h.get(NOTES_METHODS.save)!({
+        id: created.note.id,
+        content: `# ${t}\n`,
+        base,
+      })) as Extract<NoteSaveResult, { ok: true }>;
+      base = r.hash;
+      expect(r.note.path).toBe('Untitled.md');
+    }
+    // Closing settles what's pending, as the timer would have.
+    await s2.close();
+    const { readdirSync } = await import('node:fs');
+    expect(readdirSync(root2).filter((f) => f.endsWith('.md'))).toEqual(['Packing list.md']);
+    rmSync(root2, { recursive: true, force: true });
   });
 });

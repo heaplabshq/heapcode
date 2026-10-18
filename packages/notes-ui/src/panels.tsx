@@ -446,14 +446,19 @@ export function SettingsDialog({
   fontSize,
   vault,
   picker,
+  hiddenTags,
   onFontSize,
+  onHiddenTags,
   onImport,
   onClose,
 }: {
   fontSize: number;
   vault: string;
   picker: JSX.Element;
+  /** Undefined when AI isn't available here — the field is then absent. */
+  hiddenTags?: string[];
   onFontSize(size: number): void;
+  onHiddenTags(tags: string[]): void;
   onImport(): void;
   onClose(): void;
 }): JSX.Element {
@@ -492,6 +497,7 @@ export function SettingsDialog({
               onChange={(e) => onFontSize(Number(e.target.value))}
             />
           </div>
+          {hiddenTags && <HiddenTagsSetting tags={hiddenTags} onSave={onHiddenTags} />}
           <div className="setting">
             <span className="setting-label">Bring notes in</span>
             <button className="btn" onClick={onImport}>
@@ -504,6 +510,50 @@ export function SettingsDialog({
           </p>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** The tags that keep notes away from every AI feature, as one editable line. */
+function HiddenTagsSetting({
+  tags,
+  onSave,
+}: {
+  tags: string[];
+  onSave(tags: string[]): void;
+}): JSX.Element {
+  const [text, setText] = useState(tags.map((t) => `#${t}`).join(' '));
+  const parsed = text
+    .split(/[\s,]+/)
+    .map((t) => t.replace(/^#|#$/g, '').trim())
+    .filter(Boolean);
+  const changed = parsed.join(' ') !== tags.join(' ');
+  return (
+    <div className="setting">
+      <label className="setting-label" htmlFor="hidden-tags">
+        Hidden from AI
+      </label>
+      <span className="notes-dim">
+        Notes with these tags never reach a model: Ask can't find them, ⌘J won't run on them, and
+        they're kept out of the search index.
+      </span>
+      <form
+        className="hidden-tags"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSave(parsed);
+        }}
+      >
+        <input
+          id="hidden-tags"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="#private"
+        />
+        <button className="btn btn-sm" type="submit" disabled={!changed}>
+          Save
+        </button>
+      </form>
     </div>
   );
 }

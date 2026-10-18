@@ -477,3 +477,39 @@ describe('change reports', () => {
     ).rejects.toMatchObject({ code: 'not_found' });
   });
 });
+
+describe('deferred renames (the app, saving as you type)', () => {
+  it('leaves the file and links alone until the title settles, then fixes both', async () => {
+    vault = await open();
+    const target = await vault.create({ title: 'Old name' });
+    const linker = await vault.create({ title: 'Index', text: 'See [[Old name]].' });
+    for (const partial of ['N', 'Ne', 'New name']) {
+      await vault.overwrite({ id: target.id }, `# ${partial}\n`, { deferRename: true });
+    }
+    expect((await vault.get({ id: target.id })).path).toBe('Old name.md');
+    // Still resolves meanwhile, through the file name.
+    expect((await vault.get({ id: linker.id })).links[0]!.id).toBe(target.id);
+    const { note, relinked } = await vault.settleTitle({ id: target.id }, 'Old name');
+    expect(note.path).toBe('New name.md');
+    expect(relinked).toEqual([linker.id]);
+    expect((await vault.read({ id: linker.id })).content).toContain('[[New name]]');
+  });
+
+  it('fixes links by the old title even when the file was never named after it', async () => {
+    write('2026-10-18.md', '---\nid: D1\n---\n# Daily\n');
+    write('Links.md', '# Links\n[[Daily]]\n');
+    vault = await open();
+    await vault.overwrite({ id: 'D1' }, '# Journal\n', { deferRename: true });
+    await vault.settleTitle({ id: 'D1' }, 'Daily');
+    expect(read('Links.md')).toContain('[[Journal]]');
+    expect((await vault.get({ id: 'D1' })).path).toBe('2026-10-18.md');
+  });
+
+  it('does nothing when the title came back to where it started', async () => {
+    vault = await open();
+    const n = await vault.create({ title: 'Same' });
+    await vault.overwrite({ id: n.id }, '# Samey\n', { deferRename: true });
+    await vault.overwrite({ id: n.id }, '# Same\n', { deferRename: true });
+    expect((await vault.settleTitle({ id: n.id }, 'Same')).note.path).toBe('Same.md');
+  });
+});

@@ -104,6 +104,12 @@ export interface ListArgs {
 export interface WriteGuard {
   /** A hash from a read. The write is refused if what it covers changed since. */
   base?: string;
+  /**
+   * A title change doesn't rename the file or rewrite links yet — the app,
+   * saving as you type, settles it with `settleTitle` once the title stops
+   * changing. Links keep resolving meanwhile, through the old file name.
+   */
+  deferRename?: boolean;
   section?: string;
   /** Which match, when a section address repeats. */
   index?: number;
@@ -1006,10 +1012,35 @@ export class Vault {
       let path = row.path;
       const oldTitle = parsed.title;
       const newTitle = nextParsed.title;
-      if (newTitle && oldTitle !== newTitle)
+      if (newTitle && oldTitle !== newTitle && !guard.deferRename)
         path = await this.followRename(row, oldTitle, newTitle);
       await this.reindex(path);
       return this.summary(this.index.byPath(path)!);
+    });
+  }
+
+  /**
+   * Finish a deferred title change (`WriteGuard.deferRename`): the title the
+   * note had before the edits began → the one it has now. Links to the old
+   * title are pointed at the new one and the file follows, as an immediate
+   * rename would have done. Nothing to do when the title came back to where
+   * it started. Returns the ids of other notes whose links were rewritten.
+   */
+  async settleTitle(
+    ref: NoteRef,
+    oldTitle: string,
+  ): Promise<{ note: NoteSummary; relinked: string[] }> {
+    const row = await this.resolve(ref);
+    return this.exclusive(async () => {
+      const { parsed } = await this.load(row);
+      const newTitle = parsed.title;
+      let path = row.path;
+      let relinked: string[] = [];
+      if (newTitle && newTitle !== oldTitle) {
+        ({ path, relinked } = await this.followRenameFrom(row, oldTitle, newTitle));
+        await this.reindex(path);
+      }
+      return { note: this.summary(this.index.byPath(path)!), relinked };
     });
   }
 
@@ -1069,33 +1100,45 @@ export class Vault {
    * see are rewritten — a scoped connection never writes outside its scope.
    */
   private async followRename(row: NoteRow, oldTitle: string, newTitle: string): Promise<string> {
+    return (await this.followRenameFrom(row, oldTitle, newTitle)).path;
+  }
+
+  private async followRenameFrom(
+    row: NoteRow,
+    oldTitle: string,
+    newTitle: string,
+  ): Promise<{ path: string; relinked: string[] }> {
     const stem = posix.basename(row.path).replace(/\.md$/i, '');
     const keys = new Set([linkKey(oldTitle), linkKey(stem)].filter(Boolean));
-    for (const other of this.index.backlinks(row, this.scope)) {
+    const relinked: string[] = [];
+    // By the old title and name, not by what the note is called now: after a
+    // deferred rename the index already holds the new title.
+    for (const other of this.index.linkingTo([...keys], row.rowid, this.scope)) {
       const { text, parsed } = await this.load(other);
       let out = text;
       for (const w of [...parsed.wikiLinks].reverse()) {
         if (!keys.has(linkKey(w.target))) continue;
-        // Only links that really mean this note — not a same-named one.
+        // Only links that mean this note — not one that now names another note.
         const hits = this.index.resolveLink(w.target, this.scope);
-        if (hits.length !== 1 || hits[0]!.id !== row.id) continue;
+        if (hits.length > 1 || (hits.length === 1 && hits[0]!.id !== row.id)) continue;
         const rest = `${w.heading ? `#${w.heading}` : ''}${w.alias ? `|${w.alias}` : ''}`;
         out = splice(out, w.start, w.end, `${w.embed ? '!' : ''}[[${newTitle}${rest}]]`);
       }
       if (out !== text) {
         await atomicWrite(this.abs(other.path), out);
         await this.reindex(other.path);
+        relinked.push(other.id);
       }
     }
 
     const namedAfterTitle = stem === fileStem(oldTitle) || /^Untitled(?: \d+)?$/.test(stem);
-    if (!namedAfterTitle || row.location === 'trash') return row.path;
+    if (!namedAfterTitle || row.location === 'trash') return { path: row.path, relinked };
     const dir = posix.dirname(row.path);
     const want = fileStem(newTitle);
-    if (want === stem) return row.path;
+    if (want === stem) return { path: row.path, relinked };
     const dest = await this.uniquePath(dir === '.' ? '' : dir, want);
     await this.move(row.path, dest);
-    return dest;
+    return { path: dest, relinked };
   }
 
   private async move(from: string, to: string): Promise<void> {

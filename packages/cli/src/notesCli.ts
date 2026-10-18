@@ -170,7 +170,11 @@ async function argsFor(
       );
     else args[key] = values.at(-1);
   }
-  const names = cmd.positional ?? [];
+  // `--title` or `--path` names the note, so the words that follow fill the
+  // slots after it: `tag-add --title Plan work` is the tag, not an id.
+  let names = cmd.positional ?? [];
+  if (names[0] === 'id' && (args.title !== undefined || args.path !== undefined))
+    names = names.slice(1);
   // `heapcode notes search meeting notes` means one query, not two arguments.
   const last = names.at(-1);
   if ((last === 'query' || last === 'text') && positionals.length > names.length) {

@@ -115,6 +115,34 @@ describe('the notes persona', () => {
   });
 });
 
+describe('asking about the open note', () => {
+  it('names the open note with each question', async () => {
+    const p = notesPersona({
+      vault: () => view,
+      hiddenTags: () => ['private'],
+      openNote: () => 'PLAN',
+    });
+    expect(await p.turnContext!()).toMatch(
+      /open the note "Plan" \(id PLAN\)|note "Plan" \(id PLAN\) open/,
+    );
+  });
+
+  it('says nothing about a hidden note, or when none is open', async () => {
+    const hidden = notesPersona({
+      vault: () => view,
+      hiddenTags: () => ['private'],
+      openNote: () => 'DIARY',
+    });
+    expect(await hidden.turnContext!()).toBeUndefined();
+    const none = notesPersona({
+      vault: () => view,
+      hiddenTags: () => ['private'],
+      openNote: () => undefined,
+    });
+    expect(await none.turnContext!()).toBeUndefined();
+  });
+});
+
 describe('closeEnough (related by meaning)', () => {
   it('keeps what stands out, on any model’s scale', async () => {
     const { closeEnough } = await import('../src/related.js');

@@ -28,6 +28,19 @@ export interface ChatPersona {
   preview?(call: ToolCall): Promise<ChatChangePreview | undefined>;
   /** Evidence rows for the grounding check, from one of its tools' results. */
   evidence?(name: string, args: Record<string, unknown> | undefined, content: string): Evidence[];
+  /**
+   * Folder-relative paths the index must never read or embed — Heapnotes'
+   * notes hidden from AI. Asked at connect time, so nothing is embedded
+   * before the list is known; `ChatSession.setIndexExclude` changes it later.
+   */
+  indexExclude?(): Promise<string[]> | string[];
+  /**
+   * A note about where the person is, sent with each question and never shown
+   * or stored with it — Heapnotes says which note is open, so "summarize this"
+   * means that note. Riding with the turn rather than the system prompt keeps
+   * the prompt identical from turn to turn, as the clock does (now.ts).
+   */
+  turnContext?(): Promise<string | undefined> | string | undefined;
   /** Where its conversations are kept for a folder, apart from Heap Chat's own for it. */
   conversationsFile?(root: string | undefined): string;
 }

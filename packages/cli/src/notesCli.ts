@@ -10,6 +10,7 @@ import {
   importBearExport,
   importMarkdownFolder,
   importObsidian,
+  importNotion,
   serveNotesMcp,
   writeNotesSettings,
   type Command,
@@ -84,6 +85,7 @@ Usage:
   heapcode notes import markdown <folder>      Copy in a folder of .md files (layout and linked files kept)
   heapcode notes import obsidian <vault>       Copy in an Obsidian vault, attachments included
   heapcode notes import bear [export-folder]   From Bear: through bearcli, or from a Bear export (Markdown/TextBundle)
+  heapcode notes import notion <zip|folder>    From Notion's export (Markdown & CSV): the .zip, or it unzipped
   heapcode notes mcp                           Serve the notes to an AI app over MCP (stdio)
 ${rows.join('\n')}
 
@@ -271,9 +273,14 @@ async function importCommand(
     case 'bear':
       result = source ? await importBearExport(vault, source, opts) : await importBear(vault, opts);
       break;
+    case 'notion':
+      if (!source)
+        return usage('Which export? `heapcode notes import notion ~/Downloads/Export-….zip`');
+      result = await importNotion(vault, source, opts);
+      break;
     default:
       return usage(
-        'Import from markdown, obsidian or bear: `heapcode notes import markdown <folder>`.',
+        'Import from markdown, obsidian, bear or notion: `heapcode notes import markdown <folder>`.',
       );
   }
   if (format === 'json') {

@@ -1,4 +1,4 @@
-import { deflateRawSync } from 'node:zlib';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 /**
  * A .zip of a few files, in memory — enough for exporting notes, without a
@@ -89,4 +89,64 @@ export function zip(entries: ZipEntry[]): Buffer {
   end.writeUInt32LE(dir.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, dir, end]);
+}
+
+/**
+ * Read a .zip — what Notion's export arrives as. Stored and deflated entries;
+ * folders skipped. Zip64 (archives past 4 GB or 65,535 files) is refused with
+ * a way round it rather than read wrongly.
+ */
+export function unzip(buf: Buffer): ZipEntry[] {
+  // The end record sits in the last 22 bytes, plus a comment of up to 64 KB.
+  let end = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) throw new Error("This isn't a .zip file, or it's damaged.");
+  const count = buf.readUInt16LE(end + 10);
+  let at = buf.readUInt32LE(end + 16);
+  if (count === 0xffff || at === 0xffffffff)
+    throw new Error('This .zip is too large to read here (Zip64). Unzip it and import the folder.');
+  const out: ZipEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(at) !== 0x02014b50) throw new Error('This .zip is damaged.');
+    const method = buf.readUInt16LE(at + 10);
+    const time = buf.readUInt16LE(at + 12);
+    const date = buf.readUInt16LE(at + 14);
+    const size = buf.readUInt32LE(at + 20);
+    const nameLen = buf.readUInt16LE(at + 28);
+    const extraLen = buf.readUInt16LE(at + 30);
+    const commentLen = buf.readUInt16LE(at + 32);
+    const local = buf.readUInt32LE(at + 42);
+    if (size === 0xffffffff || local === 0xffffffff)
+      throw new Error(
+        'This .zip is too large to read here (Zip64). Unzip it and import the folder.',
+      );
+    // UTF-8 whether or not bit 11 says so: Notion writes UTF-8 names, and it
+    // is the best guess for anything else.
+    const path = buf
+      .subarray(at + 46, at + 46 + nameLen)
+      .toString('utf8')
+      .replace(/\\/g, '/');
+    at += 46 + nameLen + extraLen + commentLen;
+    if (path.endsWith('/')) continue;
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const raw = buf.subarray(start, start + size);
+    if (method !== 0 && method !== 8)
+      throw new Error(`${path} uses a compression this can't read.`);
+    const data = method === 8 ? inflateRawSync(raw) : Buffer.from(raw);
+    const modified = new Date(
+      1980 + (date >> 9),
+      ((date >> 5) & 0xf) - 1,
+      date & 0x1f,
+      time >> 11,
+      (time >> 5) & 0x3f,
+      (time & 0x1f) * 2,
+    );
+    out.push({ path, data, modified });
+  }
+  return out;
 }

@@ -368,6 +368,11 @@ const KINDS: { kind: NotesImportKind | 'bear-export'; label: string; hint: strin
     hint: 'Notes, folders and attachments. .obsidian settings stay behind.',
   },
   {
+    kind: 'notion',
+    label: 'Notion',
+    hint: 'The .zip from Notion (Settings → Export all workspace content, or a page’s ••• → Export), as Markdown & CSV — or that zip unpacked. Links become [[links]], databases become tables.',
+  },
+  {
     kind: 'markdown',
     label: 'Markdown folder',
     hint: 'Any folder of .md files, with the files they link to.',
@@ -379,27 +384,43 @@ export function ImportDialog({
   onImport,
   onClose,
 }: {
-  browse(path?: string): Promise<UiBrowseFoldersResult>;
+  /** `zips`: list .zip files too, for an export that arrives as one (Notion). */
+  browse(path?: string, zips?: boolean): Promise<UiBrowseFoldersResult>;
   onImport(kind: NotesImportKind, path?: string): Promise<string>;
   onClose(): void;
 }): JSX.Element {
   const [kind, setKind] = useState<(typeof KINDS)[number]['kind']>('bear');
   const [listing, setListing] = useState<UiBrowseFoldersResult>();
+  /** A .zip picked in the list (Notion), instead of the folder being shown. */
+  const [zip, setZip] = useState<string>();
+  const zips = kind === 'notion';
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string>();
   const [error, setError] = useState<string>();
   const needsFolder = kind !== 'bear';
 
+  // The parent passes a new `browse` on every render; only a change of kind
+  // should reload the listing (Notion lists .zip files as well).
+  const browseRef = useRef(browse);
+  browseRef.current = browse;
+  const where = useRef<string>();
+  where.current = listing?.path;
   useEffect(() => {
-    if (needsFolder && !listing) browse().then(setListing, (e: Error) => setError(e.message));
-  }, [needsFolder, listing, browse]);
+    if (!needsFolder) return;
+    setZip(undefined);
+    browseRef.current(where.current, zips).then(setListing, (e: Error) => setError(e.message));
+  }, [needsFolder, zips]);
+  const open = (path?: string) => {
+    setZip(undefined);
+    browse(path, zips).then(setListing, (e: Error) => setError(e.message));
+  };
 
   const go = async () => {
     setBusy(true);
     setError(undefined);
     try {
       const real: NotesImportKind = kind === 'bear-export' ? 'bear' : kind;
-      setResult(await onImport(real, needsFolder ? listing?.path : undefined));
+      setResult(await onImport(real, needsFolder ? (zip ?? listing?.path) : undefined));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -445,30 +466,34 @@ export function ImportDialog({
             <div className="folder-browser">
               <div className="folder-path" title={listing.path}>
                 {listing.parent && (
-                  <button
-                    className="btn btn-quiet btn-sm"
-                    onClick={() =>
-                      browse(listing.parent).then(setListing, (e: Error) => setError(e.message))
-                    }
-                  >
+                  <button className="btn btn-quiet btn-sm" onClick={() => open(listing.parent)}>
                     ↑ Up
                   </button>
                 )}
                 <span>{listing.path}</span>
               </div>
               <ul className="folder-list">
-                {listing.entries.map((e) => (
-                  <li key={e.path}>
-                    <button
-                      onClick={() =>
-                        browse(e.path).then(setListing, (err: Error) => setError(err.message))
-                      }
-                    >
-                      {e.name}
-                    </button>
+                {listing.entries.map((e) => {
+                  const isZip = /\.zip$/i.test(e.name);
+                  return (
+                    <li key={e.path}>
+                      <button
+                        className={zip === e.path ? 'folder-picked' : undefined}
+                        aria-pressed={isZip ? zip === e.path : undefined}
+                        onClick={() =>
+                          isZip ? setZip(zip === e.path ? undefined : e.path) : open(e.path)
+                        }
+                      >
+                        {isZip ? `🗜 ${e.name}` : e.name}
+                      </button>
+                    </li>
+                  );
+                })}
+                {listing.entries.length === 0 && (
+                  <li className="notes-dim">
+                    {zips ? 'No folders or .zip files in here.' : 'No folders in here.'}
                   </li>
-                ))}
-                {listing.entries.length === 0 && <li className="notes-dim">No folders in here.</li>}
+                )}
               </ul>
             </div>
           )}
@@ -483,7 +508,13 @@ export function ImportDialog({
               disabled={busy || (needsFolder && !listing)}
               onClick={() => void go()}
             >
-              {busy ? 'Importing…' : needsFolder ? 'Import this folder' : 'Import from Bear'}
+              {busy
+                ? 'Importing…'
+                : zip
+                  ? `Import ${zip.split(/[\\/]/).pop()}`
+                  : needsFolder
+                    ? 'Import this folder'
+                    : 'Import from Bear'}
             </button>
           </div>
           <p className="notes-dim">Your originals are copied, never changed.</p>

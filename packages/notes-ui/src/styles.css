@@ -1113,3 +1113,7 @@ body {
 .ask-card-wrap {
   flex-wrap: wrap;
 }
+.folder-list button.folder-picked {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  font-weight: 600;
+}

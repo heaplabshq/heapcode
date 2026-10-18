@@ -1,12 +1,13 @@
 import { watch, type FSWatcher } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { RpcPeer } from '@heapcode/core';
 import { listFolders, type HostSession } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
 import { noteHits, notesPersona } from './ask.js';
 import { zip } from './zip.js';
+import { importNotion } from './notion.js';
 import { bulkAction, mergeNotes, type BulkAction } from './bulk.js';
 import { TEMPLATE_TAG, fillTemplate } from './templates.js';
 import { closeEnough, relatedNotes } from './related.js';
@@ -311,6 +312,11 @@ export class NotesSession implements HostSession {
       const kind = p.kind as NotesImportKind;
       const path = typeof p.path === 'string' && p.path ? p.path : undefined;
       if (kind === 'bear') return path ? importBearExport(vault, path) : importBear(vault);
+      if (kind === 'notion') {
+        if (!path)
+          throw new NoteError('invalid_argument', 'Pick the .zip Notion exported, or its folder.');
+        return importNotion(vault, path);
+      }
       if (!path) throw new NoteError('invalid_argument', 'Pick the folder to import.');
       return kind === 'obsidian' ? importObsidian(vault, path) : importMarkdownFolder(vault, path);
     });
@@ -322,9 +328,16 @@ export class NotesSession implements HostSession {
         home: homedir(),
       };
     });
-    on(NOTES_METHODS.browseFolders, async (p) =>
-      listFolders(typeof p.path === 'string' ? p.path : undefined),
-    );
+    on(NOTES_METHODS.browseFolders, async (p) => {
+      const listing = await listFolders(typeof p.path === 'string' ? p.path : undefined);
+      if (p.zips !== true) return listing;
+      // Notion's export is a .zip: list those too, so it can be picked as it is.
+      const zips = (await readdir(listing.path, { withFileTypes: true }).catch(() => []))
+        .filter((d) => d.isFile() && /\.zip$/i.test(d.name) && !d.name.startsWith('.'))
+        .map((d) => ({ name: d.name, path: join(listing.path, d.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return { ...listing, entries: [...listing.entries, ...zips] };
+    });
     on(NOTES_METHODS.setVault, async (p) => {
       const path = resolve(str(p.path));
       const st = await stat(path).catch(() => null);

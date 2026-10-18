@@ -1660,8 +1660,11 @@ export function App(): JSX.Element {
       )}
       {dialog === 'import' && (
         <ImportDialog
-          browse={(path) =>
-            client.request<UiBrowseFoldersResult>(NOTES_METHODS.browseFolders, { path })
+          browse={(path, zips) =>
+            client.request<UiBrowseFoldersResult>(NOTES_METHODS.browseFolders, {
+              path,
+              ...(zips ? { zips: true } : {}),
+            })
           }
           onImport={async (kind: NotesImportKind, path?: string) => {
             const r = await client.request<{

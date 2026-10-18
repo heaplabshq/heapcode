@@ -166,7 +166,7 @@ export interface NotesChanged {
   ids: string[];
 }
 
-export type NotesImportKind = 'markdown' | 'obsidian' | 'bear';
+export type NotesImportKind = 'markdown' | 'obsidian' | 'bear' | 'notion';
 
 export type { UiBrowseFoldersResult, UiWorkspacesResult } from '@heapcode/web-host/protocol';
 

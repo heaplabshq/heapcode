@@ -416,7 +416,9 @@ export class Vault {
       where.push(
         `EXISTS (SELECT 1 FROM tags t WHERE t.note = n.rowid AND (t.tag = ? OR substr(t.tag, 1, ?) = ?))`,
       );
-      params.push(key, key.length + 1, `${key}/`);
+      // SQLite's substr counts characters; .length counts UTF-16 units, which an
+      // emoji tag (Notion's are full of them) has more of — so count characters.
+      params.push(key, [...key].length + 1, `${key}/`);
     }
     switch (args.section) {
       case 'untagged':

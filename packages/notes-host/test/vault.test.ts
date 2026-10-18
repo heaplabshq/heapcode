@@ -589,3 +589,15 @@ describe('version history', () => {
     expect(await vault.versions({ id: note.id })).toEqual([]);
   });
 });
+
+describe('tags that start with an emoji', () => {
+  it('list their subtags’ notes too', async () => {
+    write('A.md', '# A\n#🧠 Plan#\n');
+    write('B.md', '# B\n#🧠 Plan/✅ Tracker#\n');
+    vault = await open();
+    expect((await vault.list({ tag: '🧠 Plan' })).notes.map((n) => n.title).sort()).toEqual([
+      'A',
+      'B',
+    ]);
+  });
+});

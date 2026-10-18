@@ -23,14 +23,8 @@ import { Editor, type EditorHandle } from './Editor.js';
 import { AskPanel } from './AskPanel.js';
 import { InlineAI, type InlineTarget } from './InlineAI.js';
 import { imageSrc, type NoteContext } from './editor/live.js';
-import {
-  ImportDialog,
-  InfoPanel,
-  NoteList,
-  NotesSettingsPage,
-  QuickOpen,
-  type Heading,
-} from './panels.js';
+import { InfoPanel, NoteList, NotesSettingsPage, QuickOpen, type Heading } from './panels.js';
+import { ImportDialog, type ImportOutcome } from './importDialog.js';
 import { ContextMenu, type MenuEntry, type MenuState } from './menu.js';
 import { BulkPanel, type BulkRun } from './bulk.js';
 import { VersionsDialog } from './versions.js';
@@ -1667,23 +1661,20 @@ export function App(): JSX.Element {
             })
           }
           onImport={async (kind: NotesImportKind, path?: string) => {
-            const r = await client.request<{
-              notes: number;
-              attachments: number;
-              skipped: { source: string; reason: string }[];
-            }>(NOTES_METHODS.import, { kind, ...(path ? { path } : {}) });
+            const r = await client.request<ImportOutcome>(NOTES_METHODS.import, {
+              kind,
+              ...(path ? { path } : {}),
+            });
             void loadList();
             void loadSide();
             void client
               .request<{ state: NotesState }>(NOTES_METHODS.hello, {})
               .then((h) => setState(h.state));
-            const skipped = r.skipped.length
-              ? ` Skipped ${r.skipped.length}: ${r.skipped
-                  .slice(0, 3)
-                  .map((s) => `${s.source} (${s.reason})`)
-                  .join(', ')}${r.skipped.length > 3 ? '…' : ''}`
-              : '';
-            return `Imported ${r.notes} note${r.notes === 1 ? '' : 's'} and ${r.attachments} attachment${r.attachments === 1 ? '' : 's'}.${skipped}`;
+            return r;
+          }}
+          onShowTag={(tag) => {
+            setQuery('');
+            setSelection({ tag });
           }}
           onClose={() => setDialog(undefined)}
         />

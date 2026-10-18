@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promi
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { NoteError } from './errors.js';
 import { updateFrontMatter } from './frontMatter.js';
+import { formatTag, normalizeTagName } from './parse.js';
 import type { ImportOptions, ImportResult } from './importers.js';
 import type { Vault } from './vault.js';
 import { unzip } from './zip.js';
@@ -256,6 +257,47 @@ export async function importNotion(
 
   const titles = new Set(work.filter((w) => !w.csv).map((w) => w.title));
 
+  // Notion's nesting, as nested tags — the way Heapnotes (like Bear) shows a
+  // hierarchy. A page sits under the tag of the folder it's in; a page with
+  // subpages carries the tag they sit under, so its tag shows it with them.
+  const cleanPath = (p: string) =>
+    p
+      .split('/')
+      .filter((s) => s && s !== '.')
+      .map((s) => cleanName(s).name)
+      .join('/');
+  // Folders that hold pages; one holding only a page's images isn't nesting.
+  const folders = new Set<string>();
+  for (const f of files.filter((f) => /\.(md|csv)$/i.test(f.path))) {
+    const parts = cleanPath(posix.dirname(f.path)).split('/').filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) folders.add(parts.slice(0, i).join('/'));
+  }
+  const databases = new Set(
+    work.filter((w) => w.csv).map((w) => cleanPath(w.file.path.replace(/(_all)?\.csv$/i, ''))),
+  );
+  const tagFor = (w: (typeof work)[number]): string | undefined => {
+    const own = cleanPath(w.file.path.replace(/(_all)?\.(md|csv)$/i, ''));
+    const dir = cleanPath(posix.dirname(w.file.path));
+    const tag = folders.has(own) ? own : dir;
+    // A tag can't hold "#"; the rest — spaces, emoji — it can.
+    return tag ? normalizeTagName(tag.replace(/#/g, '')) : undefined;
+  };
+  /** A database row's `Key: value` lines, which Markdown would run into one paragraph. */
+  const properties = (body: string): string =>
+    body.replace(
+      /^(# [^\n]*\n\n?)((?:[^\n:#>|-][^\n:]{0,60}: [^\n]*\n?)+)/,
+      (_m, head: string, block: string) =>
+        `${head}${block
+          .trimEnd()
+          .split('\n')
+          .map((l) => {
+            const i = l.indexOf(': ');
+            return `- **${l.slice(0, i).trim()}:** ${l.slice(i + 2).trim()}`;
+          })
+          .join('\n')}\n`,
+    );
+  result.tags = [];
+
   /** A Markdown link from page `from` (export path), pointed at its new place. */
   const relinkOne = (
     from: string,
@@ -308,6 +350,14 @@ export async function importNotion(
             .join('\n'),
         );
       if (!/^\s*# /.test(body)) body = `# ${w.title}\n\n${body}`;
+      if (databases.has(cleanPath(posix.dirname(w.file.path)))) body = properties(body);
+    }
+    const tag = tagFor(w);
+    if (tag) {
+      // Under the title, where Bear writes a note's tags.
+      body = body.replace(/^(\s*# [^\n]*\n)/, `$1${formatTag(tag)}\n`);
+      const top = tag.split('/')[0]!;
+      if (!result.tags.includes(top)) result.tags.push(top);
     }
     const text = updateFrontMatter(body.endsWith('\n') ? body : `${body}\n`, {
       ...(w.id ? { id: noteId(w.id) } : {}),
@@ -327,6 +377,7 @@ export async function importNotion(
     await writeFile(abs, file.data);
     result.attachments++;
   }
+  if (!result.tags?.length) delete result.tags;
   await vault.refresh(true);
   return result;
 }

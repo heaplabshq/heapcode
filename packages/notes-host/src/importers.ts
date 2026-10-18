@@ -19,6 +19,8 @@ export interface ImportResult {
   attachments: number;
   /** Notes left out, and why: already imported, unreadable, … */
   skipped: { source: string; reason: string }[];
+  /** Top-level tags the import filed notes under (Notion's nesting), to show them. */
+  tags?: string[];
 }
 
 export interface ImportOptions {

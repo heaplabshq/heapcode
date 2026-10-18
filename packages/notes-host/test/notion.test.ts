@@ -61,13 +61,17 @@ describe('importNotion', () => {
   it('cleans names, links pages, keeps images, tables databases, and skips a second time', async () => {
     const file = exportZip();
     const r = await importNotion(vault, file);
-    expect(r).toEqual({ notes: 4, attachments: 1, skipped: [] });
+    // Plans has subpages and Tracker has rows: each nests under a top tag.
+    expect(r).toEqual({ notes: 4, attachments: 1, skipped: [], tags: ['Plans', 'Tracker'] });
 
     const read = (rel: string) => readFileSync(join(vault.root, rel), 'utf8');
     const plans = read('Plans.md');
     expect(plans).toContain('See [[Trip]] and [[Tracker|the tracker]].');
     expect(plans).toContain('> 💡 Book early.');
     expect(readFrontMatter(plans).data).toMatchObject({ id: `notion-${A}`, source: 'notion' });
+    // Nesting as nested tags, under each title: a parent carries its children's tag.
+    expect(plans).toMatch(/^# Plans\n#Plans\n/m);
+    expect(read('Plans/Trip.md')).toMatch(/^# Trip\n#Plans\n/m);
 
     expect(read('Plans/Trip.md')).toContain('![map](Trip/map.png)');
     expect(existsSync(join(vault.root, 'Plans/Trip/map.png'))).toBe(true);
@@ -76,7 +80,9 @@ describe('importNotion', () => {
     expect(read('Tracker.md')).toContain(
       '| Name | Status | Notes |\n| --- | --- | --- |\n| [[Kyoto]] | Done | has, comma |\n| Osaka "2" | Todo |  |',
     );
-    expect(read('Tracker/Kyoto.md')).toContain('Status: Done');
+    // A database row's properties, as a list rather than one run-on paragraph.
+    expect(read('Tracker/Kyoto.md')).toMatch(/^# Kyoto\n#Tracker\n\n- \*\*Status:\*\* Done$/m);
+    expect(read('Tracker.md')).toMatch(/^# Tracker\n#Tracker\n/m);
 
     const again = await importNotion(vault, file);
     expect(again.notes).toBe(0);

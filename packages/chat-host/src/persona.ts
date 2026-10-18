@@ -52,6 +52,8 @@ export interface PersonaContext {
    * persona's to filter. Empty when the index has nothing (or no embeddings model).
    */
   semanticSearch(query: string, signal?: AbortSignal): Promise<ToolResult>;
+  /** Whether the model takes images — a tool may return them only then. */
+  vision: boolean;
 }
 
 /** A proposed change, as the approve card shows it. */

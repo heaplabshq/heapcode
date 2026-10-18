@@ -227,7 +227,20 @@ function buildInline(view: EditorView): DecorationSet {
         if (name === 'FencedCode') {
           for (let pos = node.from; pos <= node.to;) {
             const line = state.doc.lineAt(pos);
-            out.push(Decoration.line({ class: 'cm-codeblock' }).range(line.from));
+            // A wrapped line carries on under its own indent, not at the margin.
+            const indent = /^[ \t]*/.exec(line.text)![0].replace(/\t/g, '    ').length;
+            out.push(
+              Decoration.line(
+                indent
+                  ? {
+                      class: 'cm-codeblock',
+                      attributes: {
+                        style: `padding-left: calc(12px + ${indent}ch) !important; text-indent: -${indent}ch`,
+                      },
+                    }
+                  : { class: 'cm-codeblock' },
+              ).range(line.from),
+            );
             pos = line.to + 1;
           }
           return false;

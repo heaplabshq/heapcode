@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import type { ToolDefinition, ToolResult } from '@heapcode/core';
+import type { ToolCall, ToolDefinition, ToolResult } from '@heapcode/core';
 import { projectStateDir } from '@heapcode/core/node';
 import type { ChatChangePreview, ChatPersona, Evidence } from '@heapcode/chat-host';
 import { COMMANDS, checkArgs, type Command } from './commands.js';
@@ -56,6 +56,31 @@ const SEARCH_BY_MEANING: ToolDefinition = {
   permission: 'read',
 };
 
+const VIEW_IMAGE: ToolDefinition = {
+  name: 'view_image',
+  description:
+    "Look at an image in a note — a photo, screenshot or diagram it embeds. Give the note and the image's file name (as list_attachments or the note's text shows it). Use it when the question is about what an image shows.",
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'The note id.' },
+      filename: { type: 'string', description: 'The image file name, e.g. "photo.png".' },
+    },
+    required: ['id', 'filename'],
+  },
+  permission: 'read',
+};
+
+const IMAGE_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+};
+/** Past this an image costs more than it tells; providers cap near here too. */
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
 export interface NotesPersonaOptions {
   /** The vault as the assistant may see it. Called per use: the app can switch vaults. */
   vault(): Vault;
@@ -77,6 +102,40 @@ export interface NotesPersonaOptions {
  */
 export const MAX_CHANGES_PER_QUESTION = 3;
 
+/**
+ * One of a note's images, for the model to see. Through the assistant's own
+ * vault, so a hidden note's images stay hidden like its text.
+ */
+async function viewImage(vault: Vault, call: ToolCall, vision: boolean): Promise<ToolResult> {
+  const id = String(call.args.id ?? '').trim();
+  const filename = String(call.args.filename ?? '').trim();
+  if (!id || !filename)
+    throw new NoteError('invalid_argument', 'Give the note id and the image file name.');
+  if (!vision)
+    throw new NoteError(
+      'invalid_argument',
+      "This model can't see images. Answer from the note's text, and say you couldn't look at the image.",
+    );
+  const { attachment, data } = await vault.readAttachment({ id }, filename);
+  const type = IMAGE_TYPES[attachment.filename.split('.').pop()?.toLowerCase() ?? ''];
+  if (!type)
+    throw new NoteError(
+      'invalid_argument',
+      `${attachment.filename} isn't an image this can show (png, jpg, gif, webp).`,
+    );
+  if (data.byteLength > IMAGE_MAX_BYTES)
+    throw new NoteError(
+      'invalid_argument',
+      `${attachment.filename} is too large to look at (over 5 MB).`,
+    );
+  return {
+    id: call.id,
+    name: call.name,
+    content: `${attachment.filename} is attached below.`,
+    images: [`data:${type};base64,${data.toString('base64')}`],
+  };
+}
+
 export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
   const commands = new Map<string, Command>();
   for (const name of [...READS, ...CHANGES]) {
@@ -85,6 +144,7 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
   }
   const tools: ToolDefinition[] = [
     SEARCH_BY_MEANING,
+    VIEW_IMAGE,
     ...[...commands.values()].map((c) => ({
       name: c.name,
       description: CHANGES.includes(c.name as (typeof CHANGES)[number])
@@ -141,6 +201,7 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
               'Nothing close in meaning. Try search_notes with exact words, or say it is not in the notes.',
           };
         }
+        if (call.name === VIEW_IMAGE.name) return await viewImage(opts.vault(), call, ctx.vision);
         const cmd = commands.get(call.name);
         if (!cmd) throw new NoteError('invalid_argument', `No tool ${call.name}.`);
         if (isChange(call.name) && changesMade >= MAX_CHANGES_PER_QUESTION)
@@ -319,6 +380,7 @@ Search in this turn before you answer anything about the notes — what you foun
 - \`search_notes\` finds exact words and uses Bear's search syntax: "exact phrase", -exclude, #tag (subtags included), @today, @last7days, @todo, @done, @title and more. Start here when the question names something specific.
 - \`search_by_meaning\` finds passages close in meaning when the wording may differ. Use it when \`search_notes\` comes back empty before you say something isn't there.
 - \`read_note\` (by id) before you quote or rely on a note. A search snippet is a pointer, not the note. For a long note, \`outline_note\` then read one section.
+- \`view_image\` to see an image a note embeds, when the question is about what it shows.
 
 ## Answering
 

@@ -31,6 +31,7 @@ afterEach(() => {
 
 const persona = () => notesPersona({ vault: () => view, hiddenTags: () => ['private'] });
 const noSearch = {
+  vision: true,
   semanticSearch: async (): Promise<ToolResult> => ({
     id: 'x',
     name: 'semantic_search',
@@ -75,6 +76,7 @@ describe('the notes persona', () => {
     expect(out).toBe('--- Plan (id PLAN, lines 1-3) ---\nLaunch on Friday.');
     const p = persona();
     const r = await p.execute(call('search_by_meaning', { query: 'launch' }), {
+      vision: false,
       semanticSearch: async () => ({ id: 'x', name: 'semantic_search', content: raw }),
     });
     expect(r.content).not.toContain('nerves');
@@ -128,6 +130,32 @@ describe('the notes persona', () => {
   it('applies changes without asking when the person turned Apply off', () => {
     const p = notesPersona({ vault: () => view, hiddenTags: () => [], autoApply: () => true });
     expect(p.permission(call('edit_note', {}))).toBe('grant');
+  });
+
+  it("shows the model a note's image, and only when it can see", async () => {
+    const png = Buffer.from('89504e470d0a1a0a', 'hex');
+    put('assets/chart.png', png.toString('latin1'));
+    writeFileSync(join(root, 'assets/chart.png'), png);
+    put('Plan.md', '---\nid: PLAN\n---\n# Plan\nLaunch on Friday.\n![](assets/chart.png)\n');
+    put('Diary.md', '---\nid: DIARY\n---\n# Diary\n#private\n![](assets/chart.png)\n');
+    const p = persona();
+    const seen = await p.execute(
+      call('view_image', { id: 'PLAN', filename: 'chart.png' }),
+      noSearch,
+    );
+    expect(seen.isError).toBeFalsy();
+    expect(seen.images).toEqual([`data:image/png;base64,${png.toString('base64')}`]);
+    const blind = await p.execute(call('view_image', { id: 'PLAN', filename: 'chart.png' }), {
+      ...noSearch,
+      vision: false,
+    });
+    expect(blind.isError).toBe(true);
+    expect(blind.images).toBeUndefined();
+    const hidden = await p.execute(
+      call('view_image', { id: 'DIARY', filename: 'chart.png' }),
+      noSearch,
+    );
+    expect(hidden.isError).toBe(true);
   });
 
   it('says what is hidden in its prompt, and cites notes as links', () => {

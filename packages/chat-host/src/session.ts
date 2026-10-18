@@ -1408,6 +1408,7 @@ export class ChatSession implements HostSession {
             if (!this.connection) return { id: call.id, name: call.name, content: 'Not connected.', isError: true };
             return { id: call.id, name: call.name, content: await this.semanticQuery(query, s ?? signal) };
           },
+          vision: this.profile ? resolveCapabilities(this.profile).vision : false,
         },
         signal,
       );

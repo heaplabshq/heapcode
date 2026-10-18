@@ -114,12 +114,27 @@ class CodeWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'cm-code';
-    if (this.lang) {
-      const label = document.createElement('span');
-      label.className = 'cm-code-lang';
-      label.textContent = this.lang;
-      wrap.appendChild(label);
-    }
+    const head = wrap.appendChild(document.createElement('div'));
+    head.className = 'cm-code-head';
+    const label = head.appendChild(document.createElement('span'));
+    label.className = 'cm-code-lang';
+    label.textContent = this.lang;
+    // Copying the code is what people want from a code block — not the fences.
+    const copy = head.appendChild(document.createElement('button'));
+    copy.type = 'button';
+    copy.className = 'cm-code-copy';
+    copy.textContent = 'Copy';
+    copy.setAttribute('aria-label', 'Copy code');
+    copy.addEventListener('mousedown', (e) => e.preventDefault());
+    copy.addEventListener('click', () => {
+      void navigator.clipboard.writeText(this.code).then(
+        () => {
+          copy.textContent = 'Copied';
+          setTimeout(() => (copy.textContent = 'Copy'), 1500);
+        },
+        () => (copy.textContent = 'Copy failed'),
+      );
+    });
     const pre = document.createElement('pre');
     let at = 0;
     for (const s of this.spans) {
@@ -267,7 +282,7 @@ class TableWidget extends WidgetType {
 /** A click puts the cursor inside the block, which brings its Markdown back. */
 function editOnClick(view: EditorView, el: HTMLElement, offset: number): void {
   el.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
     // A click on a wide block's scrollbar scrolls it.
     const scroller = (e.target as HTMLElement).closest<HTMLElement>('pre, .cm-table');
     if (scroller && e.offsetY > scroller.clientHeight) return;

@@ -152,14 +152,15 @@ export function AskPanel({
 
   const busy = Boolean(state?.runId);
 
-  const send = (text: string): void => {
+  const send = (text: string, images?: string[]): void => {
     const id = crypto.randomUUID();
     runId.current = id;
     setStartedAt(Date.now());
     setError(undefined);
-    setTranscript((t) => withUserMessage(t, text));
+    // The images go to both: the transcript shows them, the model gets them.
+    setTranscript((t) => withUserMessage(t, text, images));
     client
-      .request(CHAT_METHODS.sendMessage, { text, runId: id })
+      .request(CHAT_METHODS.sendMessage, { text, runId: id, ...(images ? { images } : {}) })
       .catch((e: Error) => setError(e.message))
       .finally(() => {
         runId.current = undefined;
@@ -270,7 +271,7 @@ export function AskPanel({
       )}
       {asked && <QuestionCard pending={asked} />}
       <Composer
-        onSend={(text) => send(text)}
+        onSend={(text, images) => send(text, images)}
         onCancel={() => void client.request(CHAT_METHODS.cancel, {}).catch(() => undefined)}
         busy={busy}
         disabled={Boolean(state?.setup) || !state}

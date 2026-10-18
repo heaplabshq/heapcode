@@ -48,6 +48,9 @@ interface Props {
   /** The open note, when questions are about it ("summarize this"). */
   about?: { title: string };
   onClearAbout?(): void;
+  /** Changes apply without a card — the person chose "Always apply". */
+  autoApply: boolean;
+  onAutoApply(on: boolean): void;
 }
 
 interface PendingChange {
@@ -70,6 +73,8 @@ export function AskPanel({
   settingsVersion,
   about,
   onClearAbout,
+  autoApply,
+  onAutoApply,
 }: Props): JSX.Element {
   const seq = useRef(0);
   const { transcript, setTranscript, applyEvent } = useTranscript(emptyTranscript, seq);
@@ -246,7 +251,23 @@ export function AskPanel({
           )}
         </div>
       )}
-      {change && <ChangeCard pending={change} />}
+      {change && (
+        <ChangeCard
+          pending={change}
+          onAlways={() => {
+            onAutoApply(true);
+            change.decide(true);
+          }}
+        />
+      )}
+      {autoApply && !change && (
+        <div className="ask-auto" title="Ask's changes are made without showing a diff first">
+          <span>Changes apply automatically</span>
+          <button className="btn btn-quiet btn-sm" onClick={() => onAutoApply(false)}>
+            Ask me first
+          </button>
+        </div>
+      )}
       {asked && <QuestionCard pending={asked} />}
       <Composer
         onSend={(text) => send(text)}
@@ -270,7 +291,13 @@ export function AskPanel({
   );
 }
 
-function ChangeCard({ pending }: { pending: PendingChange }): JSX.Element {
+function ChangeCard({
+  pending,
+  onAlways,
+}: {
+  pending: PendingChange;
+  onAlways(): void;
+}): JSX.Element {
   const { params } = pending;
   const change = params.change;
   return (
@@ -299,6 +326,15 @@ function ChangeCard({ pending }: { pending: PendingChange }): JSX.Element {
         <button className="btn btn-quiet btn-sm" onClick={() => pending.decide(false)}>
           Discard
         </button>
+        {change && (
+          <button
+            className="btn btn-sm"
+            onClick={onAlways}
+            title="Apply this and every change after it without asking — turn off in Settings › Notes"
+          >
+            Always apply
+          </button>
+        )}
         <button className="btn btn-primary btn-sm" autoFocus onClick={() => pending.decide(true)}>
           {change ? 'Apply' : 'Allow'}
         </button>

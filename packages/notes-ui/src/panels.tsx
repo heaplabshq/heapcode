@@ -6,7 +6,12 @@ import type {
   UiBrowseFoldersResult,
 } from '@heapcode/notes-host/protocol';
 import { fuzzyFilter } from './fuzzy.js';
-import { SettingsGroup, SettingsRow, SettingsSection } from '@heapcode/web-ui/components/Settings';
+import {
+  SettingsGroup,
+  SettingsRow,
+  SettingsSection,
+  SettingsToggle,
+} from '@heapcode/web-ui/components/Settings';
 
 /** "3:41 PM" today, "Yesterday", "Mon", then a date — how a list says when. */
 export function when(iso: string, now = new Date()): string {
@@ -453,8 +458,10 @@ export function NotesSettingsPage({
   picker,
   fontSize,
   hiddenTags,
+  autoApply,
   onFontSize,
   onHiddenTags,
+  onAutoApply,
   onImport,
   onChangeModel,
 }: {
@@ -463,8 +470,10 @@ export function NotesSettingsPage({
   fontSize: number;
   /** Undefined when this host runs no AI — the AI rows are then absent. */
   hiddenTags?: string[];
+  autoApply: boolean;
   onFontSize(size: number): void;
   onHiddenTags(tags: string[]): void;
+  onAutoApply(on: boolean): void;
   onImport(): void;
   onChangeModel(): void;
 }): JSX.Element {
@@ -503,6 +512,12 @@ export function NotesSettingsPage({
               Connections and models
             </button>
           </SettingsRow>
+          <SettingsToggle
+            label="Apply Ask's changes automatically"
+            hint="Off: each change Ask makes to a note shows as a diff to apply or discard. On: they're made straight away, without a diff to check first."
+            checked={autoApply}
+            onChange={onAutoApply}
+          />
           <HiddenTagsSetting tags={hiddenTags} onSave={onHiddenTags} />
         </SettingsGroup>
       )}

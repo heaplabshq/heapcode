@@ -155,6 +155,16 @@ export function App(): JSX.Element {
     [client],
   );
 
+  const setAutoApply = useCallback(
+    (on: boolean) => {
+      setState((s) => (s ? { ...s, autoApply: on } : s));
+      void call<NotesState>(NOTES_METHODS.saveSettings, { autoApply: on }).then(
+        (next) => next && setState(next),
+      );
+    },
+    [call],
+  );
+
   // ── Loading ──────────────────────────────────────────────────────────
 
   const listParams = useMemo(
@@ -691,84 +701,91 @@ export function App(): JSX.Element {
       style={{ '--note-font-size': `${state?.fontSize ?? 16}px` } as React.CSSProperties}
     >
       <div className="body">
-        {layout === 3 && (
-          <Sidebar
-            brand="Heapnotes"
-            toggle={
-              HAS_CODE ? (
-                <ProductToggle
-                  current="notes"
-                  {...(PRODUCTS.includes('chat') ? { chatPath: '/chat/' } : {})}
-                  {...(PRODUCTS.includes('qa') ? { qaPath: '/qa/' } : {})}
-                  notesPath={`${BASE}/`}
-                />
-              ) : undefined
-            }
-            collapsed={railCollapsed}
-            onToggleCollapsed={() =>
-              setRailCollapsed((v) => {
-                remember('heap.rail', v ? 'expanded' : 'collapsed');
-                return !v;
-              })
-            }
-            conversations={[]}
-            onOpen={() => undefined}
-            onNew={() => void newNote()}
-            busy={false}
-            status={status}
-            onOpenSettings={() => openSettings('notes')}
-            extraNav={
-              <>
-                {SECTIONS.map((s) => (
-                  <RailRow
-                    key={s.section}
-                    label={s.label}
-                    icon={s.icon}
-                    collapsed={railCollapsed}
-                    active={'section' in selection && selection.section === s.section}
-                    onClick={() => {
-                      setQuery('');
-                      setSelection({ section: s.section });
-                    }}
-                  />
-                ))}
-              </>
-            }
-            recents={
-              <TagTree
-                tags={tags}
-                active={'tag' in selection ? selection.tag : undefined}
-                onPick={(tag) => {
-                  setQuery('');
-                  setSelection({ tag });
-                }}
-                onRename={(from) => {
-                  const to = prompt(`Rename #${from} (and its subtags) in every note to:`, from);
-                  if (to && to !== from)
-                    void call(NOTES_METHODS.renameTag, { from, to }).then(() => {
-                      void loadSide();
-                      void loadList();
-                      if ('tag' in selection && selection.tag === from) setSelection({ tag: to });
-                      if (openRef.current)
-                        void openNote(openRef.current.note.id, { fromHistory: true });
-                    });
-                }}
+        {/* Never gone, only narrowed: in the editor-focused layouts the rail
+            stays as its icon strip, so sections and New are a click away. */}
+        <Sidebar
+          brand="Heapnotes"
+          toggle={
+            HAS_CODE ? (
+              <ProductToggle
+                current="notes"
+                {...(PRODUCTS.includes('chat') ? { chatPath: '/chat/' } : {})}
+                {...(PRODUCTS.includes('qa') ? { qaPath: '/qa/' } : {})}
+                notesPath={`${BASE}/`}
               />
+            ) : undefined
+          }
+          collapsed={layout < 3 || railCollapsed}
+          onToggleCollapsed={() => {
+            // Expanding from a focused layout brings the whole view back.
+            if (layout < 3) {
+              setLayoutMode(3);
+              setRailCollapsed(false);
+              remember('heap.rail', 'expanded');
+              return;
             }
-            footer={
-              <button
-                className="notes-foot"
-                onClick={() => openSettings('notes')}
-                title={state?.vault}
-              >
-                <span className="notes-foot-name">
-                  {state ? state.vault.split(/[\\/]/).pop() : '…'}
-                </span>
-                <span className="notes-foot-count">{state ? `${state.count} notes` : ''}</span>
-              </button>
-            }
-          />
-        )}
+            setRailCollapsed((v) => {
+              remember('heap.rail', v ? 'expanded' : 'collapsed');
+              return !v;
+            });
+          }}
+          conversations={[]}
+          onOpen={() => undefined}
+          onNew={() => void newNote()}
+          busy={false}
+          status={status}
+          onOpenSettings={() => openSettings('notes')}
+          extraNav={
+            <>
+              {SECTIONS.map((s) => (
+                <RailRow
+                  key={s.section}
+                  label={s.label}
+                  icon={s.icon}
+                  collapsed={layout < 3 || railCollapsed}
+                  active={'section' in selection && selection.section === s.section}
+                  onClick={() => {
+                    setQuery('');
+                    setSelection({ section: s.section });
+                  }}
+                />
+              ))}
+            </>
+          }
+          recents={
+            <TagTree
+              tags={tags}
+              active={'tag' in selection ? selection.tag : undefined}
+              onPick={(tag) => {
+                setQuery('');
+                setSelection({ tag });
+              }}
+              onRename={(from) => {
+                const to = prompt(`Rename #${from} (and its subtags) in every note to:`, from);
+                if (to && to !== from)
+                  void call(NOTES_METHODS.renameTag, { from, to }).then(() => {
+                    void loadSide();
+                    void loadList();
+                    if ('tag' in selection && selection.tag === from) setSelection({ tag: to });
+                    if (openRef.current)
+                      void openNote(openRef.current.note.id, { fromHistory: true });
+                  });
+              }}
+            />
+          }
+          footer={
+            <button
+              className="notes-foot"
+              onClick={() => openSettings('notes')}
+              title={state?.vault}
+            >
+              <span className="notes-foot-name">
+                {state ? state.vault.split(/[\\/]/).pop() : '…'}
+              </span>
+              <span className="notes-foot-count">{state ? `${state.count} notes` : ''}</span>
+            </button>
+          }
+        />
         <main className="notes-main">
           {layout >= 2 && (
             <section className="notes-list-pane" aria-label="Note list">
@@ -843,7 +860,9 @@ export function App(): JSX.Element {
                 <button
                   className="btn btn-quiet btn-sm"
                   onClick={() => setLayoutMode(layout === 1 ? 3 : 1)}
-                  title={layout === 1 ? 'Show the sidebar and list (⌃3)' : 'Editor only (⌃1)'}
+                  title={
+                    layout === 1 ? 'Show the note list and sidebar (⌃3)' : 'Focus on the note (⌃1)'
+                  }
                   aria-label="Toggle panes"
                 >
                   <IconPanes />
@@ -863,30 +882,45 @@ export function App(): JSX.Element {
                         : ''}
                 </span>
               </span>
-              {current && (
-                <span className="notes-toolbar-right">
-                  {!inTrash && (
-                    <button
-                      className={
-                        current.pinned ? 'btn btn-quiet btn-sm notes-on' : 'btn btn-quiet btn-sm'
-                      }
-                      onClick={pin}
-                      title="Pin (⇧⌘P)"
-                      aria-pressed={current.pinned}
-                    >
-                      {current.pinned ? 'Pinned' : 'Pin'}
-                    </button>
-                  )}
+              {/* One group, in order of use: the note's own state, then the
+                  panels, then everything else behind •••. */}
+              <span className="notes-toolbar-right">
+                {current && !inTrash && (
+                  <button
+                    className={
+                      current.pinned ? 'btn btn-quiet btn-sm notes-on' : 'btn btn-quiet btn-sm'
+                    }
+                    onClick={pin}
+                    title="Pin (⇧⌘P)"
+                    aria-pressed={current.pinned}
+                  >
+                    {current.pinned ? 'Pinned' : 'Pin'}
+                  </button>
+                )}
+                {current && (
                   <button
                     className={infoOpen ? 'btn btn-quiet btn-sm notes-on' : 'btn btn-quiet btn-sm'}
                     onClick={toggleInfo}
-                    title="Contents and backlinks (⇧⌘A)"
+                    title="Contents, backlinks and related notes (⇧⌘A)"
                     aria-pressed={infoOpen}
                   >
                     Info
                   </button>
+                )}
+                {state?.ask && (
+                  <button
+                    className={askOpen ? 'btn btn-quiet btn-sm notes-on' : 'btn btn-quiet btn-sm'}
+                    onClick={() => showAsk(!askOpen)}
+                    title="Ask your notes (⇧⌘J) — or type ?question in search"
+                    aria-pressed={askOpen}
+                  >
+                    Ask
+                  </button>
+                )}
+                {current && (
                   <NoteMenu
                     location={current.location}
+                    {...(state?.ask && !inTrash ? { onEditWithAi: startInline } : {})}
                     onDuplicate={() => void duplicate()}
                     onArchive={archive}
                     onTrash={trash}
@@ -896,29 +930,8 @@ export function App(): JSX.Element {
                     onCopyLink={() => copy(`[[${current.title}]]`)}
                     onCopyId={() => copy(current.id)}
                   />
-                </span>
-              )}
-              {state?.ask && current && !inTrash && (
-                <button
-                  className="btn btn-quiet btn-sm"
-                  // Keep the editor's selection: a click would otherwise take the focus first.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={startInline}
-                  title={`Edit the selection (or this paragraph) with AI (${IS_MAC ? '⌘' : 'Ctrl+'}J)`}
-                >
-                  ✦ AI
-                </button>
-              )}
-              {state?.ask && (
-                <button
-                  className={askOpen ? 'btn btn-quiet btn-sm notes-on' : 'btn btn-quiet btn-sm'}
-                  onClick={() => showAsk(!askOpen)}
-                  title="Ask your notes (⇧⌘J) — or type ?question in search"
-                  aria-pressed={askOpen}
-                >
-                  Ask
-                </button>
-              )}
+                )}
+              </span>
             </div>
             {error && (
               <div className="notes-banner notes-banner-bad" role="alert">
@@ -1012,6 +1025,8 @@ export function App(): JSX.Element {
                 settingsVersion={settingsVersion}
                 {...(aboutId && open ? { about: { title: open.note.title } } : {})}
                 onClearAbout={() => setAboutDismissed(openId)}
+                autoApply={state?.autoApply ?? false}
+                onAutoApply={setAutoApply}
               />
             </div>
           )}
@@ -1104,6 +1119,8 @@ export function App(): JSX.Element {
                       (next) => next && setState(next),
                     );
                   }}
+                  autoApply={state.autoApply}
+                  onAutoApply={setAutoApply}
                   onImport={() => setDialog('import')}
                   onChangeModel={() => go('providers')}
                 />
@@ -1252,6 +1269,8 @@ function TagTree({
 
 function NoteMenu(props: {
   location: string;
+  /** ⌘J on the selection or the paragraph — only when AI is available here. */
+  onEditWithAi?(): void;
   onDuplicate(): void;
   onArchive(): void;
   onTrash(): void;
@@ -1296,6 +1315,12 @@ function NoteMenu(props: {
       </button>
       {open && (
         <div className="notes-menu-pop" role="menu">
+          {props.onEditWithAi && (
+            <>
+              {item('Edit with AI…', props.onEditWithAi, m ? '⌘J' : 'Ctrl+J')}
+              <hr />
+            </>
+          )}
           {item('Copy as Markdown', props.onCopyMarkdown)}
           {item('Copy link', props.onCopyLink, m ? '⌥⇧⌘L' : undefined)}
           {item('Copy ID', props.onCopyId, m ? '⌥⇧⌘I' : undefined)}

@@ -84,6 +84,8 @@ export interface NotesState {
   fontSize: number;
   /** Tags hidden from the assistant (default `private`). */
   aiHiddenTags: string[];
+  /** Ask's changes apply without asking each time. */
+  autoApply: boolean;
   /** Whether Ask is available: false when the host runs without a model connection. */
   ask: boolean;
   /** Where the page should send images: `${base}/attachment/<path>`. */

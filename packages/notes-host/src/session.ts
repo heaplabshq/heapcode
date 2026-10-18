@@ -104,6 +104,7 @@ export class NotesSession implements HostSession {
             hiddenTags: () => this.hiddenTags(),
             hiddenPaths: () => this.hiddenPaths(),
             openNote: () => this.askAboutId,
+            autoApply: () => readNotesSettings().autoApply === true,
           }),
         })
       : undefined;
@@ -301,6 +302,7 @@ export class NotesSession implements HostSession {
     on(NOTES_METHODS.saveSettings, async (p) => {
       if (typeof p.fontSize === 'number' && p.fontSize >= 10 && p.fontSize <= 32)
         writeNotesSettings({ fontSize: Math.round(p.fontSize) });
+      if (typeof p.autoApply === 'boolean') writeNotesSettings({ autoApply: p.autoApply });
       if (Array.isArray(p.aiHiddenTags)) {
         writeNotesSettings({
           aiHiddenTags: p.aiHiddenTags
@@ -449,6 +451,7 @@ export class NotesSession implements HostSession {
       count: total,
       fontSize: readNotesSettings().fontSize ?? 16,
       aiHiddenTags: this.hiddenTags(),
+      autoApply: readNotesSettings().autoApply === true,
       ask: Boolean(this.ask),
       attachmentBase: `${this.deps.basePath}/attachment/`,
     };

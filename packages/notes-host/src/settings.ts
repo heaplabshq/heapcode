@@ -18,6 +18,8 @@ export interface NotesSettings {
   fontSize?: number;
   /** Tags the in-app assistant can't see. Unset means `private`; empty means none. */
   aiHiddenTags?: string[];
+  /** Ask's changes are made without an Apply each time. Off by default. */
+  autoApply?: boolean;
 }
 
 export const DEFAULT_AI_HIDDEN_TAGS = ['private'];
@@ -31,6 +33,7 @@ export function readNotesSettings(): NotesSettings {
       ...(Array.isArray(raw.aiHiddenTags)
         ? { aiHiddenTags: raw.aiHiddenTags.filter((t): t is string => typeof t === 'string') }
         : {}),
+      ...(typeof raw.autoApply === 'boolean' ? { autoApply: raw.autoApply } : {}),
     };
   } catch {
     return {};

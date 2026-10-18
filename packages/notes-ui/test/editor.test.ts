@@ -1,8 +1,12 @@
 import { EditorSelection, EditorState, type StateCommand } from '@codemirror/state';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { ensureSyntaxTree } from '@codemirror/language';
 import { parser as baseParser, GFM } from '@lezer/markdown';
 import { describe, expect, it } from 'vitest';
 import { insertWikiLink, setLineKind, toggleInline, toggleTask } from '../src/editor/commands.js';
 import { imageSrc } from '../src/editor/live.js';
+import { renderedBlocks } from '../src/editor/blocks.js';
+import { noteHighlight } from '../src/editor/theme.js';
 import { heapnotesMarkdown, wikiTarget } from '../src/editor/markup.js';
 import { fuzzyFilter } from '../src/fuzzy.js';
 
@@ -139,5 +143,37 @@ describe('what ⌘J works on', () => {
     expect(at(3)).toBeUndefined();
     expect(slice(at(2, 14))).toBe('first ');
     expect(at(doc.indexOf('\n\n') + 1)).toBeUndefined();
+  });
+});
+
+describe('rendered code blocks and tables', () => {
+  const doc = '# T\n\n```python\nprint(1)\n```\n\n| A | B |\n|---|--:|\n| 1 | `2` |\n';
+  const blocks = (cursor: number) => {
+    const field = renderedBlocks(noteHighlight);
+    const state = EditorState.create({
+      doc,
+      selection: EditorSelection.cursor(cursor),
+      extensions: [markdown({ base: markdownLanguage }), field],
+    });
+    ensureSyntaxTree(state, state.doc.length, 1000);
+    // Rebuild once the tree is complete.
+    const next = state.update({ selection: EditorSelection.cursor(cursor) }).state;
+    const out: { text: string; widget: string }[] = [];
+    next.field(field).between(0, doc.length, (from, to, d) => {
+      out.push({ text: doc.slice(from, to), widget: d.spec.widget.constructor.name });
+    });
+    return out;
+  };
+
+  it('draws both when the cursor is elsewhere', () => {
+    expect(blocks(1)).toEqual([
+      { text: '```python\nprint(1)\n```', widget: 'CodeWidget' },
+      { text: '| A | B |\n|---|--:|\n| 1 | `2` |', widget: 'TableWidget' },
+    ]);
+  });
+
+  it('gives back the Markdown of the one being edited', () => {
+    expect(blocks(doc.indexOf('print')).map((b) => b.widget)).toEqual(['TableWidget']);
+    expect(blocks(doc.indexOf('| 1')).map((b) => b.widget)).toEqual(['CodeWidget']);
   });
 });

@@ -23,6 +23,8 @@ const base = EditorView.theme({
     margin: '0 auto',
     padding: '0 32px',
     caretColor: 'var(--accent)',
+    // Lets a wide code block or table scroll inside the page, not widen it.
+    minWidth: '0',
   },
   '.cm-line': { padding: '0' },
   '.cm-cursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' },
@@ -103,6 +105,63 @@ const base = EditorView.theme({
     background: 'var(--border-strong)',
     verticalAlign: 'middle',
   },
+  // Rendered blocks (blocks.ts): code without fences, tables as tables.
+  '.cm-code': {
+    margin: '4px 0',
+    borderRadius: '6px',
+    background: 'var(--code-bg)',
+    cursor: 'text',
+  },
+  '.cm-code pre': {
+    margin: '0',
+    padding: '10px 14px',
+    fontFamily: 'var(--mono)',
+    fontSize: '0.88em',
+    lineHeight: '1.5',
+    whiteSpace: 'pre',
+    overflowX: 'auto',
+    tabSize: '4',
+  },
+  '.cm-code-lang': {
+    display: 'block',
+    padding: '6px 14px 0',
+    fontSize: '11px',
+    lineHeight: '1.2',
+    color: 'var(--text-dim)',
+    fontFamily: 'var(--sans)',
+  },
+  '.cm-code-lang + pre': { paddingTop: '4px' },
+  '.cm-tablesrc': { fontFamily: 'var(--mono)', fontSize: '0.88em' },
+  '.cm-table': { margin: '6px 0', overflowX: 'auto', cursor: 'text' },
+  '.cm-table table': { borderCollapse: 'collapse', fontSize: '0.94em', lineHeight: '1.45' },
+  '.cm-table th, .cm-table td': {
+    border: '1px solid var(--border)',
+    padding: '5px 10px',
+    textAlign: 'left',
+    verticalAlign: 'top',
+  },
+  '.cm-table th': { fontWeight: '600', background: 'var(--bg-sunken)' },
+  '.cm-table code': {
+    fontFamily: 'var(--mono)',
+    fontSize: '0.9em',
+    background: 'var(--code-bg)',
+    borderRadius: '3px',
+    padding: '0 3px',
+  },
+  '.cm-tooltip.cm-ai-chip': { border: 'none', background: 'transparent' },
+  '.cm-ai-chip button': {
+    font: 'inherit',
+    fontSize: '12px',
+    padding: '3px 9px',
+    borderRadius: '999px',
+    border: '1px solid var(--border)',
+    background: 'var(--bg-raised)',
+    color: 'var(--text)',
+    cursor: 'pointer',
+    boxShadow: '0 4px 12px rgb(0 0 0 / 0.12)',
+    whiteSpace: 'pre',
+  },
+  '.cm-ai-chip button:hover': { borderColor: 'var(--accent)', color: 'var(--accent)' },
   '.cm-image': { padding: '8px 0' },
   '.cm-image img': { maxWidth: '100%', maxHeight: '480px', borderRadius: '6px', display: 'block' },
   '.cm-image-broken': { display: 'none' },
@@ -124,7 +183,8 @@ const base = EditorView.theme({
   '.cm-searchMatch': { background: 'color-mix(in srgb, var(--warn) 30%, transparent)' },
 });
 
-const style = HighlightStyle.define([
+/** Markdown and the code inside it; also colours rendered code blocks (blocks.ts). */
+export const noteHighlight = HighlightStyle.define([
   { tag: t.heading, fontWeight: '700' },
   { tag: t.strong, fontWeight: '700' },
   { tag: t.emphasis, fontStyle: 'italic' },
@@ -159,5 +219,5 @@ const style = HighlightStyle.define([
 ]);
 
 export function heapnotesTheme(): Extension {
-  return [base, syntaxHighlighting(style)];
+  return [base, syntaxHighlighting(noteHighlight)];
 }

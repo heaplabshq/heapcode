@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolResult } from '@heapcode/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { Vault, notesPersona, visibleHits } from '../src/index.js';
+import { MAX_CHANGES_PER_QUESTION, Vault, notesPersona, visibleHits } from '../src/index.js';
 
 let root: string;
 let vault: Vault;
@@ -106,6 +106,28 @@ describe('the notes persona', () => {
     );
     expect(r.isError).toBeFalsy();
     expect((await vault.read({ id: 'PLAN' })).content).toContain('Monday');
+  });
+
+  it('stops a question after a few changes, and starts again on the next', async () => {
+    const p = persona();
+    const edit = (n: number) =>
+      p.execute(call('append_to_note', { id: 'PLAN', text: `line ${n}` }), noSearch);
+    await p.turnContext!();
+    for (let n = 0; n < MAX_CHANGES_PER_QUESTION; n++) expect((await edit(n)).isError).toBeFalsy();
+    // No Apply card for a call that will only be refused.
+    expect(p.permission(call('edit_note', {}))).toBe('grant');
+    const over = await edit(99);
+    expect(over.isError).toBe(true);
+    expect(over.content).toMatch(/finish now/);
+    expect((await vault.read({ id: 'PLAN' })).content).not.toContain('line 99');
+    await p.turnContext!();
+    expect(p.permission(call('edit_note', {}))).toBe('ask');
+    expect((await edit(100)).isError).toBeFalsy();
+  });
+
+  it('applies changes without asking when the person turned Apply off', () => {
+    const p = notesPersona({ vault: () => view, hiddenTags: () => [], autoApply: () => true });
+    expect(p.permission(call('edit_note', {}))).toBe('grant');
   });
 
   it('says what is hidden in its prompt, and cites notes as links', () => {

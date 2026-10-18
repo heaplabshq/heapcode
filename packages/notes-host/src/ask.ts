@@ -65,7 +65,17 @@ export interface NotesPersonaOptions {
   hiddenPaths?(): Promise<string[]>;
   /** The note open in the editor, when the person is asking about it. */
   openNote?(): string | undefined;
+  /** Make changes without asking each time — the person switched Apply off. */
+  autoApply?(): boolean;
 }
+
+/**
+ * Changes one question may make. A model asked to "improve" a note will, left
+ * alone, apply a change, read the result, find something else to improve and
+ * go again — for as long as the turn allows. Past this many it's told to stop
+ * and say what it did.
+ */
+export const MAX_CHANGES_PER_QUESTION = 3;
 
 export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
   const commands = new Map<string, Command>();
@@ -85,6 +95,9 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
     })),
   ];
 
+  const isChange = (name: string): boolean => CHANGES.includes(name as (typeof CHANGES)[number]);
+  let changesMade = 0;
+
   return {
     name: 'Heapnotes',
     tools,
@@ -94,6 +107,8 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
     // embeddings model, which may well be a cloud one.
     ...(opts.hiddenPaths ? { indexExclude: () => opts.hiddenPaths!() } : {}),
     async turnContext() {
+      // Called once per question: the count of changes starts again.
+      changesMade = 0;
       const id = opts.openNote?.();
       if (!id) return undefined;
       // Through the assistant's own view: a hidden note isn't named, even here.
@@ -105,7 +120,10 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
       return `The person has the note "${note.title}" (id ${note.id}) open. "This note", "this", "here" and "it" mean that note unless they say otherwise — read it with read_note before answering about it.`;
     },
     permission: (call) =>
-      CHANGES.includes(call.name as (typeof CHANGES)[number]) ? 'ask' : 'grant',
+      // Over the limit the call is refused in `execute`; no card for that.
+      !isChange(call.name) || opts.autoApply?.() || changesMade >= MAX_CHANGES_PER_QUESTION
+        ? 'grant'
+        : 'ask',
 
     async execute(call, ctx, signal): Promise<ToolResult> {
       try {
@@ -125,7 +143,13 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
         }
         const cmd = commands.get(call.name);
         if (!cmd) throw new NoteError('invalid_argument', `No tool ${call.name}.`);
+        if (isChange(call.name) && changesMade >= MAX_CHANGES_PER_QUESTION)
+          throw new NoteError(
+            'invalid_argument',
+            `That's ${changesMade} changes for this question — the limit. Don't make another: finish now and tell the person, in a line or two, what you changed.`,
+          );
         const result = await cmd.run(opts.vault(), checkArgs(cmd, call.args));
+        if (isChange(call.name)) changesMade += 1;
         return {
           id: call.id,
           name: call.name,
@@ -303,6 +327,8 @@ Ground every specific claim in a note you read, and cite it as a link the person
 ## Changing notes
 
 You can propose changes: \`edit_note\` for a precise change (exact \`find\` text that appears once), \`append_to_note\`, \`create_note\`, \`overwrite_note\` for a full rewrite the person asked for, and tags. **The person sees each change as a diff and applies it or not** — so propose only what they asked for, one coherent change at a time, and pass \`base\` (the hash from your last \`read_note\`) so you never overwrite something they just typed. If a change isn't applied, don't retry it; ask what they'd like instead.
+
+**One pass, then stop.** When the change they asked for is made, finish: say in a line what you changed. Don't read the note again to look for more to improve, and don't follow a change with another round polishing the same text — they'll ask if they want more.
 
 Keep their voice: edit the words they asked about and leave the rest alone. Use their markup — #tags, [[links]], - [ ] tasks.
 

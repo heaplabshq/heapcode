@@ -215,6 +215,15 @@ function buildInline(view: EditorView): DecorationSet {
           }
           return;
         }
+        if (name === 'Table') {
+          // Being edited (blocks.ts draws it otherwise): columns line up in mono.
+          for (let pos = node.from; pos <= node.to;) {
+            const line = state.doc.lineAt(pos);
+            out.push(Decoration.line({ class: 'cm-tablesrc' }).range(line.from));
+            pos = line.to + 1;
+          }
+          return false;
+        }
         if (name === 'FencedCode') {
           for (let pos = node.from; pos <= node.to;) {
             const line = state.doc.lineAt(pos);

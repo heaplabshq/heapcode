@@ -23,11 +23,14 @@ import {
   Compartment,
   EditorSelection,
   EditorState,
+  StateField,
   type Extension,
   type StateCommand,
 } from '@codemirror/state';
 import {
   drawSelection,
+  showTooltip,
+  type Tooltip,
   dropCursor,
   EditorView,
   highlightSpecialChars,
@@ -48,7 +51,8 @@ import {
 import { liveRendering, noteContext, type NoteContext } from './editor/live.js';
 import { heapnotesMarkdown } from './editor/markup.js';
 import { aiTarget, setAiTarget, targetRange } from './editor/aiTarget.js';
-import { heapnotesTheme } from './editor/theme.js';
+import { heapnotesTheme, noteHighlight } from './editor/theme.js';
+import { renderedBlocks } from './editor/blocks.js';
 
 export interface EditorHandle {
   focus(): void;
@@ -258,6 +262,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
     extensions.current = () => [
       ctxSlot.current.of(noteContext.of(latest.current.context)),
       roSlot.current.of(EditorState.readOnly.of(latest.current.readOnly === true)),
+      selectionChip(() => latest.current.onAi),
       keymap.of([
         { key: 'Mod-j', run: () => (latest.current.onAi ? (latest.current.onAi(), true) : false) },
       ]),
@@ -271,6 +276,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
       EditorView.lineWrapping,
       markdown({ base: markdownLanguage, codeLanguages: languages, extensions: heapnotesMarkdown }),
       liveRendering(),
+      renderedBlocks(noteHighlight),
       heapnotesTheme(),
       search({ top: true }),
       highlightSelectionMatches(),
@@ -344,4 +350,43 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(prop
 function firstLineEnd(text: string): number {
   const nl = text.indexOf('\n');
   return nl === -1 ? text.length : nl;
+}
+
+/**
+ * "Edit with AI" beside a selection — where people look for it (Notion,
+ * Apple's Writing Tools) — instead of a toolbar button whose target isn't
+ * obvious. Hidden in a read-only note, on the title, or when AI isn't here.
+ */
+function selectionChip(handler: () => (() => void) | undefined): Extension {
+  const chip = (state: EditorState): readonly Tooltip[] => {
+    const r = state.selection.main;
+    if (r.empty || state.readOnly || !handler() || state.doc.lineAt(r.from).number === 1) return [];
+    return [
+      {
+        pos: r.head,
+        above: r.head <= r.anchor,
+        strictSide: true,
+        arrow: false,
+        create: () => {
+          const dom = document.createElement('div');
+          dom.className = 'cm-ai-chip';
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = `✦ Edit with AI  ${IS_MAC ? '⌘J' : 'Ctrl+J'}`;
+          // Keep the selection: the click must not take the editor's focus first.
+          b.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            handler()?.();
+          });
+          dom.appendChild(b);
+          return { dom };
+        },
+      },
+    ];
+  };
+  return StateField.define<readonly Tooltip[]>({
+    create: chip,
+    update: (tips, tr) => (tr.docChanged || tr.selection ? chip(tr.state) : tips),
+    provide: (f) => showTooltip.computeN([f], (state) => state.field(f)),
+  });
 }

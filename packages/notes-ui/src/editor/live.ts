@@ -17,6 +17,7 @@ import {
 } from '@codemirror/view';
 import { toggleTaskAt } from './commands.js';
 import { wikiTarget } from './markup.js';
+import { imagesInLine, withWidth } from './images.js';
 
 /**
  * Live rendering, the way Bear does it: Markdown stays the text, but away from
@@ -135,23 +136,110 @@ class RuleWidget extends WidgetType {
   }
 }
 
+/** Widths the image bar offers; none means the image's own size, up to the page. */
+const IMAGE_SIZES: { label: string; width?: number; title: string }[] = [
+  { label: 'S', width: 240, title: 'Small — 240px wide' },
+  { label: 'M', width: 420, title: 'Medium — 420px wide' },
+  { label: 'L', width: 640, title: 'Large — 640px wide' },
+  { label: 'Fit', title: 'Its own size, up to the page width' },
+];
+
 class ImageWidget extends WidgetType {
-  constructor(readonly src: string) {
+  constructor(
+    readonly src: string,
+    /** Which image on its line, for finding its Markdown when a button is used. */
+    readonly nth: number,
+    readonly width: number | undefined,
+    /** False in a read-only note (trash): no bar. `editable` is WidgetType's own. */
+    readonly canChange: boolean,
+  ) {
     super();
   }
   override eq(other: ImageWidget): boolean {
-    return other.src === this.src;
+    return (
+      other.src === this.src &&
+      other.nth === this.nth &&
+      other.width === this.width &&
+      other.canChange === this.canChange
+    );
   }
-  toDOM(): HTMLElement {
+  toDOM(view: EditorView): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'cm-image';
-    const img = document.createElement('img');
+    const frame = wrap.appendChild(document.createElement('div'));
+    frame.className = 'cm-image-frame';
+    const img = frame.appendChild(document.createElement('img'));
     img.src = this.src;
     img.alt = '';
     img.loading = 'lazy';
+    if (this.width) img.style.width = `${this.width}px`;
     img.onerror = () => wrap.classList.add('cm-image-broken');
-    wrap.appendChild(img);
+    if (!this.canChange) return wrap;
+
+    // Size and remove, on hover — the only other way out was undo.
+    const bar = frame.appendChild(document.createElement('div'));
+    bar.className = 'cm-image-bar';
+    const button = (label: string, title: string, run: () => void, on = false) => {
+      const b = bar.appendChild(document.createElement('button'));
+      b.type = 'button';
+      b.textContent = label;
+      b.title = title;
+      if (on) b.className = 'cm-image-on';
+      b.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        run();
+      });
+    };
+    for (const size of IMAGE_SIZES)
+      button(
+        size.label,
+        size.title,
+        () => this.resize(view, wrap, size.width),
+        size.width === this.width,
+      );
+    button('Remove', 'Remove the image from the note', () => this.remove(view, wrap));
     return wrap;
+  }
+
+  /** Its Markdown now: the widget sits at the end of the image's line. */
+  private markup(view: EditorView, wrap: HTMLElement) {
+    const line = view.state.doc.lineAt(view.posAtDOM(wrap));
+    const found = imagesInLine(line.text)[this.nth];
+    return found && { line, from: line.from + found.start, to: line.from + found.end };
+  }
+
+  private resize(view: EditorView, wrap: HTMLElement, width: number | undefined): void {
+    const m = this.markup(view, wrap);
+    if (!m) return;
+    const insert = withWidth(view.state.sliceDoc(m.from, m.to), width);
+    view.dispatch({ changes: { from: m.from, to: m.to, insert }, userEvent: 'input.image' });
+  }
+
+  private remove(view: EditorView, wrap: HTMLElement): void {
+    const m = this.markup(view, wrap);
+    if (!m) return;
+    const rest = m.line.text.slice(0, m.from - m.line.from) + m.line.text.slice(m.to - m.line.from);
+    // Alone on its line: the line goes too, and the blank line after it,
+    // so the paragraphs either side close up instead of leaving a gap.
+    const doc = view.state.doc;
+    let from = m.from;
+    let to = m.to;
+    if (rest.trim() === '') {
+      const { line } = m;
+      if (line.number === doc.lines) {
+        from = line.number > 1 ? line.from - 1 : line.from;
+        to = line.to;
+      } else {
+        const next = doc.line(line.number + 1);
+        from = line.from;
+        to = next.text.trim() === '' ? Math.min(next.to + 1, doc.length) : next.from;
+      }
+    }
+    view.dispatch({ changes: { from, to }, userEvent: 'delete.image' });
+  }
+
+  override ignoreEvent(): boolean {
+    return true;
   }
 }
 
@@ -373,6 +461,7 @@ const images = StateField.define<DecorationSet>({
   create: (state) => buildImages(state),
   update: (deco, tr) =>
     tr.docChanged ||
+    tr.startState.readOnly !== tr.state.readOnly ||
     tr.startState.facet(noteContext) !== tr.state.facet(noteContext) ||
     syntaxTree(tr.startState) !== syntaxTree(tr.state)
       ? buildImages(tr.state)
@@ -383,22 +472,29 @@ const images = StateField.define<DecorationSet>({
 function buildImages(state: EditorState): DecorationSet {
   const ctx = state.facet(noteContext);
   const builder = new RangeSetBuilder<Decoration>();
-  const found: { at: number; src: string }[] = [];
+  const editable = !state.readOnly;
+  const found: { at: number; src: string; nth: number; width?: number }[] = [];
+  // Which image on its line this node is, and the width its Markdown asks for.
+  const place = (from: number) => {
+    const line = state.doc.lineAt(from);
+    const all = imagesInLine(line.text);
+    const nth = all.findIndex((i) => i.start === from - line.from);
+    return { at: line.to, nth, width: all[nth]?.width };
+  };
   syntaxTree(state).iterate({
     enter: (node) => {
       if (node.name === 'Image') {
         const url = node.node.getChild('URL');
         const src = url ? imageSrc(state.sliceDoc(url.from, url.to), ctx) : null;
-        if (src) found.push({ at: state.doc.lineAt(node.to).to, src });
+        const where = place(node.from);
+        if (src && where.nth >= 0) found.push({ ...where, src });
         return false;
       }
       if (node.name === 'WikiLink' && state.sliceDoc(node.from, node.from + 1) === '!') {
         const target = wikiTarget(state.sliceDoc(node.from, node.to));
-        if (/\.(png|jpe?g|gif|webp|svg|avif)$/i.test(target))
-          found.push({
-            at: state.doc.lineAt(node.to).to,
-            src: ctx.attachmentBase + encodeURIComponent(target),
-          });
+        const where = place(node.from);
+        if (/\.(png|jpe?g|gif|webp|svg|avif)$/i.test(target) && where.nth >= 0)
+          found.push({ ...where, src: ctx.attachmentBase + encodeURIComponent(target) });
       }
       return;
     },
@@ -408,7 +504,11 @@ function buildImages(state: EditorState): DecorationSet {
     builder.add(
       f.at,
       f.at,
-      Decoration.widget({ widget: new ImageWidget(f.src), block: true, side: 1 }),
+      Decoration.widget({
+        widget: new ImageWidget(f.src, f.nth, f.width, editable),
+        block: true,
+        side: 1,
+      }),
     );
   return builder.finish();
 }

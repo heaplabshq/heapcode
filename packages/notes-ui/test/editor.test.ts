@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { insertWikiLink, setLineKind, toggleInline, toggleTask } from '../src/editor/commands.js';
 import { imageSrc } from '../src/editor/live.js';
 import { renderedBlocks } from '../src/editor/blocks.js';
+import { imagesInLine, widthOf, withWidth } from '../src/editor/images.js';
 import { noteHighlight } from '../src/editor/theme.js';
 import { heapnotesMarkdown, wikiTarget } from '../src/editor/markup.js';
 import { fuzzyFilter } from '../src/fuzzy.js';
@@ -175,5 +176,23 @@ describe('rendered code blocks and tables', () => {
   it('gives back the Markdown of the one being edited', () => {
     expect(blocks(doc.indexOf('print')).map((b) => b.widget)).toEqual(['TableWidget']);
     expect(blocks(doc.indexOf('| 1')).map((b) => b.widget)).toEqual(['CodeWidget']);
+  });
+});
+
+describe('image sizes in the Markdown', () => {
+  it('finds each image on a line, with any width it asks for', () => {
+    expect(imagesInLine('a ![x|300](p.png) b ![[q.png]]')).toEqual([
+      { start: 2, end: 17, width: 300 },
+      { start: 20, end: 30 },
+    ]);
+  });
+
+  it('sets, changes and clears a width, keeping the alt text and target', () => {
+    expect(withWidth('![cat](assets/c.png)', 240)).toBe('![cat|240](assets/c.png)');
+    expect(withWidth('![cat|240](assets/c.png)', 640)).toBe('![cat|640](assets/c.png)');
+    expect(withWidth('![cat|240](assets/c.png)', undefined)).toBe('![cat](assets/c.png)');
+    expect(withWidth('![[c.png]]', 420)).toBe('![[c.png|420]]');
+    expect(withWidth('![[c.png|420]]', undefined)).toBe('![[c.png]]');
+    expect(widthOf('![|100x80](c.png)')).toBe(100);
   });
 });

@@ -774,15 +774,24 @@ export function App(): JSX.Element {
             />
           }
           footer={
+            // Says what a click does — settings — with the folder's name as the detail.
             <button
               className="notes-foot"
               onClick={() => openSettings('notes')}
-              title={state?.vault}
+              title={state ? `Notes folder, text size and AI — ${state.vault}` : undefined}
+              aria-label="Notes settings"
             >
-              <span className="notes-foot-name">
-                {state ? state.vault.split(/[\\/]/).pop() : '…'}
+              <span className="notes-foot-icon">
+                <IconFolder />
               </span>
-              <span className="notes-foot-count">{state ? `${state.count} notes` : ''}</span>
+              <span className="notes-foot-text">
+                <span className="notes-foot-name">Notes settings</span>
+                <span className="notes-foot-count">
+                  {state
+                    ? `${state.count} note${state.count === 1 ? '' : 's'} · ${state.vault.split(/[\\/]/).pop()}`
+                    : ''}
+                </span>
+              </span>
             </button>
           }
         />
@@ -1403,6 +1412,13 @@ function IconNotes(): JSX.Element {
     <Svg>
       <path d="M4 2.5h5.5l3 3v8H4z" />
       <path d="M6 8h4.5M6 10.5h3" />
+    </Svg>
+  );
+}
+function IconFolder(): JSX.Element {
+  return (
+    <Svg>
+      <path d="M2 4.5a1 1 0 0 1 1-1h3.3l1.5 1.5H13a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
     </Svg>
   );
 }

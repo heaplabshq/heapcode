@@ -416,9 +416,8 @@ body {
 }
 .notes-foot {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   min-width: 0;
   background: none;
@@ -433,20 +432,32 @@ body {
 .notes-foot:hover {
   background: var(--hover);
 }
+.notes-foot-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+.notes-foot-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
 .notes-foot-name {
   font-weight: 600;
   font-size: 13px;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .notes-foot-count {
   color: var(--text-dim);
   font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.rail-collapsed .notes-foot-name,
-.rail-collapsed .notes-foot-count {
+.rail-collapsed .notes-foot {
+  justify-content: center;
+}
+.rail-collapsed .notes-foot-text {
   display: none;
 }
 
@@ -713,16 +724,18 @@ body {
   flex: 1 1 auto;
   min-width: 0;
 }
-.related-link {
+.backlinks .related-link {
+  /* Not the list's full-width row button: that squeezed the title to nothing. */
   flex: 0 0 auto;
+  width: auto;
   opacity: 0;
 }
 .related-row:hover .related-link,
-.related-link:focus-visible {
+.backlinks .related-link:focus-visible {
   opacity: 1;
 }
 @media (hover: none) {
-  .related-link {
+  .backlinks .related-link {
     opacity: 1;
   }
 }

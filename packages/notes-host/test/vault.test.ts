@@ -513,3 +513,79 @@ describe('deferred renames (the app, saving as you type)', () => {
     expect((await vault.settleTitle({ id: n.id }, 'Same')).note.path).toBe('Same.md');
   });
 });
+
+describe('where a note came from, and getting notes out', () => {
+  it('records the source of a note made through Ask, MCP or the terminal — not the app', async () => {
+    vault = await open();
+    const mine = await vault.create({ title: 'Mine' });
+    const asked = await vault
+      .scoped({ excludeTags: ['private'] }, 'ask')
+      .create({ title: 'Asked' });
+    expect((await vault.get({ id: mine.id })).source).toBeUndefined();
+    expect((await vault.get({ id: asked.id })).source).toBe('ask');
+    vault.close();
+    vault = await open({ origin: 'mcp' });
+    const viaMcp = await vault.create({ title: 'Via MCP' });
+    expect(read(viaMcp.path)).toMatch(/^source: mcp$/m);
+  });
+
+  it('exports one note with its images, or every note outside the trash', async () => {
+    write('Plan.md', '# Plan\n![](assets/a.png)\n');
+    write('assets/a.png', 'png');
+    write('assets/unused.png', 'png');
+    write('Other.md', '# Other\n');
+    write('.trash/Gone.md', '# Gone\n');
+    vault = await open();
+    const plan = (await vault.list({})).notes.find((n) => n.title === 'Plan')!;
+    expect((await vault.exportFiles({ id: plan.id })).map((f) => f.path)).toEqual([
+      'Plan.md',
+      'assets/a.png',
+    ]);
+    expect((await vault.exportFiles()).map((f) => f.path)).toEqual([
+      'Other.md',
+      'Plan.md',
+      'assets/a.png',
+      'assets/unused.png',
+    ]);
+    await expect(vault.scoped({ excludeTags: ['private'] }).exportFiles()).rejects.toThrow(
+      /one note at a time/,
+    );
+  });
+});
+
+describe('version history', () => {
+  it('keeps one version per few minutes of typing, always one before AI and restores, and restores', async () => {
+    let now = new Date('2026-10-19T10:00:00Z');
+    const historyDir = join(root, '..', `${root.split('/').pop()}-history`);
+    vault = await open({ historyDir, now: () => now });
+    const note = await vault.create({ title: 'Plan', text: 'one' });
+    const id = { id: note.id };
+    await vault.overwrite(id, '# Plan\ntwo\n'); // the first edit keeps "one"
+    now = new Date('2026-10-19T10:01:00Z');
+    await vault.overwrite(id, '# Plan\nthree\n'); // a minute later: too soon
+    expect((await vault.versions(id)).length).toBe(1);
+
+    now = new Date('2026-10-19T10:07:00Z');
+    await vault.overwrite(id, '# Plan\nfour\n'); // past the interval: keeps "three"
+    const asked = vault.scoped({}, 'ask');
+    now = new Date('2026-10-19T10:07:30Z');
+    await asked.overwrite(id, '# Plan\nfive\n'); // Ask's change: always keeps "four"
+    const versions = await vault.versions(id);
+    expect(versions.map((v) => v.by ?? '')).toEqual(['ask', '', '']);
+    expect((await vault.readVersion(id, versions[2]!.version)).content).toBe('# Plan\n\none\n');
+
+    await vault.restoreVersion(id, versions[2]!.version);
+    expect((await vault.read(id)).content).toBe('# Plan\n\none\n');
+    // What the restore replaced is kept too, so a restore can be undone.
+    expect((await vault.versions(id))[0]).toMatchObject({ by: 'restore' });
+    await expect(vault.readVersion(id, '../../etc/passwd')).rejects.toThrow(/no longer kept/);
+    rmSync(historyDir, { recursive: true, force: true });
+  });
+
+  it('keeps nothing with an in-memory index unless asked', async () => {
+    vault = await open();
+    const note = await vault.create({ title: 'T', text: 'a' });
+    await vault.overwrite({ id: note.id }, '# T\nb\n');
+    expect(await vault.versions({ id: note.id })).toEqual([]);
+  });
+});

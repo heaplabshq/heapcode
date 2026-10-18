@@ -47,7 +47,12 @@ export async function runNotes(argv: string[]): Promise<number> {
 
   let vault: Vault | undefined;
   try {
-    vault = await Vault.open({ root: vaultRoot(parsed), scope: scopeOf(parsed) });
+    vault = await Vault.open({
+      root: vaultRoot(parsed),
+      scope: scopeOf(parsed),
+      // What it creates says so: an AI app over MCP, or someone at the terminal.
+      origin: sub === 'mcp' ? 'mcp' : 'terminal',
+    });
     if (sub === 'mcp') {
       await serveNotesMcp(vault, cliVersion() ?? '0.0.0');
       return 0;

@@ -14,6 +14,7 @@ import {
   type NotesImportKind,
   type NotesSection,
   type NotesState,
+  type NoteVersion,
   type RelatedNote,
   type UiBrowseFoldersResult,
   type UiWorkspacesResult,
@@ -21,7 +22,7 @@ import {
 import { Editor, type EditorHandle } from './Editor.js';
 import { AskPanel } from './AskPanel.js';
 import { InlineAI, type InlineTarget } from './InlineAI.js';
-import type { NoteContext } from './editor/live.js';
+import { imageSrc, type NoteContext } from './editor/live.js';
 import {
   ImportDialog,
   InfoPanel,
@@ -30,6 +31,9 @@ import {
   QuickOpen,
   type Heading,
 } from './panels.js';
+import { VersionsDialog } from './versions.js';
+import { base64Blob, download, noteHtml, printHtml } from './exporting.js';
+import { ago, fullDate, useNow } from './time.js';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import {
   CHAT_METHODS,
@@ -89,6 +93,8 @@ function remember(key: string, value: string): void {
   }
 }
 
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+
 export function App(): JSX.Element {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [state, setState] = useState<NotesState>();
@@ -115,8 +121,9 @@ export function App(): JSX.Element {
   );
   const [infoOpen, setInfoOpen] = useState(() => remembered('heapnotes.info') === 'open');
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
-  const [quick, setQuick] = useState<'notes' | 'tags'>();
-  const [dialog, setDialog] = useState<'settings' | 'import'>();
+  const [quick, setQuick] = useState<'notes' | 'tags' | 'templates'>();
+  const [templates, setTemplates] = useState<{ id: string; title: string; tags: string[] }[]>([]);
+  const [dialog, setDialog] = useState<'settings' | 'import' | 'versions'>();
   /** The shared Settings' contents (connections, roles, connectors), read when it opens. */
   const [settings, setSettings] = useState<ChatSettings>();
   const [settingsPage, setSettingsPage] = useState('notes');
@@ -124,6 +131,7 @@ export function App(): JSX.Element {
   const [settingsVersion, setSettingsVersion] = useState(0);
   /** A note whose "About" chip was dismissed — Ask is then about all notes until another opens. */
   const [aboutDismissed, setAboutDismissed] = useState<string>();
+  const [scopeDismissed, setScopeDismissed] = useState<string>();
   /** ⌘J's target while its menu is up. */
   const [inline, setInline] = useState<InlineTarget>();
   const [askOpen, setAskOpen] = useState(() => remembered('heapnotes.ask') === 'open');
@@ -191,12 +199,17 @@ export function App(): JSX.Element {
   // Which note "this" means in Ask: the open one, unless its chip was dismissed.
   const aboutId =
     openId && aboutDismissed !== openId && open?.note.location !== 'trash' ? openId : undefined;
+  // Ask over a tag: the tag you're in, unless its chip was dismissed.
+  const askTag = 'tag' in selection && scopeDismissed !== selection.tag ? selection.tag : undefined;
   useEffect(() => {
     if (!state?.ask) return;
     void client
-      .request(NOTES_METHODS.askAbout, aboutId ? { id: aboutId } : {})
+      .request(NOTES_METHODS.askAbout, {
+        ...(aboutId ? { id: aboutId } : {}),
+        ...(askTag ? { tag: askTag } : {}),
+      })
       .catch(() => undefined);
-  }, [aboutId, state?.ask, client, connection]);
+  }, [aboutId, askTag, state?.ask, client, connection]);
   // A ⌘J menu belongs to the note it was opened on.
   useEffect(() => setInline(undefined), [openId]);
   /** The note the related list was last loaded for: a different one loads at once. */
@@ -470,6 +483,7 @@ export function App(): JSX.Element {
   );
 
   const current = open?.note;
+  const now = useNow();
   const inTrash = current?.location === 'trash';
   const pin = () =>
     current && void act(NOTES_METHODS.pin, { id: current.id, pinned: !current.pinned }, 'reopen');
@@ -497,10 +511,74 @@ export function App(): JSX.Element {
       void loadList();
     }
   };
+  const dir = current ? current.path.split('/').slice(0, -1).join('/') : '';
   const copy = (s: string) =>
     void navigator.clipboard
       ?.writeText(s)
       .catch(() => setError('Copying was blocked by the browser.'));
+
+  /** A note (or, with no id, the whole vault) as its files: .md alone, else .zip. */
+  const exportFiles = async (id?: string) => {
+    if (id) await flush();
+    const r = await call<{ filename: string; base64: string }>(
+      NOTES_METHODS.exportNotes,
+      id ? { id } : {},
+    );
+    if (r)
+      download(
+        r.filename,
+        base64Blob(r.base64, r.filename.endsWith('.zip') ? 'application/zip' : 'text/markdown'),
+      );
+  };
+  const exportPage = async (as: 'html' | 'pdf') => {
+    if (!current) return;
+    const html = await noteHtml(current.title, textRef.current, {
+      dir,
+      attachmentBase: state?.attachmentBase ?? `${BASE}/attachment/`,
+    });
+    if (as === 'pdf') printHtml(html);
+    else download(`${current.title || 'Untitled'}.html`, new Blob([html], { type: 'text/html' }));
+  };
+
+  const versionsOf = open?.note.id;
+  const listVersions = useCallback(
+    () =>
+      client
+        .request<{ versions: NoteVersion[] }>(NOTES_METHODS.versions, { id: versionsOf })
+        .then((r) => r.versions),
+    [client, versionsOf],
+  );
+  const readVersion = useCallback(
+    (version: string) =>
+      client
+        .request<{ content: string }>(NOTES_METHODS.version, { id: versionsOf, version })
+        .then((r) => r.content),
+    [client, versionsOf],
+  );
+
+  const pickTemplate = useCallback(() => {
+    void call<{ templates: { id: string; title: string; tags: string[] }[] }>(
+      NOTES_METHODS.templates,
+    ).then((r) => {
+      setTemplates(r?.templates ?? []);
+      setQuick('templates');
+    });
+  }, [call]);
+  const fromTemplate = async (id: string) => {
+    await flush();
+    const tag = 'tag' in selection && selection.tag !== 'template' ? selection.tag : undefined;
+    const r = await call<NoteOpenResult>(NOTES_METHODS.fromTemplate, {
+      id,
+      ...(tag ? { tag } : {}),
+    });
+    if (!r) return;
+    if (openRef.current) history.current.back.push(openRef.current.note.id);
+    show(r);
+    void loadList();
+    void loadSide();
+  };
+  const isTemplate =
+    current?.tags.some((t) => t === 'template' || t.startsWith('template/')) ?? false;
 
   const setLayoutMode = (n: 1 | 2 | 3) => {
     setLayout(n);
@@ -598,6 +676,7 @@ export function App(): JSX.Element {
         return run(() => current && copy(current.id));
       if (e.altKey && e.shiftKey && e.code === 'KeyL')
         return run(() => current && copy(`[[${current.title}]]`));
+      if (e.altKey && !e.shiftKey && e.code === 'KeyN') return run(pickTemplate);
       if (e.altKey && /^Digit[1-7]$/.test(e.code))
         return run(() => setSelection({ section: SECTIONS[Number(e.code.slice(5)) - 1]!.section }));
       if (e.altKey) return;
@@ -616,6 +695,8 @@ export function App(): JSX.Element {
       if (!e.shiftKey && e.key === 'Enter' && inEditor)
         return run(() => (document.activeElement as HTMLElement)?.blur());
       if (!e.shiftKey && k === 's') return run(() => void flush());
+      // The note, not the whole app around it.
+      if (!e.shiftKey && k === 'p' && current) return run(() => void exportPage('pdf'));
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -632,7 +713,6 @@ export function App(): JSX.Element {
   const tagList = useRef<string[]>([]);
   tagList.current = tags.map((t) => t.tag);
 
-  const dir = current ? current.path.split('/').slice(0, -1).join('/') : '';
   const context: NoteContext = useMemo(
     () => ({
       dir,
@@ -642,9 +722,31 @@ export function App(): JSX.Element {
         setQuery('');
         setSelection({ tag });
       },
-      openUrl: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
+      openUrl: (url) => {
+        // A web link opens as one; a link to a file in the vault opens that file.
+        if (/^[a-z][a-z0-9+.-]*:/i.test(url))
+          return void window.open(url, '_blank', 'noopener,noreferrer');
+        let path = url;
+        try {
+          path = decodeURIComponent(url);
+        } catch {
+          // Literal.
+        }
+        if (/\.md$/i.test(path))
+          return void followLink(path.split('/').pop()!.replace(/\.md$/i, ''));
+        const src = imageSrc(url, {
+          dir,
+          attachmentBase: state?.attachmentBase ?? `${BASE}/attachment/`,
+        });
+        if (src) window.open(src, '_blank', 'noopener,noreferrer');
+      },
+      peek: (target) =>
+        client.request<{ title: string; path: string; content: string; more: boolean } | null>(
+          NOTES_METHODS.peek,
+          { target },
+        ),
     }),
-    [dir, state?.attachmentBase, followLink],
+    [dir, state?.attachmentBase, followLink, client],
   );
 
   const onFiles = useCallback(
@@ -653,6 +755,11 @@ export function App(): JSX.Element {
       if (!id) return [];
       const out: string[] = [];
       for (const f of files) {
+        // The page sends files as text over its connection, which takes ~100 MB a message.
+        if (f.size > MAX_FILE_BYTES) {
+          setError(`${f.name || 'That file'} is over 50 MB — too large to add to a note.`);
+          continue;
+        }
         const base64 = await fileToBase64(f);
         const r = await call<{ markdown: string }>(NOTES_METHODS.attach, {
           id,
@@ -828,6 +935,14 @@ export function App(): JSX.Element {
                   >
                     <IconCompose />
                   </button>
+                  <button
+                    className="btn btn-quiet btn-sm"
+                    onClick={pickTemplate}
+                    title={`New from template (${IS_MAC ? '⌥⌘' : 'Ctrl+Alt+'}N)`}
+                    aria-label="New from template"
+                  >
+                    <IconTemplate />
+                  </button>
                 </span>
               </div>
               <div className="notes-search">
@@ -890,6 +1005,11 @@ export function App(): JSX.Element {
                         ? 'Saved'
                         : ''}
                 </span>
+                {current && saving === 'idle' && (
+                  <span className="notes-edited" title={`Modified ${fullDate(current.modified)}`}>
+                    Edited {ago(current.modified, now)}
+                  </span>
+                )}
               </span>
               {/* One group, in order of use: the note's own state, then the
                   panels, then everything else behind •••. */}
@@ -938,6 +1058,18 @@ export function App(): JSX.Element {
                     onCopyMarkdown={() => copy(text)}
                     onCopyLink={() => copy(`[[${current.title}]]`)}
                     onCopyId={() => copy(current.id)}
+                    onVersions={() => void flush().then(() => setDialog('versions'))}
+                    isTemplate={isTemplate}
+                    onTemplate={() =>
+                      void act(
+                        NOTES_METHODS.setTemplate,
+                        { id: current.id, on: !isTemplate },
+                        'reopen',
+                      )
+                    }
+                    onExport={(as) =>
+                      void (as === 'markdown' ? exportFiles(current.id) : exportPage(as))
+                    }
                   />
                 )}
               </span>
@@ -1034,6 +1166,8 @@ export function App(): JSX.Element {
                 settingsVersion={settingsVersion}
                 {...(aboutId && open ? { about: { title: open.note.title } } : {})}
                 onClearAbout={() => setAboutDismissed(openId)}
+                {...(askTag ? { scopeTag: askTag } : {})}
+                onClearScope={() => setScopeDismissed(askTag)}
                 autoApply={state?.autoApply ?? false}
                 onAutoApply={setAutoApply}
               />
@@ -1041,6 +1175,11 @@ export function App(): JSX.Element {
           )}
           {open && infoOpen && (
             <InfoPanel
+              note={{
+                created: open.note.created,
+                modified: open.note.modified,
+                ...(open.source ? { source: open.source } : {}),
+              }}
               headings={headings}
               backlinks={open.backlinks}
               {...(relatedTo ? { related: relatedTo } : {})}
@@ -1077,6 +1216,26 @@ export function App(): JSX.Element {
           onCreate={(title) => {
             setQuick(undefined);
             void followLink(title);
+          }}
+          onClose={() => setQuick(undefined)}
+        />
+      )}
+      {quick === 'templates' && (
+        <QuickOpen
+          items={templates}
+          label="New from template"
+          placeholder="New note from a template…"
+          text={(t) => t.title}
+          detail={(t) =>
+            t.tags
+              .filter((x) => !x.startsWith('template'))
+              .map((x) => `#${x}`)
+              .join(' ')
+          }
+          empty="No templates yet. Tag a note #template — or choose “Use as template” in its ••• menu — and it shows up here."
+          onPick={(t) => {
+            setQuick(undefined);
+            void fromTemplate(t.id);
           }}
           onClose={() => setQuick(undefined)}
         />
@@ -1131,6 +1290,7 @@ export function App(): JSX.Element {
                   autoApply={state.autoApply}
                   onAutoApply={setAutoApply}
                   onImport={() => setDialog('import')}
+                  onExportAll={() => void exportFiles()}
                   onChangeModel={() => go('providers')}
                 />
               ),
@@ -1170,6 +1330,23 @@ export function App(): JSX.Element {
             return res.authorizationUrl;
           }}
           onSignOutMcpServer={(name) => editSettings(CHAT_METHODS.signOutMcpServer, { name })}
+        />
+      )}
+      {dialog === 'versions' && open && (
+        <VersionsDialog
+          title={open.note.title}
+          current={textRef.current}
+          list={listVersions}
+          read={readVersion}
+          onRestore={async (version) => {
+            const r = await client.request<NoteOpenResult>(NOTES_METHODS.restoreVersion, {
+              id: open.note.id,
+              version,
+            });
+            show(r);
+            void loadList();
+          }}
+          onClose={() => setDialog(undefined)}
         />
       )}
       {dialog === 'import' && (
@@ -1288,6 +1465,10 @@ function NoteMenu(props: {
   onCopyMarkdown(): void;
   onCopyLink(): void;
   onCopyId(): void;
+  onExport(as: 'markdown' | 'html' | 'pdf'): void;
+  onVersions(): void;
+  isTemplate: boolean;
+  onTemplate(): void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -1334,6 +1515,13 @@ function NoteMenu(props: {
           {item('Copy link', props.onCopyLink, m ? '⌥⇧⌘L' : undefined)}
           {item('Copy ID', props.onCopyId, m ? '⌥⇧⌘I' : undefined)}
           <hr />
+          {item('Export as Markdown', () => props.onExport('markdown'))}
+          {item('Export as HTML', () => props.onExport('html'))}
+          {item('Print or save as PDF…', () => props.onExport('pdf'), m ? '⌘P' : 'Ctrl+P')}
+          <hr />
+          {item('Version history…', props.onVersions)}
+          {props.location !== 'trash' &&
+            item(props.isTemplate ? 'Stop using as template' : 'Use as template', props.onTemplate)}
           {item('Duplicate', props.onDuplicate)}
           {props.location === 'notes' && item('Archive', props.onArchive)}
           {props.location !== 'notes' && item('Restore', props.onRestore, m ? '⇧⌘R' : undefined)}
@@ -1419,6 +1607,14 @@ function IconFolder(): JSX.Element {
   return (
     <Svg>
       <path d="M2 4.5a1 1 0 0 1 1-1h3.3l1.5 1.5H13a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
+    </Svg>
+  );
+}
+function IconTemplate(): JSX.Element {
+  return (
+    <Svg>
+      <rect x="3" y="2.5" width="10" height="11" rx="1.5" strokeDasharray="2 1.6" />
+      <path d="M5.5 6h5M5.5 8.5h3" />
     </Svg>
   );
 }

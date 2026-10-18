@@ -59,6 +59,7 @@ describe('Markdown folder', () => {
     );
     const top = readFileSync(join(vault.root, 'Top.md'), 'utf8');
     expect(readFrontMatter(top).data.id).toMatch(/^[0-9A-F-]{36}$/);
+    expect(readFrontMatter(top).data.source).toBe('markdown');
     expect(existsSync(join(vault.root, 'img/a.png'))).toBe(true);
     expect(existsSync(join(vault.root, 'img/unused.png'))).toBe(false);
     expect((await vault.get({ id: 'KEEP' })).path).toBe('deep/Inner.md');

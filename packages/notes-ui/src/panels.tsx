@@ -6,28 +6,13 @@ import type {
   UiBrowseFoldersResult,
 } from '@heapcode/notes-host/protocol';
 import { fuzzyFilter } from './fuzzy.js';
+import { ago, fullDate, sourceLabel, useNow } from './time.js';
 import {
   SettingsGroup,
   SettingsRow,
   SettingsSection,
   SettingsToggle,
 } from '@heapcode/web-ui/components/Settings';
-
-/** "3:41 PM" today, "Yesterday", "Mon", then a date — how a list says when. */
-export function when(iso: string, now = new Date()): string {
-  const d = new Date(iso);
-  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const days = Math.round((day(now) - day(d)) / 86_400_000);
-  if (days === 0) return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'short' });
-  return d.toLocaleDateString(
-    undefined,
-    d.getFullYear() === now.getFullYear()
-      ? { month: 'short', day: 'numeric' }
-      : { dateStyle: 'medium' },
-  );
-}
 
 export function NoteList({
   notes,
@@ -43,6 +28,7 @@ export function NoteList({
   onSelect(id: string): void;
   empty: string;
 }): JSX.Element {
+  const now = useNow();
   const box = useRef<HTMLUListElement>(null);
   useEffect(() => {
     box.current?.querySelector('.note-row-on')?.scrollIntoView({ block: 'nearest' });
@@ -66,7 +52,7 @@ export function NoteList({
           n.subtitle && <span className="note-row-sub">{n.subtitle}</span>
         )}
         <span className="note-row-meta">
-          <span>{when(n.modified)}</span>
+          <span title={`Modified ${fullDate(n.modified)}`}>{ago(n.modified, now)}</span>
           {n.todos > 0 && <span className="note-meta-chip">{n.todos} to do</span>}
           {(n.hasImages || n.hasFiles) && (
             <span className="note-meta-chip">{n.hasImages ? 'image' : 'file'}</span>
@@ -111,7 +97,10 @@ export function InfoPanel({
   onOpen,
   onLink,
   onClose,
+  note,
 }: {
+  /** The open note's dates and where it came from. */
+  note: { created: string; modified: string; source?: string };
   headings: Heading[];
   backlinks: { id: string; title: string; subtitle: string }[];
   /** Undefined while loading. */
@@ -123,6 +112,7 @@ export function InfoPanel({
   onOpen(id: string): void;
   onClose(): void;
 }): JSX.Element {
+  const now = useNow();
   const words = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’_-]*/gu)?.length ?? 0;
   const top = Math.min(...headings.map((h) => h.level), 6);
   return (
@@ -193,6 +183,21 @@ export function InfoPanel({
         )}
       </section>
       <section>
+        <h3>Details</h3>
+        <dl className="stats">
+          <dt>Created</dt>
+          <dd title={ago(note.created, now)}>{fullDate(note.created)}</dd>
+          <dt>Modified</dt>
+          <dd title={fullDate(note.modified)}>{ago(note.modified, now)}</dd>
+          {sourceLabel(note.source) && (
+            <>
+              <dt>Source</dt>
+              <dd>{sourceLabel(note.source)}</dd>
+            </>
+          )}
+        </dl>
+      </section>
+      <section>
         <h3>Statistics</h3>
         <dl className="stats">
           <dt>Words</dt>
@@ -217,7 +222,10 @@ export function QuickOpen<T>({
   onPick,
   onCreate,
   onClose,
+  empty = 'Nothing matches.',
 }: {
+  /** What an empty list says. */
+  empty?: string;
   items: T[];
   label: string;
   placeholder: string;
@@ -274,7 +282,9 @@ export function QuickOpen<T>({
           }}
         />
         <ul className="palette-list" role="listbox">
-          {total === 0 && <li className="palette-empty">Nothing matches.</li>}
+          {total === 0 && (
+            <li className="palette-empty">{items.length === 0 ? empty : 'Nothing matches.'}</li>
+          )}
           {results.map((r, i) => (
             <li key={i}>
               <button
@@ -463,6 +473,7 @@ export function NotesSettingsPage({
   onHiddenTags,
   onAutoApply,
   onImport,
+  onExportAll,
   onChangeModel,
 }: {
   vault: string;
@@ -475,6 +486,7 @@ export function NotesSettingsPage({
   onHiddenTags(tags: string[]): void;
   onAutoApply(on: boolean): void;
   onImport(): void;
+  onExportAll(): void;
   onChangeModel(): void;
 }): JSX.Element {
   return (
@@ -499,6 +511,14 @@ export function NotesSettingsPage({
         >
           <button className="btn btn-sm" onClick={onImport}>
             Import…
+          </button>
+        </SettingsRow>
+        <SettingsRow
+          label="Export all notes"
+          hint="Every note as a Markdown file, with its images, in one .zip — the trash left out. Folders and front matter as they are, so any Markdown app can open it."
+        >
+          <button className="btn btn-sm" onClick={onExportAll}>
+            Export…
           </button>
         </SettingsRow>
       </SettingsGroup>

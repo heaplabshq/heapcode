@@ -35,7 +35,7 @@ export async function importMarkdownFolder(
   source: string,
   opts: ImportOptions = {},
 ): Promise<ImportResult> {
-  return importFolder(vault, source, opts, { allFiles: false });
+  return importFolder(vault, source, opts, { allFiles: false, source: 'markdown' });
 }
 
 /**
@@ -49,14 +49,15 @@ export async function importObsidian(
   source: string,
   opts: ImportOptions = {},
 ): Promise<ImportResult> {
-  return importFolder(vault, source, opts, { allFiles: true });
+  return importFolder(vault, source, opts, { allFiles: true, source: 'obsidian' });
 }
 
 async function importFolder(
   vault: Vault,
   source: string,
   opts: ImportOptions,
-  mode: { allFiles: boolean },
+  /** `source` is written into each note, unless it says where it came from already. */
+  mode: { allFiles: boolean; source: string },
 ): Promise<ImportResult> {
   const src = resolve(source);
   const st = await stat(src).catch(() => null);
@@ -91,7 +92,7 @@ async function importFolder(
       vault.root,
       joinRel(into, dir === '.' ? '' : dir),
       basename(rel, extname(rel)),
-      withIdentity(text, times.birthtime),
+      withIdentity(text, times.birthtime, mode.source),
       times,
     );
     if (!placed) result.skipped.push({ source: rel, reason: "front matter isn't valid YAML" });
@@ -202,6 +203,7 @@ export async function importBear(
     const text = updateFrontMatter(content.endsWith('\n') ? content : `${content}\n`, {
       id: note.id,
       ...(created ? { created: created.toISOString() } : {}),
+      source: 'bear',
       ...(note.pins?.includes('global') ? { pinned: true } : {}),
       ...(note.location === 'archive' ? { archived: true } : {}),
       ...(trashed ? { trashed: (modified ?? new Date()).toISOString() } : {}),
@@ -234,7 +236,7 @@ export async function importBearExport(
   const st = await stat(src).catch(() => null);
   if (!st?.isDirectory()) throw new NoteError('not_found', `${source} isn't a folder.`);
   const into = intoFolder(vault, opts.into);
-  const result = await importFolder(vault, src, opts, { allFiles: false });
+  const result = await importFolder(vault, src, opts, { allFiles: false, source: 'bear' });
 
   for (const bundle of await findBundles(src)) {
     const textFile = ['text.md', 'text.markdown', 'text.txt']
@@ -259,7 +261,7 @@ export async function importBearExport(
       vault.root,
       into,
       fileStem(parseNote(text).title || name),
-      withIdentity(text, times.birthtime),
+      withIdentity(text, times.birthtime, 'bear'),
       times,
     );
     result.notes++;
@@ -279,14 +281,15 @@ async function exists(vault: Vault, id: string): Promise<boolean> {
   }
 }
 
-/** Add `id` and `created` unless the note has them. Broken front matter is left as it is. */
-function withIdentity(text: string, birth: Date): string | null {
+/** Add `id`, `created` and `source` unless the note has them. Broken front matter is left as it is. */
+function withIdentity(text: string, birth: Date, source: string): string | null {
   const fm = readFrontMatter(text);
   if (fm.invalid) return null;
   const patch: Record<string, unknown> = {};
   if (fm.data.id === undefined) patch.id = randomUUID().toUpperCase();
   if (fm.data.created === undefined && !Number.isNaN(birth.getTime()))
     patch.created = birth.toISOString();
+  if (fm.data.source === undefined) patch.source = source;
   return Object.keys(patch).length ? updateFrontMatter(text, patch) : text;
 }
 

@@ -28,6 +28,8 @@ export const NOTES_METHODS = {
   create: 'notes/create',
   /** A [[link]] was followed: its note, made first if there is none (as Bear does). */
   followLink: 'notes/followLink',
+  /** What a [[link]] points at, for its hover preview — never makes a note: `{ target }`. */
+  peek: 'notes/peek',
   pin: 'notes/pin',
   archive: 'notes/archive',
   trash: 'notes/trash',
@@ -43,6 +45,20 @@ export const NOTES_METHODS = {
   browseFolders: 'notes/browseFolders',
   setVault: 'notes/setVault',
   saveSettings: 'notes/saveSettings',
+  /** A note's earlier versions, newest first. */
+  /** Notes tagged #template, by title. */
+  templates: 'notes/templates',
+  /** A new note from a template: `{ id }` → the opened note. */
+  fromTemplate: 'notes/fromTemplate',
+  /** Make a note a template, or stop: adds or removes #template. `{ id, on }` */
+  setTemplate: 'notes/setTemplate',
+  versions: 'notes/versions',
+  /** One version's text: `{ id, version }`. */
+  version: 'notes/version',
+  /** Put a version back (what's there now becomes a version too). */
+  restoreVersion: 'notes/restoreVersion',
+  /** A .zip (or one .md) of a note, or of the whole vault: `{ filename, base64 }`. */
+  exportNotes: 'notes/export',
   /** Host → page: something in the vault changed on disk. */
   changed: 'notes/changed',
   /** Host → page: show this note — an agent called open_note. */
@@ -106,6 +122,8 @@ export interface NoteOpenResult {
   hash: string;
   outline: { address: string; level: number; heading: string; offset: number }[];
   backlinks: { id: string; title: string; subtitle: string }[];
+  /** Where the note came from — `bear`, `obsidian`, `ask`, `mcp`, `terminal`…; absent when written here. */
+  source?: string;
 }
 
 export type InlineAction =
@@ -145,3 +163,6 @@ export interface NotesChanged {
 export type NotesImportKind = 'markdown' | 'obsidian' | 'bear';
 
 export type { UiBrowseFoldersResult, UiWorkspacesResult } from '@heapcode/web-host/protocol';
+
+/** One earlier version of a note — type only: history.ts itself is Node's. */
+export type { NoteVersion } from './history.js';

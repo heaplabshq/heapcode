@@ -48,6 +48,9 @@ interface Props {
   /** The open note, when questions are about it ("summarize this"). */
   about?: { title: string };
   onClearAbout?(): void;
+  /** Ask over a tag: only notes with it are searched. */
+  scopeTag?: string;
+  onClearScope?(): void;
   /** Changes apply without a card — the person chose "Always apply". */
   autoApply: boolean;
   onAutoApply(on: boolean): void;
@@ -73,6 +76,8 @@ export function AskPanel({
   settingsVersion,
   about,
   onClearAbout,
+  scopeTag,
+  onClearScope,
   autoApply,
   onAutoApply,
 }: Props): JSX.Element {
@@ -236,6 +241,25 @@ export function AskPanel({
           }}
         />
       </div>
+      {scopeTag && (
+        <div
+          className="ask-about"
+          title="Questions search only notes with this tag (and its subtags)"
+        >
+          <span>
+            Within <strong>#{scopeTag}</strong>
+          </span>
+          {onClearScope && (
+            <button
+              className="btn btn-quiet btn-sm"
+              onClick={onClearScope}
+              aria-label="Ask about all notes instead"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      )}
       {about && (
         <div className="ask-about" title="Questions like “summarize this” mean this note">
           <span>

@@ -15,3 +15,6 @@ export * from './focus.js';
 export * from './ask.js';
 export * from './related.js';
 export * from './inline.js';
+export * from './zip.js';
+export * from './history.js';
+export * from './templates.js';

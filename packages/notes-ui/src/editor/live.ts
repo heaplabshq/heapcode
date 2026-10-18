@@ -12,9 +12,11 @@ import {
   EditorView,
   ViewPlugin,
   WidgetType,
+  hoverTooltip,
   type DecorationSet,
   type ViewUpdate,
 } from '@codemirror/view';
+import { renderMarkdown } from '@heapcode/web-ui/markdown';
 import { toggleTaskAt } from './commands.js';
 import { wikiTarget } from './markup.js';
 import { imagesInLine, withWidth } from './images.js';
@@ -34,6 +36,10 @@ export interface NoteContext {
   openLink(target: string): void;
   openTag(tag: string): void;
   openUrl(url: string): void;
+  /** The note a [[link]] points at, for its hover preview; null when there's none. */
+  peek?(
+    target: string,
+  ): Promise<{ title: string; path: string; content: string; more: boolean } | null>;
 }
 
 export const noteContext = Facet.define<NoteContext, NoteContext>({
@@ -361,10 +367,11 @@ function buildInline(view: EditorView): DecorationSet {
           const textTo = marks[1]?.from ?? node.to;
           if (textTo > textFrom)
             out.push(
-              Decoration.mark({ class: 'cm-link', attributes: { 'data-href': href } }).range(
-                textFrom,
-                textTo,
-              ),
+              Decoration.mark({
+                // A file in the vault (a PDF, a sheet) reads as one, not as a web link.
+                class: isVaultFile(href) ? 'cm-link cm-filelink' : 'cm-link',
+                attributes: { 'data-href': href },
+              }).range(textFrom, textTo),
             );
           if (!editing(node.from, node.to) && marks.length >= 2) {
             out.push(hidden.range(node.from, textFrom));
@@ -431,6 +438,12 @@ const inlinePlugin = ViewPlugin.fromClass(
   },
   { decorations: (v) => v.decorations },
 );
+
+/** A link to a file beside the notes — not a web address, an anchor or another note. */
+export function isVaultFile(href: string): boolean {
+  const h = href.replace(/^<|>$/g, '').trim();
+  return !!h && !/^[a-z][a-z0-9+.-]*:/i.test(h) && !h.startsWith('#') && !/\.md$/i.test(h);
+}
 
 /** Where an image's `src` points: a vault file through the host, or an https URL. */
 export function imageSrc(
@@ -535,6 +548,55 @@ const clicks = EditorView.domEventHandlers({
   },
 });
 
+/**
+ * Hover a [[link]] and the note it points at shows under it — Obsidian's
+ * page preview — so you can check what a link says without leaving.
+ */
+const linkPreview = hoverTooltip(
+  async (view, pos) => {
+    const ctx = view.state.facet(noteContext);
+    if (!ctx.peek) return null;
+    let node = syntaxTree(view.state).resolveInner(pos, 1);
+    while (node.parent && node.name !== 'WikiLink') node = node.parent;
+    if (node.name !== 'WikiLink' || view.state.sliceDoc(node.from, node.from + 1) === '!')
+      return null;
+    const target = wikiTarget(view.state.sliceDoc(node.from, node.to));
+    const note = await ctx.peek(target).catch(() => null);
+    return {
+      pos: node.from,
+      end: node.to,
+      above: false,
+      create: () => {
+        const dom = document.createElement('div');
+        dom.className = 'cm-peek';
+        if (!note) {
+          dom.classList.add('cm-peek-none');
+          dom.textContent = `No note “${target}” yet — click to make it.`;
+          return { dom };
+        }
+        const body = document.createElement('div');
+        body.className = 'cm-peek-body';
+        body.innerHTML = renderMarkdown(note.content + (note.more ? '\n\n…' : ''), {
+          highlight: false,
+          wikiLinks: true,
+        });
+        const dir = note.path.split('/').slice(0, -1).join('/');
+        for (const img of body.querySelectorAll('img')) {
+          const src = imageSrc(img.getAttribute('src') ?? '', {
+            dir,
+            attachmentBase: ctx.attachmentBase,
+          });
+          if (src) img.src = src;
+          else img.remove();
+        }
+        dom.appendChild(body);
+        return { dom };
+      },
+    };
+  },
+  { hoverTime: 350 },
+);
+
 export function liveRendering(): Extension {
-  return [inlinePlugin, images, clicks];
+  return [inlinePlugin, images, clicks, linkPreview];
 }

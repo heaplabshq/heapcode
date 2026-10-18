@@ -90,6 +90,8 @@ export interface NotesPersonaOptions {
   hiddenPaths?(): Promise<string[]>;
   /** The note open in the editor, when the person is asking about it. */
   openNote?(): string | undefined;
+  /** A tag the person is asking over: only notes with it are visible. */
+  scopeTag?(): string | undefined;
   /** Make changes without asking each time — the person switched Apply off. */
   autoApply?(): boolean;
 }
@@ -169,15 +171,26 @@ export function notesPersona(opts: NotesPersonaOptions): ChatPersona {
     async turnContext() {
       // Called once per question: the count of changes starts again.
       changesMade = 0;
+      const parts: string[] = [];
+      const tag = opts.scopeTag?.();
+      if (tag)
+        parts.push(
+          `The person is asking about their notes tagged ${formatTag(tag)} (subtags included). Only those notes are visible to you for this question — search and answer within them, and say so if the answer isn't there.`,
+        );
       const id = opts.openNote?.();
-      if (!id) return undefined;
-      // Through the assistant's own view: a hidden note isn't named, even here.
-      const note = await opts
-        .vault()
-        .get({ id })
-        .catch(() => undefined);
-      if (!note || note.location === 'trash') return undefined;
-      return `The person has the note "${note.title}" (id ${note.id}) open. "This note", "this", "here" and "it" mean that note unless they say otherwise — read it with read_note before answering about it.`;
+      // Through the assistant's own view: a hidden note — or one outside the
+      // tag — isn't named, even here.
+      const note = id
+        ? await opts
+            .vault()
+            .get({ id })
+            .catch(() => undefined)
+        : undefined;
+      if (note && note.location !== 'trash')
+        parts.push(
+          `The person has the note "${note.title}" (id ${note.id}) open. "This note", "this", "here" and "it" mean that note unless they say otherwise — read it with read_note before answering about it.`,
+        );
+      return parts.length ? parts.join('\n') : undefined;
     },
     permission: (call) =>
       // Over the limit the call is refused in `execute`; no card for that.

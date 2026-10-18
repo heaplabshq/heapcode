@@ -6,6 +6,8 @@ import type { RpcPeer } from '@heapcode/core';
 import { listFolders, type HostSession } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
 import { noteHits, notesPersona } from './ask.js';
+import { zip } from './zip.js';
+import { TEMPLATE_TAG, fillTemplate } from './templates.js';
 import { closeEnough, relatedNotes } from './related.js';
 import { cleanInline, inlineMessages } from './inline.js';
 import { NoteError } from './errors.js';
@@ -78,6 +80,9 @@ export class NotesSession implements HostSession {
   private current: Vault | undefined;
   /** The assistant's view of it, with the hidden tags scoped out. */
   private aiView: Vault | undefined;
+  /** Ask over one tag: its questions see only notes with it (and subtags). */
+  private askTag: string | undefined;
+  private tagView: Vault | undefined;
   /** "Ask your notes": Heap Chat's session with the notes persona. */
   private readonly ask: ChatSession | undefined;
   private reindexTimer: ReturnType<typeof setTimeout> | undefined;
@@ -100,7 +105,8 @@ export class NotesSession implements HostSession {
           root,
           basePath: deps.basePath,
           persona: notesPersona({
-            vault: () => this.assistantVault(),
+            vault: () => this.askVault(),
+            scopeTag: () => this.askTag,
             hiddenTags: () => this.hiddenTags(),
             hiddenPaths: () => this.hiddenPaths(),
             openNote: () => this.askAboutId,
@@ -134,6 +140,7 @@ export class NotesSession implements HostSession {
     this.watch(vault);
     this.current = vault;
     this.aiView = undefined;
+    this.tagView = undefined;
     return vault;
   }
 
@@ -200,6 +207,9 @@ export class NotesSession implements HostSession {
     });
     on(NOTES_METHODS.askAbout, async (p) => {
       this.askAboutId = typeof p.id === 'string' && p.id ? p.id : undefined;
+      const tag = typeof p.tag === 'string' && p.tag ? p.tag : undefined;
+      if (tag !== this.askTag) this.tagView = undefined;
+      this.askTag = tag;
       return { ok: true };
     });
     on(NOTES_METHODS.inlineCancel, async (p) => {
@@ -243,6 +253,19 @@ export class NotesSession implements HostSession {
       // Bear's new note: an empty title line, the cursor on it, and the tag you were in.
       const text = typeof p.text === 'string' ? p.text : `# \n${tag ? `${formatTag(tag)}\n` : ''}`;
       return this.open(await v(), { id: (await (await v()).createRaw(text)).id });
+    });
+    on(NOTES_METHODS.peek, async (p) => {
+      const vault = await v();
+      const hit = await vault.resolveLink(str(p.target));
+      if (!hit) return null;
+      const read = await vault.read({ id: hit.id }, { limit: 1500 });
+      return {
+        id: hit.id,
+        title: read.title,
+        path: hit.path,
+        content: read.content,
+        more: read.totalLength > read.content.length,
+      };
     });
     on(NOTES_METHODS.followLink, async (p) => {
       const vault = await v();
@@ -299,6 +322,60 @@ export class NotesSession implements HostSession {
       await this.ask?.setFolder(path).catch(() => undefined);
       return this.state();
     });
+    on(NOTES_METHODS.templates, async () => {
+      const page = await (
+        await v()
+      ).list({ tag: TEMPLATE_TAG, limit: 500, sort: [{ field: 'title', direction: 'asc' }] });
+      return { templates: page.notes.map((n) => ({ id: n.id, title: n.title, tags: n.tags })) };
+    });
+    on(NOTES_METHODS.setTemplate, async (p) => {
+      const vault = await v();
+      const ref = { id: str(p.id) };
+      return p.on === false ? vault.removeTag(ref, TEMPLATE_TAG) : vault.addTag(ref, TEMPLATE_TAG);
+    });
+    on(NOTES_METHODS.fromTemplate, async (p) => {
+      const vault = await v();
+      const template = await vault.read({ id: str(p.id) });
+      const tag = typeof p.tag === 'string' && p.tag ? `\n${formatTag(p.tag)}` : '';
+      const body = fillTemplate(template.content);
+      // The tag you were in comes along, as it does for a plain new note.
+      const lines = body.split('\n');
+      const text =
+        tag && !body.includes(formatTag(String(p.tag)))
+          ? [lines[0], tag.slice(1), ...lines.slice(1)].join('\n')
+          : body;
+      return this.open(vault, { id: (await vault.createRaw(text)).id });
+    });
+    on(NOTES_METHODS.versions, async (p) => ({
+      versions: await (await v()).versions({ id: str(p.id) }),
+    }));
+    on(NOTES_METHODS.version, async (p) =>
+      (await v()).readVersion({ id: str(p.id) }, str(p.version)),
+    );
+    on(NOTES_METHODS.restoreVersion, async (p) => {
+      const vault = await v();
+      await vault.restoreVersion({ id: str(p.id) }, str(p.version));
+      return this.open(vault, { id: str(p.id) });
+    });
+    on(NOTES_METHODS.exportNotes, async (p) => {
+      const vault = await v();
+      const id = typeof p.id === 'string' && p.id ? p.id : undefined;
+      const files = await vault.exportFiles(id ? { id } : undefined);
+      const stamp = new Date().toISOString().slice(0, 10);
+      if (id) {
+        const note = await vault.get({ id });
+        const name = fileName(note.title || 'Untitled');
+        // A note on its own is just its file; with images, the images come too.
+        if (files.length === 1)
+          return { filename: `${name}.md`, base64: files[0]!.data.toString('base64') };
+        return { filename: `${name}.zip`, base64: zip(files).toString('base64') };
+      }
+      const folder = fileName(vault.root.split(/[\\/]/).pop() || 'Notes');
+      return {
+        filename: `${folder} ${stamp}.zip`,
+        base64: zip(files.map((f) => ({ ...f, path: `${folder}/${f.path}` }))).toString('base64'),
+      };
+    });
     on(NOTES_METHODS.saveSettings, async (p) => {
       if (typeof p.fontSize === 'number' && p.fontSize >= 10 && p.fontSize <= 32)
         writeNotesSettings({ fontSize: Math.round(p.fontSize) });
@@ -310,6 +387,7 @@ export class NotesSession implements HostSession {
             .filter(Boolean),
         });
         this.aiView = undefined;
+        this.tagView = undefined;
         this.lastHidden = '';
         await this.pushHiddenPaths().catch(() => undefined);
       }
@@ -400,11 +478,21 @@ export class NotesSession implements HostSession {
     return readNotesSettings().aiHiddenTags ?? DEFAULT_AI_HIDDEN_TAGS;
   }
 
+  /** What Ask sees: the assistant's vault, narrowed to one tag when asked over it. */
+  private askVault(): Vault {
+    if (!this.askTag) return this.assistantVault();
+    this.tagView ??= this.current!.scoped(
+      { excludeTags: this.hiddenTags(), onlyTags: [this.askTag] },
+      'ask',
+    );
+    return this.tagView;
+  }
+
   /** The vault as the assistant sees it: hidden tags scoped out. */
   private assistantVault(): Vault {
     if (!this.current)
       throw new NoteError('io', 'The notes are still opening; try again in a moment.');
-    this.aiView ??= this.current.scoped({ excludeTags: this.hiddenTags() });
+    this.aiView ??= this.current.scoped({ excludeTags: this.hiddenTags() }, 'ask');
     return this.aiView;
   }
 
@@ -439,6 +527,7 @@ export class NotesSession implements HostSession {
     this.unsubscribe?.();
     this.current = undefined;
     this.aiView = undefined;
+    this.tagView = undefined;
     const vault = await this.vault.catch(() => undefined);
     vault?.close();
   }
@@ -525,6 +614,7 @@ export class NotesSession implements HostSession {
         offset: s.offset,
       })),
       backlinks: backlinks.map((b) => ({ id: b.id, title: b.title, subtitle: b.subtitle })),
+      ...(note.source ? { source: note.source } : {}),
     };
   }
 
@@ -560,4 +650,14 @@ export class NotesSession implements HostSession {
 function str(v: unknown): string {
   if (typeof v !== 'string' || !v) throw new NoteError('invalid_argument', 'Missing argument.');
   return v;
+}
+
+/** A title as a file name anywhere: no path separators or characters Windows refuses. */
+function fileName(title: string): string {
+  return (
+    title
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
+      .trim()
+      .slice(0, 120) || 'Untitled'
+  );
 }

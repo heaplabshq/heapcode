@@ -14,6 +14,7 @@ import {
 import { join, posix, relative, resolve, sep } from 'node:path';
 import { projectStateDir } from '@heapcode/core/node';
 import { NoteError } from './errors.js';
+import { NoteHistory, type NoteVersion } from './history.js';
 import { readFrontMatter, updateFrontMatter } from './frontMatter.js';
 import {
   NoteIndex,
@@ -51,6 +52,17 @@ export interface VaultOptions {
   now?: () => Date;
   /** How old the index may be before a read rescans the folder. Default 1s. */
   staleMs?: number;
+  /**
+   * Written as `source` into notes this vault creates — `ask`, `mcp`,
+   * `terminal` — so a note says where it came from. Unset in the app: a
+   * note without a source was written there.
+   */
+  origin?: string;
+  /**
+   * Where earlier versions of notes are kept (history.ts). Defaults beside
+   * the index; none with an in-memory index (tests) unless given.
+   */
+  historyDir?: string;
 }
 
 export interface NoteSummary {
@@ -113,6 +125,8 @@ export interface WriteGuard {
   section?: string;
   /** Which match, when a section address repeats. */
   index?: number;
+  /** Keep the text being replaced as a version, however recent the last one (a restore). */
+  snapshot?: string;
 }
 
 export interface EditArgs extends WriteGuard {
@@ -177,13 +191,22 @@ export class Vault {
     };
     this.now = opts.now ?? (() => new Date());
     this.staleMs = opts.staleMs ?? 1000;
+    this.history = opts.historyDir ? new NoteHistory(opts.historyDir, this.now) : undefined;
   }
+
+  private readonly history: NoteHistory | undefined;
 
   static async open(opts: VaultOptions): Promise<Vault> {
     const root = resolve(opts.root);
     await mkdir(root, { recursive: true });
     const indexFile = opts.indexFile ?? join(projectStateDir(root), 'notes-index.db');
-    const vault = new Vault(opts, NoteIndex.open(indexFile));
+    const historyDir =
+      opts.historyDir ??
+      (indexFile === ':memory:' ? undefined : join(projectStateDir(root), 'notes-history'));
+    const vault = new Vault(
+      { ...opts, ...(historyDir ? { historyDir } : {}) },
+      NoteIndex.open(indexFile),
+    );
     await vault.refresh(true);
     return vault;
   }
@@ -199,8 +222,10 @@ export class Vault {
    * with `#private` hidden. Shares the index and the write lock; closing it
    * closes nothing, so it lives as long as the vault it came from.
    */
-  scoped(scope: Visibility): Vault {
-    return new Vault({ ...this.opts, scope }, this.index, { lock: this.lock });
+  scoped(scope: Visibility, origin?: string): Vault {
+    return new Vault({ ...this.opts, scope, ...(origin ? { origin } : {}) }, this.index, {
+      lock: this.lock,
+    });
   }
 
   // ── Indexing ────────────────────────────────────────────────────────────
@@ -426,12 +451,18 @@ export class Vault {
     return { notes: rows.map((r) => this.summary(r)), total };
   }
 
-  async get(
-    ref: NoteRef,
-  ): Promise<
-    NoteSummary & { backlinks: number; links: { target: string; heading?: string; id?: string }[] }
+  async get(ref: NoteRef): Promise<
+    NoteSummary & {
+      backlinks: number;
+      links: { target: string; heading?: string; id?: string }[];
+      /** Where the note came from (`bear`, `ask`, …); absent when written in the app. */
+      source?: string;
+    }
   > {
     const row = await this.resolve(ref);
+    const { text } = await this.load(row);
+    const fm = readFrontMatter(text);
+    const source = typeof fm.data.source === 'string' ? fm.data.source : undefined;
     const links = this.index.linksOf(row.rowid).map((l) => {
       const hits = this.index.resolveLink(l.target, this.scope);
       return {
@@ -440,7 +471,12 @@ export class Vault {
         ...(hits.length === 1 ? { id: hits[0]!.id } : {}),
       };
     });
-    return { ...this.summary(row), backlinks: this.index.backlinks(row, this.scope).length, links };
+    return {
+      ...this.summary(row),
+      backlinks: this.index.backlinks(row, this.scope).length,
+      links,
+      ...(source ? { source } : {}),
+    };
   }
 
   async read(
@@ -592,6 +628,7 @@ export class Vault {
     const text = updateFrontMatter(body, {
       id,
       created: this.now().toISOString(),
+      ...(this.opts.origin ? { source: this.opts.origin } : {}),
       ...(args.pinned ? { pinned: true } : {}),
     });
 
@@ -616,6 +653,29 @@ export class Vault {
   /** Replace the body (or one section). The front matter — id, pins — is kept. */
   async overwrite(ref: NoteRef, content: string, opts: WriteGuard = {}): Promise<NoteSummary> {
     return this.modify(ref, opts, overwriteChange(content));
+  }
+
+  /** The note's earlier versions, newest first — empty where none are kept. */
+  async versions(ref: NoteRef): Promise<NoteVersion[]> {
+    const row = await this.resolve(ref);
+    return this.history ? this.history.list(row.id) : [];
+  }
+
+  /** One earlier version's body (no front matter), to show or compare. */
+  async readVersion(ref: NoteRef, version: string): Promise<{ content: string } & NoteVersion> {
+    const row = await this.resolve(ref);
+    const text = this.history && (await this.history.read(row.id, version));
+    const meta =
+      text !== undefined && (await this.history!.list(row.id)).find((v) => v.version === version);
+    if (text === undefined || !text || !meta)
+      throw new NoteError('not_found', 'That version is no longer kept.');
+    return { ...meta, content: text.slice(parseNote(text).bodyStart) };
+  }
+
+  /** Put an earlier version back. What's there now is kept as a version first, so this undoes too. */
+  async restoreVersion(ref: NoteRef, version: string): Promise<NoteSummary> {
+    const { content } = await this.readVersion(ref, version);
+    return this.modify(ref, { snapshot: 'restore' }, overwriteChange(content));
   }
 
   /**
@@ -831,6 +891,35 @@ export class Vault {
 
   // ── Attachments ─────────────────────────────────────────────────────────
 
+  /**
+   * Files for an export, as they sit in the folder: one note and the files
+   * it shows, or — with no ref — every note and file outside the trash.
+   * The whole vault is only for its owner: a scoped vault (the MCP's, the
+   * assistant's) can export single notes it can see, never everything.
+   */
+  async exportFiles(ref?: NoteRef): Promise<{ path: string; data: Buffer; modified: Date }[]> {
+    let paths: string[];
+    if (ref) {
+      const row = await this.resolve(ref);
+      paths = [row.path, ...(await this.listAttachments(ref)).map((a) => a.path)];
+    } else {
+      if (this.scope.excludeTags?.length || this.scope.onlyTags?.length)
+        throw new NoteError('invalid_argument', 'Export one note at a time here.');
+      const { notes, files } = await walk(this.root);
+      paths = [...notes.keys(), ...files].filter((p) => !p.startsWith(`${TRASH}/`)).sort();
+    }
+    const out: { path: string; data: Buffer; modified: Date }[] = [];
+    for (const p of paths) {
+      const file = this.abs(p);
+      const [data, st] = await Promise.all([
+        readFile(file).catch(() => undefined),
+        stat(file).catch(() => undefined),
+      ]);
+      if (data) out.push({ path: p, data, modified: st?.mtime ?? new Date() });
+    }
+    return out;
+  }
+
   async listAttachments(ref: NoteRef): Promise<Attachment[]> {
     const row = await this.resolve(ref);
     const { parsed } = await this.load(row);
@@ -1007,6 +1096,15 @@ export class Vault {
       const { parsed, next: changed, text } = await this.compute(row, guard, change);
       if (changed === text) return this.summary(row);
       const next = this.withId(changed, row);
+      // What it was, before anything else changes it. A failure here never
+      // stops the write: losing a version is better than losing the edit.
+      const by = guard.snapshot ?? this.opts.origin;
+      await this.history
+        ?.keep(row.id, text, {
+          ...(by ? { by } : {}),
+          force: !!by,
+        })
+        .catch(() => undefined);
       const nextParsed = parseNote(next);
       await atomicWrite(this.abs(row.path), next);
       let path = row.path;

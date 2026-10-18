@@ -158,6 +158,23 @@ describe('the notes persona', () => {
     expect(hidden.isError).toBe(true);
   });
 
+  it('asked over a tag, sees only notes with it, and says so', async () => {
+    put('Trip.md', '---\nid: TRIP\n---\n# Trip\n#travel/japan\nKyoto launch.\n');
+    const p = notesPersona({
+      vault: () => vault.scoped({ excludeTags: ['private'], onlyTags: ['travel'] }, 'ask'),
+      hiddenTags: () => ['private'],
+      scopeTag: () => 'travel',
+      openNote: () => 'PLAN',
+    });
+    const context = await p.turnContext!();
+    expect(context).toMatch(/tagged #travel/);
+    // The open note isn't in the tag, so it isn't named either.
+    expect(context).not.toMatch(/Plan/);
+    const search = await p.execute(call('search_notes', { query: 'launch' }), noSearch);
+    expect(JSON.parse(search.content).notes.map((n: { id: string }) => n.id)).toEqual(['TRIP']);
+    expect((await p.execute(call('read_note', { id: 'PLAN' }), noSearch)).isError).toBe(true);
+  });
+
   it('says what is hidden in its prompt, and cites notes as links', () => {
     const prompt = persona().systemPrompt();
     expect(prompt).toContain('#private');

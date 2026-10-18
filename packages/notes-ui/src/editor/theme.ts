@@ -29,7 +29,21 @@ const base = EditorView.theme({
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': {
     background: 'color-mix(in srgb, var(--accent) 22%, transparent) !important',
   },
-  '.cm-h': { fontWeight: '700', lineHeight: '1.3' },
+  '.cm-h': { fontWeight: '700', lineHeight: '1.3', position: 'relative' },
+  // `###` as a small label in the margin, as Bear does; takes no room in the line.
+  '.cm-hlabel': {
+    position: 'absolute',
+    right: '100%',
+    marginRight: '8px',
+    bottom: '0.3em',
+    fontSize: '11px',
+    fontWeight: '600',
+    lineHeight: '1',
+    color: 'var(--text-dim)',
+    opacity: '0.7',
+    fontFamily: 'var(--sans)',
+    whiteSpace: 'nowrap',
+  },
   '.cm-h1': { fontSize: '1.75em', paddingTop: '0.4em' },
   '.cm-h2': { fontSize: '1.4em', paddingTop: '0.5em' },
   '.cm-h3': { fontSize: '1.2em', paddingTop: '0.4em' },

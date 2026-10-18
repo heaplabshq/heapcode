@@ -46,25 +46,29 @@ export const noteContext = Facet.define<NoteContext, NoteContext>({
     },
 });
 
+/** Inline marks that hide once the cursor leaves their span. */
 const HIDE_WHEN_IDLE = new Set([
   'EmphasisMark',
   'StrikethroughMark',
   'HighlightMark',
   'UnderlineMark',
   'WikiLinkMark',
-  'QuoteMark',
 ]);
 
-/** Lines the cursor or selection touches, while the editor has focus. */
-function activeLines(state: EditorState, focused: boolean): Set<number> {
-  const lines = new Set<number>();
-  if (!focused) return lines;
-  for (const r of state.selection.ranges) {
-    const a = state.doc.lineAt(r.from).number;
-    const b = state.doc.lineAt(r.to).number;
-    for (let n = a; n <= b; n++) lines.add(n);
-  }
-  return lines;
+/**
+ * Whether the cursor or a selection is in `from..to` (ends included), while
+ * the editor has focus. Markup shows only for the element being edited — as
+ * in Bear, Obsidian's live preview and Typora — so `### ` turns into a
+ * heading as soon as you type its first letter, not when you leave the line.
+ */
+function touching(state: EditorState, focused: boolean, from: number, to: number): boolean {
+  if (!focused) return false;
+  return state.selection.ranges.some((r) => r.from <= to && r.to >= from);
+}
+
+/** The mark plus the one space after it — `### `, `- `, `> `. */
+function withSpace(state: EditorState, to: number): number {
+  return state.sliceDoc(to, to + 1) === ' ' ? to + 1 : to;
 }
 
 class CheckboxWidget extends WidgetType {
@@ -88,6 +92,23 @@ class CheckboxWidget extends WidgetType {
   }
   override ignoreEvent(): boolean {
     return true;
+  }
+}
+
+/** `###` as Bear shows it: a small "H3" in the margin, beside the heading. */
+class HeadingLabel extends WidgetType {
+  constructor(readonly level: number) {
+    super();
+  }
+  override eq(other: HeadingLabel): boolean {
+    return other.level === this.level;
+  }
+  toDOM(): HTMLElement {
+    const s = document.createElement('span');
+    s.className = 'cm-hlabel';
+    s.textContent = `H${this.level}`;
+    s.setAttribute('aria-hidden', 'true');
+    return s;
   }
 }
 
@@ -138,9 +159,8 @@ const hidden = Decoration.replace({});
 
 function buildInline(view: EditorView): DecorationSet {
   const { state } = view;
-  const active = activeLines(state, view.hasFocus);
   const out: Range<Decoration>[] = [];
-  const isActive = (pos: number) => active.has(state.doc.lineAt(pos).number);
+  const editing = (from: number, to: number) => touching(state, view.hasFocus, from, to);
 
   for (const { from, to } of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -158,24 +178,33 @@ function buildInline(view: EditorView): DecorationSet {
           return;
         }
         if (name === 'HeaderMark' && node.node.parent?.name.startsWith('ATXHeading')) {
-          if (!isActive(node.from)) {
-            const end = state.sliceDoc(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
-            out.push(hidden.range(node.from, end));
+          // Only the closing `###` some write after a heading has text before it.
+          if (node.from > state.doc.lineAt(node.from).from) {
+            if (!editing(node.from, node.to)) out.push(hidden.range(node.from, node.to));
+            return;
           }
+          const end = withSpace(state, node.to);
+          // Raw while the cursor is in `### ` itself; otherwise a margin label.
+          if (end > node.to && !editing(node.from, end)) {
+            const level = Number(/^ATXHeading(\d)$/.exec(node.node.parent.name)?.[1] ?? 1);
+            out.push(Decoration.replace({ widget: new HeadingLabel(level) }).range(node.from, end));
+          }
+          return;
+        }
+        if (name === 'QuoteMark') {
+          const end = withSpace(state, node.to);
+          if (!editing(node.from, end)) out.push(hidden.range(node.from, end));
           return;
         }
         if (HIDE_WHEN_IDLE.has(name)) {
-          if (!isActive(node.from)) {
-            const end =
-              name === 'QuoteMark' && state.sliceDoc(node.to, node.to + 1) === ' '
-                ? node.to + 1
-                : node.to;
-            out.push(hidden.range(node.from, end));
-          }
+          // The whole span counts: inside `**bold**` the stars show, past it they go.
+          const span = node.node.parent ?? node.node;
+          if (!editing(span.from, span.to)) out.push(hidden.range(node.from, node.to));
           return;
         }
         if (name === 'CodeMark' && node.node.parent?.name === 'InlineCode') {
-          if (!isActive(node.from)) out.push(hidden.range(node.from, node.to));
+          const span = node.node.parent;
+          if (!editing(span.from, span.to)) out.push(hidden.range(node.from, node.to));
           return;
         }
         if (name === 'Blockquote') {
@@ -227,14 +256,14 @@ function buildInline(view: EditorView): DecorationSet {
                 textTo,
               ),
             );
-          if (!isActive(node.from) && marks.length >= 2) {
+          if (!editing(node.from, node.to) && marks.length >= 2) {
             out.push(hidden.range(node.from, textFrom));
             out.push(hidden.range(textTo, node.to));
           }
           return false;
         }
         if (name === 'Image') {
-          if (!isActive(node.from)) out.push(hidden.range(node.from, node.to));
+          if (!editing(node.from, node.to)) out.push(hidden.range(node.from, node.to));
           return false;
         }
         if (name === 'TaskMarker') {
@@ -252,18 +281,16 @@ function buildInline(view: EditorView): DecorationSet {
           const item = node.node.parent;
           const isTask = item?.getChild('Task') != null;
           const bullet = /^[-*+]$/.test(state.sliceDoc(node.from, node.to));
+          const end = withSpace(state, node.to);
           if (isTask) {
-            if (!isActive(node.from)) {
-              const end = state.sliceDoc(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
-              out.push(hidden.range(node.from, end));
-            }
-          } else if (bullet && !isActive(node.from)) {
+            if (!editing(node.from, end)) out.push(hidden.range(node.from, end));
+          } else if (bullet && !editing(node.from, end)) {
             out.push(Decoration.replace({ widget: new BulletWidget() }).range(node.from, node.to));
           }
           return;
         }
         if (name === 'HorizontalRule') {
-          if (!isActive(node.from))
+          if (!editing(node.from, node.to))
             out.push(Decoration.replace({ widget: new RuleWidget() }).range(node.from, node.to));
           return;
         }
@@ -365,19 +392,17 @@ function buildImages(state: EditorState): DecorationSet {
 }
 
 /**
- * A rendered tag, link or wiki link opens on a click; on the line being
- * edited it takes ⌘/Ctrl-click, so a click there still places the cursor.
+ * A rendered tag, link or wiki link opens on a click; while the cursor is
+ * inside it, it takes ⌘/Ctrl-click, so a click there still places the cursor.
  */
 const clicks = EditorView.domEventHandlers({
   mousedown(e, view) {
     const el = (e.target as HTMLElement).closest<HTMLElement>('.cm-tag, .cm-wikilink, .cm-link');
     if (!el || e.button !== 0) return false;
     const pos = view.posAtDOM(el);
-    const editing =
-      view.hasFocus &&
-      view.state.selection.ranges.some(
-        (r) => view.state.doc.lineAt(r.head).number === view.state.doc.lineAt(pos).number,
-      );
+    // Inside the link itself a click places the cursor (⌘/Ctrl-click still
+    // opens it); anywhere else — even on the same line — it opens.
+    const editing = touching(view.state, view.hasFocus, pos, pos + (el.textContent?.length ?? 0));
     if (editing && !(e.metaKey || e.ctrlKey)) return false;
     const ctx = view.state.facet(noteContext);
     e.preventDefault();

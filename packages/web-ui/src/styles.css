@@ -595,7 +595,9 @@ body {
 /* Sits with the text, not shoved to the container's right edge. The chip head
    is full-width for the click target, but a disclosure arrow marooned 600px
    from the label it discloses reads as belonging to something else. */
-.chip-caret { color: var(--text-dim); }
+.chip-caret { display: inline-flex; color: var(--text-dim); transition: transform 120ms ease; }
+.chip-caret-open { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .chip-caret { transition: none; } }
 /* The one thing allowed to eat slack, so everything before it stays packed
    left and long arguments still ellipsise instead of pushing the caret out. */
 .chip-args { flex: 0 1 auto; }
@@ -675,9 +677,13 @@ body {
 
 .reasoning { margin: 0 0 8px; }
 .reasoning-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
   background: none; border: 0; cursor: pointer;
   color: var(--text-dim); font-size: 12px; padding: 2px 0;
 }
+.reasoning-caret { display: inline-flex; transition: transform 120ms ease; }
+.reasoning-caret-open { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .reasoning-caret { transition: none; } }
 .reasoning-body {
   white-space: pre-wrap; color: var(--text-dim);
   border-left: 2px solid var(--border); padding-left: 10px;
@@ -2221,7 +2227,9 @@ html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; 
   color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left;
 }
 .steps-summary:hover { background: var(--hover); color: var(--text); }
-.steps-caret { width: 10px; flex: 0 0 auto; font-size: 10px; }
+.steps-caret { display: inline-flex; flex: 0 0 auto; color: var(--text-dim); transition: transform 120ms ease; }
+.steps-caret-open { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .steps-caret { transition: none; } }
 .steps-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .steps-live { animation: steps-pulse 1.4s ease-in-out infinite; }
 @keyframes steps-pulse { 50% { opacity: 0.55; } }

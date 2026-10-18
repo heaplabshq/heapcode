@@ -6,6 +6,12 @@
  * optional info column on the right.
  */
 
+/* The disclosure arrow as a mask, for the places that cannot hold an element
+   of their own — a <summary>'s marker. Same path as IconChevron (icons.tsx). */
+:root {
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 3.5 4.5 4.5L6 12.5'/%3E%3C/svg%3E");
+}
+
 html,
 body,
 #root {
@@ -412,14 +418,27 @@ body {
   gap: 4px;
 }
 .tag-caret {
-  width: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   flex: 0 0 auto;
+  border-radius: 4px;
   color: var(--text-dim);
-  font-size: 10px;
-  text-align: center;
+}
+.tag-caret:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 .tag-caret-none {
   visibility: hidden;
+}
+.chevron {
+  transition: transform 120ms ease;
+}
+.chevron-open {
+  transform: rotate(90deg);
 }
 .tag-count {
   margin-left: auto;
@@ -1275,8 +1294,34 @@ body {
   font-size: 12.5px;
 }
 .imp-skipped summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   color: var(--text-dim);
+  list-style: none;
+}
+.imp-skipped summary::-webkit-details-marker {
+  display: none;
+}
+/* The same drawn chevron as the tag tree, so the two read as one control. */
+.imp-skipped summary::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  background: currentColor;
+  -webkit-mask: var(--chevron) center / contain no-repeat;
+  mask: var(--chevron) center / contain no-repeat;
+  transition: transform 120ms ease;
+}
+.imp-skipped[open] summary::before {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .imp-skipped summary::before {
+    transition: none;
+  }
 }
 .imp-skipped ul {
   max-height: 140px;
@@ -1316,8 +1361,10 @@ body {
   color: var(--text);
 }
 .note-subtag-caret {
-  width: 10px;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  width: 16px;
+  color: var(--text-dim);
 }
 .note-subtag-name {
   flex: 1 1 auto;

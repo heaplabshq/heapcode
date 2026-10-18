@@ -8,6 +8,7 @@ import {
 } from 'react';
 import type { NoteListItem, NotesListGroup, RelatedNote } from '@heapcode/notes-host/protocol';
 import { fuzzyFilter } from './fuzzy.js';
+import { IconChevron } from './icons.js';
 import { ago, fullDate, sourceLabel, useNow } from './time.js';
 import {
   SettingsGroup,
@@ -128,7 +129,7 @@ export function NoteList({
                       title={`#${g}`}
                     >
                       <span className="note-subtag-caret" aria-hidden="true">
-                        {shut ? '▸' : '▾'}
+                        <IconChevron open={!shut} />
                       </span>
                       <span className="note-subtag-name">{g.split('/').pop()}</span>
                       {info && <span className="note-subtag-count">{info.count}</span>}

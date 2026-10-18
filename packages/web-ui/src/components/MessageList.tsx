@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CopyButton } from './CopyButton.js';
-import { ICON_EDIT, ICON_RESTORE } from './icons.js';
+import { ICON_CHEVRON, ICON_EDIT, ICON_RESTORE } from './icons.js';
 import { renderMarkdown } from '../markdown.js';
 import { activityOf, foldTurns, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
@@ -322,8 +322,8 @@ function Steps({ label, live, children }: { label: string; live: boolean; childr
   return (
     <div className={open ? 'steps steps-open' : 'steps'}>
       <button className="steps-summary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className="steps-caret" aria-hidden="true">
-          {open ? '▾' : '▸'}
+        <span className={open ? 'steps-caret steps-caret-open' : 'steps-caret'} aria-hidden="true">
+          {ICON_CHEVRON}
         </span>
         <span className={live ? 'steps-label steps-live' : 'steps-label'}>{label}</span>
       </button>
@@ -487,7 +487,10 @@ function Reasoning({ text, streaming }: { text: string; streaming?: boolean }): 
   return (
     <div className="reasoning">
       <button className="reasoning-toggle" onClick={() => setManual(!open)} aria-expanded={open}>
-        {open ? '▾' : '▸'} thinking{streaming ? '…' : ''}
+        <span className={open ? 'reasoning-caret reasoning-caret-open' : 'reasoning-caret'}>
+          {ICON_CHEVRON}
+        </span>
+        thinking{streaming ? '…' : ''}
       </button>
       {open && <pre className="reasoning-body">{text}</pre>}
     </div>

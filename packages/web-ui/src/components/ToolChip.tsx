@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ToolItem } from '../transcript.js';
 import { DiffView, diffStats, isDiffText } from './DiffView.js';
+import { ICON_CHEVRON } from './icons.js';
 
 /**
  * A collapsed one-liner per tool call, expandable to the full output.
@@ -66,7 +67,9 @@ export function ToolChip({
             <span className="stat-del">−{stats.removed}</span>
           </span>
         )}
-        {tool.done && tool.result && <span className="chip-caret">{open ? '▾' : '▸'}</span>}
+        {tool.done && tool.result && (
+          <span className={open ? 'chip-caret chip-caret-open' : 'chip-caret'}>{ICON_CHEVRON}</span>
+        )}
       </button>
       {open && (
         <>

@@ -25,6 +25,7 @@ import { AskPanel } from './AskPanel.js';
 import { InlineAI, type InlineTarget } from './InlineAI.js';
 import { imageSrc, type NoteContext } from './editor/live.js';
 import { InfoPanel, NoteList, NotesSettingsPage, QuickOpen, type Heading } from './panels.js';
+import { IconChevron } from './icons.js';
 import { ImportDialog, type ImportOutcome } from './importDialog.js';
 import { ContextMenu, type MenuEntry, type MenuState } from './menu.js';
 import { BulkPanel, type BulkRun } from './bulk.js';
@@ -1767,7 +1768,7 @@ function TagTree({
                     });
                   }}
                 >
-                  {hasKids ? (closed.has(t) ? '▸' : '▾') : ''}
+                  {hasKids && <IconChevron open={!closed.has(t)} />}
                 </span>
                 <span className="convo-title">{name}</span>
                 {count.get(t) !== undefined && <span className="tag-count">{count.get(t)}</span>}

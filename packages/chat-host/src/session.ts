@@ -1,3 +1,4 @@
+import { forgetMcpTrust, isTrusted, trustFor, trustMcp } from './mcpTrust.js';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -936,6 +937,12 @@ export class ChatSession implements HostSession {
       return startMcpSignIn(this.mcp!, this.deps.mcpLogins, name, () => void this.pushState());
     });
 
+    ui.onRequest(CHAT_METHODS.forgetMcpTrust, async (raw) => {
+      const { name } = raw as { name: string };
+      forgetMcpTrust(String(name ?? ''));
+      return null;
+    });
+
     ui.onRequest(CHAT_METHODS.signOutMcpServer, async (raw) => {
       const { name } = raw as { name: string };
       await this.mcp?.signOut(name);
@@ -1051,6 +1058,7 @@ export class ChatSession implements HostSession {
       // Names only. These are credentials, and this list is on screen.
       envKeys: Object.keys(server.env ?? {}),
       project: name in project,
+      ...(trustFor(name) ? { trusted: trustFor(name) } : {}),
     }));
   }
 
@@ -1293,7 +1301,7 @@ export class ChatSession implements HostSession {
       const outcome = permissionFor(
         call.name,
         Boolean(this.mcp?.isMcpTool(call.name)),
-        this.allowedTools.has(call.name),
+        this.allowedTools.has(call.name) || isTrusted(call.name),
       );
       if (outcome === 'grant') return { granted: true };
       if (outcome === 'deny') return { granted: false };
@@ -1722,7 +1730,7 @@ export class ChatSession implements HostSession {
   }
 
   private async askPermission(call: ToolCall): Promise<boolean> {
-    if (this.allowedTools.has(call.name)) return true;
+    if (this.allowedTools.has(call.name) || isTrusted(call.name)) return true;
     if (!this.ui) return false;
     const server = call.name.slice('mcp__'.length).split('__')[0] ?? '';
     const answer = await this.ui
@@ -1736,6 +1744,7 @@ export class ChatSession implements HostSession {
       .catch(() => undefined);
     if (!answer?.granted) return false;
     if (answer.remember) this.allowedTools.add(call.name);
+    if (answer.always) trustMcp(call.name, answer.always);
     return true;
   }
 

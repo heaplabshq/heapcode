@@ -49,6 +49,8 @@ export interface SettingsProps {
    */
   onSignInMcpServer?(name: string): Promise<string>;
   onSignOutMcpServer?(name: string): void;
+  /** Undo "Always allow" for a server's tools: ask again before they run. */
+  onForgetMcpTrust?(name: string): void;
   /** Models a given profile's endpoint serves, for the role fields' type-ahead. */
   listModels?(profileName: string): Promise<string[]>;
   /** Tests an endpoint that isn't a saved profile yet, and reports what it serves. */
@@ -388,6 +390,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                   onDelete={props.onDeleteMcpServer}
                   onSignIn={props.onSignInMcpServer}
                   onSignOut={props.onSignOutMcpServer}
+                  onForgetTrust={props.onForgetMcpTrust}
                 />
               )}
 
@@ -1190,8 +1193,10 @@ function Connectors({
   onDelete,
   onSignIn,
   onSignOut,
+  onForgetTrust,
 }: {
   servers: UiMcpServer[];
+  onForgetTrust?(name: string): void;
   onSave(name: string, spec: string, env?: string): void;
   onDelete(name: string): void;
   onSignIn?(name: string): Promise<string>;
@@ -1272,6 +1277,20 @@ function Connectors({
                 <p className="hint mono-hint">{m.envKeys.join(', ')}</p>
               )}
               {m.error && <p className="hint hint-warn">{m.error}</p>}
+              {m.trusted && (
+                // "Always allow" from a permission card: said once, so it is
+                // shown here, where it can be taken back.
+                <p className="hint row-trust">
+                  {m.trusted === 'all'
+                    ? 'All its tools run without asking.'
+                    : `${m.trusted} of its tools run${m.trusted === 1 ? 's' : ''} without asking.`}
+                  {onForgetTrust && (
+                    <button className="btn btn-sm" onClick={() => onForgetTrust(m.name)}>
+                      Ask again
+                    </button>
+                  )}
+                </p>
+              )}
               {editing === m.name && !m.project && (
                 <EditServer
                   initial={m.spec ?? ''}

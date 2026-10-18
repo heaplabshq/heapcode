@@ -1907,6 +1907,7 @@ body {
 /* Why a connector is not connected. Warn, not danger: nothing is broken —
    the server is refusing us, or was never reachable to begin with. */
 .hint-warn { color: var(--warn); margin: 6px 0 0; }
+.row-trust { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; }
 .row code { font-family: var(--mono); font-size: 12px; }
 
 .badge {

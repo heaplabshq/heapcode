@@ -58,7 +58,8 @@ interface Props {
 
 interface PendingChange {
   params: ChatPermissionParams;
-  decide(granted: boolean): void;
+  /** `always`, for a connector's tool: stop asking — this tool, or all its server's. */
+  decide(granted: boolean, always?: 'tool' | 'server'): void;
 }
 
 interface PendingQuestion {
@@ -100,9 +101,9 @@ export function AskPanel({
         new Promise<ChatPermissionResult>((resolve) =>
           setChange({
             params: raw as ChatPermissionParams,
-            decide: (granted) => {
+            decide: (granted, always) => {
               setChange(undefined);
-              resolve({ granted });
+              resolve({ granted, ...(always ? { always } : {}) });
             },
           }),
         ),
@@ -325,10 +326,45 @@ function ChangeCard({
 }): JSX.Element {
   const { params } = pending;
   const change = params.change;
+  // A connector's tool (Notion, GitHub…), not a change to a note: allow it
+  // once, or stop asking — the same choices Heap Chat's card gives.
+  if (!change) {
+    const tool = params.tool.split('__').slice(2).join('__') || params.tool;
+    return (
+      <div className="ask-card" role="dialog" aria-label="Allow this connector?">
+        <div className="ask-card-title">
+          {params.server} wants to run <code>{tool}</code>
+        </div>
+        <pre className="ask-diff">{JSON.stringify(params.args, null, 2)}</pre>
+        <div className="ask-card-actions ask-card-wrap">
+          <button className="btn btn-quiet btn-sm" onClick={() => pending.decide(false)}>
+            Deny
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => pending.decide(true, 'server')}
+            title={`Don't ask again for any of ${params.server}'s tools — undo in Settings › MCP`}
+          >
+            Always allow {params.server}
+          </button>
+          <button
+            className="btn btn-sm"
+            onClick={() => pending.decide(true, 'tool')}
+            title="Don't ask again for this tool — undo in Settings › MCP"
+          >
+            Always allow
+          </button>
+          <button className="btn btn-primary btn-sm" autoFocus onClick={() => pending.decide(true)}>
+            Allow once
+          </button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="ask-card" role="dialog" aria-label="Proposed change">
-      <div className="ask-card-title">{change?.title ?? `Run ${params.tool}?`}</div>
-      {change && (change.before || change.after) && (
+      <div className="ask-card-title">{change.title}</div>
+      {(change.before || change.after) && (
         <pre className="ask-diff">
           {lineDiff(change.before, change.after).map((l, i) =>
             l.kind === 'fold' ? (
@@ -346,22 +382,19 @@ function ChangeCard({
           )}
         </pre>
       )}
-      {!change && <pre className="ask-diff">{JSON.stringify(params.args, null, 2)}</pre>}
       <div className="ask-card-actions">
         <button className="btn btn-quiet btn-sm" onClick={() => pending.decide(false)}>
           Discard
         </button>
-        {change && (
-          <button
-            className="btn btn-sm"
-            onClick={onAlways}
-            title="Apply this and every change after it without asking — turn off in Settings › Notes"
-          >
-            Always apply
-          </button>
-        )}
+        <button
+          className="btn btn-sm"
+          onClick={onAlways}
+          title="Apply this and every change after it without asking — turn off in Settings › Notes"
+        >
+          Always apply
+        </button>
         <button className="btn btn-primary btn-sm" autoFocus onClick={() => pending.decide(true)}>
-          {change ? 'Apply' : 'Allow'}
+          Apply
         </button>
       </div>
     </div>

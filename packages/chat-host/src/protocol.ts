@@ -81,6 +81,8 @@ export const CHAT_METHODS = {
   deleteMcpServer: 'chat/deleteMcpServer',
   signInMcpServer: 'chat/signInMcpServer',
   signOutMcpServer: 'chat/signOutMcpServer',
+  /** Ask again before a server's tools run: undoes "Always allow". `{ name }` */
+  forgetMcpTrust: 'chat/forgetMcpTrust',
 
   // settings — the same surface Heap Code's dialog drives, because the things
   // it edits (connections, the model role table, web search) are global
@@ -317,6 +319,8 @@ export interface ChatPermissionResult {
   granted: boolean;
   /** Stop asking for this tool for the rest of this conversation. */
   remember?: boolean;
+  /** Stop asking for good — this tool, or every tool of its server (mcpTrust.ts). */
+  always?: 'tool' | 'server';
 }
 
 export type {

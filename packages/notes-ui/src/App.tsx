@@ -1638,6 +1638,7 @@ export function App(): JSX.Element {
             return res.authorizationUrl;
           }}
           onSignOutMcpServer={(name) => editSettings(CHAT_METHODS.signOutMcpServer, { name })}
+          onForgetMcpTrust={(name) => editSettings(CHAT_METHODS.forgetMcpTrust, { name })}
         />
       )}
       {dialog === 'versions' && open && (

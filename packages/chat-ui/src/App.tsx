@@ -95,7 +95,8 @@ interface Pending {
 /** A connector's tool waiting to be allowed. */
 interface PendingPermission {
   params: ChatPermissionParams;
-  decide: (granted: boolean, remember?: boolean) => void;
+  /** `always`: stop asking for good — this tool, or all of its server's. */
+  decide: (granted: boolean, always?: 'tool' | 'server') => void;
 }
 
 export function App(): JSX.Element {
@@ -235,9 +236,9 @@ export function App(): JSX.Element {
       return new Promise<ChatPermissionResult>((resolve) => {
         setPermission({
           params,
-          decide: (granted, remember) => {
+          decide: (granted, always) => {
             setPermission(undefined);
-            resolve({ granted, remember });
+            resolve({ granted, ...(always ? { always } : {}) });
           },
         });
       });
@@ -544,8 +545,20 @@ export function App(): JSX.Element {
                 <button className="btn btn-primary" onClick={() => permission.decide(true)}>
                   Allow once
                 </button>
-                <button className="btn" onClick={() => permission.decide(true, true)}>
-                  Allow for this chat
+                {/* Kept across chats and restarts; Settings › MCP takes it back. */}
+                <button
+                  className="btn"
+                  onClick={() => permission.decide(true, 'tool')}
+                  title="Don't ask again for this tool — undo in Settings › MCP"
+                >
+                  Always allow
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => permission.decide(true, 'server')}
+                  title={`Don't ask again for any of ${permission.params.server}'s tools — undo in Settings › MCP`}
+                >
+                  Always allow {permission.params.server}
                 </button>
                 <button className="btn btn-ghost-danger" onClick={() => permission.decide(false)}>
                   Deny
@@ -745,6 +758,7 @@ export function App(): JSX.Element {
             return res.authorizationUrl;
           }}
           onSignOutMcpServer={(name) => edit(CHAT_METHODS.signOutMcpServer, { name })}
+          onForgetMcpTrust={(name) => edit(CHAT_METHODS.forgetMcpTrust, { name })}
         />
       ) : null}
     </div>

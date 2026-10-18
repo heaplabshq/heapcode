@@ -199,6 +199,9 @@ body {
   align-items: center;
   gap: 4px;
   min-width: 0;
+  /* The left group is hidden, so `space-between` alone would leave this at the
+     left edge; the auto margin holds it right either way. */
+  margin-left: auto;
 }
 .notes-path {
   color: var(--text-dim);

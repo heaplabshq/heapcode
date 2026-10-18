@@ -1,4 +1,5 @@
 import { renderMarkdown } from '@heapcode/web-ui/markdown';
+import { renderMermaid } from '@heapcode/web-ui/mermaid';
 import { imageSrc } from './editor/live.js';
 import { widthOf } from './editor/images.js';
 
@@ -63,6 +64,7 @@ const PAGE_CSS = `
   blockquote { margin: 0; padding-left: 14px; border-left: 3px solid #d0d7de; color: #59636e; }
   table { border-collapse: collapse; } th, td { border: 1px solid #d0d7de; padding: 5px 10px; }
   .wikilink { color: #0969da; }
+  .mermaid { text-align: center; margin: 1em 0; } .mermaid svg { max-width: 100%; height: auto; }
   @media print { body { margin: 0; } a { color: inherit; } }
 `;
 
@@ -86,6 +88,17 @@ export async function noteHtml(
     const width = widthOf(`![${img.getAttribute('alt') ?? ''}]()`);
     if (width) img.setAttribute('width', String(width));
     img.setAttribute('alt', (img.getAttribute('alt') ?? '').replace(/\|\s*\d+(x\d+)?\s*$/, ''));
+  }
+  // Diagrams as drawings; one with a mistake stays as its code.
+  for (const code of [...doc.querySelectorAll('pre > code.language-mermaid')]) {
+    try {
+      const figure = doc.createElement('div');
+      figure.className = 'mermaid';
+      figure.innerHTML = await renderMermaid(code.textContent ?? '', 'default');
+      code.parentElement!.replaceWith(figure);
+    } catch {
+      // Left as code.
+    }
   }
   // A [[link]] goes nowhere outside the app: keep its words, drop the link.
   for (const a of [...doc.querySelectorAll('a[data-wikilink]')]) {

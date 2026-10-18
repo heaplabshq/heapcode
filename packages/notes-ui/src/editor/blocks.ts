@@ -2,6 +2,7 @@ import { syntaxTree } from '@codemirror/language';
 import { RangeSetBuilder, StateField, type EditorState } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 import { highlightTree, type Highlighter } from '@lezer/highlight';
+import { mermaidTheme, renderMermaid } from '@heapcode/web-ui/mermaid';
 
 /**
  * Code blocks and tables, drawn as what they are once the cursor is
@@ -73,6 +74,8 @@ function codeWidget(
   const start = Math.min(open.to + 1, node.to);
   const end = closed ? state.doc.lineAt(marks[marks.length - 1]!.from).from - 1 : node.to;
   const code = end > start ? state.sliceDoc(start, end) : '';
+  // A diagram, drawn — the code is a click away, as every block's is.
+  if (lang.toLowerCase() === 'mermaid') return new MermaidWidget(code, start - open.from);
   const spans: Span[] = [];
   // The language, once loaded, is a tree mounted inside this one.
   highlightTree(
@@ -149,6 +152,72 @@ class CodeWidget extends WidgetType {
     // An empty block still takes a line.
     if (!this.code) pre.textContent = '​';
     wrap.appendChild(pre);
+    editOnClick(view, wrap, this.cursor);
+    return wrap;
+  }
+  override ignoreEvent(): boolean {
+    return true;
+  }
+}
+
+// ── Diagrams ───
+
+/** Drawn diagrams by source, so scrolling or moving the cursor doesn't redraw them. */
+const drawn = new Map<string, { svg?: string; error?: string }>();
+
+class MermaidWidget extends WidgetType {
+  constructor(
+    readonly code: string,
+    readonly cursor: number,
+  ) {
+    super();
+  }
+  override eq(o: MermaidWidget): boolean {
+    return o.code === this.code;
+  }
+  override get estimatedHeight(): number {
+    return 200;
+  }
+  toDOM(view: EditorView): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'cm-mermaid';
+    const key = `${mermaidTheme()}\n${this.code}`;
+    const show = (r: { svg?: string; error?: string }) => {
+      wrap.replaceChildren();
+      if (r.svg !== undefined) {
+        // Strict mode: Mermaid has escaped the labels and dropped scripts and links.
+        wrap.innerHTML = r.svg;
+      } else {
+        wrap.classList.add('cm-mermaid-bad');
+        const msg = wrap.appendChild(document.createElement('div'));
+        msg.className = 'cm-mermaid-error';
+        msg.textContent = `This diagram has a mistake: ${(r.error ?? '').split('\n')[0]}`;
+        const pre = wrap.appendChild(document.createElement('pre'));
+        pre.textContent = this.code;
+      }
+      view.requestMeasure();
+    };
+    const done = drawn.get(key);
+    if (done) show(done);
+    else {
+      wrap.classList.add('cm-mermaid-wait');
+      wrap.textContent = 'Drawing the diagram…';
+      renderMermaid(this.code).then(
+        (svg) => {
+          const r = { svg };
+          drawn.set(key, r);
+          wrap.classList.remove('cm-mermaid-wait');
+          show(r);
+        },
+        (e: unknown) => {
+          const r = { error: e instanceof Error ? e.message : String(e) };
+          drawn.set(key, r);
+          wrap.classList.remove('cm-mermaid-wait');
+          show(r);
+        },
+      );
+      if (drawn.size > 200) drawn.delete(drawn.keys().next().value!);
+    }
     editOnClick(view, wrap, this.cursor);
     return wrap;
   }

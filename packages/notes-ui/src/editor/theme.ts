@@ -160,6 +160,30 @@ const base = EditorView.theme({
   // Over the text, not under it: a code line's background hid the selection.
   '.cm-selectionLayer': { zIndex: '1 !important' },
   '.cm-tablesrc': { fontFamily: 'var(--mono)', fontSize: '0.88em' },
+  '.cm-mermaid': {
+    margin: '6px 0',
+    padding: '12px',
+    borderRadius: '6px',
+    background: 'var(--code-bg)',
+    textAlign: 'center',
+    overflowX: 'auto',
+    cursor: 'text',
+  },
+  '.cm-mermaid svg': { maxWidth: '100%', height: 'auto' },
+  '.cm-mermaid-wait': { color: 'var(--text-dim)', fontSize: '0.85em', fontFamily: 'var(--sans)' },
+  '.cm-mermaid-bad': { textAlign: 'left' },
+  '.cm-mermaid-error': {
+    color: 'var(--danger)',
+    fontSize: '0.85em',
+    fontFamily: 'var(--sans)',
+    marginBottom: '6px',
+  },
+  '.cm-mermaid pre': {
+    margin: '0',
+    fontFamily: 'var(--mono)',
+    fontSize: '0.85em',
+    whiteSpace: 'pre-wrap',
+  },
   '.cm-table': { margin: '6px 0', overflowX: 'auto', cursor: 'text' },
   '.cm-table table': { borderCollapse: 'collapse', fontSize: '0.94em', lineHeight: '1.45' },
   '.cm-table th, .cm-table td': {

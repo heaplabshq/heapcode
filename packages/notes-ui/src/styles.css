@@ -1288,3 +1288,45 @@ body {
   width: 100%;
   margin-top: 8px;
 }
+
+/* ---------- smart order: subtag headings ---------- */
+.note-subtag {
+  padding: 10px 4px 2px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.note-subtag button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+.note-subtag button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.note-subtag-caret {
+  width: 10px;
+  font-size: 10px;
+}
+.note-subtag-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.note-subtag-count {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}

@@ -20,3 +20,4 @@ export * from './history.js';
 export * from './templates.js';
 export * from './bulk.js';
 export * from './notion.js';
+export * from './smartOrder.js';

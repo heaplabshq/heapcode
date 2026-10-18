@@ -12,6 +12,7 @@ import {
   type NoteSaveResult,
   type NotesChanged,
   type NotesImportKind,
+  type NotesListGroup,
   type NotesSection,
   type NotesState,
   type NoteVersion,
@@ -96,9 +97,11 @@ export function App(): JSX.Element {
   const [state, setState] = useState<NotesState>();
   const [selection, setSelection] = useState<Selection>({ section: 'all' });
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState<'modified' | 'created' | 'title'>(
-    () => (remembered('heapnotes.sort') as 'modified') ?? 'modified',
+  const [sort, setSort] = useState<'smart' | 'modified' | 'created' | 'title'>(
+    () => (remembered('heapnotes.sort') as 'smart') ?? 'smart',
   );
+  /** Smart order's subtag headings, when the list is a tag with subtags. */
+  const [groups, setGroups] = useState<NotesListGroup[]>();
   const [notes, setNotes] = useState<NoteListItem[]>([]);
   const [related, setRelated] = useState<NoteListItem[]>([]);
   /** The open note's related notes, for the Info panel; undefined while loading. */
@@ -186,11 +189,14 @@ export function App(): JSX.Element {
   );
 
   const loadList = useCallback(async () => {
-    const page = await call<{ notes: NoteListItem[]; total: number }>(
+    const page = await call<{ notes: NoteListItem[]; total: number; groups?: NotesListGroup[] }>(
       NOTES_METHODS.list,
       listParams,
     );
-    if (page) setNotes(page.notes);
+    if (page) {
+      setNotes(page.notes);
+      setGroups(page.groups && page.groups.length > 1 ? page.groups : undefined);
+    }
   }, [call, listParams]);
 
   // Related notes for the Info panel (HEAPNOTES_PHASE2_PLAN §2C): on opening
@@ -300,7 +306,9 @@ export function App(): JSX.Element {
     setOpen((o) => (o && o.note.id === r.note.id ? { ...o, note: r.note } : o));
     setNotes((list) => {
       const rest = list.filter((n) => n.id !== r.note.id);
-      return sort === 'modified' && !('section' in selection && selection.section === 'pinned')
+      // An edit moves a note to the top only where the list is by date.
+      const byDate = sort === 'modified' || (sort === 'smart' && !('tag' in selection));
+      return byDate && !('section' in selection && selection.section === 'pinned')
         ? [r.note, ...rest]
         : list.map((n) => (n.id === r.note.id ? r.note : n));
     });
@@ -1218,6 +1226,12 @@ export function App(): JSX.Element {
                       remember('heapnotes.sort', v);
                     }}
                   >
+                    <option
+                      value="smart"
+                      title="In a tag: its page first, then the order it links them; elsewhere, newest first"
+                    >
+                      Smart
+                    </option>
                     <option value="modified">Modified</option>
                     <option value="created">Created</option>
                     <option value="title">Title</option>
@@ -1269,6 +1283,7 @@ export function App(): JSX.Element {
                 related={related}
                 selected={current?.id}
                 picked={pickedSet}
+                {...(groups && !query.trim() ? { groups } : {})}
                 onSelect={select}
                 onMenu={noteMenu}
                 empty={emptyText}

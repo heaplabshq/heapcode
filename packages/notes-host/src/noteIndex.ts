@@ -221,7 +221,10 @@ export class NoteIndex {
 
   /** Outgoing `[[links]]`, as written (lowercased). */
   linksOf(rowid: number): { target: string; heading: string | null }[] {
-    return this.db.prepare('SELECT target, heading FROM links WHERE note = ?').all(rowid) as {
+    // In the order the note has them: smart order follows it.
+    return this.db
+      .prepare('SELECT target, heading FROM links WHERE note = ? ORDER BY rowid')
+      .all(rowid) as {
       target: string;
       heading: string | null;
     }[];

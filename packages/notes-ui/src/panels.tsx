@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
-import type { NoteListItem, RelatedNote } from '@heapcode/notes-host/protocol';
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
+import type { NoteListItem, NotesListGroup, RelatedNote } from '@heapcode/notes-host/protocol';
 import { fuzzyFilter } from './fuzzy.js';
 import { ago, fullDate, sourceLabel, useNow } from './time.js';
 import {
@@ -14,11 +21,14 @@ export function NoteList({
   related = [],
   selected,
   picked,
+  groups,
   onSelect,
   onMenu,
   empty,
 }: {
   notes: NoteListItem[];
+  /** Subtag headings, smart order inside a tag: notes carry the `group` they're under. */
+  groups?: NotesListGroup[];
   /** Several notes chosen with ⌘/⇧-click; the open note stays `selected`. */
   picked?: ReadonlySet<string>;
   /** Right-click on a row. */
@@ -31,6 +41,7 @@ export function NoteList({
   empty: string;
 }): JSX.Element {
   const now = useNow();
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const box = useRef<HTMLUListElement>(null);
   useEffect(() => {
     box.current?.querySelector('.note-row-on')?.scrollIntoView({ block: 'nearest' });
@@ -93,7 +104,42 @@ export function NoteList({
       aria-label="Notes"
       aria-multiselectable="true"
     >
-      {notes.map(row)}
+      {groups
+        ? notes.map((n, i) => {
+            // A heading where a subtag's notes begin; the tag's own notes need none.
+            const g = n.group ?? '';
+            const starts = (i === 0 || notes[i - 1]!.group !== n.group) && g !== groups[0]!.tag;
+            const info = groups.find((x) => x.tag === g);
+            const shut = folded.has(g);
+            return (
+              <Fragment key={n.id}>
+                {starts && (
+                  <li className="note-group note-subtag" role="presentation">
+                    <button
+                      aria-expanded={!shut}
+                      onClick={() =>
+                        setFolded((f) => {
+                          const next = new Set(f);
+                          if (next.has(g)) next.delete(g);
+                          else next.add(g);
+                          return next;
+                        })
+                      }
+                      title={`#${g}`}
+                    >
+                      <span className="note-subtag-caret" aria-hidden="true">
+                        {shut ? '▸' : '▾'}
+                      </span>
+                      <span className="note-subtag-name">{g.split('/').pop()}</span>
+                      {info && <span className="note-subtag-count">{info.count}</span>}
+                    </button>
+                  </li>
+                )}
+                {!shut && row(n)}
+              </Fragment>
+            );
+          })
+        : notes.map(row)}
       {related.length > 0 && (
         <li className="note-group" role="presentation">
           {notes.length === 0 ? 'No exact matches — close in meaning' : 'Related by meaning'}

@@ -7,6 +7,7 @@ import { listFolders, type HostSession } from '@heapcode/web-host';
 import { ChatSession, type ChatSessionDeps } from '@heapcode/chat-host';
 import { noteHits, notesPersona } from './ask.js';
 import { zip } from './zip.js';
+import { naturalCompare, smartOrder } from './smartOrder.js';
 import { importNotion } from './notion.js';
 import { bulkAction, mergeNotes, type BulkAction } from './bulk.js';
 import { TEMPLATE_TAG, fillTemplate } from './templates.js';
@@ -587,8 +588,10 @@ export class NotesSession implements HostSession {
   private async list(vault: Vault, p: NotesListParams) {
     const location =
       p.section === 'archive' ? 'archive' : p.section === 'trash' ? 'trash' : 'notes';
-    const sort = p.sort
-      ? [{ field: p.sort, direction: p.sort === 'title' ? ('asc' as const) : ('desc' as const) }]
+    // Smart is by date where there's no tag to give an order; inside one, smartOrder.ts.
+    const field = p.sort === 'smart' ? 'modified' : p.sort;
+    const sort = field
+      ? [{ field, direction: field === 'title' ? ('asc' as const) : ('desc' as const) }]
       : undefined;
     const page = { location, limit: 2000, ...(sort ? { sort } : {}) } as const;
     if (p.query?.trim()) {
@@ -599,11 +602,21 @@ export class NotesSession implements HostSession {
       p.section && !['archive', 'trash', 'all'].includes(p.section)
         ? (p.section as 'todo')
         : undefined;
-    return vault.list({
+    const result = await vault.list({
       ...page,
       ...(section ? { section } : {}),
       ...(p.tag ? { tag: p.tag } : {}),
     });
+    if (p.sort === 'title')
+      // Numbers as numbers — Week 2 before Week 10 — pinned still on top.
+      result.notes.sort(
+        (a, b) => Number(b.pinned) - Number(a.pinned) || naturalCompare(a.title, b.title),
+      );
+    if (p.sort === 'smart' && p.tag) {
+      const smart = await smartOrder(vault, result.notes, p.tag);
+      return { ...result, notes: smart.notes, groups: smart.groups };
+    }
+    return result;
   }
 
   /**

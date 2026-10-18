@@ -97,6 +97,14 @@ export interface NoteListItem {
   length: number;
   hash: string;
   snippet?: string;
+  /** Smart order inside a tag: which subtag heading it sits under (smartOrder.ts). */
+  group?: string;
+}
+
+/** A subtag heading in the list, and how many notes are under it. */
+export interface NotesListGroup {
+  tag: string;
+  count: number;
 }
 
 export interface NotesState {
@@ -118,7 +126,8 @@ export interface NotesListParams {
   section?: NotesSection;
   tag?: string;
   query?: string;
-  sort?: 'modified' | 'created' | 'title';
+  /** `smart`: inside a tag, its page then the order it links (smartOrder.ts); elsewhere by date. */
+  sort?: 'smart' | 'modified' | 'created' | 'title';
 }
 
 export interface NoteOpenResult {

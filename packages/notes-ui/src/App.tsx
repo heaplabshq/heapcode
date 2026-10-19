@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 import { RpcClient, signedOutMessage, type ConnectionStatus } from '@heapcode/web-ui/rpc';
@@ -41,7 +40,8 @@ import { BulkPanel, type BulkRun } from './bulk.js';
 import { VersionsDialog } from './versions.js';
 import { base64Blob, download, noteHtml, printHtml } from './exporting.js';
 import { ago, fullDate, useNow } from './time.js';
-import { clampListWidth, LIST_DEFAULT, LIST_MAX, LIST_MIN } from './layout.js';
+import { LIST_DEFAULT } from './layout.js';
+import { ListSplitter } from './ListSplitter.js';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import {
   CHAT_METHODS,
@@ -133,10 +133,7 @@ export function App(): JSX.Element {
   const [listWidth, setListWidth] = useState(
     () => Number(remembered('heapnotes.listWidth')) || LIST_DEFAULT,
   );
-  const listWidthRef = useRef(listWidth);
-  listWidthRef.current = listWidth;
   const mainRef = useRef<HTMLElement>(null);
-  const listDrag = useRef<{ x: number; width: number }>();
   const [infoOpen, setInfoOpen] = useState(() => remembered('heapnotes.info') === 'open');
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
   const [quick, setQuick] = useState<'notes' | 'tags' | 'templates'>();
@@ -908,32 +905,6 @@ export function App(): JSX.Element {
     setLayout(n);
     remember('heapnotes.layout', String(n));
   };
-
-  /** The list's width, held between its floor and the room the editor needs. */
-  const resizeList = (width: number): number => {
-    const next = clampListWidth(width, mainRef.current?.clientWidth ?? 900);
-    setListWidth(next);
-    return next;
-  };
-  const startListDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    listDrag.current = { x: e.clientX, width: listWidth };
-    document.body.classList.add('notes-resizing');
-  };
-  const moveListDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
-    const d = listDrag.current;
-    if (d) resizeList(d.width + (e.clientX - d.x));
-  };
-  const endListDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!listDrag.current) return;
-    listDrag.current = undefined;
-    if (e.currentTarget.hasPointerCapture(e.pointerId))
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    document.body.classList.remove('notes-resizing');
-    remember('heapnotes.listWidth', String(listWidthRef.current));
-  };
   const startInline = () => {
     if (!state?.ask || !open || open.note.location === 'trash') return;
     const hidden = state.aiHiddenTags.find((h) =>
@@ -1340,29 +1311,12 @@ export function App(): JSX.Element {
             </section>
           )}
           {layout >= 2 && (
-            <div
-              className="notes-splitter"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize the note list"
-              aria-valuenow={listWidth}
-              aria-valuemin={LIST_MIN}
-              aria-valuemax={LIST_MAX}
-              tabIndex={0}
-              title="Drag to resize the note list — double-click to reset"
-              onPointerDown={startListDrag}
-              onPointerMove={moveListDrag}
-              onPointerUp={endListDrag}
-              onPointerCancel={endListDrag}
-              onDoubleClick={() => {
-                resizeList(LIST_DEFAULT);
-                remember('heapnotes.listWidth', String(LIST_DEFAULT));
-              }}
-              onKeyDown={(e) => {
-                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-                e.preventDefault();
-                const next = resizeList(listWidth + (e.key === 'ArrowLeft' ? -16 : 16));
-                remember('heapnotes.listWidth', String(next));
+            <ListSplitter
+              width={listWidth}
+              mainWidth={mainRef.current?.clientWidth ?? 900}
+              onResize={(w) => {
+                setListWidth(w);
+                remember('heapnotes.listWidth', String(w));
               }}
             />
           )}

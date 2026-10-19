@@ -54,12 +54,25 @@ body {
   width: 1px;
   background: var(--border);
 }
-.notes-splitter:hover::after,
-.notes-splitter:focus-visible::after,
-.notes-resizing .notes-splitter::after {
-  left: 1px;
-  width: 3px;
+/* The drag highlight is the same accent bar the panel splitter draws — 2px,
+   rounded, half opacity, fading in — so every draggable seam in the app reads
+   alike. The hairline above stays put underneath it. */
+.notes-splitter::before {
+  content: '';
+  position: absolute;
+  inset: 4px 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 1px;
   background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.notes-splitter:hover::before,
+.notes-splitter:focus-visible::before,
+.notes-resizing .notes-splitter::before {
+  opacity: 0.5;
 }
 .notes-splitter:focus-visible {
   outline: none;

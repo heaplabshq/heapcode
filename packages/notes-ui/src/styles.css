@@ -35,14 +35,47 @@ body {
   min-height: 0;
 }
 
+/* ---------- the note list's edge ----------
+   The list is as wide as the drag left it; the splitter straddles the line so
+   the grab area is wider than the hairline it draws. */
+.notes-splitter {
+  flex: 0 0 5px;
+  width: 5px;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.notes-splitter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--border);
+}
+.notes-splitter:hover::after,
+.notes-splitter:focus-visible::after,
+.notes-resizing .notes-splitter::after {
+  left: 1px;
+  width: 3px;
+  background: var(--accent);
+}
+.notes-splitter:focus-visible {
+  outline: none;
+}
+body.notes-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 /* ---------- note list ---------- */
 .notes-list-pane {
-  width: 300px;
+  width: var(--notes-list-w, 300px);
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-right: 1px solid var(--border);
   background: var(--bg);
 }
 .notes-list-head {
@@ -531,9 +564,6 @@ body {
 }
 
 @media (max-width: 900px) {
-  .notes-list-pane {
-    width: 240px;
-  }
   .notes-info {
     display: none;
   }
@@ -541,9 +571,6 @@ body {
 @media (max-width: 640px) {
   .notes-layout-3 .rail {
     display: none;
-  }
-  .notes-list-pane {
-    width: 42%;
   }
 }
 

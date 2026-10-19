@@ -40,7 +40,7 @@ import { BulkPanel, type BulkRun } from './bulk.js';
 import { VersionsDialog } from './versions.js';
 import { base64Blob, download, noteHtml, printHtml } from './exporting.js';
 import { ago, fullDate, useNow } from './time.js';
-import { LIST_DEFAULT } from './layout.js';
+import { clampListWidth, savedListWidth } from './layout.js';
 import { ListSplitter } from './ListSplitter.js';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import {
@@ -130,10 +130,28 @@ export function App(): JSX.Element {
     () => (Number(remembered('heapnotes.layout')) as 1 | 2 | 3) || 3,
   );
   /** The note list's width, dragged at its right edge. */
-  const [listWidth, setListWidth] = useState(
-    () => Number(remembered('heapnotes.listWidth')) || LIST_DEFAULT,
+  const [listWidth, setListWidth] = useState(() =>
+    savedListWidth(remembered('heapnotes.listWidth')),
   );
-  const mainRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
+  // The room the list and editor share, followed as the window changes: the
+  // width you chose is kept, and what's shown is what fits right now — so a
+  // narrower window doesn't overwrite it, and widening again brings it back.
+  // Watched from when <main> exists — the app shows a loading screen first,
+  // so an effect run on mount would find nothing to watch.
+  const [mainEl, setMainEl] = useState<HTMLElement | null>(null);
+  const [mainWidth, setMainWidth] = useState<number>();
+  useEffect(() => {
+    if (!mainEl || typeof ResizeObserver === 'undefined') return;
+    const watch = new ResizeObserver(() => setMainWidth(mainEl.clientWidth));
+    watch.observe(mainEl);
+    return () => watch.disconnect();
+  }, [mainEl]);
+  const setMain = useCallback((el: HTMLElement | null) => {
+    mainRef.current = el;
+    setMainEl(el);
+  }, []);
+  const shownListWidth = mainWidth ? clampListWidth(listWidth, mainWidth) : listWidth;
   const [infoOpen, setInfoOpen] = useState(() => remembered('heapnotes.info') === 'open');
   const [railCollapsed, setRailCollapsed] = useState(() => remembered('heap.rail') === 'collapsed');
   const [quick, setQuick] = useState<'notes' | 'tags' | 'templates'>();
@@ -1223,8 +1241,8 @@ export function App(): JSX.Element {
         />
         <main
           className="notes-main"
-          ref={mainRef}
-          style={{ '--notes-list-w': `${listWidth}px` } as CSSProperties}
+          ref={setMain}
+          style={{ '--notes-list-w': `${shownListWidth}px` } as CSSProperties}
         >
           {layout >= 2 && (
             <section className="notes-list-pane" aria-label="Note list">
@@ -1312,7 +1330,7 @@ export function App(): JSX.Element {
           )}
           {layout >= 2 && (
             <ListSplitter
-              width={listWidth}
+              width={shownListWidth}
               getMainWidth={() => mainRef.current?.clientWidth ?? 900}
               onResize={setListWidth}
               onCommit={(w) => remember('heapnotes.listWidth', String(w))}

@@ -16,3 +16,13 @@ export function clampListWidth(width: number, mainWidth: number): number {
   const ceiling = Math.min(LIST_MAX, Math.max(LIST_MIN, room));
   return Math.round(Math.min(ceiling, Math.max(LIST_MIN, width)));
 }
+
+/**
+ * A width read back from storage: anything that isn't a number in the list's
+ * own range (an old value, a hand edit) comes back as the default or clamped.
+ */
+export function savedListWidth(raw: string | null | undefined): number {
+  const n = Number(raw);
+  if (!raw || !Number.isFinite(n)) return LIST_DEFAULT;
+  return Math.round(Math.min(LIST_MAX, Math.max(LIST_MIN, n)));
+}

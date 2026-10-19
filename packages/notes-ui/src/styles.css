@@ -489,6 +489,11 @@ body.notes-resizing {
 .chevron-open {
   transform: rotate(90deg);
 }
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}
 .tag-count {
   margin-left: auto;
   color: var(--text-dim);

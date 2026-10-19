@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampListWidth, LIST_DEFAULT, LIST_MAX, LIST_MIN } from '../src/layout.js';
+import { clampListWidth, LIST_DEFAULT, LIST_MAX, LIST_MIN, savedListWidth } from '../src/layout.js';
 
 describe('the note list width', () => {
   it('keeps a dragged width inside the list’s own range', () => {
@@ -23,5 +23,13 @@ describe('the note list width', () => {
 
   it('resets to the default width', () => {
     expect(clampListWidth(LIST_DEFAULT, 1600)).toBe(LIST_DEFAULT);
+  });
+
+  it('reads a saved width back inside the list’s range', () => {
+    expect(savedListWidth('420')).toBe(420);
+    expect(savedListWidth('5000')).toBe(LIST_MAX);
+    expect(savedListWidth('12')).toBe(LIST_MIN);
+    expect(savedListWidth('wide')).toBe(LIST_DEFAULT);
+    expect(savedListWidth(null)).toBe(LIST_DEFAULT);
   });
 });

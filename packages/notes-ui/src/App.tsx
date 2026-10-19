@@ -1314,10 +1314,8 @@ export function App(): JSX.Element {
             <ListSplitter
               width={listWidth}
               getMainWidth={() => mainRef.current?.clientWidth ?? 900}
-              onResize={(w) => {
-                setListWidth(w);
-                remember('heapnotes.listWidth', String(w));
-              }}
+              onResize={setListWidth}
+              onCommit={(w) => remember('heapnotes.listWidth', String(w))}
             />
           )}
           <section className="notes-editor-pane" aria-label="Editor">

@@ -4,6 +4,7 @@
  * itself is what is tested here — not just the clamp it calls.
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ListSplitter } from '../src/ListSplitter.js';
 import { LIST_DEFAULT, LIST_MAX, LIST_MIN } from '../src/layout.js';
@@ -19,12 +20,39 @@ const stubCapture = () => {
   return el;
 };
 
+/** A controlled harness, as App is: the width it renders is the one it was given. */
+function Harness({
+  initial,
+  mainWidth,
+  onResize,
+  onCommit,
+}: {
+  initial: number;
+  mainWidth: number;
+  onResize(w: number): void;
+  onCommit(w: number): void;
+}): JSX.Element {
+  const [width, setWidth] = useState(initial);
+  return (
+    <ListSplitter
+      width={width}
+      getMainWidth={() => mainWidth}
+      onResize={(w) => {
+        setWidth(w);
+        onResize(w);
+      }}
+      onCommit={onCommit}
+    />
+  );
+}
+
 const setup = (width = LIST_DEFAULT, mainWidth = 1600) => {
   const onResize = vi.fn();
+  const onCommit = vi.fn();
   const { unmount } = render(
-    <ListSplitter width={width} getMainWidth={() => mainWidth} onResize={onResize} />,
+    <Harness initial={width} mainWidth={mainWidth} onResize={onResize} onCommit={onCommit} />,
   );
-  return { onResize, unmount, el: stubCapture() };
+  return { onResize, onCommit, unmount, el: stubCapture() };
 };
 
 describe('the note list splitter', () => {
@@ -93,6 +121,26 @@ describe('the note list splitter', () => {
     expect(document.body.classList.contains('notes-resizing')).toBe(false);
   });
 
+  it('saves the width once the drag ends, not on every move', () => {
+    const { onResize, onCommit, el } = setup(300);
+    fireEvent.pointerDown(el, { button: 0, clientX: 500, pointerId: 1 });
+    fireEvent.pointerMove(el, { clientX: 520, pointerId: 1 });
+    fireEvent.pointerMove(el, { clientX: 560, pointerId: 1 });
+    expect(onResize).toHaveBeenCalledTimes(2);
+    expect(onCommit).not.toHaveBeenCalled();
+    fireEvent.pointerUp(el, { clientX: 560, pointerId: 1 });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith(360);
+  });
+
+  it('saves the reset and the arrow-key width too', () => {
+    const { onCommit, el } = setup(480);
+    fireEvent.doubleClick(el);
+    expect(onCommit).toHaveBeenLastCalledWith(LIST_DEFAULT);
+    fireEvent.keyDown(el, { key: 'ArrowRight' });
+    expect(onCommit).toHaveBeenLastCalledWith(LIST_DEFAULT + 16);
+  });
+
   it('clears the resizing class if the panes are hidden mid-drag', () => {
     const { el, unmount } = setup(300);
     fireEvent.pointerDown(el, { button: 0, clientX: 500, pointerId: 1 });
@@ -113,7 +161,7 @@ describe('the note list splitter', () => {
     fireEvent.keyDown(el, { key: 'ArrowRight' });
     expect(onResize).toHaveBeenLastCalledWith(316);
     fireEvent.keyDown(el, { key: 'ArrowLeft' });
-    expect(onResize).toHaveBeenLastCalledWith(284);
+    expect(onResize).toHaveBeenLastCalledWith(300);
     onResize.mockClear();
     fireEvent.keyDown(el, { key: 'Enter' });
     expect(onResize).not.toHaveBeenCalled();
@@ -122,7 +170,14 @@ describe('the note list splitter', () => {
   it('reads the room at drag time, so a window resize since render still counts', () => {
     let mainWidth = 1600;
     const onResize = vi.fn();
-    render(<ListSplitter width={300} getMainWidth={() => mainWidth} onResize={onResize} />);
+    render(
+      <ListSplitter
+        width={300}
+        getMainWidth={() => mainWidth}
+        onResize={onResize}
+        onCommit={vi.fn()}
+      />,
+    );
     const el = stubCapture();
     // The window shrank after the splitter rendered.
     mainWidth = 700;

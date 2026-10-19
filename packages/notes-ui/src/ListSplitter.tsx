@@ -10,6 +10,7 @@ export function ListSplitter({
   width,
   getMainWidth,
   onResize,
+  onCommit,
 }: {
   width: number;
   /**
@@ -19,10 +20,16 @@ export function ListSplitter({
    */
   getMainWidth(): number;
   onResize(width: number): void;
+  /** Called once the width settles — a drag's end, a reset, an arrow key. */
+  onCommit(width: number): void;
 }): JSX.Element {
   const drag = useRef<{ x: number; width: number }>();
 
-  const resize = (next: number) => onResize(clampListWidth(next, getMainWidth()));
+  const resize = (next: number) => {
+    const w = clampListWidth(next, getMainWidth());
+    onResize(w);
+    return w;
+  };
 
   const start = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -36,11 +43,13 @@ export function ListSplitter({
     if (d) resize(d.width + (e.clientX - d.x));
   };
   const end = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drag.current) return;
+    const d = drag.current;
+    if (!d) return;
     drag.current = undefined;
     if (e.currentTarget.hasPointerCapture(e.pointerId))
       e.currentTarget.releasePointerCapture(e.pointerId);
     document.body.classList.remove('notes-resizing');
+    onCommit(clampListWidth(d.width + (e.clientX - d.x), getMainWidth()));
   };
 
   // ⌃1 hides the panes mid-drag, which unmounts this before the pointer is
@@ -62,11 +71,11 @@ export function ListSplitter({
       onPointerMove={move}
       onPointerUp={end}
       onPointerCancel={end}
-      onDoubleClick={() => resize(LIST_DEFAULT)}
+      onDoubleClick={() => onCommit(resize(LIST_DEFAULT))}
       onKeyDown={(e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
         e.preventDefault();
-        resize(width + (e.key === 'ArrowLeft' ? -16 : 16));
+        onCommit(resize(width + (e.key === 'ArrowLeft' ? -16 : 16)));
       }}
     />
   );

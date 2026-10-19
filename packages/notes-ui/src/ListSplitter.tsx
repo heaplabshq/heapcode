@@ -1,4 +1,4 @@
-import { useRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import { clampListWidth, LIST_DEFAULT, LIST_MAX, LIST_MIN } from './layout.js';
 
 /**
@@ -42,6 +42,10 @@ export function ListSplitter({
       e.currentTarget.releasePointerCapture(e.pointerId);
     document.body.classList.remove('notes-resizing');
   };
+
+  // ⌃1 hides the panes mid-drag, which unmounts this before the pointer is
+  // released — the class would otherwise stay on the page for good.
+  useEffect(() => () => document.body.classList.remove('notes-resizing'), []);
 
   return (
     <div

@@ -21,10 +21,10 @@ const stubCapture = () => {
 
 const setup = (width = LIST_DEFAULT, mainWidth = 1600) => {
   const onResize = vi.fn();
-  render(
+  const { unmount } = render(
     <ListSplitter width={width} getMainWidth={() => mainWidth} onResize={onResize} />,
   );
-  return { onResize, el: stubCapture() };
+  return { onResize, unmount, el: stubCapture() };
 };
 
 describe('the note list splitter', () => {
@@ -90,6 +90,15 @@ describe('the note list splitter', () => {
     fireEvent.pointerDown(el, { button: 0, clientX: 500, pointerId: 1 });
     expect(document.body.classList.contains('notes-resizing')).toBe(true);
     fireEvent.pointerUp(el, { clientX: 500, pointerId: 1 });
+    expect(document.body.classList.contains('notes-resizing')).toBe(false);
+  });
+
+  it('clears the resizing class if the panes are hidden mid-drag', () => {
+    const { el, unmount } = setup(300);
+    fireEvent.pointerDown(el, { button: 0, clientX: 500, pointerId: 1 });
+    expect(document.body.classList.contains('notes-resizing')).toBe(true);
+    // ⌃1 unmounts the splitter before the pointer is ever released.
+    unmount();
     expect(document.body.classList.contains('notes-resizing')).toBe(false);
   });
 

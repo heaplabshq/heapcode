@@ -8,17 +8,21 @@ import { clampListWidth, LIST_DEFAULT, LIST_MAX, LIST_MIN } from './layout.js';
  */
 export function ListSplitter({
   width,
-  mainWidth,
+  getMainWidth,
   onResize,
 }: {
   width: number;
-  /** The room the list and editor share — the drag's ceiling comes from it. */
-  mainWidth: number;
+  /**
+   * The room the list and editor share, read when the drag happens — not at
+   * render, where the pane has not been measured yet and a window resize
+   * since would leave the ceiling stale.
+   */
+  getMainWidth(): number;
   onResize(width: number): void;
 }): JSX.Element {
   const drag = useRef<{ x: number; width: number }>();
 
-  const resize = (next: number) => onResize(clampListWidth(next, mainWidth));
+  const resize = (next: number) => onResize(clampListWidth(next, getMainWidth()));
 
   const start = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;

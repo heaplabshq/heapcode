@@ -1313,7 +1313,7 @@ export function App(): JSX.Element {
           {layout >= 2 && (
             <ListSplitter
               width={listWidth}
-              mainWidth={mainRef.current?.clientWidth ?? 900}
+              getMainWidth={() => mainRef.current?.clientWidth ?? 900}
               onResize={(w) => {
                 setListWidth(w);
                 remember('heapnotes.listWidth', String(w));

@@ -21,7 +21,9 @@ const stubCapture = () => {
 
 const setup = (width = LIST_DEFAULT, mainWidth = 1600) => {
   const onResize = vi.fn();
-  render(<ListSplitter width={width} mainWidth={mainWidth} onResize={onResize} />);
+  render(
+    <ListSplitter width={width} getMainWidth={() => mainWidth} onResize={onResize} />,
+  );
   return { onResize, el: stubCapture() };
 };
 
@@ -106,6 +108,18 @@ describe('the note list splitter', () => {
     onResize.mockClear();
     fireEvent.keyDown(el, { key: 'Enter' });
     expect(onResize).not.toHaveBeenCalled();
+  });
+
+  it('reads the room at drag time, so a window resize since render still counts', () => {
+    let mainWidth = 1600;
+    const onResize = vi.fn();
+    render(<ListSplitter width={300} getMainWidth={() => mainWidth} onResize={onResize} />);
+    const el = stubCapture();
+    // The window shrank after the splitter rendered.
+    mainWidth = 700;
+    fireEvent.pointerDown(el, { button: 0, clientX: 500, pointerId: 1 });
+    fireEvent.pointerMove(el, { clientX: 5000, pointerId: 1 });
+    expect(onResize).toHaveBeenLastCalledWith(360);
   });
 
   it('reports its width to assistive tech', () => {

@@ -18,7 +18,6 @@ import { TaskBar } from '@heapcode/web-ui/components/TaskBar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
 import { Toasts } from '@heapcode/web-ui/components/Toasts';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
-import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/ProductToggle';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
@@ -80,12 +79,6 @@ import { MemoryPanel } from './components/MemoryPanel.js';
  * still connects.
  */
 const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
-const HAS_CODE = document.documentElement.dataset.sibling === 'code';
-/** Heap QA, mounted beside this page by `heapcode web`. */
-const HAS_QA = servedProducts().includes('qa');
-const HAS_NOTES = servedProducts().includes('notes');
-/** The mount prefix, derived from the socket path — `/chat/rpc` → `/chat`. */
-const BASE = RPC_PATH.replace(/\/rpc$/, '');
 
 const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${RPC_PATH}`;
 
@@ -435,10 +428,7 @@ export function App(): JSX.Element {
     <div className="app">
       <div className="body">
         <Sidebar
-          brand="Heap Chat"
-          // Absent when Heap Code is not served here: a switcher with one
-          // working half teaches people the control is broken.
-          toggle={HAS_CODE ? <ProductToggle current="chat" chatPath={`${BASE}/`} {...(HAS_QA ? { qaPath: '/qa/' } : {})} {...(HAS_NOTES ? { notesPath: '/notes/' } : {})} /> : undefined}
+          product="chat"
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
@@ -451,7 +441,6 @@ export function App(): JSX.Element {
           onNew={newConversation}
           onDelete={deleteConversation}
           busy={busy}
-          state={state}
           status={status}
           // No artifacts and no command palette here: neither exists in this
           // product, and a rail row that opens nothing is worse than its

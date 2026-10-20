@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { useMenu } from './useMenu.js';
 import { desktopBridge } from '../desktop.js';
 
 /**
@@ -52,6 +53,11 @@ export function ChatTools({ views, more = [], active, onSelect }: ChatToolsProps
           title={v.shortcut ? `${v.label} (${v.shortcut})` : v.label}
         >
           {v.icon}
+          {/* Named, where there is room: three bare glyphs in a corner asked
+              people to hover each one to find out what it opened. */}
+          <span className="chat-tool-text" aria-hidden="true">
+            {v.label}
+          </span>
           {typeof v.badge === 'number' && v.badge > 0 && <span className="chat-tool-badge">{v.badge}</span>}
           {v.badge === true && <span className="chat-tool-dot" aria-hidden="true" />}
         </button>
@@ -73,43 +79,7 @@ function MoreMenu({
   keepAwake?: (on: boolean) => Promise<boolean>;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
-
-  // Outside click and Escape close it, the way every menu does. Escape also
-  // gives focus back to the button, so the keyboard is not left nowhere.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent): void => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      setOpen(false);
-      button.current?.focus();
-    };
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey, true);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey, true);
-    };
-  }, [open]);
-
-  // Focus the first row on open, so arrow keys work straight away.
-  useEffect(() => {
-    if (open) root.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus();
-  }, [open]);
-
-  const onMenuKey = (e: React.KeyboardEvent): void => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    e.preventDefault();
-    const rows = [...(root.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [])];
-    const at = rows.indexOf(document.activeElement as HTMLElement);
-    const next = (at + (e.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
-    rows[next]?.focus();
-  };
+  const { root, button, onMenuKey } = useMenu(open, setOpen);
 
   const anyActive = items.some((i) => i.id === active);
 

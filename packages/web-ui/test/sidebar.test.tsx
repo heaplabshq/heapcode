@@ -9,23 +9,10 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { UiState } from '@heapcode/web-host/protocol';
 import { Sidebar, type SidebarProps } from '../src/components/Sidebar.js';
 import { WorkspacePicker } from '../src/components/WorkspacePicker.js';
 
 afterEach(cleanup);
-
-const STATE = {
-  root: '/Users/me/code/app',
-  workspaceName: 'app',
-  profile: 'ollama',
-  model: 'llama',
-  persona: 'agent',
-  permissionMode: 'default',
-  contextWindow: 32_000,
-  profiles: [],
-  daemon: 'up',
-} satisfies UiState;
 
 function railProps(over: Partial<SidebarProps> = {}): SidebarProps {
   return {
@@ -38,7 +25,6 @@ function railProps(over: Partial<SidebarProps> = {}): SidebarProps {
     onOpen: vi.fn(),
     onNew: vi.fn(),
     busy: false,
-    state: STATE,
     status: 'open',
     onOpenArtifacts: vi.fn(),
     onOpenSettings: vi.fn(),
@@ -48,18 +34,13 @@ function railProps(over: Partial<SidebarProps> = {}): SidebarProps {
 }
 
 describe('the left rail', () => {
-  it('carries the brand, connection and what is answering', () => {
+  it('carries the brand and the connection, and leaves the model to the composer', () => {
     const { container } = render(<Sidebar {...railProps()} />);
     expect(screen.getByText('Heap Code')).toBeTruthy();
-    // Connected is the silent state: a dot that is green all day says nothing
-    // and reads as a presence indicator beside the model.
+    // Connected is the silent state: a dot that is green all day says nothing.
     expect(container.querySelector('.dot')).toBeNull();
-    // The model leads and the endpoint is the second line. It used to be an
-    // initial in a circle beside the endpoint's name, which is the signed-in
-    // user control from every other app — so `ollama` read as an account.
-    expect(screen.getByText('llama')).toBeTruthy();
-    expect(screen.getByText('ollama')).toBeTruthy();
-    expect(container.querySelector('.rail-avatar')).toBeNull();
+    // The model is named once, on the composer's picker, not here as well.
+    expect(container.querySelector('.rail-model')).toBeNull();
   });
 
   it('shows the connection dot only when the connection is not fine', () => {
@@ -70,11 +51,18 @@ describe('the left rail', () => {
     }
   });
 
-  it('sends the footer to models and context, not to the front page of settings', () => {
+  it('puts Settings at the foot, under that name, in every product', () => {
     const onOpenSettings = vi.fn();
-    render(<Sidebar {...railProps({ onOpenSettings })} />);
-    fireEvent.click(screen.getByText('llama'));
-    expect(onOpenSettings).toHaveBeenCalledWith('context');
+    const { container } = render(<Sidebar {...railProps({ onOpenSettings })} />);
+    expect(screen.queryByText('Customize')).toBeNull();
+    fireEvent.click(screen.getByText('Settings'));
+    expect(onOpenSettings).toHaveBeenCalled();
+    expect(container.querySelector('.rail-foot')?.textContent).toContain('Settings');
+  });
+
+  it('shows a product\'s detail line under Settings', () => {
+    render(<Sidebar {...railProps({ settingsDetail: '12 notes · vault' })} />);
+    expect(screen.getByText('12 notes · vault')).toBeTruthy();
   });
 
   it('holds nothing that is really a workspace-panel tab', () => {
@@ -146,8 +134,8 @@ describe('the left rail', () => {
     // still the last flex child — the recents list is not there to push it.
     const rail = container.querySelector('.rail')!;
     expect(rail.lastElementChild?.className).toBe('rail-foot');
-    fireEvent.click(screen.getByLabelText('Models and context'));
-    expect(onOpenSettings).toHaveBeenCalledWith('context');
+    fireEvent.click(screen.getByLabelText('Settings'));
+    expect(onOpenSettings).toHaveBeenCalled();
   });
 
   it('puts the command palette in the nav rather than behind a disclosure', () => {
@@ -176,6 +164,47 @@ describe('the left rail', () => {
     expect(screen.getByText('Previous 7 days')).toBeTruthy();
     // A bucket with nothing in it is not a heading.
     expect(screen.queryByText('Yesterday')).toBeNull();
+  });
+});
+
+describe('the product menu', () => {
+  afterEach(() => {
+    delete document.documentElement.dataset.products;
+    delete document.documentElement.dataset.sibling;
+  });
+
+  it('is just the name when no other product is served', () => {
+    render(<Sidebar {...railProps()} />);
+    expect(screen.queryByRole('button', { name: /Heap Code/ })).toBeNull();
+    expect(screen.getByText('Heap Code')).toBeTruthy();
+  });
+
+  it('lists every served product with what it is for, marking this one', () => {
+    document.documentElement.dataset.products = 'chat,qa,notes';
+    render(<Sidebar {...railProps()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Heap Code/ }));
+    const rows = screen.getAllByRole('menuitem');
+    expect(rows.map((r) => r.getAttribute('href'))).toEqual(['/', '/chat/', '/notes/', '/qa/']);
+    expect(screen.getByText('Ask about your documents and files')).toBeTruthy();
+    expect(rows[0]!.getAttribute('aria-current')).toBe('page');
+  });
+
+  it('reaches Heap Code from a product mounted beside it', () => {
+    document.documentElement.dataset.products = 'chat';
+    document.documentElement.dataset.sibling = 'code';
+    render(<Sidebar {...railProps({ product: 'chat' })} />);
+    fireEvent.click(screen.getByRole('button', { name: /Heap Chat/ }));
+    expect(screen.getAllByRole('menuitem').map((r) => r.textContent)).toEqual([
+      expect.stringContaining('Heap Code'),
+      expect.stringContaining('Heap Chat'),
+    ]);
+  });
+
+  it('offers no switch for a product running on its own', () => {
+    // `heapcode chat` alone: no Heap Code at the root to switch to.
+    document.documentElement.dataset.products = 'chat';
+    render(<Sidebar {...railProps({ product: 'chat' })} />);
+    expect(screen.queryByRole('button', { name: /Heap Chat/ })).toBeNull();
   });
 });
 

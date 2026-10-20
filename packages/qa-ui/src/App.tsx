@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { RpcClient, signedOutMessage, type ConnectionStatus } from '@heapcode/web-ui/rpc';
 import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
-import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/ProductToggle';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
 import { Composer } from '@heapcode/web-ui/components/Composer';
@@ -40,9 +39,6 @@ import {
 const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
 const BASE = RPC_PATH.replace(/\/rpc$/, '');
 const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${RPC_PATH}`;
-const HAS_CODE = document.documentElement.dataset.sibling === 'code';
-const HAS_CHAT = servedProducts().includes('chat');
-const HAS_NOTES = servedProducts().includes('notes');
 
 type View = 'tests' | 'run' | 'record' | 'explore' | 'ask' | { detail: string };
 
@@ -327,8 +323,7 @@ export function App(): JSX.Element {
     <div className="app">
       <div className="body">
         <Sidebar
-          brand="Heap QA"
-          toggle={HAS_CODE ? <ProductToggle current="qa" {...(HAS_CHAT ? { chatPath: '/chat/' } : {})} qaPath={`${BASE}/`} {...(HAS_NOTES ? { notesPath: '/notes/' } : {})} /> : undefined}
+          product="qa"
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
@@ -340,7 +335,9 @@ export function App(): JSX.Element {
           onOpen={(id) => setView({ detail: id })}
           onNew={() => setView('record')}
           busy={false}
-          state={{ model: state?.model, profile: state?.profile }}
+          // Heap QA has no composer to carry a model picker, so what is
+          // answering is said here, under the way to change it.
+          settingsDetail={state?.model ? `${state.model} on ${state.profile}` : undefined}
           status={status}
           onOpenSettings={() => openSettings()}
           extraNav={

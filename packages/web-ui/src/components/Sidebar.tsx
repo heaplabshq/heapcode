@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { UiConversationMeta } from '@heapcode/web-host/protocol';
-import { markHue } from '../mark.js';
 import type { ConnectionStatus } from '../rpc.js';
+import { ProductToggle, type Product } from './ProductToggle.js';
 
 export interface SidebarProps {
   /** Collapsed shows the icon rail only; the labels come back on expand. */
@@ -14,36 +14,23 @@ export interface SidebarProps {
   /** Delete a saved conversation. Absent, rows offer no delete. */
   onDelete?(id: string): void;
   busy: boolean;
-  /**
-   * What is answering. Widened from `UiState` to the two fields the footer
-   * actually reads, so Heap Chat's `ChatState` satisfies it too — the rail is
-   * the same rail in both products, and a second copy of it would drift in
-   * exactly the ways a shared design system exists to prevent.
-   */
-  state?: { model?: string; profile?: string };
   status: ConnectionStatus;
-  /** The product name in the rail's top row. */
-  brand?: string;
-  /**
-   * The product switcher, rendered beside the brand. A slot rather than a
-   * built-in control because only the host page knows where the other product
-   * lives and whether it is reachable.
-   */
-  toggle?: ReactNode;
+  /** Which product this rail belongs to: its name heads the rail and opens the product menu. */
+  product?: Product;
   /** Omitted by a product with no artifacts of its own — the row is then absent. */
   onOpenArtifacts?(): void;
-  onOpenSettings(focus?: 'context'): void;
+  onOpenSettings(): void;
+  /** A second line under Settings — Heapnotes names its folder there. */
+  settingsDetail?: string;
   /** Omitted by a product with no command palette — the row is then absent. */
   onOpenPalette?(): void;
-  /** Extra rail rows, above the model footer. */
+  /** The product's own rows, under the shared ones. */
   extraNav?: ReactNode;
   /**
    * The scrolling list under the rows, in place of Recents — Heapnotes puts
    * its tags here. `conversations` is ignored when this is given.
    */
   recents?: ReactNode;
-  /** The bottom of the rail, in place of the model chip — for a product with no model. */
-  footer?: ReactNode;
 }
 
 /**
@@ -59,9 +46,14 @@ export interface SidebarProps {
  * Nothing here is a section "header" in the heavy sense: the brand is a word,
  * `Recents` is a quiet label over its list, and the groups are separated by
  * space rather than by rules and titles.
+ *
+ * Every product lays it out the same way — New and the shared rows, then the
+ * product's own, then Recents, then Settings pinned to the foot — so moving
+ * between products never means relearning where things are. Only `extraNav`
+ * and `recents` differ.
  */
 export function Sidebar(props: SidebarProps): JSX.Element {
-  const { collapsed, state, status } = props;
+  const { collapsed, status } = props;
 
   return (
     <aside className={collapsed ? 'rail rail-collapsed' : 'rail'} aria-label="Navigation">
@@ -69,8 +61,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <span className="rail-logo" aria-hidden="true">
           <Logo />
         </span>
-        <span className="rail-brand">{props.brand ?? 'Heap Code'}</span>
-        {props.toggle}
+        <ProductToggle current={props.product ?? 'code'} />
         <button
           className="icon-btn rail-collapse"
           onClick={props.onToggleCollapsed}
@@ -90,11 +81,6 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           disabled={props.busy}
           hint={props.busy ? 'Stop the current run first' : undefined}
         />
-        {props.onOpenArtifacts && (
-          <RailItem icon={<IconArtifact />} label="Artifacts" collapsed={collapsed} onClick={props.onOpenArtifacts} />
-        )}
-        <RailItem icon={<IconSliders />} label="Customize" collapsed={collapsed} onClick={() => props.onOpenSettings()} />
-        {props.extraNav}
         {/* Was behind a "More" chevron with one other item. Two entries is not
             a submenu; it is two entries. */}
         {props.onOpenPalette && (
@@ -106,6 +92,10 @@ export function Sidebar(props: SidebarProps): JSX.Element {
             onClick={props.onOpenPalette}
           />
         )}
+        {props.onOpenArtifacts && (
+          <RailItem icon={<IconArtifact />} label="Artifacts" collapsed={collapsed} onClick={props.onOpenArtifacts} />
+        )}
+        {props.extraNav}
       </nav>
 
       {/* Kept mounted through a collapse so it fades and clips with the rail.
@@ -168,42 +158,17 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           ))}
       </div>
 
-      {/*
-        * What is answering, not who is signed in.
-        *
-        * This used to be a circular avatar holding the profile's initial next
-        * to the profile's name, which is the signed-in-user control from every
-        * other app on the screen — so `ollama` read as an account. It is a
-        * model on an endpoint. The model id leads, in the same monospace the
-        * settings page uses for it; the connection is the second line; the
-        * mark is a square chip glyph in the connection's own colour rather
-        * than a round initial.
-        */}
+      {/* Settings, at the foot in every product — where people look for it.
+          What is answering is not repeated here: the composer's model picker
+          already says, beside the message it will answer. */}
       <div className="rail-foot">
-        {props.footer ?? (
-          <button
-            className="rail-model"
-            onClick={() => props.onOpenSettings('context')}
-            title={
-              state?.model ? `${state.model} on ${state.profile} — models and context` : 'Choose a model'
-            }
-            aria-label={collapsed ? 'Models and context' : undefined}
-          >
-            <span
-              className="rail-model-mark"
-              style={{ '--mark-h': markHue(state?.profile ?? '') } as React.CSSProperties}
-              aria-hidden="true"
-            >
-              <IconChip />
-            </span>
-            <span className="rail-model-text">
-              <span className="rail-model-name">{state?.model || 'no model'}</span>
-              <span className="rail-model-conn">
-                on <span className="rail-model-host">{state?.profile || 'no connection'}</span>
-              </span>
-            </span>
-          </button>
-        )}
+        <RailItem
+          icon={<IconGear />}
+          label="Settings"
+          detail={props.settingsDetail}
+          collapsed={collapsed}
+          onClick={() => props.onOpenSettings()}
+        />
         {/* Only when something is wrong. A green dot that is green all day is
             not a status, it is decoration — and it sat next to the model like
             a presence indicator. Connecting and closed still say so. */}
@@ -253,6 +218,7 @@ function RailItem({
   badge,
   hint,
   kbd,
+  detail,
 }: {
   icon: ReactNode;
   label: string;
@@ -264,6 +230,8 @@ function RailItem({
   hint?: string;
   /** Shown at the row's right edge, when there is a shortcut for it. */
   kbd?: string;
+  /** A quieter second line under the label. */
+  detail?: string;
 }): JSX.Element {
   const tip = hint ?? label;
   return (
@@ -278,7 +246,14 @@ function RailItem({
       aria-label={collapsed ? label : undefined}
     >
       <span className="rail-icon">{icon}</span>
-      <span className="rail-label">{label}</span>
+      {detail ? (
+        <span className="rail-label rail-label-two">
+          <span>{label}</span>
+          <span className="rail-label-sub">{detail}</span>
+        </span>
+      ) : (
+        <span className="rail-label">{label}</span>
+      )}
       {kbd && <span className="rail-kbd">{kbd}</span>}
       {badge !== undefined && <span className="rail-badge">{badge}</span>}
       {collapsed && (
@@ -345,12 +320,12 @@ function IconArtifact(): JSX.Element {
   );
 }
 
-function IconSliders(): JSX.Element {
+/** Settings: a gear, the glyph people already look for. */
+function IconGear(): JSX.Element {
   return (
     <svg {...S}>
-      <path d="M4 7h10M18 7h2M4 17h4M12 17h8" />
-      <circle cx="16" cy="7" r="2" />
-      <circle cx="10" cy="17" r="2" />
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   );
 }
@@ -359,16 +334,6 @@ function IconCommand(): JSX.Element {
   return (
     <svg {...S}>
       <path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" />
-    </svg>
-  );
-}
-
-/** The footer mark: a chip, because what is down there is a model. */
-function IconChip(): JSX.Element {
-  return (
-    <svg {...S} width={13} height={13}>
-      <rect x="7" y="7" width="10" height="10" rx="2" />
-      <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4" />
     </svg>
   );
 }

@@ -35,17 +35,38 @@ const BREAKDOWN: UiContextResult = {
 };
 
 describe('ContextMeter', () => {
-  it('shows the percentage of the window in use during a run', () => {
+  it('shows how full the window is during a run, in words', () => {
     render(
       <ContextMeter
-        used={8_000}
+        used={24_000}
         live
         window={32_000}
         load={() => Promise.resolve(BREAKDOWN)}
         onOpenSettings={vi.fn()}
       />,
     );
-    expect(screen.getByText('25%')).toBeTruthy();
+    expect(screen.getByText('Context 75%')).toBeTruthy();
+  });
+
+  it('stays out of the way until the window is half full', () => {
+    // 0% on every message was one more unexplained thing on the bar.
+    const { container } = render(
+      <ContextMeter used={8_000} live window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} />,
+    );
+    expect(container.querySelector('.ctx-btn')).toBeNull();
+  });
+
+  it('offers to start fresh once filling, but not mid-run', async () => {
+    const onStartFresh = vi.fn();
+    const { rerender } = render(
+      <ContextMeter used={30_000} live window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} onStartFresh={onStartFresh} />,
+    );
+    expect(screen.queryByText('Start fresh')).toBeNull();
+    rerender(
+      <ContextMeter used={30_000} window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} onStartFresh={onStartFresh} />,
+    );
+    fireEvent.click(await screen.findByText('Start fresh'));
+    expect(onStartFresh).toHaveBeenCalled();
   });
 
   it('drops to what the next turn starts with once the run ends', async () => {
@@ -54,7 +75,7 @@ describe('ContextMeter', () => {
     // released — the next turn starts from the breakdown's 16k, not 30k.
     const load = vi.fn(() => Promise.resolve(BREAKDOWN));
     render(<ContextMeter used={30_000} window={32_000} load={load} onOpenSettings={vi.fn()} />);
-    expect(await screen.findByText('50%')).toBeTruthy();
+    expect(await screen.findByText('Context 50%')).toBeTruthy();
   });
 
   it('does not price a hypothetical while a run is in flight', async () => {
@@ -62,7 +83,7 @@ describe('ContextMeter', () => {
     // things to do than rebuild a prompt nobody is going to send yet.
     const load = vi.fn(() => Promise.resolve(BREAKDOWN));
     render(<ContextMeter used={30_000} live window={32_000} load={load} onOpenSettings={vi.fn()} />);
-    await waitFor(() => expect(screen.getByText('94%')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Context 94%')).toBeTruthy());
     expect(load).not.toHaveBeenCalled();
   });
 
@@ -79,7 +100,7 @@ describe('ContextMeter', () => {
   it('says which of the two questions the breakdown answers', async () => {
     // "5% of the window" beside a ring that said 47% was the whole confusion.
     render(
-      <ContextMeter used={8_000} window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} />,
+      <ContextMeter used={16_000} window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} />,
     );
     fireEvent.click(screen.getByLabelText('Context usage'));
     expect(await screen.findByText(/What the next turn starts with/)).toBeTruthy();
@@ -91,7 +112,7 @@ describe('ContextMeter', () => {
     // of them appear in the breakdown above it.
     render(
       <ContextMeter
-        used={8_000}
+        used={16_000}
         live
         window={32_000}
         load={() => Promise.resolve(BREAKDOWN)}
@@ -112,7 +133,7 @@ describe('ContextMeter', () => {
 
   it('opens a modal that fetches the real breakdown', async () => {
     const load = vi.fn(() => Promise.resolve(BREAKDOWN));
-    render(<ContextMeter used={8_000} window={32_000} load={load} onOpenSettings={vi.fn()} />);
+    render(<ContextMeter used={16_000} window={32_000} load={load} onOpenSettings={vi.fn()} />);
     fireEvent.click(screen.getByLabelText('Context usage'));
 
     await waitFor(() => expect(load).toHaveBeenCalled());
@@ -127,7 +148,7 @@ describe('ContextMeter', () => {
 
   it('says the numbers are estimates rather than implying precision', async () => {
     render(
-      <ContextMeter used={1} window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} />,
+      <ContextMeter used={16_000} window={32_000} load={() => Promise.resolve(BREAKDOWN)} onOpenSettings={vi.fn()} />,
     );
     fireEvent.click(screen.getByLabelText('Context usage'));
     // Heap Code ships no tokenizer; presenting ~4-chars-per-token arithmetic as
@@ -138,7 +159,7 @@ describe('ContextMeter', () => {
   it('surfaces a failure instead of an empty dialog', async () => {
     render(
       <ContextMeter
-        used={1}
+        used={16_000}
         window={32_000}
         load={() => Promise.reject(new Error('daemon is down'))}
         onOpenSettings={vi.fn()}
@@ -152,7 +173,7 @@ describe('ContextMeter', () => {
     const onOpenSettings = vi.fn();
     render(
       <ContextMeter
-        used={1}
+        used={16_000}
         window={32_000}
         load={() => Promise.resolve(BREAKDOWN)}
         onOpenSettings={onOpenSettings}

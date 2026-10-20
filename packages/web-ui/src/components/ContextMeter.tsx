@@ -15,7 +15,16 @@ export interface ContextMeterProps {
   load(): Promise<UiContextResult>;
   /** "Change it on the profile" — the modal's one action. */
   onOpenSettings(): void;
+  /** Start a new conversation. Given, a filling window offers it beside the meter. */
+  onStartFresh?(): void;
 }
+
+/**
+ * Below this the meter is not shown at all. A ring reading 0% or 12% on every
+ * message was one more unexplained thing on the bar, and there is nothing to
+ * do about it until the window is filling.
+ */
+export const SHOW_FROM = 0.5;
 
 /** Ring colours, warmest last: the meter should look calm until it is not. */
 function colorFor(pct: number): string {
@@ -31,6 +40,9 @@ function colorFor(pct: number): string {
  * either be too short to read or too wide to belong. The same shape the
  * extension uses (webview-ui/App.tsx), for the same reason.
  *
+ * Hidden until the window is half full; from then it says "Context 72%" in
+ * words and offers to start fresh, which is the thing to do about it.
+ *
  * Clicking opens a modal, not a popover: the answer to "why is my context
  * full" is a table with five rows and a paragraph of caveat, and a 240px
  * popover is where that turns into something nobody reads.
@@ -42,6 +54,7 @@ export function ContextMeter({
   revision,
   load,
   onOpenSettings,
+  onStartFresh,
 }: ContextMeterProps): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const [idle, setIdle] = useState<number>();
@@ -81,6 +94,7 @@ export function ContextMeter({
   if (!win) return null;
 
   const pct = Math.min(1, shown / Math.max(1, win));
+  if (pct < SHOW_FROM) return null;
 
   return (
     <>
@@ -96,9 +110,15 @@ export function ContextMeter({
       >
         <Ring pct={pct} />
         <span className="ctx-pct" style={{ color: colorFor(pct) }}>
-          {Math.round(pct * 100)}%
+          Context {Math.round(pct * 100)}%
         </span>
       </button>
+      {/* Not mid-run: a new conversation then would abandon the one working. */}
+      {onStartFresh && !live && (
+        <button className="link-btn ctx-fresh" onClick={onStartFresh} title="Start a new conversation with an empty context">
+          Start fresh
+        </button>
+      )}
       {open && (
         <ContextModal live={live} load={load} onClose={() => setOpen(false)} onOpenSettings={onOpenSettings} />
       )}

@@ -502,44 +502,59 @@ export function activityOf(t: Transcript): Activity {
 export type FoldedRow = { kind: 'item'; item: Item } | { kind: 'steps'; id: string; items: Item[]; live: boolean };
 
 /**
- * One turn as "your message, what it did, its answer" — for a page that wants
- * the answer up front and the work behind a click (Heapnotes' Ask).
+ * The transcript with each stretch of working steps folded into one line.
  *
- * The answer is the turn's last assistant text with nothing but text after
- * it: once a tool runs after some prose, that prose was commentary on the
- * way, not the reply. Everything else in the turn — thinking, tool calls,
- * earlier remarks, the plan — becomes one steps group in front of it.
- * User messages and notices stay where they are. A model that says its
- * answer twice (prose, then a `finish` summary) shows it once: the first
- * copy is a step.
+ * Everything the assistant writes stays on screen, in order; only what it
+ * did between writing — thinking, tool calls, the plan — folds, into one
+ * steps group per stretch. It used to fold the whole turn except its last
+ * message, which hid anything said on the way: "click this link to log in",
+ * written before the agent went on to wait for the login, vanished into the
+ * fold at exactly the moment it needed reading.
+ *
+ * A model that says its answer twice (prose, then a `finish` summary) shows
+ * it once: the later copy stays, the earlier one goes. User messages and
+ * notices stay where they are. While a run is going, the last group is the
+ * live one.
  */
 export function foldTurns(items: Item[], busy = false): FoldedRow[] {
   const out: FoldedRow[] = [];
-  let turn: Item[] = [];
-  const flush = (last: boolean) => {
-    if (turn.length === 0) return;
-    let answerAt = -1;
-    for (let i = turn.length - 1; i >= 0; i--) {
-      const it = turn[i]!;
-      if (it.kind === 'text' && it.role === 'assistant' && it.text.trim()) {
-        answerAt = i;
-        break;
-      }
-      if (it.kind !== 'notice') break;
-    }
-    const steps = turn.filter((it, i) => i !== answerAt && it.kind !== 'notice');
-    if (steps.length > 0) out.push({ kind: 'steps', id: `steps-${steps[0]!.id}`, items: steps, live: last && busy });
-    turn.forEach((it, i) => {
-      if (i === answerAt || it.kind === 'notice') out.push({ kind: 'item', item: it });
-    });
-    turn = [];
+  let steps: Item[] = [];
+  /** Where in `out` this turn's last assistant message sits, for the said-twice case. */
+  let lastSaid = -1;
+  const flush = () => {
+    if (steps.length === 0) return;
+    out.push({ kind: 'steps', id: `steps-${steps[0]!.id}`, items: steps, live: false });
+    steps = [];
   };
   for (const it of items) {
     if (it.kind === 'text' && it.role === 'user') {
-      flush(false);
+      flush();
       out.push({ kind: 'item', item: it });
-    } else turn.push(it);
+      lastSaid = -1;
+    } else if (it.kind === 'text' && it.role === 'assistant' && it.text.trim()) {
+      flush();
+      const prev = lastSaid >= 0 ? out[lastSaid] : undefined;
+      if (prev?.kind === 'item' && prev.item.kind === 'text' && prev.item.text.trim() === it.text.trim()) {
+        out.splice(lastSaid, 1);
+        // The groups either side of the dropped copy are one stretch of work.
+        const before = out[lastSaid - 1];
+        const after = out[lastSaid];
+        if (before?.kind === 'steps' && after?.kind === 'steps') {
+          before.items = [...before.items, ...after.items];
+          out.splice(lastSaid, 1);
+        }
+      }
+      out.push({ kind: 'item', item: it });
+      lastSaid = out.length - 1;
+    } else if (it.kind === 'notice') {
+      flush();
+      out.push({ kind: 'item', item: it });
+    } else {
+      steps.push(it);
+    }
   }
-  flush(true);
+  flush();
+  const last = out.at(-1);
+  if (busy && last?.kind === 'steps') last.live = true;
   return out;
 }

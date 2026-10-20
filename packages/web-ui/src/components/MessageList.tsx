@@ -1,11 +1,13 @@
 import type { ReactNode } from 'react';
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CopyButton } from './CopyButton.js';
 import { ICON_CHEVRON, ICON_EDIT, ICON_FILE, ICON_RESTORE } from './icons.js';
 import { splitAttachedFiles } from '@heapcode/web-host/attachedFiles';
 import { renderMarkdown } from '../markdown.js';
 import { activityOf, foldTurns, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
+import { StepIcon } from './StepIcon.js';
+import { formatDuration, groupSteps, summarizeWork, webSources, type StepUnit } from '../steps.js';
 import { WorkingIndicator } from './WorkingIndicator.js';
 
 /**
@@ -32,6 +34,8 @@ export interface MessageListProps {
   transcript: Transcript;
   /** Clicking a path in a tool chip opens it in the workspace panel. */
   onOpenPath?(path: string): void;
+  /** Clicking an edited file in folded steps opens its diff (Heap Code's Changes). */
+  onOpenDiff?(path: string): void;
   /** A run is in flight — the working indicator sits under the last message. */
   busy?: boolean;
   /** When the run started, for the indicator's elapsed counter. */
@@ -67,6 +71,7 @@ export interface MessageListProps {
 export function MessageList({
   transcript,
   onOpenPath,
+  onOpenDiff,
   busy,
   runStartedAt,
   onEdit,
@@ -98,6 +103,8 @@ export function MessageList({
   // card stays — including this one once the run ends and the bar goes away,
   // because the transcript is the record of what each turn set out to do.
   const shown = hideTaskId ? windowed.filter((item) => item.id !== hideTaskId) : windowed;
+  const rows = foldSteps ? foldTurns(shown, busy) : shown.map((item) => ({ kind: 'item' as const, item }));
+  const sources = foldSteps ? sourcesByAnswer(rows, Boolean(busy)) : new Map<number, WebSource[]>();
 
   /**
    * When the person last moved the list themselves — wheel, trackpad, touch,
@@ -278,27 +285,30 @@ export function MessageList({
           </button>
         </div>
       )}
-      {(foldSteps ? foldTurns(shown, busy) : shown.map((item) => ({ kind: 'item' as const, item }))).map((row) =>
+      {rows.map((row, i) =>
         row.kind === 'steps' ? (
-          <Steps key={row.id} label={foldSteps!.describe(row.items, row.live)} live={row.live}>
-            {/* No todo_write rows: the Tasks card in the same group already
-                shows the list, and one row per update repeated it four times. */}
-            {row.items
-              .filter((item) => !(item.kind === 'tool' && item.name === 'todo_write'))
-              .map((item) => (
-                <Row key={item.id} item={item} onOpenPath={onOpenPath} busy={busy} wikiLinks={wikiLinks} />
-              ))}
-          </Steps>
-        ) : (
-          <Row
-            key={row.item.id}
-            item={row.item}
+          <Steps
+            key={row.id}
+            items={row.items}
+            label={foldSteps!.describe(row.items, row.live)}
+            live={row.live}
             onOpenPath={onOpenPath}
+            onOpenDiff={onOpenDiff}
             busy={busy}
-            onEdit={onEdit}
-            onRestore={onRestore}
             wikiLinks={wikiLinks}
           />
+        ) : (
+          <Fragment key={row.item.id}>
+            <Row
+              item={row.item}
+              onOpenPath={onOpenPath}
+              busy={busy}
+              onEdit={onEdit}
+              onRestore={onRestore}
+              wikiLinks={wikiLinks}
+            />
+            {sources.has(i) && <WebSources sources={sources.get(i)!} />}
+          </Fragment>
         ),
       )}
       {transcript.compacted && (
@@ -314,6 +324,212 @@ export function MessageList({
 }
 
 /**
+ * One stretch of folded steps: a quiet line saying what was done — with any
+ * failures in red, the time it took and the lines it changed — that opens to
+ * the steps themselves, as readable rows (see `groupSteps`).
+ *
+ * While its run is going the group shows its last two steps under the line,
+ * so progress is visible without a click; when the run ends it closes back
+ * to the line. Opened by hand, it stays open either way. A group with a
+ * failure opens with the failed step in view.
+ */
+function Steps({
+  items,
+  label,
+  live,
+  onOpenPath,
+  onOpenDiff,
+  busy,
+  wikiLinks,
+}: {
+  items: Item[];
+  label: string;
+  live: boolean;
+  onOpenPath?(path: string): void;
+  onOpenDiff?(path: string): void;
+  busy?: boolean;
+  wikiLinks?: boolean;
+}): JSX.Element {
+  const [manual, setManual] = useState<boolean>();
+  const open = manual ?? false;
+  const units = groupSteps(items);
+  // A group that is one bundle (and some thinking) would open to a row saying
+  // its own line again — "Searched the web 4 times" inside "Searched the web
+  // 4 times" — so opened, the bundle's steps are listed straight away.
+  const work = units.filter((u) => u.kind !== 'thinking');
+  const opened =
+    work.length === 1 && work[0]!.kind === 'bundle'
+      ? units.flatMap((u): StepUnit[] => (u.kind === 'bundle' ? u.tools.map((tool) => ({ kind: 'tool', tool })) : [u]))
+      : units;
+  const shownUnits = open ? opened : live ? units.slice(-2) : [];
+  const { failed, ms, added, removed } = summarizeWork(items);
+  const body = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (open && failed > 0) body.current?.querySelector('.chip-error')?.scrollIntoView({ block: 'nearest' });
+  }, [open, failed]);
+
+  // Only thinking: one quiet "Thought for 6s" line, not a group around it.
+  const only = units.length === 1 ? units[0] : undefined;
+  if (only?.kind === 'thinking') {
+    return (
+      <div className="steps">
+        <StepRow unit={only} live={live} busy={busy} wikiLinks={wikiLinks} />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`steps ${open ? 'steps-open' : ''} ${!open && live ? 'steps-peek' : ''}`}>
+      <button className="steps-summary" onClick={() => setManual(!open)} aria-expanded={open}>
+        <span className={open ? 'steps-caret steps-caret-open' : 'steps-caret'} aria-hidden="true">
+          {ICON_CHEVRON}
+        </span>
+        <span className={live ? 'steps-label steps-live' : 'steps-label'}>{label}</span>
+        {(added > 0 || removed > 0) && (
+          <span className="chip-stats steps-stats">
+            <span className="stat-add">+{added}</span>
+            <span className="stat-del">−{removed}</span>
+          </span>
+        )}
+        {failed > 0 && <span className="steps-failed">{failed} failed</span>}
+        {!live && ms !== undefined && ms >= 1000 && <span className="steps-time">{formatDuration(ms)}</span>}
+      </button>
+      {shownUnits.length > 0 && (
+        <div className="steps-body" ref={body}>
+          {shownUnits.map((u) => (
+            <StepRow
+              key={u.kind === 'tool' ? u.tool.id : u.kind === 'item' ? u.item.id : u.id}
+              unit={u}
+              live={live}
+              onOpenPath={onOpenPath}
+              onOpenDiff={onOpenDiff}
+              busy={busy}
+              wikiLinks={wikiLinks}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepRow({
+  unit,
+  live,
+  onOpenPath,
+  onOpenDiff,
+  busy,
+  wikiLinks,
+}: {
+  unit: StepUnit;
+  live: boolean;
+  onOpenPath?(path: string): void;
+  onOpenDiff?(path: string): void;
+  busy?: boolean;
+  wikiLinks?: boolean;
+}): JSX.Element {
+  switch (unit.kind) {
+    case 'tool':
+      return <ToolChip tool={unit.tool} onOpenPath={onOpenPath} onOpenDiff={onOpenDiff} readable />;
+    case 'bundle':
+      return <Bundle unit={unit} live={live} onOpenPath={onOpenPath} onOpenDiff={onOpenDiff} />;
+    case 'thinking':
+      return (
+        <Reasoning
+          text={unit.items.map((r) => r.text.trim()).filter(Boolean).join('\n\n')}
+          streaming={unit.streaming}
+          label={unit.streaming ? 'Thinking…' : unit.ms !== undefined && unit.ms >= 1000 ? `Thought for ${formatDuration(unit.ms)}` : 'Thought'}
+        />
+      );
+    default:
+      return <Row item={unit.item} onOpenPath={onOpenPath} busy={busy} wikiLinks={wikiLinks} />;
+  }
+}
+
+/**
+ * Same-kind steps in a row as one line — "Searched the web 10 times" — that
+ * opens to each of them. Open from the start when one of them failed, or
+ * while it is the step the run is on.
+ */
+function Bundle({
+  unit,
+  live,
+  onOpenPath,
+  onOpenDiff,
+}: {
+  unit: Extract<StepUnit, { kind: 'bundle' }>;
+  live: boolean;
+  onOpenPath?(path: string): void;
+  onOpenDiff?(path: string): void;
+}): JSX.Element {
+  const failed = unit.tools.some((t) => t.isError);
+  const running = unit.tools.some((t) => !t.done);
+  const [manual, setManual] = useState<boolean>();
+  const open = manual ?? failed;
+  return (
+    <div className={`chip chip-readable bundle ${failed ? 'bundle-failed' : ''}`}>
+      <button className="chip-head" onClick={() => setManual(!open)} aria-expanded={open}>
+        <span className={`chip-icon ${running && live ? 'chip-icon-live' : ''}`}>
+          <StepIcon kind={unit.step} />
+        </span>
+        <span className="chip-name">{unit.label}</span>
+        <span className={open ? 'chip-caret chip-caret-open' : 'chip-caret'}>{ICON_CHEVRON}</span>
+      </button>
+      {open && (
+        <div className="bundle-body">
+          {unit.tools.map((t) => (
+            <ToolChip key={t.id} tool={t} onOpenPath={onOpenPath} onOpenDiff={onOpenDiff} readable />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The sites an answer drew on, under it, each a link to the page. */
+function WebSources({ sources }: { sources: WebSource[] }): JSX.Element {
+  return (
+    <ul className="web-sources" aria-label="Web sources">
+      {sources.map((s) => (
+        <li key={s.host}>
+          <a className="web-source" href={s.url} target="_blank" rel="noreferrer noopener" title={s.url}>
+            <StepIcon kind="page" />
+            {s.host}
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+type WebSource = { host: string; url: string };
+
+/**
+ * For each turn that has finished, the web sources its steps drew on, keyed
+ * by the row of the turn's last assistant message — the answer they go under.
+ */
+function sourcesByAnswer(rows: ReturnType<typeof foldTurns>, busy: boolean): Map<number, WebSource[]> {
+  const out = new Map<number, WebSource[]>();
+  let steps: Item[] = [];
+  let answer = -1;
+  const finish = (): void => {
+    const found = answer >= 0 ? webSources(steps) : [];
+    if (found.length) out.set(answer, found);
+    steps = [];
+    answer = -1;
+  };
+  rows.forEach((row, i) => {
+    if (row.kind === 'steps') steps.push(...row.items);
+    else if (row.item.kind === 'text' && row.item.role === 'user') finish();
+    else if (row.item.kind === 'text' && row.item.role === 'assistant') answer = i;
+  });
+  // The turn still running has no final answer yet.
+  if (!busy) finish();
+  return out;
+}
+
+/**
  * Memoized on the item's identity.
  *
  * The reducer returns a new object only for the entry that changed, so during a
@@ -321,22 +537,6 @@ export function MessageList({
  * re-ran `renderMarkdown` — highlight.js and all — for every message on screen,
  * which is what made a long conversation stutter while the model typed.
  */
-/** One turn's folded steps: a quiet line that opens to the full detail. Closed by default, live or not. */
-function Steps({ label, live, children }: { label: string; live: boolean; children: ReactNode }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className={open ? 'steps steps-open' : 'steps'}>
-      <button className="steps-summary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className={open ? 'steps-caret steps-caret-open' : 'steps-caret'} aria-hidden="true">
-          {ICON_CHEVRON}
-        </span>
-        <span className={live ? 'steps-label steps-live' : 'steps-label'}>{label}</span>
-      </button>
-      {open && <div className="steps-body">{children}</div>}
-    </div>
-  );
-}
-
 const Row = memo(function Row({
   item,
   onOpenPath,
@@ -502,7 +702,7 @@ const Row = memo(function Row({
  * on screen at all, which reads as the app having hung. Watching it think is
  * the reassurance; keeping it open afterwards is the noise.
  */
-function Reasoning({ text, streaming }: { text: string; streaming?: boolean }): JSX.Element {
+function Reasoning({ text, streaming, label }: { text: string; streaming?: boolean; label?: string }): JSX.Element {
   const [manual, setManual] = useState<boolean>();
   const open = manual ?? Boolean(streaming);
   return (
@@ -511,7 +711,7 @@ function Reasoning({ text, streaming }: { text: string; streaming?: boolean }): 
         <span className={open ? 'reasoning-caret reasoning-caret-open' : 'reasoning-caret'}>
           {ICON_CHEVRON}
         </span>
-        thinking{streaming ? '…' : ''}
+        {label ?? `thinking${streaming ? '…' : ''}`}
       </button>
       {open && <pre className="reasoning-body">{text}</pre>}
     </div>

@@ -2265,3 +2265,35 @@ html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; 
 @keyframes steps-pulse { 50% { opacity: 0.55; } }
 @media (prefers-reduced-motion: reduce) { .steps-live { animation: none; } }
 .steps-body { margin: 4px 0 0; }
+/* What the group line says beside its words: lines changed, failures, time. */
+.steps-stats { font-size: 12px; }
+.steps-failed { color: var(--danger); font-size: 12px; font-weight: 500; }
+.steps-time { color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+.steps-time::before, .steps-failed::before { content: '·'; margin-right: 6px; color: var(--text-dim); }
+/* While running, the last two steps show under the line, quieter than an opened group. */
+.steps-peek .steps-body { opacity: 0.85; }
+
+/* Steps inside a group, in words with an icon rather than the tool's name. */
+.chip-readable .chip-head { font-family: inherit; font-size: 13px; gap: 7px; padding: 3px 0; }
+.chip-readable .chip-name { font-weight: 500; flex: 0 0 auto; }
+.chip-readable .chip-args { font-size: 12.5px; }
+.chip-icon { display: inline-flex; flex: 0 0 auto; color: var(--text-dim); }
+.chip-error .chip-icon { color: var(--danger); }
+.chip-error.chip-readable .chip-name { color: var(--danger); }
+.chip-icon-live { color: var(--accent); animation: steps-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .chip-icon-live { animation: none; } }
+.chip-readable .chip-body, .chip-readable .diff { margin-left: 21px; }
+.chip-readable .chip-open { margin-left: 21px; font-family: inherit; }
+/* A bundle's steps sit under its line, indented to its words. */
+.bundle-body { margin: 2px 0 4px 21px; }
+.bundle-failed > .chip-head .chip-icon { color: var(--danger); }
+
+/* The sites an answer drew on, under it. */
+.web-sources { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: -6px 0 16px; padding: 0; }
+.web-source {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px 2px 7px; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text-dim); font-size: 12px; text-decoration: none; background: var(--bg-raised);
+}
+.web-source:hover { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.web-source svg { width: 12px; height: 12px; }

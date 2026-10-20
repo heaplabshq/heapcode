@@ -520,6 +520,14 @@ export function App(): JSX.Element {
     setOpenPath(path);
   }, []);
 
+  /** An edited file in folded steps opens its diff in Changes. */
+  const [openChange, setOpenChange] = useState<{ path: string; n: number }>();
+  const openInChanges = useCallback((path: string) => {
+    setPanelOpen(true);
+    setPanelTab('changes');
+    setOpenChange((prev) => ({ path, n: (prev?.n ?? 0) + 1 }));
+  }, []);
+
   /** Stable identity: the modal fetches on mount, so a new function each
    *  render would make it refetch on every parent render instead. */
   const loadContext = useCallback(
@@ -1150,6 +1158,7 @@ export function App(): JSX.Element {
             transcript={transcript}
             hideTaskId={pinnedTasks?.id}
             onOpenPath={openInFiles}
+            onOpenDiff={openInChanges}
             busy={busy}
             runStartedAt={runStartedAt}
             onEdit={startEdit}
@@ -1280,6 +1289,7 @@ export function App(): JSX.Element {
               terminal={terminal}
               busy={busy}
               openPath={openPath}
+              openChange={openChange}
               loadDiff={loadDiff}
               loadTree={loadTree}
               workspaceVersion={workspaceVersion}

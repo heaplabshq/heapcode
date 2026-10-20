@@ -58,6 +58,8 @@ export interface PanelProps {
   localUrls?: string[];
   /** Set by the chat pane when the user clicks a path in a tool chip. */
   openPath?: string;
+  /** Set when an edited file is clicked in the chat: Changes opens on its diff. `n` re-fires a repeat click. */
+  openChange?: { path: string; n: number };
 
   /** Both indexes, live — see IndexView. */
   indexStatus?: UiIndexStatus;
@@ -212,11 +214,20 @@ export function Panel(props: PanelProps): JSX.Element {
 }
 
 function Changes(props: PanelProps): JSX.Element {
-  const [selected, setSelected] = useState<string>();
+  const [selected, setSelected] = useState<string | undefined>(props.openChange?.path);
   const [diff, setDiff] = useState<UiDiffResult>();
   const [diffError, setDiffError] = useState<string>();
 
-  const { loadDiff, changes } = props;
+  const { loadDiff, changes, openChange } = props;
+  useEffect(() => {
+    if (!openChange) return;
+    // The chat names a file as the agent wrote it — sometimes absolute,
+    // sometimes relative; Changes lists them relative.
+    const match = changes.find((c) => c.path === openChange.path || openChange.path.endsWith(`/${c.path}`));
+    setSelected(match?.path ?? openChange.path);
+    // Only on a new click: `changes` refreshes after every edit, and
+    // re-selecting then would undo the person closing the diff.
+  }, [openChange]);
   useEffect(() => {
     setDiffError(undefined);
     if (!selected) return setDiff(undefined);

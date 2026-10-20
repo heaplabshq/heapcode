@@ -45,6 +45,13 @@ export interface ToolItem {
   /** The delegate_task call this ran under, if any — drives nesting. */
   parent?: string;
   done: boolean;
+  /**
+   * When the call was made and answered, by this page's clock. Live only:
+   * stored history and a replay carry no times, and a summary simply leaves
+   * the duration out then.
+   */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface ReasoningItem {
@@ -53,6 +60,9 @@ export interface ReasoningItem {
   text: string;
   /** Still arriving — the block auto-expands so you can watch it think. */
   streaming?: boolean;
+  /** When it began and stopped, live only — "Thought for 6s". */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface PlanItem {
@@ -287,7 +297,7 @@ function closeOpenText(t: Transcript): Transcript {
  * a long transcript on events it does not draw (`tool_stream`, for one, which
  * fires per chunk of tool output).
  */
-export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcript {
+export function reduce(t: Transcript, event: AgentEvent, seq: number, now: number = Date.now()): Transcript {
   switch (event.type) {
     case 'text_delta': {
       const last = t.items[t.items.length - 1];
@@ -356,7 +366,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       const base = closeOpenText(t);
       return {
         ...base,
-        items: [...base.items, { kind: 'reasoning', id: `r${seq}`, text: event.text, streaming: true }],
+        items: [...base.items, { kind: 'reasoning', id: `r${seq}`, text: event.text, streaming: true, startedAt: now }],
       };
     }
 
@@ -364,7 +374,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       const last = t.items[t.items.length - 1];
       if (last?.kind !== 'reasoning' || !last.streaming) return t;
       // Collapses once finished: useful to watch live, noise to keep open.
-      return { ...t, items: [...t.items.slice(0, -1), { ...last, streaming: false }] };
+      return { ...t, items: [...t.items.slice(0, -1), { ...last, streaming: false, endedAt: now }] };
     }
 
     case 'tool_call': {
@@ -383,6 +393,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
             args: event.args,
             parent: event.parent,
             done: false,
+            startedAt: now,
           },
         ],
       };
@@ -417,7 +428,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       }
       if (index === -1) return t;
       const tool = t.items[index] as ToolItem;
-      const updated: ToolItem = { ...tool, result: event.content, isError: event.isError, done: true };
+      const updated: ToolItem = { ...tool, result: event.content, isError: event.isError, done: true, endedAt: now };
       const items = [...t.items];
       items[index] = updated;
       return { ...t, items };

@@ -9,7 +9,7 @@ import {
   SecretsStore,
 } from '@heapcode/host';
 import { DEFAULT_PORT, WorkspaceStore, isLoopback, startWebHost } from '@heapcode/web-host';
-import { ChatSession } from '@heapcode/chat-host';
+import { ChatSession, chatExtractors } from '@heapcode/chat-host';
 import { QaSession } from '@heapcode/qa-host';
 import { NotesSession } from '@heapcode/notes-host';
 import { loadProjectInstructions } from './memory.js';
@@ -81,6 +81,10 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
       staticDir,
       clientVersion: cliVersion(),
       loadInstructions: loadProjectInstructions,
+      // So a PDF or Word file attached in Heap Code reads as it does in Heap
+      // Chat. The parsers are optional dependencies: absent, those two
+      // formats are refused with a reason and text files still attach.
+      extractors: chatExtractors,
       connect: (hello) => connectToServer({ client: { name: 'heapcode-web', version: cliVersion() }, ...hello }),
       // Heap Chat, alongside — the switcher in the rail is a link, and a link
       // only works if both products answer on this origin under this token.

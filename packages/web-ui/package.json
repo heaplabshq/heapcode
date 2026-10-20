@@ -32,6 +32,10 @@
       "types": "./src/transcript.ts",
       "default": "./src/transcript.ts"
     },
+    "./steps": {
+      "types": "./src/steps.ts",
+      "default": "./src/steps.ts"
+    },
     "./styles.css": "./src/styles.css",
     "./components/icons": {
       "types": "./src/components/icons.tsx",

@@ -195,3 +195,77 @@ describe('the attach button', () => {
     expect(onReject.mock.calls[0]![0]).toMatch(/Only images/);
   });
 });
+
+/**
+ * Documents. Given a reader, the box takes any file: it is read to text by
+ * the host the moment it is attached and goes with the message as a block
+ * after what was typed.
+ */
+describe('attaching documents', () => {
+  const pdf = () => new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'lease.pdf', { type: 'application/pdf' });
+
+  it('offers files, not just images, when the host can read them', () => {
+    setup({ readFile: vi.fn() });
+    const picker = screen.getByLabelText('Attach files') as HTMLInputElement;
+    expect(picker.accept).toBe('');
+  });
+
+  it('reads a document on attach and sends its text with the message', async () => {
+    const readFile = vi.fn(async (name: string) => ({ text: `text of ${name}`, truncated: false }));
+    const { onSend, input } = setup({ readFile });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [pdf()] } });
+    expect(await screen.findByText('lease.pdf')).toBeTruthy();
+    await vi.waitFor(() => expect(screen.queryByText('Reading…')).toBeNull());
+    expect(readFile).toHaveBeenCalledWith('lease.pdf', expect.any(String));
+
+    fireEvent.change(input, { target: { value: 'what does clause 4 say?' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith(
+      'what does clause 4 say?\n\n<attached-file name="lease.pdf">\ntext of lease.pdf\n</attached-file>',
+      undefined,
+    );
+    expect(screen.queryByText('lease.pdf')).toBeNull();
+  });
+
+  it('a file alone is a message', async () => {
+    const { onSend, input } = setup({ readFile: async () => ({ text: 'body', truncated: false }) });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [pdf()] } });
+    await vi.waitFor(() => expect(screen.queryByText('Reading…')).toBeNull());
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('<attached-file name="lease.pdf">\nbody\n</attached-file>', undefined);
+  });
+
+  it('will not send while a file is still being read', async () => {
+    let finish: (v: { text: string; truncated: boolean }) => void = () => undefined;
+    const readFile = vi.fn(() => new Promise<{ text: string; truncated: boolean }>((r) => (finish = r)));
+    const { onSend, input } = setup({ readFile });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [pdf()] } });
+    await screen.findByText('Reading…');
+    // The bytes are read off disk before the host is asked; wait for the ask.
+    await vi.waitFor(() => expect(readFile).toHaveBeenCalled());
+    fireEvent.change(input, { target: { value: 'summarize' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    finish({ text: 'done', truncated: false });
+    await vi.waitFor(() => expect(screen.queryByText('Reading…')).toBeNull());
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalled();
+  });
+
+  it('drops a file the host cannot read, and says why', async () => {
+    const onReject = vi.fn();
+    setup({ onReject, readFile: async () => Promise.reject(new Error("Couldn't find any text in lease.pdf.")) });
+    fireEvent.change(screen.getByLabelText('Attach files'), { target: { files: [pdf()] } });
+    await vi.waitFor(() => expect(onReject).toHaveBeenCalledWith("Couldn't find any text in lease.pdf."));
+    expect(screen.queryByText('lease.pdf')).toBeNull();
+  });
+
+  it('an edited message comes back with its files as chips, not as text', () => {
+    const { input } = setup({
+      readFile: vi.fn(),
+      seed: 'and clause 7?\n\n<attached-file name="lease.pdf">\nbody\n</attached-file>',
+    });
+    expect(input.value).toBe('and clause 7?');
+    expect(screen.getByText('lease.pdf')).toBeTruthy();
+  });
+});

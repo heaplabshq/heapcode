@@ -313,6 +313,14 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     // The mounted product first: its prefix is more specific than the root,
     // and the root's index.html fallback would otherwise swallow it.
     const pageMount = mountOf(url.pathname);
+    // `/notes` without its slash would be served the mount's index.html, whose
+    // relative `./assets/…` then resolve against the root and load Heap Code's
+    // bundle under Heapnotes' title. One redirect makes every relative URL right.
+    if (pageMount?.staticDir && url.pathname === pageMount.path) {
+      res.writeHead(308, { location: `${pageMount.path}/${url.search}`, 'cache-control': 'no-store' });
+      res.end();
+      return;
+    }
     if (pageMount?.staticDir) {
       // The mounted page is told where its own socket is and that the other
       // product is here. It cannot infer either: served standalone it sits at
@@ -323,9 +331,9 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
       if (await serveStatic(pageMount.staticDir, stripMount(pageMount, url.pathname), res, attrs)) return;
     }
 
-    // The page is told whether the other product is there, so the switcher is
-    // absent rather than broken when it is not.
-    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { 'chat-mounted': opts.mount ? 'true' : 'false', products, ...windowChrome(req) })))
+    // The page is told which other products are here, so the switcher lists
+    // only those rather than offering a link to a 404.
+    if (staticDir && (await serveStatic(staticDir, url.pathname, res, { products, ...windowChrome(req) })))
       return;
 
     res.writeHead(404, { 'content-type': 'text/plain' });

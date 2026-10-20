@@ -6,26 +6,23 @@ export interface TaskBarProps {
 }
 
 /**
- * The agent's task list, pinned above the transcript instead of scrolling away
- * inside it.
+ * The agent's task list during a run, as a card just above the input box.
  *
- * The list answers one question — what is left — and it answers it about the
- * run happening *now*. Drawn as an ordinary transcript card it went out of
- * view the moment the run produced two more tool chips, which is exactly when
- * it starts being worth reading. So it moves out of the scroller and sits with
- * the banners, above `.messages`: a flex row in normal flow, which is why it
- * cannot overlap the transcript, the composer, or the workspace panel the way
- * a floating overlay would.
+ * Above the input rather than above the transcript: that is where the eye is
+ * while a run is going — on the newest output and the box it will answer in —
+ * and it is where the Claude app keeps its own plan. It sits in normal flow
+ * between the transcript and the composer, so it cannot overlap either, and
+ * it is only here while the run is: when the run ends the card drops back
+ * into the transcript, where the record of that turn belongs (MessageList
+ * skips the live one meanwhile, so it is never drawn twice).
  *
- * Collapsed to one line by default. A pinned region earns its space by being
- * small: "Tasks 3/7 · wiring the history window" is the whole answer most of
- * the time, and the full list is one click away for the times it is not. The
- * card stays in the transcript for every *earlier* run, so the history of what
- * each turn set out to do is not lost — only the live one is lifted out
- * (MessageList skips it to avoid drawing the same list twice).
+ * Open by default, because the list is the point — what is done, what is
+ * happening, what is left, at a glance. The header folds it to one line for
+ * anyone who wants the room; the list scrolls past a cap so twenty tasks
+ * cannot push the conversation away.
  */
 export function TaskBar({ todos }: TaskBarProps): JSX.Element | null {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   if (todos.length === 0) return null;
 
   const done = todos.filter((t) => t.status === 'completed').length;
@@ -36,30 +33,25 @@ export function TaskBar({ todos }: TaskBarProps): JSX.Element | null {
 
   return (
     <div className="taskbar">
-      <button
-        type="button"
-        className="taskbar-head"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="taskbar-caret" aria-hidden>
-          {open ? '▾' : '▸'}
-        </span>
+      <button type="button" className="taskbar-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <span className="taskbar-label">Tasks</span>
         <span className="taskbar-count">
           {done}/{todos.length}
         </span>
         {!open && current && <span className="taskbar-current">{current.content}</span>}
+        <span className={open ? 'taskbar-caret taskbar-caret-open' : 'taskbar-caret'} aria-hidden>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </span>
       </button>
       {open && (
-        <ul className="tasks-list taskbar-list">
+        <ul className="taskbar-list">
           {todos.map((t, i) => (
             // `key` by index, not content: the list is replaced whole, so an
             // item's identity is its position, not what it says.
             <li key={i} className={`task task-${t.status}`}>
-              <span className="task-mark" aria-hidden>
-                {t.status === 'completed' ? '✔' : t.status === 'in_progress' ? '▸' : '·'}
-              </span>
+              <span className="taskbar-mark" aria-label={STATUS[t.status]} role="img" />
               <span className="task-text">{t.content}</span>
             </li>
           ))}
@@ -68,3 +60,9 @@ export function TaskBar({ todos }: TaskBarProps): JSX.Element | null {
     </div>
   );
 }
+
+const STATUS: Record<TodoItem['status'], string> = {
+  completed: 'Done',
+  in_progress: 'In progress',
+  pending: 'Not started',
+};

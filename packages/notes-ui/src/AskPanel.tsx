@@ -13,6 +13,7 @@ import {
 import { useTranscript } from '@heapcode/web-ui/useTranscript';
 import {
   CHAT_METHODS,
+  type ChatReadAttachedFileResult,
   CHAT_PROTOCOL_VERSION,
   type ChatAskUserParams,
   type ChatEventParams,
@@ -298,6 +299,9 @@ export function AskPanel({
       <Composer
         onSend={(text, images) => send(text, images)}
         onCancel={() => void client.request(CHAT_METHODS.cancel, {}).catch(() => undefined)}
+        onReject={setError}
+        // A document to ask about alongside the notes — read by the host.
+        readFile={(name, data) => client.request<ChatReadAttachedFileResult>(CHAT_METHODS.readAttachedFile, { name, data })}
         busy={busy}
         disabled={Boolean(state?.setup) || !state}
         placeholder="Ask your notes…"

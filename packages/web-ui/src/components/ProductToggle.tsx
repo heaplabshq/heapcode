@@ -1,77 +1,69 @@
+export type Product = 'code' | 'chat' | 'qa' | 'notes';
+
 /**
- * Switching between Heap Code, Heap Chat, Heap QA and Heapnotes.
+ * Switching between Heap Code, Heap Chat, Heapnotes and Heap QA.
  *
- * A pair of icon buttons at the top of the rail, the way the Claude app
- * switches between chat and code. It is a real navigation — the two products
- * are different sessions with different tool rosters — but it looks and costs
- * like a tab, because both are served from one origin under one token
+ * A row of icon tabs beside the product's name at the top of the rail, the
+ * way the Claude app switches between chat and code: every product in sight,
+ * so nobody has to open anything to find out the others exist. (A
+ * name-and-chevron menu was tried and hid them.) Each tab's tooltip says
+ * what that product is for.
+ *
+ * It is a real navigation — the products are different sessions with
+ * different tool rosters — served from one origin under one token
  * (`WebHostOptions.mount`). A link to another port would arrive without the
  * HttpOnly cookie and bounce to 401.
  *
- * Rendered only when the other product is actually mounted. A switcher with
- * one working half is worse than no switcher: it teaches people the control
- * is broken rather than that the other product is not running.
+ * Which products are here is read off `<html>`, the same way on every page,
+ * so no product can forget to list one, and the order is the same
+ * everywhere. With only the current product served it renders nothing: a
+ * switcher with one working half teaches people the control is broken.
  */
-export function ProductToggle({
-  current,
-  chatPath,
-  qaPath,
-  notesPath,
-}: {
-  current: 'code' | 'chat' | 'qa' | 'notes';
-  /** Omitted when Heap Chat is not served here. */
-  chatPath?: string;
-  /** Omitted when Heap QA is not served here. */
-  qaPath?: string;
-  /** Omitted when Heapnotes is not served here. */
-  notesPath?: string;
-}): JSX.Element {
+export function ProductToggle({ current }: { current: Product }): JSX.Element | null {
+  const here = availableProducts(current);
+  if (here.length < 2) return null;
   return (
     <div className="product-toggle" role="group" aria-label="Product">
-      {chatPath !== undefined && (
+      {here.map((p) => (
         <a
-          className={current === 'chat' ? 'product-tab product-tab-on' : 'product-tab'}
-          href={chatPath}
-          aria-current={current === 'chat' ? 'page' : undefined}
-          title="Heap Chat — your files"
+          key={p.id}
+          className={p.id === current ? 'product-tab product-tab-on' : 'product-tab'}
+          href={p.path}
+          aria-current={p.id === current ? 'page' : undefined}
+          title={`${p.name} — ${p.blurb}`}
         >
-          <IconChat />
-          <span className="sr-only">Heap Chat</span>
+          {p.icon}
+          <span className="sr-only">{p.name}</span>
         </a>
-      )}
-      <a
-        className={current === 'code' ? 'product-tab product-tab-on' : 'product-tab'}
-        href="/"
-        aria-current={current === 'code' ? 'page' : undefined}
-        title="Heap Code — this workspace"
-      >
-        <IconCode />
-        <span className="sr-only">Heap Code</span>
-      </a>
-      {qaPath !== undefined && (
-        <a
-          className={current === 'qa' ? 'product-tab product-tab-on' : 'product-tab'}
-          href={qaPath}
-          aria-current={current === 'qa' ? 'page' : undefined}
-          title="Heap QA — test your app"
-        >
-          <IconQa />
-          <span className="sr-only">Heap QA</span>
-        </a>
-      )}
-      {notesPath !== undefined && (
-        <a
-          className={current === 'notes' ? 'product-tab product-tab-on' : 'product-tab'}
-          href={notesPath}
-          aria-current={current === 'notes' ? 'page' : undefined}
-          title="Heapnotes — your notes"
-        >
-          <IconNotes />
-          <span className="sr-only">Heapnotes</span>
-        </a>
-      )}
+      ))}
     </div>
   );
+}
+
+/** The product's display name, for the rail's brand. */
+export function productName(product: Product): string {
+  return PRODUCTS.find((p) => p.id === product)!.name;
+}
+
+/** Every product, in the order the switcher shows them. */
+const PRODUCTS: { id: Product; name: string; blurb: string; path: string; icon: JSX.Element }[] = [
+  { id: 'code', name: 'Heap Code', blurb: 'Change and fix code in a folder', path: '/', icon: <IconCode /> },
+  { id: 'chat', name: 'Heap Chat', blurb: 'Ask about your documents and files', path: '/chat/', icon: <IconChat /> },
+  { id: 'notes', name: 'Heapnotes', blurb: 'Write and find your notes', path: '/notes/', icon: <IconNotes /> },
+  { id: 'qa', name: 'Heap QA', blurb: 'Record and run tests of your app', path: '/qa/', icon: <IconQa /> },
+];
+
+/**
+ * The products reachable from this page. Heap Code is the root: it is here
+ * when this page is Heap Code, or when the host says this page is mounted
+ * beside it. The others are here when the host lists them.
+ */
+function availableProducts(current: Product): typeof PRODUCTS {
+  const served = servedProducts();
+  const codeHere = current === 'code' || document.documentElement.dataset.sibling === 'code';
+  // Without Heap Code at the root there is no shared origin to switch on.
+  if (!codeHere) return PRODUCTS.filter((p) => p.id === current);
+  return PRODUCTS.filter((p) => p.id === current || p.id === 'code' || served.includes(p.id));
 }
 
 /** The products served beside this page, as the host stamps them on `<html>`: `chat,qa`. */

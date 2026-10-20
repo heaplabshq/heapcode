@@ -275,6 +275,19 @@ describe('the reply toolbar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
     expect(seen).toEqual([[0, 'look', ['/attachment/a.png']]]);
   });
+
+  it('shows attached documents as chips, not as their text, and edits with them', () => {
+    const seen: unknown[] = [];
+    const text = 'what does clause 4 say?\n\n<attached-file name="lease.pdf">\nClause 4: rent is due monthly.\n</attached-file>';
+    const turn: Transcript = { items: [{ kind: 'text', id: 'u1', role: 'user', text, ordinal: 0 }] } as never;
+    const { container } = render(<MessageList transcript={turn} onEdit={(...args) => seen.push(args)} />);
+    expect(screen.getByText('lease.pdf')).toBeTruthy();
+    expect(container.textContent).not.toContain('rent is due monthly');
+    expect(container.querySelector('.msg-body')?.textContent).toContain('what does clause 4 say?');
+    // The whole message goes back, so the composer can restore the chip.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+    expect(seen).toEqual([[0, text, undefined]]);
+  });
 });
 
 
@@ -361,5 +374,156 @@ describe('following the stream, when the page moves the list', () => {
     height = 2000;
     fireEvent.scroll(list);
     expect(list.scrollTop).toBe(2000);
+  });
+});
+
+describe('folded steps', () => {
+  it('leaves out todo_write rows, which the Tasks card already shows', () => {
+    const turn: Transcript = {
+      items: [
+        { kind: 'text', id: 'u1', role: 'user', text: 'plan it', ordinal: 0 },
+        { kind: 'tool', id: 't1', name: 'todo_write', args: {}, done: true },
+        { kind: 'tasks', id: 'k1', todos: [{ content: 'search', status: 'completed' }] },
+        { kind: 'tool', id: 't2', name: 'web_search', args: { query: 'rbi date' }, done: true },
+        { kind: 'tool', id: 't3', name: 'todo_write', args: {}, done: true },
+        { kind: 'text', id: 'a1', role: 'assistant', text: 'Done.' },
+      ],
+    } as never;
+    const { container } = render(<MessageList transcript={turn} foldSteps={{ describe: () => 'Steps' }} />);
+    fireEvent.click(screen.getByText('Steps'));
+    const body = container.querySelector('.steps-body')!;
+    expect(body.textContent).not.toContain('todo_write');
+    expect(body.textContent).toContain('Searched the web');
+    expect(body.textContent).toContain('search');
+  });
+
+  const run = (items: unknown[]): Transcript =>
+    ({ items: [{ kind: 'text', id: 'u1', role: 'user', text: 'go', ordinal: 0 }, ...items] }) as never;
+  const t = (id: string, name: string, args: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => ({
+    kind: 'tool', id, name, args, done: true, ...extra,
+  });
+  const fold = { describe: () => 'Steps' };
+
+  it('shows steps in words, with same-kind steps as one row that opens to each', () => {
+    const { container } = render(
+      <MessageList
+        transcript={run([
+          t('a', 'web_search', { query: 'rbi date' }),
+          t('b', 'web_search', { query: 'fed date' }),
+          t('c', 'fetch_url', { url: 'https://www.rbi.org.in/press' }),
+          { kind: 'text', id: 'x', role: 'assistant', text: 'Done.' },
+        ])}
+        foldSteps={fold}
+      />,
+    );
+    fireEvent.click(screen.getByText('Steps'));
+    expect(screen.getByText('Searched the web twice')).toBeTruthy();
+    expect(screen.getByText('Read page')).toBeTruthy();
+    expect(screen.getByText('rbi.org.in/press')).toBeTruthy();
+    expect(container.textContent).not.toContain('fed date');
+    fireEvent.click(screen.getByText('Searched the web twice'));
+    expect(screen.getByText('fed date')).toBeTruthy();
+  });
+
+  it('opens a group that is one bundle straight to its steps', () => {
+    render(
+      <MessageList
+        transcript={run([t('a', 'web_search', { query: 'rbi date' }), t('b', 'web_search', { query: 'fed date' }), { kind: 'text', id: 'x', role: 'assistant', text: 'Done.' }])}
+        foldSteps={fold}
+      />,
+    );
+    fireEvent.click(screen.getByText('Steps'));
+    expect(screen.queryByText('Searched the web twice')).toBeNull();
+    expect(screen.getByText('rbi date')).toBeTruthy();
+    expect(screen.getByText('fed date')).toBeTruthy();
+  });
+
+  it('puts failures in red on the line and opens with the failed step in view', () => {
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    const { container } = render(
+      <MessageList
+        transcript={run([t('a', 'run_command', { command: 'pnpm test' }, { isError: true, result: 'boom' }), { kind: 'text', id: 'x', role: 'assistant', text: 'It failed.' }])}
+        foldSteps={fold}
+      />,
+    );
+    expect(container.querySelector('.steps-failed')?.textContent).toBe('1 failed');
+    fireEvent.click(screen.getByText('Steps'));
+    expect(scrolled).toHaveBeenCalled();
+  });
+
+  it('says how long the work took and how many lines it changed', () => {
+    const diff = '--- a/x.ts\n+++ b/x.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n+more\n';
+    const { container } = render(
+      <MessageList
+        transcript={run([
+          t('a', 'edit_file', { path: 'x.ts' }, { result: diff, startedAt: 1_000, endedAt: 2_000 }),
+          t('b', 'read_file', { path: 'y.ts' }, { startedAt: 2_000, endedAt: 13_500 }),
+          { kind: 'text', id: 'x', role: 'assistant', text: 'Done.' },
+        ])}
+        foldSteps={fold}
+      />,
+    );
+    expect(container.querySelector('.steps-stats')?.textContent).toBe('+2−1');
+    expect(container.querySelector('.steps-time')?.textContent).toBe('13s');
+  });
+
+  it('shows the last steps of the live group without a click', () => {
+    const { container } = render(
+      <MessageList
+        transcript={run([t('a', 'read_file', { path: 'one.ts' }), t('b', 'run_command', { command: 'ls' }), t('c', 'web_search', { query: 'now', }, { done: false })])}
+        foldSteps={fold}
+        busy
+      />,
+    );
+    const body = container.querySelector('.steps-peek .steps-body')!;
+    expect(body.textContent).toContain('Searched the web');
+    expect(body.textContent).toContain('Ran');
+    expect(body.textContent).not.toContain('one.ts');
+  });
+
+  it('lists the sites a finished answer drew on, under it', () => {
+    render(
+      <MessageList
+        transcript={run([
+          t('a', 'fetch_url', { url: 'https://www.rbi.org.in/x' }),
+          t('b', 'fetch_url', { url: 'https://federalreserve.gov/y' }),
+          { kind: 'text', id: 'x', role: 'assistant', text: 'Dec 4.' },
+        ])}
+        foldSteps={fold}
+      />,
+    );
+    const links = screen.getByRole('list', { name: 'Web sources' }).querySelectorAll('a');
+    expect([...links].map((l) => l.textContent)).toEqual(['rbi.org.in', 'federalreserve.gov']);
+    expect(links[0]!.getAttribute('href')).toBe('https://www.rbi.org.in/x');
+  });
+
+  it('draws a stretch of only thinking as one line, not a group', () => {
+    const { container } = render(
+      <MessageList
+        transcript={run([
+          { kind: 'reasoning', id: 'r', text: 'hm', startedAt: 0, endedAt: 4_000 },
+          { kind: 'text', id: 'x', role: 'assistant', text: 'Done.' },
+        ])}
+        foldSteps={fold}
+      />,
+    );
+    expect(screen.getByText('Thought for 4s')).toBeTruthy();
+    expect(container.querySelector('.steps-summary')).toBeNull();
+  });
+
+  it('opens an edited file in Changes from its step', () => {
+    const onOpenDiff = vi.fn();
+    render(
+      <MessageList
+        transcript={run([t('a', 'write_file', { path: 'src/a.ts' }, { result: 'wrote' }), { kind: 'text', id: 'x', role: 'assistant', text: 'Done.' }])}
+        foldSteps={fold}
+        onOpenDiff={onOpenDiff}
+      />,
+    );
+    fireEvent.click(screen.getByText('Steps'));
+    fireEvent.click(screen.getByText('Wrote'));
+    fireEvent.click(screen.getByText(/View changes to src\/a.ts/));
+    expect(onOpenDiff).toHaveBeenCalledWith('src/a.ts');
   });
 });

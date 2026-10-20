@@ -15,7 +15,7 @@ import {
 } from '@heapcode/core';
 import { ConfigStore, SecretsStore } from '@heapcode/host';
 import { AuthLimiter } from '../src/authLimit.js';
-import { AUTH_CHECK_PATH, cookieName, startWebHost, type RunningWebHost } from '../src/server.js';
+import { AUTH_CHECK_PATH, cookieName, startWebHost, type MountedProduct, type RunningWebHost } from '../src/server.js';
 import { MAX_IMAGES, MAX_IMAGE_BYTES, acceptImages, clipArgs } from '../src/session.js';
 import type { DaemonHello } from '../src/hello.js';
 import { WorkspaceStore } from '../src/workspaces.js';
@@ -41,6 +41,7 @@ import {
   type UiPermissionRequestResult,
   type UiSendMessageResult,
   type UiProbeProviderResult,
+  type UiReadAttachedFileResult,
   type UiSetWorkspaceResult,
   type UiSettings,
   type UiState,
@@ -131,7 +132,7 @@ async function boot(
   /** Extra profile fields, for the ones only the CLI can normally set. */
   profileExtras: Record<string, unknown> = {},
   /** Host options the auth and LAN tests need to vary. */
-  hostExtras: { limiter?: AuthLimiter; host?: string } = {},
+  hostExtras: { limiter?: AuthLimiter; host?: string; mounts?: MountedProduct[] } = {},
   /** Top-level config.json keys — e.g. the step ceiling a run is given. */
   configExtras: Record<string, unknown> = {},
 ): Promise<{
@@ -417,6 +418,28 @@ describe('web host — auth', () => {
     expect((await fetch(url, { headers: { cookie: `${cookieName(host.port)}=old` } })).status).toBe(401);
   });
 
+  it('sends a mount without its trailing slash to the slashed path, keeping the query', async () => {
+    // Served as-is, /notes got Heapnotes' index.html with ./assets resolved
+    // against the root — Heap Code's bundle under Heapnotes' title.
+    const staticDir = join(home, 'notes-ui');
+    await mkdir(staticDir, { recursive: true });
+    await writeFile(join(staticDir, 'index.html'), '<!doctype html><html><head></head><body>notes</body></html>', 'utf8');
+    const mount: MountedProduct = {
+      path: '/notes',
+      staticDir,
+      createSession: () => {
+        throw new Error('no session for a page load');
+      },
+    };
+    const { host } = await boot(WRITE_THEN_FINISH, {}, { mounts: [mount] });
+    const cookie = `${cookieName(host.port)}=${host.token}`;
+    const res = await fetch(`http://127.0.0.1:${host.port}/notes?x=1`, { headers: { cookie }, redirect: 'manual' });
+    expect(res.status).toBe(308);
+    expect(res.headers.get('location')).toBe('/notes/?x=1');
+    const page = await fetch(`http://127.0.0.1:${host.port}/notes/`, { headers: { cookie } });
+    expect(await page.text()).toContain('notes');
+  });
+
   it('a good token before the limit is reached clears the count', async () => {
     const limiter = new AuthLimiter(3, 60_000, 60_000);
     const { host } = await boot(WRITE_THEN_FINISH, {}, { limiter });
@@ -642,6 +665,24 @@ describe('web host — testing a provider before saving it', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/base URL/i);
+    browser.close();
+  });
+});
+
+describe('web host — attached files', () => {
+  it('reads an attached file to text over the socket, and refuses one it cannot read', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const read = await browser.peer.request<UiReadAttachedFileResult>(UI_METHODS.readAttachedFile, {
+      name: 'notes.md',
+      data: Buffer.from('# Plan\nship it').toString('base64'),
+    });
+    expect(read).toEqual({ name: 'notes.md', text: '# Plan\nship it', truncated: false });
+    await expect(
+      browser.peer.request(UI_METHODS.readAttachedFile, { name: 'deck.pptx', data: Buffer.from('PK').toString('base64') }),
+    ).rejects.toThrow(/Can't read deck.pptx/);
     browser.close();
   });
 });

@@ -2,6 +2,8 @@ import { useState } from 'react';
 import type { ToolItem } from '../transcript.js';
 import { DiffView, diffStats, isDiffText } from './DiffView.js';
 import { ICON_CHEVRON } from './icons.js';
+import { StepIcon } from './StepIcon.js';
+import { stepKind, stepLabel } from '../steps.js';
 
 /**
  * A collapsed one-liner per tool call, expandable to the full output.
@@ -20,11 +22,22 @@ import { ICON_CHEVRON } from './icons.js';
 export function ToolChip({
   tool,
   onOpenPath,
+  onOpenDiff,
+  readable,
 }: {
   tool: ToolItem;
   onOpenPath?(path: string): void;
+  /** Opens a changed file's diff (Heap Code's Changes view). */
+  onOpenDiff?(path: string): void;
+  /**
+   * Plain words and an icon — "Searched the web · RBI policy date" — instead
+   * of the tool's own name. Used inside folded steps; Heap QA keeps the names.
+   */
+  readable?: boolean;
 }): JSX.Element {
-  const summary = describeArgs(tool.name, tool.args);
+  const words = readable ? stepLabel(tool) : undefined;
+  const summary = words ? words.detail : describeArgs(tool.name, tool.args);
+  const isChange = stepKind(tool.name) === 'change';
   const path = typeof tool.args.path === 'string' ? tool.args.path : undefined;
   const diff = tool.done && tool.result ? isDiffText(tool.result) : false;
   // An edit opens expanded: the diff is the whole point of the call, and
@@ -56,10 +69,16 @@ export function ToolChip({
   }
 
   return (
-    <div className={`chip ${tool.parent ? 'chip-nested' : ''} ${tool.isError ? 'chip-error' : ''}`}>
-      <button className="chip-head" onClick={() => setManual(!open)} aria-expanded={open}>
-        <span className="chip-dot">{tool.done ? (tool.isError ? '✗' : '⏺') : '◌'}</span>
-        <span className="chip-name">{tool.name}</span>
+    <div className={`chip ${tool.parent ? 'chip-nested' : ''} ${tool.isError ? 'chip-error' : ''} ${words ? 'chip-readable' : ''}`}>
+      <button className="chip-head" onClick={() => setManual(!open)} aria-expanded={open} title={words ? tool.name : undefined}>
+        {words ? (
+          <span className={`chip-icon ${tool.done ? '' : 'chip-icon-live'}`}>
+            <StepIcon kind={tool.isError ? 'failed' : stepKind(tool.name) ?? 'other'} />
+          </span>
+        ) : (
+          <span className="chip-dot">{tool.done ? (tool.isError ? '✗' : '⏺') : '◌'}</span>
+        )}
+        <span className="chip-name">{words ? words.verb : tool.name}</span>
         {summary && <span className="chip-args">{summary}</span>}
         {stats && (stats.added > 0 || stats.removed > 0) && (
           <span className="chip-stats">
@@ -75,10 +94,17 @@ export function ToolChip({
         <>
           {tool.result &&
             (diff ? <DiffView diff={tool.result} /> : <pre className="chip-body">{tool.result}</pre>)}
-          {path && onOpenPath && (
-            <button className="chip-open" onClick={() => onOpenPath(path)}>
-              Open {path} →
+          {path && isChange && onOpenDiff ? (
+            <button className="chip-open" onClick={() => onOpenDiff(path)}>
+              View changes to {path} →
             </button>
+          ) : (
+            path &&
+            onOpenPath && (
+              <button className="chip-open" onClick={() => onOpenPath(path)}>
+                Open {path} →
+              </button>
+            )
           )}
         </>
       )}

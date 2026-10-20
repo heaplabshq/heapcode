@@ -18,7 +18,7 @@ import { TaskBar } from '@heapcode/web-ui/components/TaskBar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
 import { Toasts } from '@heapcode/web-ui/components/Toasts';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
-import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/ProductToggle';
+import { describeWork } from '@heapcode/web-ui/steps';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
@@ -44,6 +44,7 @@ import type {
   ChatArtifactResult,
   ChatArtifactsResult,
   ChatReadFileResult,
+  ChatReadAttachedFileResult,
   ChatSendMessageResult,
   ChatSettings,
   ChatState,
@@ -80,12 +81,6 @@ import { MemoryPanel } from './components/MemoryPanel.js';
  * still connects.
  */
 const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
-const HAS_CODE = document.documentElement.dataset.sibling === 'code';
-/** Heap QA, mounted beside this page by `heapcode web`. */
-const HAS_QA = servedProducts().includes('qa');
-const HAS_NOTES = servedProducts().includes('notes');
-/** The mount prefix, derived from the socket path — `/chat/rpc` → `/chat`. */
-const BASE = RPC_PATH.replace(/\/rpc$/, '');
 
 const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${RPC_PATH}`;
 
@@ -435,10 +430,7 @@ export function App(): JSX.Element {
     <div className="app">
       <div className="body">
         <Sidebar
-          brand="Heap Chat"
-          // Absent when Heap Code is not served here: a switcher with one
-          // working half teaches people the control is broken.
-          toggle={HAS_CODE ? <ProductToggle current="chat" chatPath={`${BASE}/`} {...(HAS_QA ? { qaPath: '/qa/' } : {})} {...(HAS_NOTES ? { notesPath: '/notes/' } : {})} /> : undefined}
+          product="chat"
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
@@ -451,7 +443,6 @@ export function App(): JSX.Element {
           onNew={newConversation}
           onDelete={deleteConversation}
           busy={busy}
-          state={state}
           status={status}
           // No artifacts and no command palette here: neither exists in this
           // product, and a rail row that opens nothing is worse than its
@@ -504,8 +495,6 @@ export function App(): JSX.Element {
             </div>
           ) : null}
 
-          <TaskBar todos={pinnedTasks?.todos ?? []} />
-
           <MessageList
             transcript={transcript}
             hideTaskId={pinnedTasks?.id}
@@ -515,6 +504,9 @@ export function App(): JSX.Element {
             // that rewinds the workspace to a checkpoint, and nothing here
             // takes one because nothing here changes a file.
             onEdit={startEdit}
+            // Each turn's searches and reads as one line before its answer,
+            // opened with a click — the way Heapnotes' Ask shows them.
+            foldSteps={{ describe: describeWork }}
             // A path in a tool chip opens in the panel, the same gesture Heap
             // Code has — here it reads a document rather than showing a diff.
             onOpenPath={openFile}
@@ -555,6 +547,9 @@ export function App(): JSX.Element {
               ),
             }}
           />
+
+          {/* Just above the input while a run is going, as in Heap Code. */}
+          <TaskBar todos={pinnedTasks?.todos ?? []} />
 
           {permission && (
             <div className="card card-permission" role="alertdialog" aria-label="Allow this connector?">
@@ -629,6 +624,7 @@ export function App(): JSX.Element {
             onSend={send}
             onCancel={cancel}
             onReject={setNotice}
+            readFile={(name, data) => client.request<ChatReadAttachedFileResult>(CHAT_METHODS.readAttachedFile, { name, data })}
             busy={busy}
             disabled={status !== 'open'}
             seed={seed}

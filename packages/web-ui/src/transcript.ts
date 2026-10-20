@@ -45,6 +45,13 @@ export interface ToolItem {
   /** The delegate_task call this ran under, if any — drives nesting. */
   parent?: string;
   done: boolean;
+  /**
+   * When the call was made and answered, by this page's clock. Live only:
+   * stored history and a replay carry no times, and a summary simply leaves
+   * the duration out then.
+   */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface ReasoningItem {
@@ -53,6 +60,9 @@ export interface ReasoningItem {
   text: string;
   /** Still arriving — the block auto-expands so you can watch it think. */
   streaming?: boolean;
+  /** When it began and stopped, live only — "Thought for 6s". */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface PlanItem {
@@ -287,7 +297,7 @@ function closeOpenText(t: Transcript): Transcript {
  * a long transcript on events it does not draw (`tool_stream`, for one, which
  * fires per chunk of tool output).
  */
-export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcript {
+export function reduce(t: Transcript, event: AgentEvent, seq: number, now: number = Date.now()): Transcript {
   switch (event.type) {
     case 'text_delta': {
       const last = t.items[t.items.length - 1];
@@ -356,7 +366,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       const base = closeOpenText(t);
       return {
         ...base,
-        items: [...base.items, { kind: 'reasoning', id: `r${seq}`, text: event.text, streaming: true }],
+        items: [...base.items, { kind: 'reasoning', id: `r${seq}`, text: event.text, streaming: true, startedAt: now }],
       };
     }
 
@@ -364,7 +374,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       const last = t.items[t.items.length - 1];
       if (last?.kind !== 'reasoning' || !last.streaming) return t;
       // Collapses once finished: useful to watch live, noise to keep open.
-      return { ...t, items: [...t.items.slice(0, -1), { ...last, streaming: false }] };
+      return { ...t, items: [...t.items.slice(0, -1), { ...last, streaming: false, endedAt: now }] };
     }
 
     case 'tool_call': {
@@ -383,6 +393,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
             args: event.args,
             parent: event.parent,
             done: false,
+            startedAt: now,
           },
         ],
       };
@@ -417,7 +428,7 @@ export function reduce(t: Transcript, event: AgentEvent, seq: number): Transcrip
       }
       if (index === -1) return t;
       const tool = t.items[index] as ToolItem;
-      const updated: ToolItem = { ...tool, result: event.content, isError: event.isError, done: true };
+      const updated: ToolItem = { ...tool, result: event.content, isError: event.isError, done: true, endedAt: now };
       const items = [...t.items];
       items[index] = updated;
       return { ...t, items };
@@ -502,44 +513,59 @@ export function activityOf(t: Transcript): Activity {
 export type FoldedRow = { kind: 'item'; item: Item } | { kind: 'steps'; id: string; items: Item[]; live: boolean };
 
 /**
- * One turn as "your message, what it did, its answer" — for a page that wants
- * the answer up front and the work behind a click (Heapnotes' Ask).
+ * The transcript with each stretch of working steps folded into one line.
  *
- * The answer is the turn's last assistant text with nothing but text after
- * it: once a tool runs after some prose, that prose was commentary on the
- * way, not the reply. Everything else in the turn — thinking, tool calls,
- * earlier remarks, the plan — becomes one steps group in front of it.
- * User messages and notices stay where they are. A model that says its
- * answer twice (prose, then a `finish` summary) shows it once: the first
- * copy is a step.
+ * Everything the assistant writes stays on screen, in order; only what it
+ * did between writing — thinking, tool calls, the plan — folds, into one
+ * steps group per stretch. It used to fold the whole turn except its last
+ * message, which hid anything said on the way: "click this link to log in",
+ * written before the agent went on to wait for the login, vanished into the
+ * fold at exactly the moment it needed reading.
+ *
+ * A model that says its answer twice (prose, then a `finish` summary) shows
+ * it once: the later copy stays, the earlier one goes. User messages and
+ * notices stay where they are. While a run is going, the last group is the
+ * live one.
  */
 export function foldTurns(items: Item[], busy = false): FoldedRow[] {
   const out: FoldedRow[] = [];
-  let turn: Item[] = [];
-  const flush = (last: boolean) => {
-    if (turn.length === 0) return;
-    let answerAt = -1;
-    for (let i = turn.length - 1; i >= 0; i--) {
-      const it = turn[i]!;
-      if (it.kind === 'text' && it.role === 'assistant' && it.text.trim()) {
-        answerAt = i;
-        break;
-      }
-      if (it.kind !== 'notice') break;
-    }
-    const steps = turn.filter((it, i) => i !== answerAt && it.kind !== 'notice');
-    if (steps.length > 0) out.push({ kind: 'steps', id: `steps-${steps[0]!.id}`, items: steps, live: last && busy });
-    turn.forEach((it, i) => {
-      if (i === answerAt || it.kind === 'notice') out.push({ kind: 'item', item: it });
-    });
-    turn = [];
+  let steps: Item[] = [];
+  /** Where in `out` this turn's last assistant message sits, for the said-twice case. */
+  let lastSaid = -1;
+  const flush = () => {
+    if (steps.length === 0) return;
+    out.push({ kind: 'steps', id: `steps-${steps[0]!.id}`, items: steps, live: false });
+    steps = [];
   };
   for (const it of items) {
     if (it.kind === 'text' && it.role === 'user') {
-      flush(false);
+      flush();
       out.push({ kind: 'item', item: it });
-    } else turn.push(it);
+      lastSaid = -1;
+    } else if (it.kind === 'text' && it.role === 'assistant' && it.text.trim()) {
+      flush();
+      const prev = lastSaid >= 0 ? out[lastSaid] : undefined;
+      if (prev?.kind === 'item' && prev.item.kind === 'text' && prev.item.text.trim() === it.text.trim()) {
+        out.splice(lastSaid, 1);
+        // The groups either side of the dropped copy are one stretch of work.
+        const before = out[lastSaid - 1];
+        const after = out[lastSaid];
+        if (before?.kind === 'steps' && after?.kind === 'steps') {
+          before.items = [...before.items, ...after.items];
+          out.splice(lastSaid, 1);
+        }
+      }
+      out.push({ kind: 'item', item: it });
+      lastSaid = out.length - 1;
+    } else if (it.kind === 'notice') {
+      flush();
+      out.push({ kind: 'item', item: it });
+    } else {
+      steps.push(it);
+    }
   }
-  flush(true);
+  flush();
+  const last = out.at(-1);
+  if (busy && last?.kind === 'steps') last.live = true;
   return out;
 }

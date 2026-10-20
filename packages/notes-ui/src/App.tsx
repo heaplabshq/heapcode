@@ -9,7 +9,6 @@ import {
 } from 'react';
 import { RpcClient, signedOutMessage, type ConnectionStatus } from '@heapcode/web-ui/rpc';
 import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
-import { ProductToggle, servedProducts } from '@heapcode/web-ui/components/ProductToggle';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { parseNote } from '@heapcode/notes-host/parse';
 import {
@@ -62,8 +61,6 @@ import {
 const RPC_PATH = document.documentElement.dataset.rpcPath ?? '/rpc';
 const BASE = RPC_PATH.replace(/\/rpc$/, '');
 const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${RPC_PATH}`;
-const HAS_CODE = document.documentElement.dataset.sibling === 'code';
-const PRODUCTS = servedProducts();
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 const SAVE_DELAY_MS = 600;
 
@@ -1156,17 +1153,7 @@ export function App(): JSX.Element {
         {/* Never gone, only narrowed: in the editor-focused layouts the rail
             stays as its icon strip, so sections and New are a click away. */}
         <Sidebar
-          brand="Heapnotes"
-          toggle={
-            HAS_CODE ? (
-              <ProductToggle
-                current="notes"
-                {...(PRODUCTS.includes('chat') ? { chatPath: '/chat/' } : {})}
-                {...(PRODUCTS.includes('qa') ? { qaPath: '/qa/' } : {})}
-                notesPath={`${BASE}/`}
-              />
-            ) : undefined
-          }
+          product="notes"
           collapsed={layout < 3 || railCollapsed}
           onToggleCollapsed={() => {
             // Expanding from a focused layout brings the whole view back.
@@ -1217,26 +1204,11 @@ export function App(): JSX.Element {
               onMenu={tagMenu}
             />
           }
-          footer={
-            // Says what a click does — settings — with the folder's name as the detail.
-            <button
-              className="notes-foot"
-              onClick={() => openSettings('notes')}
-              title={state ? `Notes folder, text size and AI — ${state.vault}` : undefined}
-              aria-label="Notes settings"
-            >
-              <span className="notes-foot-icon">
-                <IconFolder />
-              </span>
-              <span className="notes-foot-text">
-                <span className="notes-foot-name">Notes settings</span>
-                <span className="notes-foot-count">
-                  {state
-                    ? `${state.count} note${state.count === 1 ? '' : 's'} · ${state.vault.split(/[\\/]/).pop()}`
-                    : ''}
-                </span>
-              </span>
-            </button>
+          // The folder in use, under the way to change it.
+          settingsDetail={
+            state
+              ? `${state.count} note${state.count === 1 ? '' : 's'} · ${state.vault.split(/[\\/]/).pop()}`
+              : undefined
           }
         />
         <main
@@ -1977,13 +1949,6 @@ function IconNotes(): JSX.Element {
     <Svg>
       <path d="M4 2.5h5.5l3 3v8H4z" />
       <path d="M6 8h4.5M6 10.5h3" />
-    </Svg>
-  );
-}
-function IconFolder(): JSX.Element {
-  return (
-    <Svg>
-      <path d="M2 4.5a1 1 0 0 1 1-1h3.3l1.5 1.5H13a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" />
     </Svg>
   );
 }

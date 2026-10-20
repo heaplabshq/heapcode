@@ -36,7 +36,7 @@ export const COMMANDS: Command[] = [
   { name: '/model', description: 'Switch the model', kind: 'ui' },
   { name: '/profile', description: 'Switch, add, or remove provider profiles', kind: 'ui' },
   { name: '/persona', description: 'Switch persona: agent, architect, debug, reviewer', kind: 'ui' },
-  { name: '/mode', description: 'Permission mode: plan, default, auto-edit, full-auto', kind: 'ui' },
+  { name: '/mode', description: 'What the agent may do without asking', kind: 'ui' },
   { name: '/context', description: 'Set the context window and max output tokens', kind: 'ui' },
   { name: '/websearch', description: 'Configure web search for the agent', kind: 'ui' },
   { name: '/permissions', description: 'Show or clear saved "Always allow" grants', kind: 'ui' },

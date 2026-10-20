@@ -1,10 +1,25 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import { splitAttachedFiles, withAttachedFiles } from '@heapcode/web-host/attachedFiles';
 import { matchCommands, type Command } from '../commands.js';
+import { ICON_FILE } from './icons.js';
 
 /** Matches the host's own cap (`session.ts` MAX_IMAGES) so the two agree. */
 const MAX_IMAGES = 8;
 /** Roughly the host's MAX_IMAGE_BYTES, checked before the base64 expansion. */
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+/** Documents per message. */
+const MAX_FILES = 8;
+/** The host's MAX_ATTACHED_FILE_BYTES, checked before the file is read and sent. */
+const MAX_FILE_BYTES = 12 * 1024 * 1024;
+
+/** A document in the box: being read by the host, then its text. */
+interface PendingFile {
+  id: number;
+  name: string;
+  size?: number;
+  text?: string;
+  truncated?: boolean;
+}
 
 export interface ComposerProps {
   onSend(text: string, images?: string[]): void;
@@ -39,6 +54,12 @@ export interface ComposerProps {
   onCancelEdit?(): void;
   /** What the empty box says, when the default does not fit the product. */
   placeholder?: string;
+  /**
+   * Reads an attached document to text on the host (`readAttachedFile`).
+   * Given, the box takes any file — PDFs, Word, text and code — and sends
+   * each with the message; absent, it takes images only.
+   */
+  readFile?(name: string, data: string): Promise<{ text: string; truncated: boolean }>;
 }
 
 /**
@@ -51,6 +72,11 @@ export interface ComposerProps {
  * It also takes images, by paste or by drop. That is the one thing this
  * composer can do that the terminal one cannot, and it is why screenshots stop
  * being something you describe in words.
+ *
+ * Given `readFile`, it takes documents too. Each is read to text by the host
+ * the moment it is attached — so an unreadable file is refused while it is
+ * still on screen, not after the question is gone — and is sent as a block
+ * after the typed text (see web-host `attachedFiles`).
  */
 export function Composer({
   onSend,
@@ -65,9 +91,14 @@ export function Composer({
   editing,
   onCancelEdit,
   placeholder,
+  readFile,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState('');
   const [images, setImages] = useState<string[]>([]);
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const nextFileId = useRef(0);
+  const reading = files.some((f) => f.text === undefined);
+  const hasAttachments = images.length > 0 || files.length > 0;
   const [dragging, setDragging] = useState(false);
   const [picked, setPicked] = useState(0);
   /** Escape closes the menu without closing anything else; typing reopens it. */
@@ -121,7 +152,10 @@ export function Composer({
   // deliberately or pressing `/` would focus an empty box and eat the slash.
   useEffect(() => {
     if (seed === undefined) return;
-    setText(seed);
+    // An edited message comes back with its documents as chips, not as text.
+    const split = splitAttachedFiles(seed);
+    setText(split.text);
+    setFiles(split.files.map((f) => ({ id: nextFileId.current++, name: f.name, text: f.text })));
     setImages(seedImages ?? []);
     setMenuDismissed(false);
     setPicked(0);
@@ -136,11 +170,14 @@ export function Composer({
   const send = (value = text): void => {
     const trimmed = value.trim();
     // An image with no words is a real message — "what is wrong with this?" is
-    // implied — so the guard is "nothing at all", not "no text".
-    if ((!trimmed && images.length === 0) || busy || disabled) return;
-    onSend(trimmed, images.length > 0 ? images : undefined);
+    // implied — so the guard is "nothing at all", not "no text". A document
+    // still being read holds the message back rather than going without it.
+    if ((!trimmed && !hasAttachments) || reading || busy || disabled) return;
+    const docs = files.map((f) => ({ name: f.name, text: f.text ?? '' }));
+    onSend(withAttachedFiles(trimmed, docs), images.length > 0 ? images : undefined);
     setText('');
     setImages([]);
+    setFiles([]);
     setMenuDismissed(false);
   };
 
@@ -167,13 +204,15 @@ export function Composer({
     }
   };
 
-  /** Files → data URLs, with the count and size caps applied before reading. */
-  const addFiles = async (files: File[]): Promise<void> => {
-    const pictures = files.filter((f) => f.type.startsWith('image/'));
-    if (pictures.length === 0) {
-      if (files.length > 0) onReject?.('Only images can be attached — drop a file path into the message instead.');
-      return;
+  /** Files → images as data URLs and documents as text, with the caps applied before reading. */
+  const addFiles = async (dropped: File[]): Promise<void> => {
+    const pictures = dropped.filter((f) => f.type.startsWith('image/'));
+    const documents = dropped.filter((f) => !f.type.startsWith('image/'));
+    if (documents.length > 0) {
+      if (readFile) void addDocuments(documents);
+      else onReject?.('Only images can be attached here — drop a file path into the message instead.');
     }
+    if (pictures.length === 0) return;
     const room = MAX_IMAGES - images.length;
     if (room <= 0) {
       onReject?.(`At most ${MAX_IMAGES} images per message.`);
@@ -188,6 +227,35 @@ export function Composer({
       accepted.push(await readAsDataUrl(file));
     }
     if (accepted.length > 0) setImages((prev) => [...prev, ...accepted]);
+  };
+
+  /** Each document shows as a chip at once, reading, and gets its text or goes away with the reason. */
+  const addDocuments = async (documents: File[]): Promise<void> => {
+    const room = MAX_FILES - files.length;
+    if (room <= 0) {
+      onReject?.(`At most ${MAX_FILES} files per message.`);
+      return;
+    }
+    if (documents.length > room) onReject?.(`At most ${MAX_FILES} files per message.`);
+    await Promise.all(
+      documents.slice(0, room).map(async (file) => {
+        const name = file.name || 'file';
+        if (file.size > MAX_FILE_BYTES) {
+          onReject?.(`${name} is too large to attach (max ${MAX_FILE_BYTES / 1024 / 1024} MB).`);
+          return;
+        }
+        const id = nextFileId.current++;
+        setFiles((prev) => [...prev, { id, name, size: file.size }]);
+        try {
+          const data = (await readAsDataUrl(file)).replace(/^data:[^,]*,/, '');
+          const read = await readFile!(name, data);
+          setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, text: read.text, truncated: read.truncated } : f)));
+        } catch (err) {
+          setFiles((prev) => prev.filter((f) => f.id !== id));
+          onReject?.((err as Error).message || `Couldn't read ${name}.`);
+        }
+      }),
+    );
   };
 
   const onDrop = (e: DragEvent): void => {
@@ -245,6 +313,27 @@ export function Composer({
             <button onClick={onCancelEdit}>Cancel</button>
           </div>
         )}
+        {files.length > 0 && (
+          <ul className="file-chips" aria-label={`${files.length} attached file(s)`}>
+            {files.map((f) => (
+              <li className="file-chip" key={f.id} title={f.truncated ? 'Long file: only the first part is sent' : f.name}>
+                {ICON_FILE}
+                <span className="file-chip-name">{f.name}</span>
+                <span className="file-chip-meta">
+                  {f.text === undefined ? 'Reading…' : f.truncated ? 'first part' : f.size !== undefined ? formatSize(f.size) : ''}
+                </span>
+                <button
+                  className="file-chip-remove"
+                  onClick={() => setFiles((prev) => prev.filter((x) => x.id !== f.id))}
+                  aria-label={`Remove ${f.name}`}
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {images.length > 0 && (
           <div className="attachments" aria-label={`${images.length} attached image(s)`}>
             {images.map((src, i) => (
@@ -267,16 +356,16 @@ export function Composer({
             which acts on the message as a whole.
             A label wrapping a hidden input, not a button calling .click() —
             that shape stays keyboard-reachable and needs no ref. */}
-        <label className="composer-attach" title="Attach images">
+        <label className="composer-attach" title={readFile ? 'Attach files' : 'Attach images'}>
           {/* The glyph is decoration; the accessible name lives on the input,
               which is the thing that actually takes focus. In a visually
               hidden span it would make the label read "+Attach images". */}
           <span aria-hidden="true">+</span>
           <input
             type="file"
-            accept="image/*"
+            accept={readFile ? undefined : 'image/*'}
             multiple
-            aria-label="Attach images"
+            aria-label={readFile ? 'Attach files' : 'Attach images'}
             disabled={disabled || busy}
             onChange={(e) => {
               void addFiles([...(e.target.files ?? [])]);
@@ -293,7 +382,7 @@ export function Composer({
           value={text}
           disabled={disabled}
           placeholder={
-            disabled ? (placeholder ?? 'Connecting…') : busy ? 'Running — Esc to stop' : (placeholder ?? 'Ask anything, / for commands, paste an image')
+            disabled ? (placeholder ?? 'Connecting…') : busy ? 'Running — Esc to stop' : (placeholder ?? (readFile ? 'Ask anything, / for commands, attach files or images' : 'Ask anything, / for commands, paste an image'))
           }
           aria-label="Message"
           // Combobox over the slash menu when it is up: the input keeps focus
@@ -307,7 +396,7 @@ export function Composer({
             if (files.length === 0) return;
             // Only swallow the paste when it really carried files; a paste that
             // is text plus an image should still insert the text.
-            if (files.some((f) => f.type.startsWith('image/'))) e.preventDefault();
+            if (readFile || files.some((f) => f.type.startsWith('image/'))) e.preventDefault();
             void addFiles(files);
           }}
           onChange={(e) => {
@@ -378,7 +467,8 @@ export function Composer({
               // Wrapped, not passed by reference: `send` now takes an optional
               // text argument, and onClick would hand it a MouseEvent.
               onClick={() => send()}
-              disabled={(!text.trim() && images.length === 0) || disabled}
+              disabled={(!text.trim() && !hasAttachments) || reading || disabled}
+              title={reading ? 'Still reading an attached file' : undefined}
             >
               Send
             </button>
@@ -388,6 +478,12 @@ export function Composer({
       {footer && <div className="composer-bar">{footer}</div>}
     </div>
   );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function readAsDataUrl(file: File): Promise<string> {

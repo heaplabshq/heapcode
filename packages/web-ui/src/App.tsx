@@ -39,9 +39,12 @@ import {
   type UiRepoMapResult,
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
+  type UiReadAttachedFileResult,
 } from '@heapcode/web-host/protocol';
 import { MENU_VIEWS, PANEL_VIEWS, Panel, STRIP_VIEWS, type PanelTab } from './components/Panel.js';
+import { PERMISSION_MODE_INFO, type PermissionMode } from '@heapcode/core/permissionModes';
 import { desktopBridge } from './desktop.js';
+import { describeWork } from './steps.js';
 import { localUrlsIn } from './localUrls.js';
 import { answerBrowserRequest } from './browserControl.js';
 import { terminalEntries } from './terminal.js';
@@ -67,7 +70,6 @@ import { MessageList } from './components/MessageList.js';
 import { useTransientNotice } from './notice.js';
 import { TaskBar } from './components/TaskBar.js';
 import { Sidebar } from './components/Sidebar.js';
-import { ProductToggle, servedProducts } from './components/ProductToggle.js';
 import { useTranscript } from './useTranscript.js';
 import { WorkspacePicker } from './components/WorkspacePicker.js';
 import { ContextMeter } from './components/ContextMeter.js';
@@ -133,8 +135,20 @@ function outcomeNotice(res: UiSendMessageResult): { text: string; warn: boolean 
   }
 }
 
-/** Permission modes, least to most autonomous — same order the CLI lists them. */
-const MODES = ['plan', 'default', 'auto-edit', 'full-auto'];
+/**
+ * Permission modes, least to most autonomous — same order the CLI lists them.
+ *
+ * Said as what the agent will do, not by id: `default` and `auto-edit` meant
+ * nothing to anyone who had not read the CLI's help. The core's one-line hint
+ * is the tooltip.
+ */
+const MODES: { id: PermissionMode; label: string }[] = [
+  { id: 'plan', label: 'Plan only' },
+  { id: 'default', label: 'Ask before changes' },
+  { id: 'auto-edit', label: 'Edit without asking' },
+  { id: 'full-auto', label: 'Edit & run freely' },
+];
+const modeHint = (mode: string): string | undefined => PERMISSION_MODE_INFO.find((m) => m.id === mode)?.hint;
 
 /** Tools whose completion can change the workspace, so the panel refetches. */
 const MUTATING_TOOLS = new Set([
@@ -147,18 +161,6 @@ const MUTATING_TOOLS = new Set([
   'run_command',
 ]);
 
-/**
- * Whether Heap Chat is served alongside this page.
- *
- * The host injects nothing; this is read from the document, because the page
- * is static and the answer is a launch-time property of the host. `heapcode
- * web` mounts chat and stamps the flag; a host that does not, does not, and
- * the switcher is simply absent rather than offering a link to a 404.
- */
-const CHAT_MOUNTED = document.documentElement.dataset.chatMounted === 'true';
-/** Heap QA, mounted at /qa by the same host — see ProductToggle. */
-const QA_MOUNTED = servedProducts().includes('qa');
-const NOTES_MOUNTED = servedProducts().includes('notes');
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
@@ -516,6 +518,14 @@ export function App(): JSX.Element {
     setPanelOpen(true);
     setPanelTab('files');
     setOpenPath(path);
+  }, []);
+
+  /** An edited file in folded steps opens its diff in Changes. */
+  const [openChange, setOpenChange] = useState<{ path: string; n: number }>();
+  const openInChanges = useCallback((path: string) => {
+    setPanelOpen(true);
+    setPanelTab('changes');
+    setOpenChange((prev) => ({ path, n: (prev?.n ?? 0) + 1 }));
   }, []);
 
   /** Stable identity: the modal fetches on mount, so a new function each
@@ -1080,11 +1090,6 @@ export function App(): JSX.Element {
     <div className="app">
       <div className="body">
         <Sidebar
-          toggle={
-            CHAT_MOUNTED || QA_MOUNTED ? (
-              <ProductToggle current="code" {...(CHAT_MOUNTED ? { chatPath: '/chat/' } : {})} {...(QA_MOUNTED ? { qaPath: '/qa/' } : {})} {...(NOTES_MOUNTED ? { notesPath: '/notes/' } : {})} />
-            ) : undefined
-          }
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {
@@ -1097,7 +1102,6 @@ export function App(): JSX.Element {
           onNew={newConversation}
           onDelete={deleteConversation}
           busy={busy}
-          state={state}
           status={status}
           onOpenArtifacts={() => {
             setPanelOpen(true);
@@ -1150,26 +1154,28 @@ export function App(): JSX.Element {
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
           {status === 'signed-out' && <div className="banner banner-error">{signedOutMessage()}</div>}
 
-          {/* Above the scroller, not inside it: the list is about the run in
-              flight, so it has to stay put while the transcript moves. And
-              only while it IS in flight — "what is left" stops being a
-              question the moment the run ends, and a finished 4/4 list held
-              above an idle window is chrome that has nothing left to say. When
-              the run ends the card drops back into the transcript, which is
-              where the record of that turn belongs. */}
-          <TaskBar todos={pinnedTasks?.todos ?? []} />
-
           <MessageList
             transcript={transcript}
             hideTaskId={pinnedTasks?.id}
             onOpenPath={openInFiles}
+            onOpenDiff={openInChanges}
             busy={busy}
             runStartedAt={runStartedAt}
             onEdit={startEdit}
             onRestore={restoreTurn}
+            // Each turn's work as one line before its answer — "Read 4 files ·
+            // changed 2 files" — opened with a click, as Heapnotes' Ask does.
+            // A dozen tool rows above every reply buried the reply.
+            foldSteps={{ describe: describeWork }}
           />
 
           <Announcer busy={busy} activity={activityOf(transcript)} lastReply={lastReplyOf(transcript)} ending={ending} />
+
+          {/* Outside the scroller, just above the input: the list is about the
+              run in flight, so it stays put while the transcript moves, and
+              only while it IS in flight — when the run ends the card drops
+              back into the transcript, where the record of that turn belongs. */}
+          <TaskBar todos={pinnedTasks?.todos ?? []} />
 
           {permission && <PermissionCard pending={permission} />}
           {ask && <AskUserCard pending={ask} />}
@@ -1188,6 +1194,7 @@ export function App(): JSX.Element {
             onSend={send}
             onCancel={cancel}
             onReject={setNotice}
+            readFile={(name, data) => rpc.request<UiReadAttachedFileResult>(UI_METHODS.readAttachedFile, { name, data })}
             seed={seed}
             onSeedUsed={clearSeed}
             busy={busy}
@@ -1210,15 +1217,17 @@ export function App(): JSX.Element {
                 />
 
                 <select
-                  className="bar-select"
+                  // Full-auto is tinted: the one setting here worth noticing
+                  // at a glance before pressing Send.
+                  className={state?.permissionMode === 'full-auto' ? 'bar-select bar-select-risky' : 'bar-select'}
                   value={state?.permissionMode ?? 'default'}
                   onChange={(e) => void rpc.request(UI_METHODS.setMode, { mode: e.target.value }).catch(() => {})}
-                  aria-label="Permission mode"
-                  title="How much the agent may do without asking"
+                  aria-label="What the agent may do without asking"
+                  title={modeHint(state?.permissionMode ?? 'default')}
                 >
                   {MODES.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
+                    <option key={m.id} value={m.id} title={modeHint(m.id)}>
+                      {m.label}
                     </option>
                   ))}
                 </select>
@@ -1234,6 +1243,7 @@ export function App(): JSX.Element {
                     window={transcript.windowTokens || state?.contextWindow}
                     load={loadContext}
                     onOpenSettings={() => openSettings('context')}
+                    onStartFresh={() => newConversationRef.current?.()}
                   />
                   <ModelPicker
                     // Keyed on the connection: the list belongs to whichever
@@ -1279,6 +1289,7 @@ export function App(): JSX.Element {
               terminal={terminal}
               busy={busy}
               openPath={openPath}
+              openChange={openChange}
               loadDiff={loadDiff}
               loadTree={loadTree}
               workspaceVersion={workspaceVersion}

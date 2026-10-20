@@ -193,3 +193,11 @@ describe('the Files tab', () => {
     expect(await screen.findByText('b.txt')).toBeTruthy();
   });
 });
+
+describe('opening a change from the chat', () => {
+  it('opens Changes on the file the chat named, matching an absolute path to the relative one', async () => {
+    const loadDiff = vi.fn(() => Promise.resolve({ path: 'src/App.jsx', diff: '', added: 1, removed: 4 }));
+    render(<Panel {...panelProps({ loadDiff, openChange: { path: '/Users/me/app/src/App.jsx', n: 1 } })} />);
+    await vi.waitFor(() => expect(loadDiff).toHaveBeenCalledWith('src/App.jsx'));
+  });
+});

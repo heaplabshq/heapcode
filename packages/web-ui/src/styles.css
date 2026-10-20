@@ -288,45 +288,10 @@ body {
 
 .rail-foot {
   display: flex; align-items: center; gap: 8px;
-  border-top: 1px solid var(--border); padding: 10px 2px 2px;
+  border-top: 1px solid var(--border); padding: 8px 0 0;
   margin-top: auto; flex: 0 0 auto;
 }
 .rail-collapsed .rail-foot { justify-content: center; flex-direction: column; gap: 6px; }
-.rail-collapsed .rail-model-text { display: none; }
-.rail-collapsed .rail-model { flex: 0 0 auto; padding: 4px; }
-
-/* What is answering, not who is signed in — see Sidebar.tsx. Two lines, the
-   model first, and a square chip rather than a round initial. */
-.rail-model {
-  display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1 1 auto;
-  background: none; border: 0; cursor: pointer; color: var(--text);
-  font: inherit; padding: 5px 6px; border-radius: 8px; text-align: left;
-}
-.rail-model:hover { background: var(--hover); }
-.rail-model-mark {
-  flex: 0 0 24px; width: 24px; height: 24px; border-radius: 7px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: hsl(var(--mark-h, 220) 44% 93%); color: hsl(var(--mark-h, 220) 42% 34%);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .rail-model-mark {
-    background: hsl(var(--mark-h, 220) 26% 21%); color: hsl(var(--mark-h, 220) 55% 72%);
-  }
-}
-:root[data-theme='dark'] .rail-model-mark {
-  background: hsl(var(--mark-h, 220) 26% 21%); color: hsl(var(--mark-h, 220) 55% 72%);
-}
-.rail-model-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
-/* Monospace, the same as the settings page prints a model id in — half of why
-   nobody reads this line as a person's name. */
-.rail-model-name {
-  font-family: var(--mono); font-size: 12px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.rail-model-conn {
-  font-size: 11px; color: var(--text-dim);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 .rail-foot .dot { flex: 0 0 auto; margin-right: 4px; }
 .rail-collapsed .rail-foot .dot { margin: 0; }
 
@@ -335,15 +300,13 @@ body {
 @media (max-width: 760px) {
   .rail { width: 56px; }
   .rail-recents { opacity: 0; visibility: hidden; }
-  .rail-logo, .rail-model-text { display: none; }
+  .rail-logo { display: none; }
   .rail-brand, .rail-label { opacity: 0; }
   .rail-kbd { opacity: 0; width: 0; }
-  .rail-model { flex: 0 0 auto; padding: 4px; }
   .rail-item { padding: 7px 12px; }
   .rail-top { padding: 0 4px 0 6px; gap: 0; }
   .rail-collapse { margin: 0 auto; }
   .rail-foot { justify-content: center; flex-direction: column; gap: 6px; }
-  .rail-model { flex: 0 0 auto; padding: 4px; }
 }
 
 /* ---------- chat pane tools ----------
@@ -363,6 +326,9 @@ body {
 }
 /* Icon-only: squared off, since there is no label to size the padding for. */
 .chat-tool-icon { padding: 6px; gap: 5px; }
+/* Icon and name while the window is wide enough; the name gives way first. */
+.chat-tool-text { font-size: 12.5px; line-height: 1; padding-right: 3px; }
+@media (max-width: 1100px) { .chat-tool-text { display: none; } }
 .chat-tool:hover { background: var(--hover); color: var(--text); }
 .chat-tool-on { background: var(--hover-strong); color: var(--text); border-color: var(--border); }
 .chat-tool-badge {
@@ -659,36 +625,61 @@ body {
 .task-in_progress .task-mark { color: var(--accent); }
 .task-completed .task-text { text-decoration: line-through; }
 
-/* The live run's task list, pinned above the transcript.
-
-   Sits with the banners rather than inside `.messages`: a flex row in normal
-   flow cannot overlap the transcript, the composer or the workspace panel,
-   which a floating overlay would, and it does not have to fight the scroller's
-   own auto-follow. Collapsed it is one line — a pinned region earns its space
-   by being small.
-
-   No fill and no rule of its own. It had both, which stacked it under the
-   notice banner into a two-tier bordered header heavy enough to read as
-   window chrome. It is transient run status, the same thing `.working` is, so
-   it is drawn with the same quietness. */
-.taskbar { flex: none; }
+/* ---- the live task list ----
+   A card just above the input box while a run is going, the width of the
+   input so the two read as one column — see TaskBar.tsx. */
+.taskbar {
+  flex: none;
+  margin: 0 var(--gutter) 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
 .taskbar-head {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 7px var(--gutter);
+  padding: 9px 14px;
   background: none; border: 0; cursor: pointer;
   font: inherit; font-size: 12.5px; color: var(--text-dim); text-align: left;
 }
 .taskbar-head:hover { color: var(--text); }
-.taskbar-caret { flex: none; width: 1em; }
 .taskbar-label { flex: none; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 .taskbar-count { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
 /* The label and the count are short and fixed, so the current task is the part
    that gives way when the window narrows. */
 .taskbar-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .taskbar-current::before { content: '·'; margin-right: 8px; color: var(--text-dim); }
+.taskbar-caret { display: inline-flex; margin-left: auto; flex: none; transform: rotate(-90deg); transition: transform 120ms ease; }
+.taskbar-caret-open { transform: none; }
 /* Capped and scrollable: twenty tasks (MAX_TODOS) must not push the
    conversation off the screen. */
-.taskbar-list { margin: 0; padding: 0 var(--gutter) 10px; max-height: 40vh; overflow-y: auto; }
+.taskbar-list {
+  list-style: none; margin: 0; padding: 0 14px 10px;
+  max-height: 32vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.taskbar-list .task { align-items: flex-start; font-size: 13.5px; }
+/* Three states as three marks: a check, a turning ring, a dashed ring. */
+.taskbar-mark {
+  flex: none; width: 14px; height: 14px; margin-top: 3px; box-sizing: border-box;
+  border-radius: 50%; border: 1.5px dashed var(--text-dim);
+}
+.task-in_progress .taskbar-mark {
+  border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  animation: taskbar-spin 0.9s linear infinite;
+}
+.task-completed .taskbar-mark {
+  border: 0; border-radius: 0;
+  background: var(--ok);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+@keyframes taskbar-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .task-in_progress .taskbar-mark { animation: none; }
+  .taskbar-caret { transition: none; }
+}
 
 .reasoning { margin: 0 0 8px; }
 .reasoning-toggle {
@@ -851,6 +842,23 @@ body {
   font-size: 13px; cursor: pointer;
 }
 .attachment-remove:hover { color: var(--danger); border-color: var(--danger); }
+/* Documents attached to a message: a name in a pill, in the box and on the sent message. */
+.file-chips { flex: 1 0 100%; display: flex; gap: 6px; flex-wrap: wrap; list-style: none; margin: 0; padding: 2px 0 4px; }
+.file-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 280px;
+  padding: 4px 6px 4px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-raised); font-size: 12.5px; color: var(--text);
+}
+.file-chip-icon { flex: 0 0 auto; color: var(--text-dim); }
+.file-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip-meta { flex: 0 0 auto; color: var(--text-dim); font-size: 11.5px; }
+.file-chip-remove {
+  flex: 0 0 auto; width: 18px; height: 18px; padding: 0; line-height: 1;
+  border: 0; border-radius: 5px; background: none; color: var(--text-dim);
+  font-size: 14px; cursor: pointer;
+}
+.file-chip-remove:hover { color: var(--danger); background: var(--hover); }
+.msg-files { justify-content: flex-end; padding: 0; margin-bottom: 6px; }
 .composer-input {
   flex: 1 1 auto; resize: none;
   background: transparent; color: var(--text);
@@ -897,6 +905,7 @@ body {
   font: inherit; font-size: 12px; cursor: pointer;
 }
 .bar-select:hover { background: var(--hover); color: var(--text); }
+.bar-select-risky, .bar-select-risky:hover { color: var(--warn); }
 .composer-bar .picker-btn {
   background: none; border: 0; color: var(--text-dim);
   font-size: 12px; padding: 3px 6px;
@@ -1810,6 +1819,7 @@ body {
 }
 .ctx-btn:hover { background: var(--hover); }
 .ctx-pct { font-variant-numeric: tabular-nums; }
+.ctx-fresh { font-size: 11.5px; margin-right: 2px; }
 
 .ctx-summary { display: flex; align-items: center; gap: 14px; margin: 6px 0 14px; }
 .ctx-headline { font-size: 16px; font-variant-numeric: tabular-nums; }
@@ -2195,6 +2205,11 @@ body {
   color: var(--text, inherit);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
 }
+
+/* A rail row with a second, quieter line — Heapnotes' folder under Settings. */
+.rail-label-two { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.rail-label-two > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-label-sub { font-size: 11.5px; color: var(--text-dim); }
 .sr-only {
   position: absolute;
   width: 1px;
@@ -2249,4 +2264,36 @@ html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; 
 .steps-live { animation: steps-pulse 1.4s ease-in-out infinite; }
 @keyframes steps-pulse { 50% { opacity: 0.55; } }
 @media (prefers-reduced-motion: reduce) { .steps-live { animation: none; } }
-.steps-body { border-left: 2px solid var(--border); margin: 4px 0 0 6px; }
+.steps-body { margin: 4px 0 0; }
+/* What the group line says beside its words: lines changed, failures, time. */
+.steps-stats { font-size: 12px; }
+.steps-failed { color: var(--danger); font-size: 12px; font-weight: 500; }
+.steps-time { color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+.steps-time::before, .steps-failed::before { content: '·'; margin-right: 6px; color: var(--text-dim); }
+/* While running, the last two steps show under the line, quieter than an opened group. */
+.steps-peek .steps-body { opacity: 0.85; }
+
+/* Steps inside a group, in words with an icon rather than the tool's name. */
+.chip-readable .chip-head { font-family: inherit; font-size: 13px; gap: 7px; padding: 3px 0; }
+.chip-readable .chip-name { font-weight: 500; flex: 0 0 auto; }
+.chip-readable .chip-args { font-size: 12.5px; }
+.chip-icon { display: inline-flex; flex: 0 0 auto; color: var(--text-dim); }
+.chip-error .chip-icon { color: var(--danger); }
+.chip-error.chip-readable .chip-name { color: var(--danger); }
+.chip-icon-live { color: var(--accent); animation: steps-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .chip-icon-live { animation: none; } }
+.chip-readable .chip-body, .chip-readable .diff { margin-left: 21px; }
+.chip-readable .chip-open { margin-left: 21px; font-family: inherit; }
+/* A bundle's steps sit under its line, indented to its words. */
+.bundle-body { margin: 2px 0 4px 21px; }
+.bundle-failed > .chip-head .chip-icon { color: var(--danger); }
+
+/* The sites an answer drew on, under it. */
+.web-sources { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: -6px 0 16px; padding: 0; }
+.web-source {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px 2px 7px; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text-dim); font-size: 12px; text-decoration: none; background: var(--bg-raised);
+}
+.web-source:hover { color: var(--text); border-color: var(--border-strong, var(--border)); }
+.web-source svg { width: 12px; height: 12px; }

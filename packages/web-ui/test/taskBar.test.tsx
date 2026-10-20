@@ -22,14 +22,28 @@ const TODOS: TodoItem[] = [
 ];
 
 describe('pinned task bar', () => {
-  it('says how far along the run is, and what it is on, in one line', () => {
+  it('shows the whole list at once, with how far along the run is', () => {
     render(<TaskBar todos={TODOS} />);
-
     expect(screen.getByText('1/3')).toBeTruthy();
+    for (const t of TODOS) expect(screen.getByText(t.content)).toBeTruthy();
+    // Each state is said, not only drawn.
+    expect(screen.getByRole('img', { name: 'Done' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'In progress' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Not started' })).toBeTruthy();
+  });
+
+  it('folds to one line saying what it is on, and opens again', () => {
+    render(<TaskBar todos={TODOS} />);
+    const head = screen.getByRole('button');
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.click(head);
+    expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByText('wire the context budget')).toBeTruthy();
-    // Collapsed: the rest of the list is not on screen competing with the
-    // conversation for height.
     expect(screen.queryByText('update the extension')).toBeNull();
+
+    fireEvent.click(head);
+    expect(screen.getByText('update the extension')).toBeTruthy();
   });
 
   it('falls back to the next unstarted task between steps', () => {
@@ -43,21 +57,9 @@ describe('pinned task bar', () => {
         ]}
       />,
     );
+    fireEvent.click(screen.getByRole('button'));
     expect(screen.getByText('first thing')).toBeTruthy();
-  });
-
-  it('opens to the full list and closes again', () => {
-    render(<TaskBar todos={TODOS} />);
-    const head = screen.getByRole('button');
-    expect(head.getAttribute('aria-expanded')).toBe('false');
-
-    fireEvent.click(head);
-    expect(head.getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getByText('update the extension')).toBeTruthy();
-    expect(screen.getByText('read the history window')).toBeTruthy();
-
-    fireEvent.click(head);
-    expect(screen.queryByText('update the extension')).toBeNull();
+    expect(screen.queryByText('second thing')).toBeNull();
   });
 
   it('wraps a task in the element its finished styling needs', () => {
@@ -65,8 +67,6 @@ describe('pinned task bar', () => {
     // transcript card rendered the text bare for a while, so the rule had
     // nothing to match and finished tasks never looked finished.
     render(<TaskBar todos={TODOS} />);
-    fireEvent.click(screen.getByRole('button'));
-
     const done = screen.getByText('read the history window');
     expect(done.className).toBe('task-text');
     expect(done.closest('li')?.className).toContain('task-completed');

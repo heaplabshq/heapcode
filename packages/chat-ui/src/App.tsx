@@ -18,6 +18,7 @@ import { TaskBar } from '@heapcode/web-ui/components/TaskBar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
 import { Toasts } from '@heapcode/web-ui/components/Toasts';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
+import { describeWork } from '@heapcode/web-ui/steps';
 import { Settings } from '@heapcode/web-ui/components/Settings';
 import { WorkspacePicker } from '@heapcode/web-ui/components/WorkspacePicker';
 import { ModelPicker } from '@heapcode/web-ui/components/ModelPicker';
@@ -504,6 +505,9 @@ export function App(): JSX.Element {
             // that rewinds the workspace to a checkpoint, and nothing here
             // takes one because nothing here changes a file.
             onEdit={startEdit}
+            // Each turn's searches and reads as one line before its answer,
+            // opened with a click — the way Heapnotes' Ask shows them.
+            foldSteps={{ describe: describeWork }}
             // A path in a tool chip opens in the panel, the same gesture Heap
             // Code has — here it reads a document rather than showing a diff.
             onOpenPath={openFile}

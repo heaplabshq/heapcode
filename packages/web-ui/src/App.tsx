@@ -43,6 +43,7 @@ import {
 import { MENU_VIEWS, PANEL_VIEWS, Panel, STRIP_VIEWS, type PanelTab } from './components/Panel.js';
 import { PERMISSION_MODE_INFO, type PermissionMode } from '@heapcode/core/permissionModes';
 import { desktopBridge } from './desktop.js';
+import { describeWork } from './steps.js';
 import { localUrlsIn } from './localUrls.js';
 import { answerBrowserRequest } from './browserControl.js';
 import { terminalEntries } from './terminal.js';
@@ -1161,6 +1162,10 @@ export function App(): JSX.Element {
             runStartedAt={runStartedAt}
             onEdit={startEdit}
             onRestore={restoreTurn}
+            // Each turn's work as one line before its answer — "Read 4 files ·
+            // changed 2 files" — opened with a click, as Heapnotes' Ask does.
+            // A dozen tool rows above every reply buried the reply.
+            foldSteps={{ describe: describeWork }}
           />
 
           <Announcer busy={busy} activity={activityOf(transcript)} lastReply={lastReplyOf(transcript)} ending={ending} />

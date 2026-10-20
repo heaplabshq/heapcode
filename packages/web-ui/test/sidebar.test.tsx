@@ -167,44 +167,41 @@ describe('the left rail', () => {
   });
 });
 
-describe('the product menu', () => {
+describe('the product switcher', () => {
   afterEach(() => {
     delete document.documentElement.dataset.products;
     delete document.documentElement.dataset.sibling;
   });
 
-  it('is just the name when no other product is served', () => {
+  it('is absent when no other product is served', () => {
     render(<Sidebar {...railProps()} />);
-    expect(screen.queryByRole('button', { name: /Heap Code/ })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Product' })).toBeNull();
     expect(screen.getByText('Heap Code')).toBeTruthy();
   });
 
-  it('lists every served product with what it is for, marking this one', () => {
-    document.documentElement.dataset.products = 'chat,qa,notes';
+  it('shows every served product as a tab, in one order, each saying what it is for', () => {
+    document.documentElement.dataset.products = 'qa,chat,notes';
     render(<Sidebar {...railProps()} />);
-    fireEvent.click(screen.getByRole('button', { name: /Heap Code/ }));
-    const rows = screen.getAllByRole('menuitem');
-    expect(rows.map((r) => r.getAttribute('href'))).toEqual(['/', '/chat/', '/notes/', '/qa/']);
-    expect(screen.getByText('Ask about your documents and files')).toBeTruthy();
-    expect(rows[0]!.getAttribute('aria-current')).toBe('page');
+    const tabs = screen.getByRole('group', { name: 'Product' }).querySelectorAll('a');
+    expect([...tabs].map((t) => t.getAttribute('href'))).toEqual(['/', '/chat/', '/notes/', '/qa/']);
+    expect(tabs[1]!.title).toBe('Heap Chat — Ask about your documents and files');
+    expect(tabs[0]!.getAttribute('aria-current')).toBe('page');
   });
 
   it('reaches Heap Code from a product mounted beside it', () => {
     document.documentElement.dataset.products = 'chat';
     document.documentElement.dataset.sibling = 'code';
     render(<Sidebar {...railProps({ product: 'chat' })} />);
-    fireEvent.click(screen.getByRole('button', { name: /Heap Chat/ }));
-    expect(screen.getAllByRole('menuitem').map((r) => r.textContent)).toEqual([
-      expect.stringContaining('Heap Code'),
-      expect.stringContaining('Heap Chat'),
-    ]);
+    expect(screen.getAllByText('Heap Chat').length).toBeGreaterThan(0);
+    const tabs = screen.getByRole('group', { name: 'Product' }).querySelectorAll('a');
+    expect([...tabs].map((t) => t.textContent)).toEqual(['Heap Code', 'Heap Chat']);
   });
 
   it('offers no switch for a product running on its own', () => {
     // `heapcode chat` alone: no Heap Code at the root to switch to.
     document.documentElement.dataset.products = 'chat';
     render(<Sidebar {...railProps({ product: 'chat' })} />);
-    expect(screen.queryByRole('button', { name: /Heap Chat/ })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Product' })).toBeNull();
   });
 });
 

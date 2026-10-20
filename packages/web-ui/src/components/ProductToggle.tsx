@@ -1,16 +1,13 @@
-import { useState } from 'react';
-import { useMenu } from './useMenu.js';
-
 export type Product = 'code' | 'chat' | 'qa' | 'notes';
 
 /**
  * Switching between Heap Code, Heap Chat, Heapnotes and Heap QA.
  *
- * The product's own name in the rail's top row, with a chevron: click it and
- * a menu lists every product served here, each with a line saying what it is
- * for. It replaced four 19px unlabelled icons squeezed in beside the name,
- * which cut the name to "Heap Co…" and asked people to learn four glyphs to
- * find out the other products existed.
+ * A row of icon tabs beside the product's name at the top of the rail, the
+ * way the Claude app switches between chat and code: every product in sight,
+ * so nobody has to open anything to find out the others exist. (A
+ * name-and-chevron menu was tried and hid them.) Each tab's tooltip says
+ * what that product is for.
  *
  * It is a real navigation — the products are different sessions with
  * different tool rosters — served from one origin under one token
@@ -18,63 +15,37 @@ export type Product = 'code' | 'chat' | 'qa' | 'notes';
  * HttpOnly cookie and bounce to 401.
  *
  * Which products are here is read off `<html>`, the same way on every page,
- * so no product can forget to list one. With only the current product served
- * it is the plain name: a menu with one entry teaches people the control does
- * nothing.
+ * so no product can forget to list one, and the order is the same
+ * everywhere. With only the current product served it renders nothing: a
+ * switcher with one working half teaches people the control is broken.
  */
-export function ProductToggle({ current }: { current: Product }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const { root, button, onMenuKey } = useMenu(open, setOpen);
+export function ProductToggle({ current }: { current: Product }): JSX.Element | null {
   const here = availableProducts(current);
-  const me = PRODUCTS.find((p) => p.id === current)!;
-
-  if (here.length < 2) return <span className="rail-brand">{me.name}</span>;
-
+  if (here.length < 2) return null;
   return (
-    <div className="product-switch" ref={root}>
-      <button
-        ref={button}
-        className="product-switch-btn"
-        onClick={() => setOpen(!open)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Switch product"
-      >
-        <span className="rail-brand">{me.name}</span>
-        <IconChevron />
-      </button>
-      {open && (
-        <div className="tool-menu product-menu" role="menu" aria-label="Products" onKeyDown={onMenuKey}>
-          {here.map((p) => (
-            <a
-              key={p.id}
-              role="menuitem"
-              href={p.path}
-              className={`tool-menu-item ${p.id === current ? 'tool-menu-item-on' : ''}`}
-              aria-current={p.id === current ? 'page' : undefined}
-              onClick={(e) => {
-                // Already here: close rather than reload the page under the user.
-                if (p.id === current) {
-                  e.preventDefault();
-                  setOpen(false);
-                }
-              }}
-            >
-              <span className="tool-menu-icon">{p.icon}</span>
-              <span className="tool-menu-text">
-                <span className="tool-menu-label">{p.name}</span>
-                <span className="tool-menu-sub">{p.blurb}</span>
-              </span>
-              {p.id === current && <IconCheck />}
-            </a>
-          ))}
-        </div>
-      )}
+    <div className="product-toggle" role="group" aria-label="Product">
+      {here.map((p) => (
+        <a
+          key={p.id}
+          className={p.id === current ? 'product-tab product-tab-on' : 'product-tab'}
+          href={p.path}
+          aria-current={p.id === current ? 'page' : undefined}
+          title={`${p.name} — ${p.blurb}`}
+        >
+          {p.icon}
+          <span className="sr-only">{p.name}</span>
+        </a>
+      ))}
     </div>
   );
 }
 
-/** Every product, in the order the menu lists them. */
+/** The product's display name, for the rail's brand. */
+export function productName(product: Product): string {
+  return PRODUCTS.find((p) => p.id === product)!.name;
+}
+
+/** Every product, in the order the switcher shows them. */
 const PRODUCTS: { id: Product; name: string; blurb: string; path: string; icon: JSX.Element }[] = [
   { id: 'code', name: 'Heap Code', blurb: 'Change and fix code in a folder', path: '/', icon: <IconCode /> },
   { id: 'chat', name: 'Heap Chat', blurb: 'Ask about your documents and files', path: '/chat/', icon: <IconChat /> },
@@ -98,22 +69,6 @@ function availableProducts(current: Product): typeof PRODUCTS {
 /** The products served beside this page, as the host stamps them on `<html>`: `chat,qa`. */
 export function servedProducts(): string[] {
   return (document.documentElement.dataset.products ?? '').split(',').filter(Boolean);
-}
-
-function IconChevron(): JSX.Element {
-  return (
-    <svg className="product-switch-chev" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-      <path d="m4.5 6.5 3.5 3.5 3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconCheck(): JSX.Element {
-  return (
-    <svg className="product-menu-check" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-      <path d="m3.5 8.5 3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
 }
 
 function IconNotes(): JSX.Element {

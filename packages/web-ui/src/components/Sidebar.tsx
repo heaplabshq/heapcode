@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { UiConversationMeta } from '@heapcode/web-host/protocol';
 import type { ConnectionStatus } from '../rpc.js';
-import { ProductToggle, type Product } from './ProductToggle.js';
+import { ProductToggle, productName, type Product } from './ProductToggle.js';
 
 export interface SidebarProps {
   /** Collapsed shows the icon rail only; the labels come back on expand. */
@@ -15,7 +15,7 @@ export interface SidebarProps {
   onDelete?(id: string): void;
   busy: boolean;
   status: ConnectionStatus;
-  /** Which product this rail belongs to: its name heads the rail and opens the product menu. */
+  /** Which product this rail belongs to: its name heads the rail, its tab is lit in the switcher. */
   product?: Product;
   /** Omitted by a product with no artifacts of its own — the row is then absent. */
   onOpenArtifacts?(): void;
@@ -61,6 +61,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <span className="rail-logo" aria-hidden="true">
           <Logo />
         </span>
+        <span className="rail-brand">{productName(props.product ?? 'code')}</span>
         <ProductToggle current={props.product ?? 'code'} />
         <button
           className="icon-btn rail-collapse"

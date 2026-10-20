@@ -196,6 +196,17 @@ export class McpManager {
     return [...this.servers.keys()];
   }
 
+  /**
+   * The tool names `name` contributed, as the model sees them.
+   *
+   * Here rather than in each settings panel: they matched on the bare server
+   * name, but every tool is named `mcp__<server>__<tool>`, so a connected
+   * server with 22 tools was listed as having none.
+   */
+  toolNamesFor(name: string): string[] {
+    return this.servers.get(name)?.tools.map((t) => t.name) ?? [];
+  }
+
   /** Why `name` is not connected, if the last attempt failed. */
   failureFor(name: string): string | undefined {
     return this.failures.get(name);

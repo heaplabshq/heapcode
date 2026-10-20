@@ -1,6 +1,6 @@
 import { forgetMcpTrust, isTrusted, trustFor, trustMcp } from './mcpTrust.js';
 import { randomUUID } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
@@ -131,6 +131,8 @@ import type {
   ChatListModelsResult,
   ChatOpenConversationParams,
   ChatOpenConversationResult,
+  ChatDeleteConversationParams,
+  ChatDeleteConversationResult,
   ChatRecentFoldersResult,
   ChatSendMessageParams,
   ChatSendMessageResult,
@@ -255,6 +257,21 @@ export interface ChatSessionDeps {
    * approvals instead of Heap Chat's folder roster. See persona.ts.
    */
   persona?: ChatPersona;
+  /**
+   * Whether opening the folder indexes it. On (the default) for the
+   * standalone command, where pointing Heap Chat at a folder is the request
+   * to make it searchable. Off for the `/chat` mount in `heapcode web`, whose
+   * folder is a code workspace nobody asked Chat to read: a click on the
+   * product switcher began embedding the whole repo, which with a local
+   * embedder was enough to stall a laptop. Off, it searches whatever index
+   * exists and the Index tab's button builds or refreshes it.
+   *
+   * Not "refresh only if one exists": an index cancelled part-way is
+   * indistinguishable from a finished one, and refreshing it is the full
+   * build again. A folder picked in Chat itself is a request, and is indexed
+   * either way.
+   */
+  indexOnOpen?: boolean;
 }
 
 /**
@@ -325,6 +342,7 @@ export class ChatSession implements HostSession {
   private modelOverride?: string;
   private chatModel = '';
   private indexProgress?: { embedded: number; total: number };
+  private indexOnOpen: boolean;
 
   private readonly contextWindowFor = createContextWindowResolver((profileName, model) =>
     this.connection
@@ -336,6 +354,7 @@ export class ChatSession implements HostSession {
 
   constructor(private readonly deps: ChatSessionDeps) {
     this.root = deps.root;
+    this.indexOnOpen = deps.indexOnOpen ?? true;
     this.memory = new ChatMemory(deps.memoryFile ?? chatMemoryFile());
     this.artifacts = new ArtifactStore(join(chatStateDir(deps.root), 'artifacts'));
     this.attachments = new AttachmentStore(join(chatStateDir(deps.root), 'attachments'));
@@ -412,12 +431,16 @@ export class ChatSession implements HostSession {
     );
     void this.mcp.ensureConnected().catch(() => undefined);
 
-    // Only with a folder: nothing on the general roster reads a file, so an
-    // executor rooted at nothing is never asked for one.
-    this.executor = this.root
-      ? new WorkspaceToolExecutor(
-      this.root,
-      new SessionCheckpoint(this.root),
+    // Always built, folder or not: it is also what runs web_search, fetch_url
+    // and search_history. It used to exist only with a folder, on the theory
+    // that nothing on the no-folder roster reads a file — true, and beside the
+    // point: every one of those three failed with "reading 'execute'". With
+    // no folder it is rooted at an empty directory of its own, and the four
+    // file tools are refused by name before they could reach it.
+    const root = this.root ?? (await noFolderRoot());
+    this.executor = new WorkspaceToolExecutor(
+      root,
+      new SessionCheckpoint(root),
       60_000,
       undefined,
       undefined,
@@ -430,8 +453,7 @@ export class ChatSession implements HostSession {
       // is only written when it finishes, and that is exactly the part a long
       // conversation is asked about.
       async (id) => (!id || id === this.conversation?.id ? this.conversation : this.history?.get(id)),
-        )
-      : undefined;
+    );
 
     const apiKey = await secrets.getApiKey(profile.name);
     this.connection = await this.deps.connect({
@@ -456,7 +478,7 @@ export class ChatSession implements HostSession {
     // defaulted to the home directory, so opening the standalone command began
     // embedding everything the person owned.
     if (this.root) {
-      void this.startIndexing();
+      if (this.indexOnOpen) void this.startIndexing();
       await this.deps.workspaces?.record(this.root);
     }
     return undefined;
@@ -512,13 +534,22 @@ export class ChatSession implements HostSession {
    * `WebSession.setWorkspace` does: an executor still jailed to the old folder
    * while the conversation store has already moved is a worse failure than a
    * slow switch. Refused mid-run — the agent is reading files in the old one.
+   *
+   * No path closes the folder: the session goes back to a plain conversation,
+   * with the no-folder prompt and roster and the global history. Without it a
+   * folder, once picked — or handed over by `heapcode chat <folder>` or the
+   * `/chat` mount — could only be left by restarting.
    */
-  async setFolder(path: string): Promise<void> {
+  async setFolder(path: string | undefined): Promise<void> {
     if (this.activeRunId) throw new Error('A run is in progress; stop it before switching folder.');
-    const target = canonicalize(path);
-    const info = await stat(target).catch(() => undefined);
-    if (!info?.isDirectory()) throw new Error(`Not a folder: ${path}`);
+    const target = path === undefined ? undefined : canonicalize(path);
+    if (target !== undefined) {
+      const info = await stat(target).catch(() => undefined);
+      if (!info?.isDirectory()) throw new Error(`Not a folder: ${path}`);
+    }
     if (target === this.root) return;
+    // Picked here, so it is a request to read it — see `indexOnOpen`.
+    this.indexOnOpen = true;
 
     this.connection?.close();
     this.connection = undefined;
@@ -536,6 +567,7 @@ export class ChatSession implements HostSession {
     this.deltaAcc = '';
     this.reasoningAcc = '';
     this.buffers.clear();
+    this.indexProgress = undefined;
 
     await this.start();
     void this.pushState();
@@ -717,6 +749,22 @@ export class ChatSession implements HostSession {
       return { id: this.conversation.id, messages: [] };
     });
 
+    ui.onRequest(CHAT_METHODS.deleteConversation, async (raw): Promise<ChatDeleteConversationResult> => {
+      await this.open();
+      const { id } = raw as ChatDeleteConversationParams;
+      const open = id === this.conversation?.id;
+      if (open && this.activeRunId) throw new Error('A run is in progress; stop it before deleting this chat.');
+      await this.history!.delete(id);
+      // Same as Heap Code's: an open conversation kept in memory would be
+      // written straight back on the next turn.
+      if (open) {
+        this.conversation = { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
+        this.turnEntries = [];
+        this.allowedTools.clear();
+      }
+      return { cleared: open };
+    });
+
     ui.onRequest(CHAT_METHODS.listModels, async (raw): Promise<ChatListModelsResult> => {
       const { profileName } = (raw ?? {}) as ChatListModelsParams;
       await this.open();
@@ -764,7 +812,7 @@ export class ChatSession implements HostSession {
 
     ui.onRequest(CHAT_METHODS.setFolder, async (raw): Promise<ChatSetFolderResult> => {
       const { path } = raw as ChatSetFolderParams;
-      await this.setFolder(path);
+      await this.setFolder(path ?? undefined);
       return { state: await this.state(), messages: toUiMessages(this.conversation?.messages ?? []) };
     });
 
@@ -910,7 +958,7 @@ export class ChatSession implements HostSession {
       // Root-jailed by the executor, like every other path this host touches.
       // With no folder open there is nowhere to put it — the artifact is still
       // there to read, it just has no destination yet.
-      if (!this.executor) throw new Error('Open a folder to save this into.');
+      if (!this.root || !this.executor) throw new Error('Open a folder to save this into.');
       const result = await this.executor.execute({
         id: `save-artifact-${id}`,
         name: 'write_file',
@@ -1033,7 +1081,7 @@ export class ChatSession implements HostSession {
       permissionMode: '',
       subAgents: false,
       nativeToolCalls: this.profile ? resolveCapabilities(this.profile).nativeToolCalls : true,
-      ...(await sharedSettings(this.deps.config, this.deps.secrets, this.profile?.name ?? '')),
+      ...(await sharedSettings(this.deps.config, this.deps.secrets, this.profile?.name ?? '', this.deps.clientVersion)),
       mcpServers: await this.listMcpServers(),
       permissionGrants: [],
     };
@@ -1045,12 +1093,11 @@ export class ChatSession implements HostSession {
       ? await loadMcpServerSources(this.root, this.deps.config)
       : { global: (await this.deps.config.load()).mcpServers ?? {}, project: {} };
     const connected = new Set(this.mcp?.connectedServerNames() ?? []);
-    const tools = this.mcp?.getToolDefinitions() ?? [];
     const signedIn = await storedTokenNames(this.deps.secrets, Object.keys({ ...global, ...project }));
     return Object.entries({ ...global, ...project }).map(([name, server]) => ({
       name,
       connected: connected.has(name),
-      tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
+      tools: this.mcp?.toolNamesFor(name) ?? [],
       spec: describeMcpServer(server),
       error: connected.has(name) ? undefined : this.mcp?.failureFor(name),
       needsAuth: !connected.has(name) && Boolean(this.mcp?.awaitingSignIn(name)),
@@ -1063,6 +1110,9 @@ export class ChatSession implements HostSession {
   }
 
   private async indexStatus(): Promise<ChatIndexStatus> {
+    // No folder, no index — the daemon's link is rooted at the home directory
+    // then, and its status would describe a folder nobody opened.
+    if (!this.root) return { state: 'idle', files: 0, chunks: 0 };
     if (!this.connection) return { state: 'unconfigured', files: 0, chunks: 0 };
     const res = await this.connection.peer
       .request<{ state: string; files?: number; chunks?: number; message?: string }>(METHODS.ragStatus, {})
@@ -1950,6 +2000,14 @@ export class ChatSession implements HostSession {
           } as StoredMessage);
         this.reasoningAcc = '';
         return;
+      case 'todo_update': {
+        // Saved like Heap Code's: one card per turn, replaced in place, so a
+        // reopened conversation shows the list as it ended.
+        const existing = this.turnEntries.find((m) => m.ui?.todos);
+        if (existing) existing.ui!.todos = event.todos;
+        else this.turnEntries.push({ role: 'assistant', content: '', ui: { todos: event.todos } } as StoredMessage);
+        return;
+      }
       case 'tool_call':
         this.turnEntries.push({
           role: 'assistant',
@@ -1998,6 +2056,13 @@ export class ChatSession implements HostSession {
  * global place. Someone who chats without picking a directory still gets a
  * history, artifacts and attachments — they simply are not about a project.
  */
+/** The executor's root when no folder is open: empty, private, never a real folder. */
+async function noFolderRoot(): Promise<string> {
+  const dir = join(chatStateDir(), 'no-folder');
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
 export function chatStateDir(root?: string): string {
   return root ? projectStateDir(root) : join(globalDir(), 'chat');
 }

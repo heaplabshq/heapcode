@@ -37,6 +37,25 @@ describe('McpManager', () => {
     }
   });
 
+  it('reports each server’s own tools, for the settings panel’s count', async () => {
+    // The panels matched tool names on the bare server name, and every tool
+    // is `mcp__<server>__…`, so a connected server always read "0 tools".
+    const manager = new McpManager(() =>
+      Promise.resolve({
+        fixture: { command: process.execPath, args: [FIXTURE_SERVER] },
+        other: { command: process.execPath, args: [FIXTURE_SERVER] },
+      }),
+    );
+    try {
+      await manager.ensureConnected();
+      expect(manager.toolNamesFor('fixture')).toEqual(['mcp__fixture__echo', 'mcp__fixture__whoami']);
+      expect(manager.toolNamesFor('other')).toEqual(['mcp__other__echo', 'mcp__other__whoami']);
+      expect(manager.toolNamesFor('missing')).toEqual([]);
+    } finally {
+      manager.dispose();
+    }
+  });
+
   it('calls a tool through the server and returns its text content', async () => {
     const manager = new McpManager(() =>
       Promise.resolve({ fixture: { command: process.execPath, args: [FIXTURE_SERVER] } }),

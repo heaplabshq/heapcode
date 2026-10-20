@@ -56,7 +56,16 @@ export const CREATE_ARTIFACT_TOOL: ToolDefinition = {
     properties: {
       id: { type: 'string', description: 'Stable id. Reuse it to publish a new version of the same artifact.' },
       title: { type: 'string', description: 'Short human-readable name.' },
-      kind: { type: 'string', enum: [...ARTIFACT_KINDS], description: 'html | markdown | mermaid | svg | code | json' },
+      kind: {
+        type: 'string',
+        enum: [...ARTIFACT_KINDS],
+        // The diagram types spelled out: a model asked for a bar chart wrote
+        // `bar` with `x-axis [...]`, which is no Mermaid type at all.
+        description:
+          'html | markdown | mermaid | svg | code | json. A mermaid artifact must start with a real diagram type — ' +
+          'flowchart, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie, mindmap, timeline, ' +
+          'or xychart-beta for bar and line charts.',
+      },
       content: { type: 'string', description: 'The full artifact source. Self-contained — nothing is fetched at render time.' },
       language: { type: 'string', description: "For kind 'code': the language, e.g. python, rust." },
     },

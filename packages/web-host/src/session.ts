@@ -72,6 +72,7 @@ import {
   listSkillsFormatted,
   permissionsFile,
   projectStateDir,
+  globalDir,
   createContextWindowResolver,
   profileContextWindow,
   trimHistoryForAgent,
@@ -97,6 +98,8 @@ import {
   type UiMessage,
   type UiOpenConversationParams,
   type UiOpenConversationResult,
+  type UiDeleteConversationParams,
+  type UiDeleteConversationResult,
   type UiPermissionRequestParams,
   type UiPermissionRequestResult,
   type UiMcpServer,
@@ -739,6 +742,19 @@ export class WebSession {
       return { id: this.conversation.id, messages: [] };
     });
 
+    ui.onRequest(UI_METHODS.deleteConversation, async (raw): Promise<UiDeleteConversationResult> => {
+      await this.open();
+      const { id } = raw as UiDeleteConversationParams;
+      const open = id === this.conversation?.id;
+      if (open && this.activeRunId) throw new Error('A run is in progress; stop it before deleting this chat.');
+      await this.history!.delete(id);
+      // Deleting the open conversation leaves nothing to show, and keeping it
+      // in memory would write it straight back on the next turn.
+      if (open) this.conversation = { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
+      void this.pushState();
+      return { cleared: open };
+    });
+
     ui.onRequest(UI_METHODS.listModels, async (raw): Promise<UiListModelsResult> => {
       const { profileName } = (raw ?? {}) as UiListModelsParams;
       await this.open();
@@ -1234,6 +1250,7 @@ export class WebSession {
         // that had servers running in it.
         mcpServers: await this.listMcpServers(connected),
         permissionGrants: await listPermissionGrants(permissionsFile(this.root)),
+        about: { version: this.deps.clientVersion, dataDir: globalDir() },
       };
     });
 
@@ -1481,12 +1498,11 @@ export class WebSession {
    */
   private async listMcpServers(connected: Set<string>): Promise<UiMcpServer[]> {
     const { global, project } = await loadMcpServerSources(this.root, this.deps.config);
-    const tools = this.session?.mcpManager.getToolDefinitions() ?? [];
     const signedIn = await storedTokenNames(this.deps.secrets, Object.keys({ ...global, ...project }));
     return Object.entries({ ...global, ...project }).map(([name, server]) => ({
       name,
       connected: connected.has(name),
-      tools: tools.map((t) => t.name).filter((t) => t.startsWith(name.replace(/[^a-zA-Z0-9_-]/g, '_'))),
+      tools: this.session?.mcpManager?.toolNamesFor(name) ?? [],
       spec: describeMcpServer(server),
       error: connected.has(name) ? undefined : this.session?.mcpManager.failureFor(name),
       needsAuth: !connected.has(name) && Boolean(this.session?.mcpManager.awaitingSignIn(name)),

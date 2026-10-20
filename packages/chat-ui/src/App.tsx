@@ -11,8 +11,10 @@ import {
   stampOrdinal,
   userTurnItemIndex,
   withUserMessage,
+  currentTasks,
 } from '@heapcode/web-ui/transcript';
 import { Sidebar } from '@heapcode/web-ui/components/Sidebar';
+import { TaskBar } from '@heapcode/web-ui/components/TaskBar';
 import { Composer } from '@heapcode/web-ui/components/Composer';
 import { Toasts } from '@heapcode/web-ui/components/Toasts';
 import { MessageList } from '@heapcode/web-ui/components/MessageList';
@@ -272,6 +274,10 @@ export function App(): JSX.Element {
   }, [client, refreshConversations, refreshIndex, refreshArtifacts]);
 
   const busy = Boolean(state?.runId);
+  // Pinned above the transcript while a run is going, exactly as Heap Code
+  // does — and only then: when the run ends the card drops back into the
+  // transcript, where the record of that turn belongs.
+  const pinnedTasks = busy ? currentTasks(transcript) : undefined;
 
   /** Re-read after every edit, so the dialog shows what was actually saved. */
   const refreshSettings = useCallback(() => {
@@ -379,6 +385,20 @@ export function App(): JSX.Element {
       .catch((e: Error) => setError(e.message));
   };
 
+  const deleteConversation = (id: string): void => {
+    client
+      .request<{ cleared: boolean }>(CHAT_METHODS.deleteConversation, { id })
+      .then((r) => {
+        if (r.cleared) {
+          setTranscript(emptyTranscript);
+          setGrounding(undefined);
+          leaveEdit();
+        }
+        refreshConversations();
+      })
+      .catch((e: Error) => setError(e.message));
+  };
+
   const openConversation = (id: string): void => {
     client
       .request<{ messages: Parameters<typeof fromMessages>[0] }>(CHAT_METHODS.openConversation, { id })
@@ -391,7 +411,8 @@ export function App(): JSX.Element {
       .catch((e: Error) => setError(e.message));
   };
 
-  const chooseFolder = async (path: string): Promise<void> => {
+  // `null` closes the folder — the same reset, back to a plain conversation.
+  const chooseFolder = async (path: string | null): Promise<void> => {
     const r = await client.request<{ state: ChatState }>(CHAT_METHODS.setFolder, { path });
     setState(r.state);
     setTranscript(emptyTranscript);
@@ -428,6 +449,7 @@ export function App(): JSX.Element {
           conversations={conversations}
           onOpen={openConversation}
           onNew={newConversation}
+          onDelete={deleteConversation}
           busy={busy}
           state={state}
           status={status}
@@ -482,8 +504,11 @@ export function App(): JSX.Element {
             </div>
           ) : null}
 
+          <TaskBar todos={pinnedTasks?.todos ?? []} />
+
           <MessageList
             transcript={transcript}
+            hideTaskId={pinnedTasks?.id}
             busy={busy}
             runStartedAt={runStartedAt}
             // Edit and re-ask, the same gesture Heap Code has. No `onRestore`:
@@ -628,6 +653,7 @@ export function App(): JSX.Element {
                   loadWorkspaces={() => client.request<ChatRecentFoldersResult>(CHAT_METHODS.recentFolders)}
                   browse={(path) => client.request<ChatBrowseFoldersResult>(CHAT_METHODS.browseFolders, { path })}
                   onPick={chooseFolder}
+                  onClear={() => chooseFolder(null)}
                 />
 
                 <span className="bar-select" aria-live="polite">
@@ -728,7 +754,7 @@ export function App(): JSX.Element {
           // product's memory is about the person, not the folder, so it gets
           // its own rail row rather than a page whose description would be
           // false here.
-          pages={['providers', 'search', 'connectors']}
+          pages={['general', 'providers', 'search', 'connectors']}
           onSaveProfile={(profile, apiKey) => edit(CHAT_METHODS.saveProfile, { profile, apiKey })}
           onDeleteProfile={(name) => edit(CHAT_METHODS.deleteProfile, { name })}
           onUseProfile={(name) => edit(CHAT_METHODS.useProfile, { name })}
@@ -746,11 +772,6 @@ export function App(): JSX.Element {
           }
           probeProvider={(params) => client.request(CHAT_METHODS.probeProvider, params)}
           // Not offered on these pages, but required by the props: no persona,
-          // no sub-agents, no permission grants here.
-          onSetPersona={() => {}}
-          onToggleSubAgents={() => {}}
-          onToggleNativeTools={() => {}}
-          onResetPermissions={() => {}}
           onSaveMcpServer={(name, spec, env) => edit(CHAT_METHODS.saveMcpServer, { name, spec, env })}
           onDeleteMcpServer={(name) => edit(CHAT_METHODS.deleteMcpServer, { name })}
           onSignInMcpServer={async (name) => {

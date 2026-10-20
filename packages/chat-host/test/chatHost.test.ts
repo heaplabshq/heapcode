@@ -26,8 +26,13 @@ let mock: MockServer | undefined;
 let daemon: HeapcodeServer | undefined;
 let host: RunningWebHost | undefined;
 let socket: WebSocket | undefined;
+/** Every method the session asked the daemon for, in order. */
+let daemonCalls: string[] = [];
+const realHome = process.env.HEAPCODE_HOME;
 
 afterEach(async () => {
+  if (realHome === undefined) delete process.env.HEAPCODE_HOME;
+  else process.env.HEAPCODE_HOME = realHome;
   socket?.close();
   await host?.close();
   await daemon?.close();
@@ -45,13 +50,22 @@ function sse(text: string): { kind: 'sse'; chunks: string[] } {
 
 async function boot(
   responses: Array<{ kind: 'sse'; chunks: string[] }>,
-  opts: { withFolder?: boolean; withConnection?: boolean; withModel?: boolean } = {},
+  opts: {
+    withFolder?: boolean;
+    withConnection?: boolean;
+    withModel?: boolean;
+    indexOnOpen?: boolean;
+  } = {},
 ): Promise<{
   peer: RpcPeer;
   folder: string;
 }> {
   mock = await startMockServer({ kind: 'sequence', responses });
   const home = await mkdtemp(join(tmpdir(), 'chat-host-test-'));
+  daemonCalls = [];
+  // A session with no folder keeps its chats under the global dir — the
+  // person's real ~/.heapcode, unless the test says otherwise.
+  process.env.HEAPCODE_HOME = home;
   daemon = new HeapcodeServer({ home, address: join(home, 'chat.sock'), idleShutdownMs: 0 });
   await daemon.listen();
 
@@ -89,13 +103,21 @@ async function boot(
     secrets: new SecretsStore(join(home, 'secrets.json')),
     workspaces: new WorkspaceStore(join(home, 'workspaces.json')),
     memoryFile: join(home, 'chat-memory.json'),
+    indexOnOpen: opts.indexOnOpen,
     port: 0,
     token: 'test-token',
-    connect: (hello): Promise<ServerConnection> =>
-      connectToServer(
+    connect: async (hello): Promise<ServerConnection> => {
+      const conn = await connectToServer(
         { client: { name: 'chat-host-test' }, ...hello },
         { address: daemon!.address, token: daemon!.token, autostart: false },
-      ),
+      );
+      const request = conn.peer.request.bind(conn.peer);
+      conn.peer.request = ((method: string, ...rest: unknown[]) => {
+        daemonCalls.push(method);
+        return (request as (m: string, ...r: unknown[]) => Promise<unknown>)(method, ...rest);
+      }) as typeof conn.peer.request;
+      return conn;
+    },
   });
 
   socket = new WebSocket(`ws://127.0.0.1:${host.port}/rpc?token=${host.token}`);
@@ -160,6 +182,47 @@ describe('the chat host', () => {
     expect(conversations).toHaveLength(1);
     expect(conversations[0]?.title).toBe('first question');
     expect(conversations[0]?.active).toBe(true);
+  });
+
+  it('deletes a conversation, and an open one is replaced by a blank chat', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"noted"}</tool>')]);
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    await peer.request(CHAT_METHODS.sendMessage, { text: 'first question' });
+    const [saved] = await peer.request<Array<{ id: string }>>(CHAT_METHODS.conversations);
+
+    const res = await peer.request<{ cleared: boolean }>(CHAT_METHODS.deleteConversation, { id: saved!.id });
+    expect(res.cleared).toBe(true);
+    expect(await peer.request<unknown[]>(CHAT_METHODS.conversations)).toEqual([]);
+  });
+
+  it('keeps the task list with the conversation, so a reopened chat shows how it ended', async () => {
+    const { peer } = await boot([
+      {
+        kind: 'sse',
+        chunks: [
+          '<tool name="todo_write">\n{"todos":[{"content":"Get holdings","status":"completed"},{"content":"Find news","status":"completed"},{"content":"Write the report","status":"completed"}]}\n</tool>',
+        ],
+      },
+      { kind: 'sse', chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+    ]);
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    await peer.request(CHAT_METHODS.sendMessage, { text: 'report on my holdings' });
+
+    const [saved] = await peer.request<Array<{ id: string }>>(CHAT_METHODS.conversations);
+    const reopened = await peer.request<{ messages: Array<{ ui?: { todos?: Array<{ content: string }> } }> }>(
+      CHAT_METHODS.openConversation,
+      { id: saved!.id },
+    );
+    const lists = reopened.messages.filter((m) => m.ui?.todos);
+    expect(lists).toHaveLength(1);
+    expect(lists[0]!.ui!.todos!.map((t) => t.content)).toEqual(['Get holdings', 'Find news', 'Write the report']);
+  });
+
+  it('tells the model when a task list is worth making, folder or not', async () => {
+    const { chatSystemPrompt } = await import('../src/prompt.js');
+    for (const hasFolder of [true, false]) {
+      expect(chatSystemPrompt(hasFolder)).toMatch(/three or more distinct steps[\s\S]*todo_write/);
+    }
   });
 
   it('refuses to switch folder mid-run rather than moving the ground under the agent', async () => {
@@ -280,6 +343,55 @@ describe('the chat host with no folder', () => {
     expect(prompt).not.toContain('works alongside someone in a folder');
   });
 
+  it('closes a folder it was opened on, back to the no-folder prompt and roster', async () => {
+    // The way back: `heapcode chat <folder>` and the `/chat` mount both open
+    // on a folder, and leaving it used to mean restarting.
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')]);
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+
+    const { state } = await peer.request<{ state: ChatState }>(CHAT_METHODS.setFolder, { path: null });
+    expect(state.folder).toBe('');
+    expect(state.folderName).toBe('');
+
+    await peer.request(CHAT_METHODS.sendMessage, { text: 'what is a 1099?' });
+    const prompt = systemPromptSent();
+    expect(prompt).toContain('No folder is open');
+    expect(prompt.includes('### read_file\n')).toBe(false);
+    await expect(peer.request(CHAT_METHODS.fileTree, { path: '' })).rejects.toThrow(/No folder is open/);
+  });
+
+  it('refuses to close the folder mid-run, like any other switch', async () => {
+    const { peer } = await boot([sse('<tool name="finish">{"summary":"ok"}</tool>')]);
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    const run = peer.request(CHAT_METHODS.sendMessage, { text: 'go' });
+    await expect(peer.request(CHAT_METHODS.setFolder, { path: null })).rejects.toThrow(/in progress/i);
+    await run;
+  });
+
+  it('runs the web and history tools, which need no folder but did need an executor', async () => {
+    // With no folder there was no executor at all, so web_search, fetch_url
+    // and search_history each failed with "Cannot read properties of
+    // undefined (reading 'execute')".
+    const { peer } = await boot(
+      // Raw text chunks: the mock wraps each one in a delta itself.
+      [
+        { kind: 'sse', chunks: ['<tool name="search_history">\n{"query":"deposit"}\n</tool>'] },
+        { kind: 'sse', chunks: ['<tool name="web_search">\n{"query":"nifty outlook"}\n</tool>'] },
+        { kind: 'sse', chunks: ['<tool name="finish">\n{"summary":"done"}\n</tool>'] },
+      ],
+      { withFolder: false },
+    );
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    await peer.request(CHAT_METHODS.sendMessage, { text: 'look it up' });
+
+    // What each tool handed back, as the model saw it on its next turn.
+    const last = mock!.requests.at(-1)?.body as { messages: Array<{ role: string; content: string }> };
+    const results = last.messages.filter((m) => m.role !== 'system').map((m) => String(m.content)).join('\n');
+    expect(results).not.toContain("reading 'execute'");
+    expect(results).toContain('search_history');
+    expect(results).toContain('web_search');
+  });
+
   it('refuses the file panel plainly instead of listing something', async () => {
     const { peer } = await boot([sse('<tool name="finish">{"summary":"hi"}</tool>')], { withFolder: false });
     await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
@@ -375,5 +487,39 @@ describe('the chat host with no folder', () => {
     expect(state.model).toBe('mock-model');
     expect(state.daemon).toBe('up');
     await expect(peer.request(CHAT_METHODS.sendMessage, { text: 'hello?' })).resolves.toBeTruthy();
+  });
+});
+
+/**
+ * Inside `heapcode web` the folder is a code workspace nobody asked Chat to
+ * read. A click on the product switcher used to start a full embedding run
+ * over the repo — enough, with a local embedder, to stall a laptop.
+ */
+describe('indexing on open', () => {
+  const opened = async (peer: RpcPeer): Promise<void> => {
+    await peer.request(CHAT_METHODS.hello, { protocolVersion: CHAT_PROTOCOL_VERSION });
+    // `open()` has resolved by now; the index request is fired from inside it.
+    await peer.request(CHAT_METHODS.indexStatus);
+  };
+
+  it('indexes the folder it is pointed at by default', async () => {
+    const { peer } = await boot([]);
+    await opened(peer);
+    expect(daemonCalls).toContain('rag/index');
+  });
+
+  it('leaves the folder alone when told not to index on open', async () => {
+    const { peer } = await boot([], { indexOnOpen: false });
+    await opened(peer);
+    expect(daemonCalls).not.toContain('rag/index');
+  });
+
+  it('still indexes a folder picked in Chat itself', async () => {
+    const { peer } = await boot([], { indexOnOpen: false });
+    await opened(peer);
+    expect(daemonCalls).not.toContain('rag/index');
+    const elsewhere = realpathSync(await mkdtemp(join(tmpdir(), 'chat-picked-')));
+    await peer.request(CHAT_METHODS.setFolder, { path: elsewhere });
+    expect(daemonCalls).toContain('rag/index');
   });
 });

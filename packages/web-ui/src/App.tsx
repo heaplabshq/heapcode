@@ -13,6 +13,7 @@ import {
   type UiProbeProviderParams,
   type UiProbeProviderResult,
   type UiOpenConversationResult,
+  type UiDeleteConversationResult,
   type UiPermissionRequestParams,
   type UiArtifactMeta,
   type UiArtifactResult,
@@ -971,6 +972,23 @@ export function App(): JSX.Element {
     setReview(undefined);
   }, [ask, permission, review]);
 
+  const deleteConversation = useCallback(
+    (id: string) => {
+      void rpc
+        .request<UiDeleteConversationResult>(UI_METHODS.deleteConversation, { id })
+        .then((res) => {
+          if (res.cleared) {
+            setTranscript(fromMessages([]));
+            dismissPending();
+            leaveEdit();
+          }
+          refreshConversations();
+        })
+        .catch((err: Error) => setError(err.message));
+    },
+    [rpc, refreshConversations, dismissPending, leaveEdit],
+  );
+
   const openConversation = useCallback(
     (id: string) => {
       void rpc
@@ -1077,6 +1095,7 @@ export function App(): JSX.Element {
           conversations={conversations}
           onOpen={openConversation}
           onNew={newConversation}
+          onDelete={deleteConversation}
           busy={busy}
           state={state}
           status={status}

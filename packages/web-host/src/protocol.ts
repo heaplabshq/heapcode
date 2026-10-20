@@ -47,6 +47,7 @@ export const UI_METHODS = {
   conversations: 'ui/conversations',
   openConversation: 'ui/openConversation',
   newConversation: 'ui/newConversation',
+  deleteConversation: 'ui/deleteConversation',
   listModels: 'ui/listModels',
   probeProvider: 'ui/probeProvider',
   setModel: 'ui/setModel',
@@ -291,6 +292,15 @@ export interface UiConversationMeta {
   title: string;
   updatedAt: number;
   active: boolean;
+}
+
+export interface UiDeleteConversationParams {
+  id: string;
+}
+
+export interface UiDeleteConversationResult {
+  /** True when it was the open one, and the session moved to a blank chat. */
+  cleared: boolean;
 }
 
 export interface UiOpenConversationParams {
@@ -837,6 +847,15 @@ export interface UiSettings {
   mcpServers: UiMcpServer[];
   /** Saved "always allow" grant keys for this project. */
   permissionGrants: string[];
+  /** For the shared General page — the same in every product. */
+  about?: UiAbout;
+}
+
+export interface UiAbout {
+  /** This build's version, when the host was told it. */
+  version?: string;
+  /** Where config, history and indexes live (`~/.heapcode`, or HEAPCODE_HOME). */
+  dataDir: string;
 }
 
 export interface UiSetPersonaParams {

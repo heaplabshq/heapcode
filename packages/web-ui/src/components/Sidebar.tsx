@@ -11,6 +11,8 @@ export interface SidebarProps {
   activeConversation?: string;
   onOpen(id: string): void;
   onNew(): void;
+  /** Delete a saved conversation. Absent, rows offer no delete. */
+  onDelete?(id: string): void;
   busy: boolean;
   /**
    * What is answering. Widened from `UiState` to the two fields the footer
@@ -127,7 +129,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
               <div className="rail-section">{when}</div>
               <ul className="convo-list">
                 {items.map((c) => (
-                  <li key={c.id}>
+                  <li key={c.id} className="convo-row">
                     <button
                       className={c.active ? 'convo convo-active' : 'convo'}
                       onClick={() => props.onOpen(c.id)}
@@ -140,6 +142,25 @@ export function Sidebar(props: SidebarProps): JSX.Element {
                       <span className={c.active ? 'convo-dot convo-dot-on' : 'convo-dot'} aria-hidden="true" />
                       <span className="convo-title">{c.title || 'Untitled'}</span>
                     </button>
+                    {props.onDelete && (
+                      <button
+                        className="convo-delete"
+                        aria-label={`Delete ${c.title || 'Untitled'}`}
+                        title="Delete"
+                        // The open conversation is the one a run writes to.
+                        disabled={props.busy && c.active}
+                        onClick={() => {
+                          // Asked, because there is no undo: the store keeps
+                          // no trash, and one stray click on a row would
+                          // otherwise lose a long conversation.
+                          if (window.confirm(`Delete “${c.title || 'Untitled'}”? This can’t be undone.`)) {
+                            props.onDelete!(c.id);
+                          }
+                        }}
+                      >
+                        <IconTrash />
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -287,6 +308,14 @@ const S = {
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,
 };
+
+function IconTrash(): JSX.Element {
+  return (
+    <svg {...S}>
+      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+    </svg>
+  );
+}
 
 function IconPlus(): JSX.Element {
   return (

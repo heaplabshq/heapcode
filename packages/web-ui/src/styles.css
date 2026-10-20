@@ -270,6 +270,21 @@ body {
 .convo-title {
   font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* The delete control sits over the row's right edge, shown on hover or when
+   reached by keyboard, so the list stays a list of titles at rest. */
+.convo-row { position: relative; }
+.convo-row .convo { padding-right: 30px; }
+.convo-delete {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 22px; height: 22px;
+  background: none; border: 0; border-radius: 5px; cursor: pointer;
+  color: var(--text-dim); opacity: 0;
+}
+.convo-delete svg { width: 14px; height: 14px; }
+.convo-row:hover .convo-delete, .convo-delete:focus-visible { opacity: 1; }
+.convo-delete:hover:not(:disabled) { color: var(--danger); background: var(--hover-strong); }
+.convo-delete:disabled { display: none; }
+@media (hover: none) { .convo-delete { opacity: 1; } }
 
 .rail-foot {
   display: flex; align-items: center; gap: 8px;

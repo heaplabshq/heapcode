@@ -405,11 +405,17 @@ export async function startWebHost(opts: WebHostOptions): Promise<RunningWebHost
     host,
     session,
     async close() {
+      // `wss.close()` stops new upgrades but leaves live sockets open, and
+      // `http.close()` waits for every connection to end — so an open tab
+      // held shutdown forever and Ctrl+C did nothing. Drop them first.
+      for (const client of wss.clients) client.terminate();
       wss.close();
       await session.close();
       // Only those something actually opened; an unused mount has no session.
       for (const s of mounted.values()) await s.close();
-      await new Promise<void>((resolve) => http.close(() => resolve()));
+      const closed = new Promise<void>((resolve) => http.close(() => resolve()));
+      http.closeAllConnections();
+      await closed;
     },
   };
 }

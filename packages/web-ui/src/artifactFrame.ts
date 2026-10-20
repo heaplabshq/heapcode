@@ -46,6 +46,8 @@ export interface FrameInput {
   language?: string;
   /** Rendered SVG for a mermaid artifact, when the renderer produced one. */
   mermaidSvg?: string;
+  /** Why it could not be drawn, shown above the source instead. */
+  mermaidError?: string;
 }
 
 /** The full `srcdoc` for an artifact. */
@@ -83,7 +85,11 @@ function bodyFor(input: FrameInput): string {
     case 'svg':
       return input.content;
     case 'mermaid':
-      return input.mermaidSvg ?? `<pre><code>${escapeHtml(input.content)}</code></pre>`;
+      return (
+        input.mermaidSvg ??
+        (input.mermaidError ? `<p><strong>This diagram could not be drawn:</strong> ${escapeHtml(input.mermaidError)}</p>` : '') +
+          `<pre><code>${escapeHtml(input.content)}</code></pre>`
+      );
     case 'json':
       return `<pre><code>${escapeHtml(format(input.content))}</code></pre>`;
     case 'markdown':

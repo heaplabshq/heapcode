@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
+import { applyTheme } from './theme.js';
 import './styles.css';
 
 /**
@@ -15,6 +16,9 @@ if (new URL(window.location.href).searchParams.has('token')) {
   clean.searchParams.delete('token');
   window.history.replaceState({}, '', clean.pathname + clean.search + clean.hash);
 }
+
+// Before the first render, so a dark choice never flashes light.
+applyTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

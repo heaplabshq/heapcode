@@ -5,6 +5,8 @@ import type {
   UiBrowseFoldersResult,
   UiFileTreeResult,
   UiReadFileResult,
+  UiReadAttachedFileParams,
+  UiReadAttachedFileResult,
   UiSaveArtifactResult,
   UiTreeEntry,
   UiConnectionModelsResult,
@@ -52,6 +54,8 @@ export const CHAT_METHODS = {
   hello: 'chat/hello',
   state: 'chat/state',
   sendMessage: 'chat/sendMessage',
+  /** A file attached in the composer, read to text — params and result as UI_METHODS.readAttachedFile. */
+  readAttachedFile: 'chat/readAttachedFile',
   editMessage: 'chat/editMessage',
   cancel: 'chat/cancel',
   conversations: 'chat/conversations',
@@ -347,3 +351,7 @@ export type {
   UiSaveProfileParams as ChatSaveProfileParams,
   UiSetRoleParams as ChatSetRoleParams,
 };
+
+/** `chat/readAttachedFile` — the same shape as Heap Code's, read by the same helper. */
+export type ChatReadAttachedFileParams = UiReadAttachedFileParams;
+export type ChatReadAttachedFileResult = UiReadAttachedFileResult;

@@ -12,6 +12,10 @@
       "types": "./src/protocol.ts",
       "default": "./src/protocol.ts"
     },
+    "./attachedFiles": {
+      "types": "./src/attachedFiles.ts",
+      "default": "./src/attachedFiles.ts"
+    },
     "./browserTools": {
       "types": "./src/browserTools.ts",
       "default": "./src/browserTools.ts"

@@ -49,6 +49,14 @@ export const ICON_EDIT = (
   </svg>
 );
 
+/** A page with a folded corner: a document attached to a message. */
+export const ICON_FILE = (
+  <svg {...S} className="file-chip-icon" aria-hidden>
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+    <path d="M14 3v5h5" />
+  </svg>
+);
+
 /** An arrow curving back on itself: put the files back as they were. */
 export const ICON_RESTORE = (
   <svg {...S} aria-hidden>

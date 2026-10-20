@@ -625,36 +625,61 @@ body {
 .task-in_progress .task-mark { color: var(--accent); }
 .task-completed .task-text { text-decoration: line-through; }
 
-/* The live run's task list, pinned above the transcript.
-
-   Sits with the banners rather than inside `.messages`: a flex row in normal
-   flow cannot overlap the transcript, the composer or the workspace panel,
-   which a floating overlay would, and it does not have to fight the scroller's
-   own auto-follow. Collapsed it is one line — a pinned region earns its space
-   by being small.
-
-   No fill and no rule of its own. It had both, which stacked it under the
-   notice banner into a two-tier bordered header heavy enough to read as
-   window chrome. It is transient run status, the same thing `.working` is, so
-   it is drawn with the same quietness. */
-.taskbar { flex: none; }
+/* ---- the live task list ----
+   A card just above the input box while a run is going, the width of the
+   input so the two read as one column — see TaskBar.tsx. */
+.taskbar {
+  flex: none;
+  margin: 0 var(--gutter) 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
 .taskbar-head {
   display: flex; align-items: center; gap: 8px; width: 100%;
-  padding: 7px var(--gutter);
+  padding: 9px 14px;
   background: none; border: 0; cursor: pointer;
   font: inherit; font-size: 12.5px; color: var(--text-dim); text-align: left;
 }
 .taskbar-head:hover { color: var(--text); }
-.taskbar-caret { flex: none; width: 1em; }
 .taskbar-label { flex: none; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 .taskbar-count { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
 /* The label and the count are short and fixed, so the current task is the part
    that gives way when the window narrows. */
 .taskbar-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .taskbar-current::before { content: '·'; margin-right: 8px; color: var(--text-dim); }
+.taskbar-caret { display: inline-flex; margin-left: auto; flex: none; transform: rotate(-90deg); transition: transform 120ms ease; }
+.taskbar-caret-open { transform: none; }
 /* Capped and scrollable: twenty tasks (MAX_TODOS) must not push the
    conversation off the screen. */
-.taskbar-list { margin: 0; padding: 0 var(--gutter) 10px; max-height: 40vh; overflow-y: auto; }
+.taskbar-list {
+  list-style: none; margin: 0; padding: 0 14px 10px;
+  max-height: 32vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.taskbar-list .task { align-items: flex-start; font-size: 13.5px; }
+/* Three states as three marks: a check, a turning ring, a dashed ring. */
+.taskbar-mark {
+  flex: none; width: 14px; height: 14px; margin-top: 3px; box-sizing: border-box;
+  border-radius: 50%; border: 1.5px dashed var(--text-dim);
+}
+.task-in_progress .taskbar-mark {
+  border: 1.5px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  animation: taskbar-spin 0.9s linear infinite;
+}
+.task-completed .taskbar-mark {
+  border: 0; border-radius: 0;
+  background: var(--ok);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+@keyframes taskbar-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .task-in_progress .taskbar-mark { animation: none; }
+  .taskbar-caret { transition: none; }
+}
 
 .reasoning { margin: 0 0 8px; }
 .reasoning-toggle {
@@ -817,6 +842,23 @@ body {
   font-size: 13px; cursor: pointer;
 }
 .attachment-remove:hover { color: var(--danger); border-color: var(--danger); }
+/* Documents attached to a message: a name in a pill, in the box and on the sent message. */
+.file-chips { flex: 1 0 100%; display: flex; gap: 6px; flex-wrap: wrap; list-style: none; margin: 0; padding: 2px 0 4px; }
+.file-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 280px;
+  padding: 4px 6px 4px 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-raised); font-size: 12.5px; color: var(--text);
+}
+.file-chip-icon { flex: 0 0 auto; color: var(--text-dim); }
+.file-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip-meta { flex: 0 0 auto; color: var(--text-dim); font-size: 11.5px; }
+.file-chip-remove {
+  flex: 0 0 auto; width: 18px; height: 18px; padding: 0; line-height: 1;
+  border: 0; border-radius: 5px; background: none; color: var(--text-dim);
+  font-size: 14px; cursor: pointer;
+}
+.file-chip-remove:hover { color: var(--danger); background: var(--hover); }
+.msg-files { justify-content: flex-end; padding: 0; margin-bottom: 6px; }
 .composer-input {
   flex: 1 1 auto; resize: none;
   background: transparent; color: var(--text);
@@ -2222,4 +2264,4 @@ html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; 
 .steps-live { animation: steps-pulse 1.4s ease-in-out infinite; }
 @keyframes steps-pulse { 50% { opacity: 0.55; } }
 @media (prefers-reduced-motion: reduce) { .steps-live { animation: none; } }
-.steps-body { border-left: 2px solid var(--border); margin: 4px 0 0 6px; }
+.steps-body { margin: 4px 0 0; }

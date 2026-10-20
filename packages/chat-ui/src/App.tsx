@@ -44,6 +44,7 @@ import type {
   ChatArtifactResult,
   ChatArtifactsResult,
   ChatReadFileResult,
+  ChatReadAttachedFileResult,
   ChatSendMessageResult,
   ChatSettings,
   ChatState,
@@ -494,8 +495,6 @@ export function App(): JSX.Element {
             </div>
           ) : null}
 
-          <TaskBar todos={pinnedTasks?.todos ?? []} />
-
           <MessageList
             transcript={transcript}
             hideTaskId={pinnedTasks?.id}
@@ -548,6 +547,9 @@ export function App(): JSX.Element {
               ),
             }}
           />
+
+          {/* Just above the input while a run is going, as in Heap Code. */}
+          <TaskBar todos={pinnedTasks?.todos ?? []} />
 
           {permission && (
             <div className="card card-permission" role="alertdialog" aria-label="Allow this connector?">
@@ -622,6 +624,7 @@ export function App(): JSX.Element {
             onSend={send}
             onCancel={cancel}
             onReject={setNotice}
+            readFile={(name, data) => client.request<ChatReadAttachedFileResult>(CHAT_METHODS.readAttachedFile, { name, data })}
             busy={busy}
             disabled={status !== 'open'}
             seed={seed}

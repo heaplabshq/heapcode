@@ -80,6 +80,8 @@ import {
 import type { Artifact } from '@heapcode/web-host';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from '@heapcode/web-host';
 import { connectionModels, probeConnection } from '@heapcode/web-host';
+import { readAttachedFile, splitAttachedFiles, titleFromMessage } from '@heapcode/web-host';
+import type { UiReadAttachedFileParams, UiReadAttachedFileResult } from '@heapcode/web-host/protocol';
 import type { UiEventParams, UiMessage } from '@heapcode/web-host/protocol';
 import {
   IMAGE_MAX_BYTES,
@@ -709,6 +711,11 @@ export class ChatSession implements HostSession {
       return this.send(text, runId, acceptImages(images));
     });
 
+    ui.onRequest(CHAT_METHODS.readAttachedFile, async (raw): Promise<UiReadAttachedFileResult> => {
+      const { name, data } = raw as UiReadAttachedFileParams;
+      return readAttachedFile(String(name ?? ''), String(data ?? ''), chatExtractors);
+    });
+
     ui.onRequest(CHAT_METHODS.editMessage, async (raw): Promise<ChatSendMessageResult> => {
       const { ordinal, text, runId, images } = raw as ChatEditMessageParams;
       return this.editMessage(ordinal, text, runId ?? randomUUID(), acceptImages(images));
@@ -1155,6 +1162,10 @@ export class ChatSession implements HostSession {
     this.deltaAcc = '';
     this.reasoningAcc = '';
     this.pendingDisplay = task;
+    // A document attached to the question is something the answer can stand
+    // on, the same as a file the run reads — without this the grounding check
+    // flagged every figure taken from it as unsupported.
+    for (const f of splitAttachedFiles(task).files) this.pushEvidence({ source: f.name, text: f.text });
     void this.pushState();
 
     const profile = this.profile!;
@@ -1306,7 +1317,7 @@ export class ChatSession implements HostSession {
     this.conversation.messages.push(user, ...this.turnEntries);
     this.conversation.updatedAt = Date.now();
     if (this.conversation.title === 'New chat' && task) {
-      this.conversation.title = task.slice(0, 60);
+      this.conversation.title = titleFromMessage(task);
     }
     this.turnEntries = [];
     await this.history.save(this.conversation).catch(() => {});

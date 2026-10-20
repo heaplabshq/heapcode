@@ -275,6 +275,19 @@ describe('the reply toolbar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
     expect(seen).toEqual([[0, 'look', ['/attachment/a.png']]]);
   });
+
+  it('shows attached documents as chips, not as their text, and edits with them', () => {
+    const seen: unknown[] = [];
+    const text = 'what does clause 4 say?\n\n<attached-file name="lease.pdf">\nClause 4: rent is due monthly.\n</attached-file>';
+    const turn: Transcript = { items: [{ kind: 'text', id: 'u1', role: 'user', text, ordinal: 0 }] } as never;
+    const { container } = render(<MessageList transcript={turn} onEdit={(...args) => seen.push(args)} />);
+    expect(screen.getByText('lease.pdf')).toBeTruthy();
+    expect(container.textContent).not.toContain('rent is due monthly');
+    expect(container.querySelector('.msg-body')?.textContent).toContain('what does clause 4 say?');
+    // The whole message goes back, so the composer can restore the chip.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+    expect(seen).toEqual([[0, text, undefined]]);
+  });
 });
 
 
@@ -361,5 +374,26 @@ describe('following the stream, when the page moves the list', () => {
     height = 2000;
     fireEvent.scroll(list);
     expect(list.scrollTop).toBe(2000);
+  });
+});
+
+describe('folded steps', () => {
+  it('leaves out todo_write rows, which the Tasks card already shows', () => {
+    const turn: Transcript = {
+      items: [
+        { kind: 'text', id: 'u1', role: 'user', text: 'plan it', ordinal: 0 },
+        { kind: 'tool', id: 't1', name: 'todo_write', args: {}, done: true },
+        { kind: 'tasks', id: 'k1', todos: [{ content: 'search', status: 'completed' }] },
+        { kind: 'tool', id: 't2', name: 'web_search', args: { query: 'rbi date' }, done: true },
+        { kind: 'tool', id: 't3', name: 'todo_write', args: {}, done: true },
+        { kind: 'text', id: 'a1', role: 'assistant', text: 'Done.' },
+      ],
+    } as never;
+    const { container } = render(<MessageList transcript={turn} foldSteps={{ describe: () => 'Steps' }} />);
+    fireEvent.click(screen.getByText('Steps'));
+    const body = container.querySelector('.steps-body')!;
+    expect(body.textContent).not.toContain('todo_write');
+    expect(body.textContent).toContain('web_search');
+    expect(body.textContent).toContain('search');
   });
 });

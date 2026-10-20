@@ -33,6 +33,7 @@ import {
   type AgentRunParams,
   type AgentRunResult,
   type Conversation,
+  type DocumentExtractor,
   type KeyRequestParams,
   type KeyRequestResult,
   type PermissionMode,
@@ -109,6 +110,8 @@ import {
   type UiRunCommandParams,
   type UiSaveProfileParams,
   type UiSendMessageParams,
+  type UiReadAttachedFileParams,
+  type UiReadAttachedFileResult,
   type UiSendMessageResult,
   type UiSetModelParams,
   type UiSetModeParams,
@@ -163,6 +166,8 @@ import {
 import type { DaemonHello } from './hello.js';
 import { attachmentPath } from './attachmentRoute.js';
 import { openPageRequest } from './openFile.js';
+import { titleFromMessage } from './attachedFiles.js';
+import { readAttachedFile } from './readAttachedFile.js';
 import { connectionModels, probeConnection } from './models.js';
 import { startMcpSignIn, storedTokenNames, type McpLoginRegistry } from './mcpLogin.js';
 import { currentText, listDirectory, readWorkspaceFile } from './workspace.js';
@@ -287,6 +292,12 @@ export interface WebSessionDeps {
    * the session never sees the bind address — only `startWebHost` does.
    */
   lan?: boolean;
+  /**
+   * Readers for documents attached in the composer (PDF, Word…). Injected
+   * because the parsers are Heap Chat's optional dependencies; without them
+   * text and code files still attach.
+   */
+  extractors?: readonly DocumentExtractor[];
 }
 
 /**
@@ -697,6 +708,11 @@ export class WebSession {
     ui.onRequest(UI_METHODS.sendMessage, async (raw): Promise<UiSendMessageResult> => {
       const { text, runId, images } = raw as UiSendMessageParams;
       return this.run(text, runId ?? randomUUID(), acceptImages(images));
+    });
+
+    ui.onRequest(UI_METHODS.readAttachedFile, async (raw): Promise<UiReadAttachedFileResult> => {
+      const { name, data } = raw as UiReadAttachedFileParams;
+      return readAttachedFile(String(name ?? ''), String(data ?? ''), this.deps.extractors);
     });
 
     ui.onRequest(UI_METHODS.editMessage, async (raw): Promise<UiSendMessageResult> => {
@@ -2077,7 +2093,7 @@ export class WebSession {
       ...entries,
     );
     this.pendingCheckpoint = undefined;
-    if (convo.title === 'New chat') convo.title = display.slice(0, 60);
+    if (convo.title === 'New chat') convo.title = titleFromMessage(display);
     convo.updatedAt = Date.now();
     await this.history!.save(convo);
   }

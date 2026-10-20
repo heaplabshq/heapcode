@@ -41,6 +41,7 @@ import {
   type UiPermissionRequestResult,
   type UiSendMessageResult,
   type UiProbeProviderResult,
+  type UiReadAttachedFileResult,
   type UiSetWorkspaceResult,
   type UiSettings,
   type UiState,
@@ -664,6 +665,24 @@ describe('web host — testing a provider before saving it', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/base URL/i);
+    browser.close();
+  });
+});
+
+describe('web host — attached files', () => {
+  it('reads an attached file to text over the socket, and refuses one it cannot read', async () => {
+    const { host } = await boot(WRITE_THEN_FINISH);
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+
+    const read = await browser.peer.request<UiReadAttachedFileResult>(UI_METHODS.readAttachedFile, {
+      name: 'notes.md',
+      data: Buffer.from('# Plan\nship it').toString('base64'),
+    });
+    expect(read).toEqual({ name: 'notes.md', text: '# Plan\nship it', truncated: false });
+    await expect(
+      browser.peer.request(UI_METHODS.readAttachedFile, { name: 'deck.pptx', data: Buffer.from('PK').toString('base64') }),
+    ).rejects.toThrow(/Can't read deck.pptx/);
     browser.close();
   });
 });

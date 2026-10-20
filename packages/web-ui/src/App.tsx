@@ -39,6 +39,7 @@ import {
   type UiRepoMapResult,
   type UiSetWorkspaceResult,
   type UiWorkspacesResult,
+  type UiReadAttachedFileResult,
 } from '@heapcode/web-host/protocol';
 import { MENU_VIEWS, PANEL_VIEWS, Panel, STRIP_VIEWS, type PanelTab } from './components/Panel.js';
 import { PERMISSION_MODE_INFO, type PermissionMode } from '@heapcode/core/permissionModes';
@@ -1145,15 +1146,6 @@ export function App(): JSX.Element {
           {status === 'closed' && <div className="banner">Disconnected — reconnecting…</div>}
           {status === 'signed-out' && <div className="banner banner-error">{signedOutMessage()}</div>}
 
-          {/* Above the scroller, not inside it: the list is about the run in
-              flight, so it has to stay put while the transcript moves. And
-              only while it IS in flight — "what is left" stops being a
-              question the moment the run ends, and a finished 4/4 list held
-              above an idle window is chrome that has nothing left to say. When
-              the run ends the card drops back into the transcript, which is
-              where the record of that turn belongs. */}
-          <TaskBar todos={pinnedTasks?.todos ?? []} />
-
           <MessageList
             transcript={transcript}
             hideTaskId={pinnedTasks?.id}
@@ -1169,6 +1161,12 @@ export function App(): JSX.Element {
           />
 
           <Announcer busy={busy} activity={activityOf(transcript)} lastReply={lastReplyOf(transcript)} ending={ending} />
+
+          {/* Outside the scroller, just above the input: the list is about the
+              run in flight, so it stays put while the transcript moves, and
+              only while it IS in flight — when the run ends the card drops
+              back into the transcript, where the record of that turn belongs. */}
+          <TaskBar todos={pinnedTasks?.todos ?? []} />
 
           {permission && <PermissionCard pending={permission} />}
           {ask && <AskUserCard pending={ask} />}
@@ -1187,6 +1185,7 @@ export function App(): JSX.Element {
             onSend={send}
             onCancel={cancel}
             onReject={setNotice}
+            readFile={(name, data) => rpc.request<UiReadAttachedFileResult>(UI_METHODS.readAttachedFile, { name, data })}
             seed={seed}
             onSeedUsed={clearSeed}
             busy={busy}

@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CopyButton } from './CopyButton.js';
-import { ICON_CHEVRON, ICON_EDIT, ICON_RESTORE } from './icons.js';
+import { ICON_CHEVRON, ICON_EDIT, ICON_FILE, ICON_RESTORE } from './icons.js';
+import { splitAttachedFiles } from '@heapcode/web-host/attachedFiles';
 import { renderMarkdown } from '../markdown.js';
 import { activityOf, foldTurns, type Item, type Transcript } from '../transcript.js';
 import { ToolChip } from './ToolChip.js';
@@ -280,9 +281,13 @@ export function MessageList({
       {(foldSteps ? foldTurns(shown, busy) : shown.map((item) => ({ kind: 'item' as const, item }))).map((row) =>
         row.kind === 'steps' ? (
           <Steps key={row.id} label={foldSteps!.describe(row.items, row.live)} live={row.live}>
-            {row.items.map((item) => (
-              <Row key={item.id} item={item} onOpenPath={onOpenPath} busy={busy} wikiLinks={wikiLinks} />
-            ))}
+            {/* No todo_write rows: the Tasks card in the same group already
+                shows the list, and one row per update repeated it four times. */}
+            {row.items
+              .filter((item) => !(item.kind === 'tool' && item.name === 'todo_write'))
+              .map((item) => (
+                <Row key={item.id} item={item} onOpenPath={onOpenPath} busy={busy} wikiLinks={wikiLinks} />
+              ))}
           </Steps>
         ) : (
           <Row
@@ -348,9 +353,22 @@ const Row = memo(function Row({
   wikiLinks?: boolean | undefined;
 }): JSX.Element | null {
   switch (item.kind) {
-    case 'text':
+    case 'text': {
+      // A question with documents attached shows them as chips; their text
+      // is in the message for the model, not for the person who sent it.
+      const sent = item.role === 'user' ? splitAttachedFiles(item.text) : { text: item.text, files: [] };
       return (
         <div className={`msg msg-${item.role}`}>
+          {sent.files.length > 0 && (
+            <ul className="file-chips msg-files" aria-label={`${sent.files.length} attached file(s)`}>
+              {sent.files.map((f, i) => (
+                <li className="file-chip" key={`${i}-${f.name}`} title={f.name}>
+                  {ICON_FILE}
+                  <span className="file-chip-name">{f.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           {item.images && item.images.length > 0 && (
             <div className="msg-images">
               {item.images.map((src, i) => (
@@ -358,13 +376,15 @@ const Row = memo(function Row({
               ))}
             </div>
           )}
-          <div
-            className="msg-body"
-            // Sanitized in renderMarkdown — model output is untrusted, and this
-            // page holds the socket that runs commands.
-            // Highlighted once it has finished, not on every streamed chunk.
-            dangerouslySetInnerHTML={{ __html: renderMarkdown(item.text, { highlight: !item.streaming, wikiLinks }) }}
-          />
+          {(sent.text || sent.files.length === 0) && (
+            <div
+              className="msg-body"
+              // Sanitized in renderMarkdown — model output is untrusted, and this
+              // page holds the socket that runs commands.
+              // Highlighted once it has finished, not on every streamed chunk.
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(sent.text, { highlight: !item.streaming, wikiLinks }) }}
+            />
+          )}
           {/* The reply's toolbar, under the reply and aligned with it.
               Hidden while streaming — half a reply is not what someone means
               to copy. */}
@@ -383,7 +403,7 @@ const Row = memo(function Row({
               is in flight, since the host refuses them then anyway. */}
           {item.role === 'user' && item.text.trim() && (
             <div className="msg-actions">
-              <CopyButton text={item.text} />
+              <CopyButton text={sent.text || item.text} />
               {item.ordinal !== undefined && !busy && onEdit && (
                 <button
                   className="msg-action"
@@ -426,6 +446,7 @@ const Row = memo(function Row({
           )}
         </div>
       );
+    }
     case 'tool':
       return <ToolChip tool={item} onOpenPath={onOpenPath} />;
     case 'plan':

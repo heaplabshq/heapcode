@@ -27,3 +27,5 @@ export * from './mcpLogin.js';
 export * from './models.js';
 export * from './connectionSettings.js';
 export * from './openFile.js';
+export * from './attachedFiles.js';
+export * from './readAttachedFile.js';

@@ -38,6 +38,8 @@ export const UI_METHODS = {
   // browser → host
   hello: 'ui/hello',
   sendMessage: 'ui/sendMessage',
+  /** A file attached in the composer, read to text before it is sent — see readAttachedFile. */
+  readAttachedFile: 'ui/readAttachedFile',
   /** Edit a sent prompt: truncate from that turn, restore its checkpoint, resend. */
   editMessage: 'ui/editMessage',
   /** Restore the workspace to the checkpoint before a turn, conversation untouched. */
@@ -188,6 +190,19 @@ export interface UiSendMessageParams {
    * base64 is a cheap way to make the host allocate.
    */
   images?: string[];
+}
+
+/** A file attached in the composer: its name and its bytes, base64. */
+export interface UiReadAttachedFileParams {
+  name: string;
+  data: string;
+}
+
+export interface UiReadAttachedFileResult {
+  name: string;
+  text: string;
+  /** Cut at MAX_ATTACHED_FILE_CHARS; the text says so where it stops. */
+  truncated: boolean;
 }
 
 export interface UiSendMessageResult {

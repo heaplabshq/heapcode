@@ -67,7 +67,7 @@ function props(over: Partial<SettingsProps> = {}): SettingsProps {
 describe('the settings dialog', () => {
   it('opens on General and shows one page at a time', () => {
     render(<Settings {...props()} />);
-    expect(screen.getByText('Persona')).toBeTruthy();
+    expect(screen.getByLabelText('Theme')).toBeTruthy();
     // Providers exists in the nav but its content is not rendered yet.
     expect(screen.getByRole('button', { name: 'Providers' })).toBeTruthy();
     expect(screen.queryByText('+ Add connection')).toBeNull();
@@ -75,7 +75,7 @@ describe('the settings dialog', () => {
 
   it('reaches every page, including the ones that used to be slash commands', () => {
     render(<Settings {...props({ loadSkills: () => Promise.resolve('doc'), loadMemory: () => Promise.resolve('m') })} />);
-    for (const page of ['Providers', 'Web search', 'Permissions', 'Skills', 'Connectors', 'Memory']) {
+    for (const page of ['Agent', 'Providers', 'Web search', 'Permissions', 'Skills', 'Connectors', 'Memory']) {
       fireEvent.click(screen.getByRole('button', { name: page }));
       // The page's own heading, which is rendered only when it is selected.
       expect(screen.getByRole('heading', { name: page })).toBeTruthy();
@@ -211,7 +211,45 @@ describe('the settings dialog', () => {
     render(<Settings {...props()} />);
     fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'mcp' } });
     expect(screen.queryByRole('button', { name: 'General' })).toBeNull();
+    expect(screen.getByLabelText('Theme')).toBeTruthy();
+  });
+
+  /**
+   * General is the page every product shows, so it holds nothing about any
+   * one of them — the coding agent's switches moved to Agent, which only
+   * Heap Code lists.
+   */
+  it('keeps the coding agent’s settings on Agent, not on the shared General page', () => {
+    render(<Settings {...props()} />);
+    expect(screen.queryByText('Persona')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent' }));
     expect(screen.getByText('Persona')).toBeTruthy();
+    expect(screen.getByText('Sub-agents')).toBeTruthy();
+    expect(screen.getByText('Native tool calling')).toBeTruthy();
+  });
+
+  it('opens General at once when the host has no settings to send', () => {
+    // Heapnotes with Ask off fetches none; the page used to sit on a skeleton.
+    render(<Settings {...props({ settings: undefined, pages: ['general'] })} />);
+    expect(screen.getByLabelText('Theme')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Agent' })).toBeNull();
+  });
+
+  it('shows which build this is and where its data lives', () => {
+    const base = props();
+    render(<Settings {...base} settings={{ ...base.settings!, about: { version: '1.2.3', dataDir: '/home/me/.heapcode' } }} />);
+    expect(screen.getByText('1.2.3')).toBeTruthy();
+    expect(screen.getByText('/home/me/.heapcode')).toBeTruthy();
+  });
+
+  it('switches the theme for the whole page and remembers it', () => {
+    render(<Settings {...props()} />);
+    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'dark' } });
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(localStorage.getItem('heap.theme')).toBe('dark');
+    fireEvent.change(screen.getByLabelText('Theme'), { target: { value: 'system' } });
+    expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+    expect(localStorage.getItem('heap.theme')).toBeNull();
   });
 
   it('fetches skills only when that page is opened', async () => {

@@ -66,6 +66,8 @@ export interface QaSessionDeps {
   config: ConfigStore;
   secrets: SecretsStore;
   lan: boolean;
+  /** This build's version, for the shared Settings' About. */
+  clientVersion?: string;
 }
 
 /**
@@ -202,7 +204,7 @@ export class QaSession implements HostSession {
       nativeToolCalls: true,
       mcpServers: [],
       permissionGrants: [],
-      ...(await sharedSettings(config, secrets)),
+      ...(await sharedSettings(config, secrets, undefined, this.deps.clientVersion)),
     }));
     const thenState = async (work: Promise<unknown>): Promise<null> => {
       await work;

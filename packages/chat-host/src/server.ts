@@ -13,6 +13,8 @@ export type ChatHostOptions = Omit<WebHostOptions, 'createSession' | 'root'> & {
   root?: string;
   /** Where personal memory lives; defaults to the global store. See ChatSessionDeps. */
   memoryFile?: string;
+  /** Whether opening the folder builds its index. See ChatSessionDeps. */
+  indexOnOpen?: ChatSessionDeps['indexOnOpen'];
 };
 
 /**
@@ -45,6 +47,7 @@ export async function startChatHost(opts: ChatHostOptions): Promise<RunningWebHo
         lan: deps.lan,
         nativeToolCalls: deps.nativeToolCalls,
         memoryFile: opts.memoryFile,
+        indexOnOpen: opts.indexOnOpen,
       } satisfies ChatSessionDeps),
   });
 }

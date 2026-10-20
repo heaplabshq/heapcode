@@ -26,7 +26,10 @@ async function load(want: 'dark' | 'default'): Promise<Mermaid> {
   loading ??= import('mermaid').then((m) => m.default);
   const mermaid = await loading;
   if (want !== theme) {
-    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: want });
+    // `suppressErrorRendering`: on a syntax error Mermaid otherwise draws its
+    // own "Syntax error in text" graphic and appends it to <body>, outside
+    // the app — a model's malformed chart stacked bombs under the page.
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: want, suppressErrorRendering: true });
     theme = want;
   }
   return mermaid;

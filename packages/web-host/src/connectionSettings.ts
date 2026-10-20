@@ -5,7 +5,7 @@ import {
   providerPresets,
   resolveCapabilities,
 } from '@heapcode/core';
-import { profileContextWindow, type ConfigStore, type SecretsStore } from '@heapcode/host';
+import { globalDir, profileContextWindow, type ConfigStore, type SecretsStore } from '@heapcode/host';
 import { UI_MODEL_ROLES, type UiModelRole, type UiSaveProfileParams, type UiSettings } from './protocol.js';
 import { mergeProfile } from './session.js';
 
@@ -19,9 +19,15 @@ import { mergeProfile } from './session.js';
  * does after one (Chat reconnects its daemon) stays with that product.
  */
 
-export type SharedSettings = Pick<UiSettings, 'profiles' | 'roles' | 'presets' | 'webSearch'>;
+export type SharedSettings = Pick<UiSettings, 'profiles' | 'roles' | 'presets' | 'webSearch' | 'about'>;
 
-export async function sharedSettings(config: ConfigStore, secrets: SecretsStore, activeName?: string): Promise<SharedSettings> {
+export async function sharedSettings(
+  config: ConfigStore,
+  secrets: SecretsStore,
+  activeName?: string,
+  /** This build's version, for the General page's About. */
+  version?: string,
+): Promise<SharedSettings> {
   const cfg = await config.load();
   const modelConfig = await config.modelConfig();
   const active = activeName ?? (await config.getActiveProfile())?.name;
@@ -64,6 +70,7 @@ export async function sharedSettings(config: ConfigStore, secrets: SecretsStore,
       enabled: cfg.webSearch?.enabled ?? Boolean(cfg.webSearch?.provider),
       hasKey: Boolean(await secrets.getApiKey(WEB_SEARCH_SECRET_NAME).catch(() => undefined)),
     },
+    about: { version, dataDir: globalDir() },
   };
 }
 

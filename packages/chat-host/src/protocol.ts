@@ -9,6 +9,8 @@ import type {
   UiTreeEntry,
   UiConnectionModelsResult,
   UiConversationMeta,
+  UiDeleteConversationParams,
+  UiDeleteConversationResult,
   UiEventParams,
   UiMcpSignInResult,
   UiMessage,
@@ -55,6 +57,7 @@ export const CHAT_METHODS = {
   conversations: 'chat/conversations',
   openConversation: 'chat/openConversation',
   newConversation: 'chat/newConversation',
+  deleteConversation: 'chat/deleteConversation',
   listModels: 'chat/listModels',
   setModel: 'chat/setModel',
   settings: 'chat/settings',
@@ -221,7 +224,8 @@ export type ChatBrowseFoldersResult = UiBrowseFoldersResult;
 export type ChatRecentFoldersResult = UiWorkspacesResult;
 
 export interface ChatSetFolderParams {
-  path: string;
+  /** `null` closes the folder and goes back to a plain conversation. */
+  path: string | null;
 }
 
 export interface ChatSetFolderResult {
@@ -332,6 +336,8 @@ export type {
   UiSaveArtifactResult as ChatSaveArtifactResult,
   UiTreeEntry as ChatTreeEntry,
   UiConversationMeta as ChatConversationMeta,
+  UiDeleteConversationParams as ChatDeleteConversationParams,
+  UiDeleteConversationResult as ChatDeleteConversationResult,
   UiEventParams as ChatEventParams,
   UiMcpSignInResult as ChatMcpSignInResult,
   UiMessage as ChatMessageEntry,

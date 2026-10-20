@@ -3,6 +3,7 @@ import { Empty } from './Empty.js';
 import type { UiArtifactMeta, UiArtifactResult } from '@heapcode/web-host/protocol';
 import { SANDBOX, buildFrameDocument, mountStandalone, standaloneDocument } from '../artifactFrame.js';
 import { renderMarkdown } from '../markdown.js';
+import { renderMermaid } from '../mermaid.js';
 
 export interface PreviewProps {
   artifacts: UiArtifactMeta[];
@@ -23,6 +24,7 @@ export function Preview(props: PreviewProps): JSX.Element {
   const [artifact, setArtifact] = useState<UiArtifactResult>();
   const [version, setVersion] = useState<number>();
   const [mermaidSvg, setMermaidSvg] = useState<string>();
+  const [mermaidError, setMermaidError] = useState<string>();
   const [error, setError] = useState<string>();
   const [blocked, setBlocked] = useState(false);
   /**
@@ -55,13 +57,18 @@ export function Preview(props: PreviewProps): JSX.Element {
   // it out of the main bundle entirely.
   useEffect(() => {
     setMermaidSvg(undefined);
+    setMermaidError(undefined);
     if (artifact?.kind !== 'mermaid') return;
     let live = true;
-    void renderMermaid(artifact.id, artifact.content)
+    // Rendered here, in the parent: Mermaid needs real DOM measurement, which
+    // it cannot do inside a sandboxed frame it has no script access to, so
+    // only the resulting SVG crosses into the frame — still under the same
+    // CSP, so a diagram cannot smuggle in a network request. The shared
+    // renderer, not a copy: this one never cleaned up after a failed render.
+    void renderMermaid(artifact.content)
       .then((svg) => live && setMermaidSvg(svg))
-      .catch(() => {
-        /* falls back to showing the source */
-      });
+      // Falls back to showing the source, with the reason above it.
+      .catch((err: Error) => live && setMermaidError(err.message.split('\n')[0]));
     return () => {
       live = false;
     };
@@ -76,8 +83,9 @@ export function Preview(props: PreviewProps): JSX.Element {
       content: artifact.kind === 'markdown' ? renderMarkdown(artifact.content) : artifact.content,
       language: artifact.language,
       mermaidSvg,
+      mermaidError,
     });
-  }, [artifact, mermaidSvg]);
+  }, [artifact, mermaidSvg, mermaidError]);
 
   if (props.artifacts.length === 0) {
     return (
@@ -203,21 +211,6 @@ export function Preview(props: PreviewProps): JSX.Element {
       )}
     </div>
   );
-}
-
-/**
- * Renders mermaid to SVG in the parent, then injects the result.
- *
- * Mermaid needs real DOM measurement, which it cannot do inside a sandboxed
- * frame it has no script access to — so the rendering happens here and only
- * the resulting SVG crosses into the frame. That SVG still goes through the
- * same CSP, so a diagram cannot smuggle in a network request.
- */
-async function renderMermaid(id: string, source: string): Promise<string> {
-  const { default: mermaid } = await import('mermaid');
-  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
-  const { svg } = await mermaid.render(`m-${id.replace(/[^a-zA-Z0-9_-]/g, '')}-${Date.now()}`, source);
-  return svg;
 }
 
 function slug(title: string): string {

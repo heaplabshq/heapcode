@@ -1627,7 +1627,7 @@ export function App(): JSX.Element {
           // model roles, web search, MCP connectors (which Ask can use) — and
           // its own page first. Edits go through Ask's session, which answers
           // Heap Chat's settings requests on this same socket.
-          pages={state.ask ? ['providers', 'search', 'connectors'] : []}
+          pages={state.ask ? ['general', 'providers', 'search', 'connectors'] : ['general']}
           extraPages={[
             {
               id: 'notes',
@@ -1677,11 +1677,6 @@ export function App(): JSX.Element {
               .then((r) => r.models.map((m) => m.id))
           }
           probeProvider={(params) => client.request(CHAT_METHODS.probeProvider, params)}
-          // Not on the pages offered here, but required by the props.
-          onSetPersona={() => {}}
-          onToggleSubAgents={() => {}}
-          onToggleNativeTools={() => {}}
-          onResetPermissions={() => {}}
           onSaveMcpServer={(name, spec, env) =>
             editSettings(CHAT_METHODS.saveMcpServer, { name, spec, env })
           }

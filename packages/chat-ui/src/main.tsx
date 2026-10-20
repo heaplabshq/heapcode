@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
+import { applyTheme } from '@heapcode/web-ui/theme';
 // Heap Code's stylesheet, not a copy of it — the two products share a shell
 // and must not drift. `styles.css` here holds only what is genuinely this
 // product's: the grounding badge, the memory list, the folder picker.
@@ -18,6 +19,9 @@ if (new URL(window.location.href).searchParams.has('token')) {
   clean.searchParams.delete('token');
   window.history.replaceState({}, '', clean.pathname + clean.search + clean.hash);
 }
+
+// Before the first render, so a dark choice never flashes light.
+applyTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

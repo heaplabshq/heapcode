@@ -285,6 +285,8 @@ function IndexState({ status, onReindex }: { status?: ChatIndexStatus; onReindex
       return status.progress ? `Indexing ${status.progress.embedded}/${status.progress.total}…` : 'Indexing…';
     }
     if (status.state === 'unconfigured') return 'No embeddings model configured — text search only.';
+    // Inside `heapcode web` the workspace is not indexed until asked.
+    if (status.files === 0) return 'Not indexed yet — build it to search these files by meaning.';
     return `${status.files} files · ${status.chunks} chunks searchable.`;
   })();
 
@@ -296,7 +298,7 @@ function IndexState({ status, onReindex }: { status?: ChatIndexStatus; onReindex
       ) : null}
       {status?.message ? <p className="hint">{status.message}</p> : null}
       <button className="btn" onClick={onReindex} disabled={status?.state === 'indexing'}>
-        Rebuild index
+        {status && status.state !== 'unconfigured' && status.files === 0 ? 'Build index' : 'Rebuild index'}
       </button>
     </div>
   );

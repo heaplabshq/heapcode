@@ -11,7 +11,9 @@ import {
   type UiRoleAssignment,
   type UiSaveProfileParams,
   type UiSettings,
+  type UiAbout,
 } from '@heapcode/web-host/protocol';
+import { setThemePref, themePref, type ThemePref } from '../theme.js';
 import { ModelInput } from './ModelInput.js';
 import { markHue } from '../mark.js';
 import { Empty } from './Empty.js';
@@ -21,11 +23,12 @@ export interface SettingsProps {
   /** Opened via /context or the header meter: start on the active profile. */
   focus?: 'context';
   onClose(): void;
-  onSetPersona(id: string): void;
-  onToggleSubAgents(enabled: boolean): void;
-  onToggleNativeTools(enabled: boolean): void;
+  /** Agent and Permissions are Heap Code's pages; only it passes these. */
+  onSetPersona?(id: string): void;
+  onToggleSubAgents?(enabled: boolean): void;
+  onToggleNativeTools?(enabled: boolean): void;
   onSetWebSearch(patch: { provider?: string; enabled?: boolean; apiKey?: string }): void;
-  onResetPermissions(): void;
+  onResetPermissions?(): void;
   onUseProfile(name: string): void;
   onDeleteProfile(name: string): void;
   onSaveProfile(profile: UiSaveProfileParams['profile'], apiKey?: string): void;
@@ -107,7 +110,8 @@ export interface UiProfileDraft {
 
 /** Left-nav entries, in the two groups the dialog shows them under. */
 const PAGES = [
-  { id: 'general', group: 'General', label: 'General', icon: 'sliders', keywords: 'persona agent sub-agents native tool calling' },
+  { id: 'general', group: 'General', label: 'General', icon: 'sliders', keywords: 'appearance theme dark light privacy data about version folder' },
+  { id: 'agent', group: 'General', label: 'Agent', icon: 'agent', keywords: 'persona sub-agents delegate native tool calling' },
   { id: 'providers', group: 'General', label: 'Providers', icon: 'plug', keywords: 'profile model api key base url context window tokens' },
   { id: 'search', group: 'General', label: 'Web search', icon: 'globe', keywords: 'brave tavily serper provider api key' },
   { id: 'permissions', group: 'General', label: 'Permissions', icon: 'shield', keywords: 'grants always allow reset' },
@@ -164,6 +168,12 @@ const ICONS: Record<string, JSX.Element> = {
       <path d="M3 13.5C3 12.7 3.7 12 4.5 12H13" />
     </svg>
   ),
+  agent: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <rect x="3" y="5" width="10" height="8" rx="2" strokeLinejoin="round" />
+      <path d="M8 2.5V5M6 9h.01M10 9h.01" strokeLinecap="round" />
+    </svg>
+  ),
 };
 
 
@@ -190,6 +200,10 @@ export function Settings(props: SettingsProps): JSX.Element {
     props.focus === 'context' ? 'providers' : (props.initialPage ?? available[0]?.id ?? 'general'),
   );
   const [query, setQuery] = useState('');
+  // Pages that need nothing from the host: they open at once, rather than on
+  // a skeleton that never resolves when a product has no settings to fetch
+  // (Heapnotes with Ask off).
+  const standalone = page === 'general' || extra.some((p) => p.id === page);
 
   const q = query.trim().toLowerCase();
   const shown = q
@@ -249,7 +263,7 @@ export function Settings(props: SettingsProps): JSX.Element {
             </button>
           </div>
 
-          {!s ? (
+          {!s && !standalone ? (
             // Placeholder fields rather than the word "Loading": the dialog is
             // a fixed height, so an empty pane reads as a broken settings
             // screen for however long the round trip takes.
@@ -261,7 +275,10 @@ export function Settings(props: SettingsProps): JSX.Element {
           ) : (
             <div className="modal-body">
               {extra.find((p) => p.id === page)?.render(setPage)}
-              {page === 'general' && (
+              {page === 'general' && <GeneralPage about={s?.about} />}
+              {s && (
+                <>
+              {page === 'agent' && (
                 <Section description="How the agent behaves on every task.">
                   <Group>
                     <SettingRow label="Persona" hint={s.personas.find((p) => p.id === s.persona)?.description}>
@@ -269,7 +286,7 @@ export function Settings(props: SettingsProps): JSX.Element {
                         className="select"
                         aria-label="Persona"
                         value={s.persona}
-                        onChange={(e) => props.onSetPersona(e.target.value)}
+                        onChange={(e) => props.onSetPersona?.(e.target.value)}
                       >
                         {s.personas.map((p) => (
                           <option key={p.id} value={p.id}>
@@ -282,13 +299,13 @@ export function Settings(props: SettingsProps): JSX.Element {
                       label="Sub-agents"
                       hint="Lets the agent hand off a self-contained sub-task to a fresh agent (delegate_task)."
                       checked={s.subAgents}
-                      onChange={props.onToggleSubAgents}
+                      onChange={(v) => props.onToggleSubAgents?.(v)}
                     />
                     <Toggle
                       label="Native tool calling"
                       hint="Turn off for endpoints that reject the tools parameter — the agent falls back to the text protocol."
                       checked={s.nativeToolCalls}
-                      onChange={props.onToggleNativeTools}
+                      onChange={(v) => props.onToggleNativeTools?.(v)}
                     />
                   </Group>
                 </Section>
@@ -441,6 +458,8 @@ export function Settings(props: SettingsProps): JSX.Element {
                   </div>
                 </Section>
               )}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -488,6 +507,52 @@ function TextPane({ load, empty }: { load?(): Promise<string>; empty: string }):
  * as a column of unrelated widgets. Grouping them onto one surface makes the
  * page's shape visible before any of the labels are read.
  */
+/**
+ * What every product shares and nothing about any one of them: how the screen
+ * looks, what leaves the computer, and which build this is.
+ */
+function GeneralPage({ about }: { about?: UiAbout }): JSX.Element {
+  const [theme, setTheme] = useState<ThemePref>(themePref);
+  return (
+    <Section description="Settings shared by every Heap product on this computer.">
+      <Group label="Appearance">
+        <SettingRow label="Theme" hint="System follows your computer’s light or dark setting.">
+          <select
+            className="select"
+            aria-label="Theme"
+            value={theme}
+            onChange={(e) => {
+              const next = e.target.value as ThemePref;
+              setTheme(next);
+              setThemePref(next);
+            }}
+          >
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </SettingRow>
+      </Group>
+      <Group label="Privacy">
+        <SettingRow
+          label="What leaves this computer"
+          hint="Your files, prompts and answers go only to the model connections, web search and connectors you set up here. This app sends no usage data of its own."
+        >
+          <span />
+        </SettingRow>
+      </Group>
+      <Group label="About">
+        <SettingRow label="Version">
+          <span className="mono-hint">{about?.version ?? '—'}</span>
+        </SettingRow>
+        <SettingRow label="Data folder" hint="Connections, chat history and search indexes. API keys are kept here too, readable only by you.">
+          <span className="mono-hint">{about?.dataDir ?? '—'}</span>
+        </SettingRow>
+      </Group>
+    </Section>
+  );
+}
+
 function Group({ label, children }: { label?: string; children: React.ReactNode }): JSX.Element {
   return (
     <div className="settings-group-wrap">

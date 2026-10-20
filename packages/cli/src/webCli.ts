@@ -101,10 +101,13 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
             // is a view onto the same work — landing somewhere unrelated is
             // the surprising behaviour, not the safe one.
             //
-            // It also inherits the workspace's existing index (both products
-            // key it by root), so the toggle costs nothing instead of starting
-            // a fresh embedding run over the home directory.
+            // It also shares the workspace's index (both products key it by
+            // root) — but `heapcode web` never builds one, so the first switch
+            // used to be a full embedding run over the whole repo. It now
+            // searches whatever index exists; building one is the Index tab's
+            // button.
             root: deps.root,
+            indexOnOpen: false,
             config: deps.config,
             secrets: deps.secrets,
             connect: deps.connect,
@@ -131,6 +134,7 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
               config: deps.config,
               secrets: deps.secrets,
               lan: deps.lan,
+              clientVersion: deps.clientVersion,
               ...(deps.workspaceEvents ? { workspaceEvents: deps.workspaceEvents } : {}),
               ...(deps.workspaces ? { workspaces: deps.workspaces } : {}),
             }),

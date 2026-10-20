@@ -647,6 +647,20 @@ describe('web host — testing a provider before saving it', () => {
 });
 
 describe('web host — conversations', () => {
+  it('deletes a saved conversation, and starts a blank one if it was open', async () => {
+    const { root, host } = await boot(WRITE_THEN_FINISH);
+    await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
+    const browser = await openBrowser(host);
+    await browser.peer.request(UI_METHODS.hello, { protocolVersion: UI_PROTOCOL_VERSION });
+    await browser.peer.request<UiSendMessageResult>(UI_METHODS.sendMessage, { text: 'rewrite the greeting' });
+    const [saved] = await browser.peer.request<UiConversationMeta[]>(UI_METHODS.conversations);
+
+    const res = await browser.peer.request<{ cleared: boolean }>(UI_METHODS.deleteConversation, { id: saved!.id });
+    expect(res.cleared).toBe(true);
+    expect(await browser.peer.request<UiConversationMeta[]>(UI_METHODS.conversations)).toEqual([]);
+    browser.close();
+  });
+
   it('persists a turn, lists it, and reloads it into a later tab', async () => {
     const { root, host } = await boot(WRITE_THEN_FINISH);
     await writeFile(join(root, 'greeting.txt'), 'hello world\n', 'utf8');
@@ -2535,3 +2549,17 @@ function never(): Promise<never> {
 function basenameOf(p: string): string {
   return p.split('/').filter(Boolean).pop()!;
 }
+
+describe('web host — shutting down', () => {
+  it('closes with a browser still attached, rather than waiting for it to leave', async () => {
+    // Ctrl+C in the terminal goes through close(). It used to wait on the
+    // http server, which waits for every open connection — and an open tab
+    // holds a WebSocket forever, so the process had to be killed with -9.
+    const { host } = await boot([]);
+    await openBrowser(host);
+    web = undefined; // closed here, not by afterEach
+    const closed = host.close().then(() => 'closed');
+    const timeout = new Promise((r) => setTimeout(() => r('still open'), 3_000));
+    expect(await Promise.race([closed, timeout])).toBe('closed');
+  });
+});

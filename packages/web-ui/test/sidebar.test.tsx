@@ -105,6 +105,29 @@ describe('the left rail', () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
+  it('offers delete only when the host supports it, and asks first', () => {
+    const { unmount } = render(<Sidebar {...railProps()} />);
+    expect(screen.queryByLabelText('Delete Add ads to site')).toBeNull();
+    unmount();
+
+    const onDelete = vi.fn();
+    render(<Sidebar {...railProps({ onDelete })} />);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    fireEvent.click(screen.getByLabelText('Delete Add ads to site'));
+    expect(onDelete).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText('Delete Add ads to site'));
+    expect(onDelete).toHaveBeenCalledWith('b');
+    confirm.mockRestore();
+  });
+
+  it('will not delete the conversation a run is writing to', () => {
+    const onDelete = vi.fn();
+    render(<Sidebar {...railProps({ busy: true, onDelete })} />);
+    expect((screen.getByLabelText('Delete Fix the diff colours') as HTMLButtonElement).disabled).toBe(true);
+    // Another conversation is not in the run's way.
+    expect((screen.getByLabelText('Delete Add ads to site') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('collapses to icons, keeping each one reachable by name', () => {
     const { container } = render(<Sidebar {...railProps({ collapsed: true })} />);
     // Everything stays mounted and is faded and clipped by the rail's own

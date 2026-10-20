@@ -6,13 +6,19 @@ import type {
 } from '@heapcode/web-host/protocol';
 
 export interface WorkspacePickerProps {
-  /** Absolute path of the folder the session is pointed at. */
+  /** Absolute path of the folder the session is pointed at; empty for none. */
   current: string;
   /** Disabled while a run is in flight — switching would move the ground under it. */
   busy: boolean;
   loadWorkspaces(): Promise<UiWorkspacesResult>;
   browse(path?: string): Promise<UiBrowseFoldersResult>;
   onPick(path: string): Promise<void>;
+  /**
+   * Close the folder. Optional, and only Heap Chat passes it: a chat works
+   * without one, while Heap Code's agent has nothing to do outside a folder.
+   * When set, Recent leads with a "No folder" row.
+   */
+  onClear?(): Promise<void>;
 }
 
 /**
@@ -32,6 +38,7 @@ export function WorkspacePicker({
   loadWorkspaces,
   browse,
   onPick,
+  onClear,
 }: WorkspacePickerProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'recent' | 'browse'>('recent');
@@ -82,6 +89,7 @@ export function WorkspacePicker({
     if (!listing) goto(parentOf(current) ?? workspaces?.home);
   };
 
+  // '' is "no folder", which only `onClear` can choose.
   const choose = (path: string): void => {
     if (path === current) {
       setOpen(false);
@@ -89,7 +97,7 @@ export function WorkspacePicker({
     }
     setPending(path);
     setError(undefined);
-    void onPick(path)
+    void (path === '' && onClear ? onClear() : onPick(path))
       .then(() => {
         setOpen(false);
         // Recents and the browse listing are both stale now.
@@ -107,11 +115,11 @@ export function WorkspacePicker({
         className="wsp-chip"
         onClick={openPicker}
         aria-expanded={open}
-        title={busy ? 'Stop the current run before switching folder' : current}
+        title={busy ? 'Stop the current run before switching folder' : current || 'No folder open'}
         disabled={busy}
       >
         <IconFolder />
-        <span className="wsp-name">{nameOf(current)}</span>
+        <span className="wsp-name">{current ? nameOf(current) : 'No folder'}</span>
         <span className="wsp-caret">▾</span>
       </button>
 
@@ -133,13 +141,25 @@ export function WorkspacePicker({
 
           {tab === 'recent' && (
             <ul className="wsp-list">
+              {onClear && (
+                <li>
+                  <button
+                    className={`wsp-row ${current === '' ? 'wsp-row-on' : ''}`}
+                    onClick={() => choose('')}
+                    disabled={pending !== undefined}
+                  >
+                    <span className="wsp-row-name">No folder</span>
+                    <span className="wsp-row-path">Just chat</span>
+                  </button>
+                </li>
+              )}
               {!workspaces && !error && <li className="wsp-msg">Loading…</li>}
               {workspaces?.recent.map((w) => (
                 <li key={w.path}>
                   <button
                     className={`wsp-row ${w.path === current ? 'wsp-row-on' : ''}`}
                     onClick={() => choose(w.path)}
-                    disabled={Boolean(pending)}
+                    disabled={pending !== undefined}
                   >
                     <span className="wsp-row-name">{w.name}</span>
                     <span className="wsp-row-path">{shorten(parentOf(w.path) ?? w.path, workspaces.home)}</span>
@@ -168,7 +188,7 @@ export function WorkspacePicker({
                 <button
                   className="wsp-use"
                   onClick={() => choose(listing.path)}
-                  disabled={Boolean(pending) || listing.path === current}
+                  disabled={pending !== undefined || listing.path === current}
                 >
                   {listing.path === current ? 'Already open' : `Open ${nameOf(listing.path)}`}
                 </button>
@@ -187,7 +207,9 @@ export function WorkspacePicker({
             </>
           )}
 
-          {pending && <p className="wsp-msg">Opening {nameOf(pending)}…</p>}
+          {pending !== undefined && (
+            <p className="wsp-msg">{pending ? `Opening ${nameOf(pending)}…` : 'Closing the folder…'}</p>
+          )}
         </div>
       )}
     </div>

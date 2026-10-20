@@ -12,6 +12,10 @@
       "types": "./src/mermaid.ts",
       "default": "./src/mermaid.ts"
     },
+    "./theme": {
+      "types": "./src/theme.ts",
+      "default": "./src/theme.ts"
+    },
     "./rpc": {
       "types": "./src/rpc.ts",
       "default": "./src/rpc.ts"
@@ -44,6 +48,10 @@
     "./components/Sidebar": {
       "types": "./src/components/Sidebar.tsx",
       "default": "./src/components/Sidebar.tsx"
+    },
+    "./components/TaskBar": {
+      "types": "./src/components/TaskBar.tsx",
+      "default": "./src/components/TaskBar.tsx"
     },
     "./components/Composer": {
       "types": "./src/components/Composer.tsx",

@@ -558,7 +558,7 @@ export function App(): JSX.Element {
           initialPage={settingsOpen}
           // Only what Heap QA uses from the shared config: connections and the
           // model roles (healing and AI tests run on the agent role).
-          pages={['providers']}
+          pages={['general', 'providers']}
           extraPages={[
             {
               id: 'tests',
@@ -577,11 +577,6 @@ export function App(): JSX.Element {
           listConnectionModels={(connection) => client.request<{ models: string[] }>(QA_METHODS.listConnectionModels, { connection }).then((r) => r.models)}
           listModels={(profileName) => client.request<{ models: string[] }>(QA_METHODS.listConnectionModels, { connection: profileName }).then((r) => r.models)}
           probeProvider={(params) => client.request(QA_METHODS.probeProvider, params)}
-          // Not on the pages offered here, but required by the props.
-          onSetPersona={() => {}}
-          onToggleSubAgents={() => {}}
-          onToggleNativeTools={() => {}}
-          onResetPermissions={() => {}}
           onSaveMcpServer={() => {}}
           onDeleteMcpServer={() => {}}
         />

@@ -497,3 +497,49 @@ export function activityOf(t: Transcript): Activity {
   if (t.writingCallK) return { phase: 'writing-call', writingCallK: t.writingCallK };
   return { phase: 'working' };
 }
+
+/** A transcript row once the working steps are folded: an item, or one turn's steps. */
+export type FoldedRow = { kind: 'item'; item: Item } | { kind: 'steps'; id: string; items: Item[]; live: boolean };
+
+/**
+ * One turn as "your message, what it did, its answer" — for a page that wants
+ * the answer up front and the work behind a click (Heapnotes' Ask).
+ *
+ * The answer is the turn's last assistant text with nothing but text after
+ * it: once a tool runs after some prose, that prose was commentary on the
+ * way, not the reply. Everything else in the turn — thinking, tool calls,
+ * earlier remarks, the plan — becomes one steps group in front of it.
+ * User messages and notices stay where they are. A model that says its
+ * answer twice (prose, then a `finish` summary) shows it once: the first
+ * copy is a step.
+ */
+export function foldTurns(items: Item[], busy = false): FoldedRow[] {
+  const out: FoldedRow[] = [];
+  let turn: Item[] = [];
+  const flush = (last: boolean) => {
+    if (turn.length === 0) return;
+    let answerAt = -1;
+    for (let i = turn.length - 1; i >= 0; i--) {
+      const it = turn[i]!;
+      if (it.kind === 'text' && it.role === 'assistant' && it.text.trim()) {
+        answerAt = i;
+        break;
+      }
+      if (it.kind !== 'notice') break;
+    }
+    const steps = turn.filter((it, i) => i !== answerAt && it.kind !== 'notice');
+    if (steps.length > 0) out.push({ kind: 'steps', id: `steps-${steps[0]!.id}`, items: steps, live: last && busy });
+    turn.forEach((it, i) => {
+      if (i === answerAt || it.kind === 'notice') out.push({ kind: 'item', item: it });
+    });
+    turn = [];
+  };
+  for (const it of items) {
+    if (it.kind === 'text' && it.role === 'user') {
+      flush(false);
+      out.push({ kind: 'item', item: it });
+    } else turn.push(it);
+  }
+  flush(true);
+  return out;
+}

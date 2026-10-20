@@ -41,6 +41,8 @@ import type {
  * and re-asking is not checkpoint-shaped — only the workspace restore inside
  * Heap Code's version is, and this host simply omits that part.
  */
+import type { ChatChangePreview } from './persona.js';
+
 export const CHAT_PROTOCOL_VERSION = 1;
 
 export const CHAT_METHODS = {
@@ -79,6 +81,8 @@ export const CHAT_METHODS = {
   deleteMcpServer: 'chat/deleteMcpServer',
   signInMcpServer: 'chat/signInMcpServer',
   signOutMcpServer: 'chat/signOutMcpServer',
+  /** Ask again before a server's tools run: undoes "Always allow". `{ name }` */
+  forgetMcpTrust: 'chat/forgetMcpTrust',
 
   // settings — the same surface Heap Code's dialog drives, because the things
   // it edits (connections, the model role table, web search) are global
@@ -307,12 +311,16 @@ export interface ChatPermissionParams {
   server: string;
   /** Arguments, rendered for review. */
   args: Record<string, unknown>;
+  /** A persona's proposed change, shown as a diff to Apply or Discard. */
+  change?: ChatChangePreview;
 }
 
 export interface ChatPermissionResult {
   granted: boolean;
   /** Stop asking for this tool for the rest of this conversation. */
   remember?: boolean;
+  /** Stop asking for good — this tool, or every tool of its server (mcpTrust.ts). */
+  always?: 'tool' | 'server';
 }
 
 export type {

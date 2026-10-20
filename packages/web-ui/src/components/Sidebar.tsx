@@ -35,6 +35,13 @@ export interface SidebarProps {
   onOpenPalette?(): void;
   /** Extra rail rows, above the model footer. */
   extraNav?: ReactNode;
+  /**
+   * The scrolling list under the rows, in place of Recents — Heapnotes puts
+   * its tags here. `conversations` is ignored when this is given.
+   */
+  recents?: ReactNode;
+  /** The bottom of the rail, in place of the model chip — for a product with no model. */
+  footer?: ReactNode;
 }
 
 /**
@@ -105,7 +112,8 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           is not smooth" was. Hidden with `visibility` once the fade is done,
           so nothing invisible stays in the tab order. */}
       <div className="rail-recents">
-          {props.conversations.length === 0 && (
+          {props.recents}
+          {props.recents === undefined && props.conversations.length === 0 && (
             <>
               <div className="rail-section">Recents</div>
               <p className="convo-empty">Nothing saved yet.</p>
@@ -114,7 +122,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           {/* Bucketed by when it was last touched. An undivided list of forty
               titles gives no way to tell this morning's work from last
               month's, and the date is the only thing anyone sorts by. */}
-          {byAge(props.conversations).map(([when, items]) => (
+          {props.recents === undefined && byAge(props.conversations).map(([when, items]) => (
             <div key={when}>
               <div className="rail-section">{when}</div>
               <ul className="convo-list">
@@ -151,28 +159,30 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         * than a round initial.
         */}
       <div className="rail-foot">
-        <button
-          className="rail-model"
-          onClick={() => props.onOpenSettings('context')}
-          title={
-            state?.model ? `${state.model} on ${state.profile} — models and context` : 'Choose a model'
-          }
-          aria-label={collapsed ? 'Models and context' : undefined}
-        >
-          <span
-            className="rail-model-mark"
-            style={{ '--mark-h': markHue(state?.profile ?? '') } as React.CSSProperties}
-            aria-hidden="true"
+        {props.footer ?? (
+          <button
+            className="rail-model"
+            onClick={() => props.onOpenSettings('context')}
+            title={
+              state?.model ? `${state.model} on ${state.profile} — models and context` : 'Choose a model'
+            }
+            aria-label={collapsed ? 'Models and context' : undefined}
           >
-            <IconChip />
-          </span>
-          <span className="rail-model-text">
-            <span className="rail-model-name">{state?.model || 'no model'}</span>
-            <span className="rail-model-conn">
-              on <span className="rail-model-host">{state?.profile || 'no connection'}</span>
+            <span
+              className="rail-model-mark"
+              style={{ '--mark-h': markHue(state?.profile ?? '') } as React.CSSProperties}
+              aria-hidden="true"
+            >
+              <IconChip />
             </span>
-          </span>
-        </button>
+            <span className="rail-model-text">
+              <span className="rail-model-name">{state?.model || 'no model'}</span>
+              <span className="rail-model-conn">
+                on <span className="rail-model-host">{state?.profile || 'no connection'}</span>
+              </span>
+            </span>
+          </button>
+        )}
         {/* Only when something is wrong. A green dot that is green all day is
             not a status, it is decoration — and it sat next to the model like
             a presence indicator. Connecting and closed still say so. */}

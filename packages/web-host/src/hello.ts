@@ -30,5 +30,7 @@ export interface DaemonHello {
    * source files and needs no parser to do it.
    */
   documentExtensions?: string[];
+  /** Root-relative paths the daemon must never index or embed (HelloParams.indexExclude). */
+  indexExclude?: string[];
 }
 

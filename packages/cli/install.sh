@@ -9,17 +9,17 @@
 #
 set -eu
 
-MIN_NODE_MAJOR=20
+# 22.13 is the first Node with built-in SQLite unflagged — Heapnotes' index.
+MIN_NODE="22.13"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "heapcode requires Node.js >= ${MIN_NODE_MAJOR}, but no 'node' was found on PATH." >&2
+  echo "heapcode requires Node.js >= ${MIN_NODE}, but no 'node' was found on PATH." >&2
   echo "Install it from https://nodejs.org (or via nvm/fnm/volta) and re-run this script." >&2
   exit 1
 fi
 
-node_major=$(node -e 'console.log(process.versions.node.split(".")[0])')
-if [ "$node_major" -lt "$MIN_NODE_MAJOR" ]; then
-  echo "heapcode requires Node.js >= ${MIN_NODE_MAJOR}; found $(node -v)." >&2
+if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=13)?0:1)'; then
+  echo "heapcode requires Node.js >= ${MIN_NODE}; found $(node -v)." >&2
   echo "Upgrade Node (nodejs.org, or nvm/fnm/volta) and re-run this script." >&2
   exit 1
 fi

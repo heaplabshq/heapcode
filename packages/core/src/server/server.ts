@@ -38,6 +38,7 @@ import {
   type RagEventParams,
   type RagIndexParams,
   type RagQueryParams,
+  type RagExcludeParams,
   type ReviewConfirmParams,
   type ReviewConfirmResult,
   type ReviewEvent,
@@ -456,6 +457,12 @@ export class HeapcodeServer {
       } finally {
         active.endRun(params.runId);
       }
+    });
+
+    peer.onRequest(METHODS.ragExclude, async (raw) => {
+      if (!session) throw new Error('session/hello must be sent first');
+      await ragFor(session).exclude(((raw ?? {}) as RagExcludeParams).paths ?? []);
+      return { ok: true };
     });
 
     peer.onRequest(METHODS.ragStatus, async () => {

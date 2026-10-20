@@ -157,6 +157,7 @@ const MUTATING_TOOLS = new Set([
 const CHAT_MOUNTED = document.documentElement.dataset.chatMounted === 'true';
 /** Heap QA, mounted at /qa by the same host — see ProductToggle. */
 const QA_MOUNTED = servedProducts().includes('qa');
+const NOTES_MOUNTED = servedProducts().includes('notes');
 
 export function App(): JSX.Element {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
@@ -1063,7 +1064,7 @@ export function App(): JSX.Element {
         <Sidebar
           toggle={
             CHAT_MOUNTED || QA_MOUNTED ? (
-              <ProductToggle current="code" {...(CHAT_MOUNTED ? { chatPath: '/chat/' } : {})} {...(QA_MOUNTED ? { qaPath: '/qa/' } : {})} />
+              <ProductToggle current="code" {...(CHAT_MOUNTED ? { chatPath: '/chat/' } : {})} {...(QA_MOUNTED ? { qaPath: '/qa/' } : {})} {...(NOTES_MOUNTED ? { notesPath: '/notes/' } : {})} />
             ) : undefined
           }
           collapsed={railCollapsed}

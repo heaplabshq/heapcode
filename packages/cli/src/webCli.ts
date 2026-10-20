@@ -11,6 +11,7 @@ import {
 import { DEFAULT_PORT, WorkspaceStore, isLoopback, startWebHost } from '@heapcode/web-host';
 import { ChatSession } from '@heapcode/chat-host';
 import { QaSession } from '@heapcode/qa-host';
+import { NotesSession } from '@heapcode/notes-host';
 import { loadProjectInstructions } from './memory.js';
 import { connectToServer } from './server/client.js';
 import { cliVersion } from './version.js';
@@ -27,6 +28,8 @@ const staticDir = join(__dirname, 'web');
 const chatStaticDir = join(__dirname, 'chat');
 /** Heap QA's bundle, mounted under /qa the same way. */
 const qaStaticDir = join(__dirname, 'qa');
+/** And Heapnotes' at /notes. */
+const notesStaticDir = join(__dirname, 'notes');
 
 export interface WebCliOptions {
   port?: number;
@@ -130,6 +133,27 @@ export async function runWeb(opts: WebCliOptions = {}): Promise<number> {
               lan: deps.lan,
               ...(deps.workspaceEvents ? { workspaceEvents: deps.workspaceEvents } : {}),
               ...(deps.workspaces ? { workspaces: deps.workspaces } : {}),
+            }),
+        },
+        // Heapnotes. Not this workspace's: notes live in their own vault
+        // (the one `heapcode notes` uses), so switching projects in Heap Code
+        // leaves them where they are.
+        {
+          path: '/notes',
+          staticDir: notesStaticDir,
+          createSession: (deps) =>
+            new NotesSession({
+              basePath: '/notes',
+              // "Ask your notes" runs on Heap Chat's engine, with the same
+              // connections, roles and sign-ins as everything else here.
+              ai: {
+                config: deps.config,
+                secrets: deps.secrets,
+                connect: deps.connect,
+                ...(deps.mcpLogins ? { mcpLogins: deps.mcpLogins } : {}),
+                ...(deps.clientVersion ? { clientVersion: deps.clientVersion } : {}),
+                lan: deps.lan,
+              },
             }),
         },
       ],

@@ -595,7 +595,9 @@ body {
 /* Sits with the text, not shoved to the container's right edge. The chip head
    is full-width for the click target, but a disclosure arrow marooned 600px
    from the label it discloses reads as belonging to something else. */
-.chip-caret { color: var(--text-dim); }
+.chip-caret { display: inline-flex; color: var(--text-dim); transition: transform 120ms ease; }
+.chip-caret-open { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .chip-caret { transition: none; } }
 /* The one thing allowed to eat slack, so everything before it stays packed
    left and long arguments still ellipsise instead of pushing the caret out. */
 .chip-args { flex: 0 1 auto; }
@@ -675,9 +677,13 @@ body {
 
 .reasoning { margin: 0 0 8px; }
 .reasoning-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
   background: none; border: 0; cursor: pointer;
   color: var(--text-dim); font-size: 12px; padding: 2px 0;
 }
+.reasoning-caret { display: inline-flex; transition: transform 120ms ease; }
+.reasoning-caret-open { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .reasoning-caret { transition: none; } }
 .reasoning-body {
   white-space: pre-wrap; color: var(--text-dim);
   border-left: 2px solid var(--border); padding-left: 10px;
@@ -1907,6 +1913,7 @@ body {
 /* Why a connector is not connected. Warn, not danger: nothing is broken —
    the server is refusing us, or was never reachable to begin with. */
 .hint-warn { color: var(--warn); margin: 6px 0 0; }
+.row-trust { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; }
 .row code { font-family: var(--mono); font-size: 12px; }
 
 .badge {
@@ -2153,6 +2160,9 @@ body {
   background: var(--surface-2, rgb(0 0 0 / 0.05));
 }
 .rail-collapsed .product-toggle { display: none; }
+/* Four products: narrower tabs, so the product's name still fits beside them. */
+.rail-top:has(.product-toggle > :nth-child(4)) { gap: 4px; }
+.product-toggle:has(> :nth-child(4)) .product-tab { width: 19px; }
 .product-tab {
   display: grid;
   place-items: center;
@@ -2164,7 +2174,9 @@ body {
 }
 .product-tab:hover { color: var(--text, inherit); }
 .product-tab-on {
-  background: var(--surface, #fff);
+  /* --surface is never defined, so this was always the white fallback — a
+     blank white chip with a white icon in dark mode. */
+  background: var(--bg-raised);
   color: var(--text, inherit);
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
 }
@@ -2204,3 +2216,22 @@ html[data-chrome="mac"] .rail-collapse { position: fixed; left: 84px; top: 8px; 
 .preview-save-label { font-size: 12.5px; color: var(--text-dim); }
 .preview-save .card-input { flex: 1 1 200px; font-family: var(--mono); font-size: 12.5px; }
 .preview-save-hint { flex-basis: 100%; margin: 0; font-size: 12px; }
+
+/* ---- folded steps (MessageList foldSteps) ----
+   A turn's working shown as one quiet line before its answer; the full
+   detail is a click away and looks exactly as it does unfolded. */
+.steps { margin: 4px var(--gutter, 16px) 6px; }
+.steps-summary {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  background: none; border: 0; padding: 2px 6px 2px 2px; border-radius: 6px;
+  color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left;
+}
+.steps-summary:hover { background: var(--hover); color: var(--text); }
+.steps-caret { display: inline-flex; flex: 0 0 auto; color: var(--text-dim); transition: transform 120ms ease; }
+.steps-caret-open { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .steps-caret { transition: none; } }
+.steps-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps-live { animation: steps-pulse 1.4s ease-in-out infinite; }
+@keyframes steps-pulse { 50% { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .steps-live { animation: none; } }
+.steps-body { border-left: 2px solid var(--border); margin: 4px 0 0 6px; }

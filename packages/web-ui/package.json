@@ -8,6 +8,10 @@
       "types": "./src/markdown.ts",
       "default": "./src/markdown.ts"
     },
+    "./mermaid": {
+      "types": "./src/mermaid.ts",
+      "default": "./src/mermaid.ts"
+    },
     "./rpc": {
       "types": "./src/rpc.ts",
       "default": "./src/rpc.ts"

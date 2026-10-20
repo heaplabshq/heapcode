@@ -42,6 +42,7 @@ import {
 import { runHeadless } from './headless.js';
 import { runChat } from './chatCli.js';
 import { runQa } from './qaCli.js';
+import { runNotes } from './notesCli.js';
 import { runWeb } from './webCli.js';
 import { AuditLog } from './audit.js';
 import { checkForUpdate } from './updateCheck.js';
@@ -180,6 +181,12 @@ async function main(): Promise<void> {
       port,
       host: hostFlag >= 0 ? (argv[hostFlag + 1] ?? '0.0.0.0') : undefined,
     });
+    return;
+  }
+
+  if (argv[0] === 'notes') {
+    // Its own --help too.
+    process.exitCode = await runNotes(argv.slice(1));
     return;
   }
 
@@ -481,6 +488,7 @@ Usage:
   heapcode web [--port N] [--host H]        Serve the browser UI for this workspace on 127.0.0.1 (--host exposes it to your network — see the warning it prints)
   heapcode chat [folder] [--port N]        Serve Heap Chat over a folder (defaults to your home directory) — read, search, ask and draft; it writes new documents, never over yours
   heapcode qa <init|check|run|install>     Heap QA: play your web app's test flows in a browser and save screenshots and results — see \`heapcode qa --help\`
+  heapcode notes <command>                 Heapnotes: your notes as a folder of Markdown — search, read, write, import from Bear/Obsidian, and \`heapcode notes mcp\` for AI apps — see \`heapcode notes help\`
 
 Headless (-p) flags:
   --json                            Stream newline-delimited JSON events (tool_call, tool_result, text_delta, plan, result) instead of plain text

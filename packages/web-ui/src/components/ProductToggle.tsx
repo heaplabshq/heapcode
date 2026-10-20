@@ -1,5 +1,5 @@
 /**
- * Switching between Heap Code, Heap Chat and Heap QA.
+ * Switching between Heap Code, Heap Chat, Heap QA and Heapnotes.
  *
  * A pair of icon buttons at the top of the rail, the way the Claude app
  * switches between chat and code. It is a real navigation — the two products
@@ -16,12 +16,15 @@ export function ProductToggle({
   current,
   chatPath,
   qaPath,
+  notesPath,
 }: {
-  current: 'code' | 'chat' | 'qa';
+  current: 'code' | 'chat' | 'qa' | 'notes';
   /** Omitted when Heap Chat is not served here. */
   chatPath?: string;
   /** Omitted when Heap QA is not served here. */
   qaPath?: string;
+  /** Omitted when Heapnotes is not served here. */
+  notesPath?: string;
 }): JSX.Element {
   return (
     <div className="product-toggle" role="group" aria-label="Product">
@@ -56,6 +59,17 @@ export function ProductToggle({
           <span className="sr-only">Heap QA</span>
         </a>
       )}
+      {notesPath !== undefined && (
+        <a
+          className={current === 'notes' ? 'product-tab product-tab-on' : 'product-tab'}
+          href={notesPath}
+          aria-current={current === 'notes' ? 'page' : undefined}
+          title="Heapnotes — your notes"
+        >
+          <IconNotes />
+          <span className="sr-only">Heapnotes</span>
+        </a>
+      )}
     </div>
   );
 }
@@ -63,6 +77,15 @@ export function ProductToggle({
 /** The products served beside this page, as the host stamps them on `<html>`: `chat,qa`. */
 export function servedProducts(): string[] {
   return (document.documentElement.dataset.products ?? '').split(',').filter(Boolean);
+}
+
+function IconNotes(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+      <path d="M4 2.5h5.5L12.5 5.5v8H4z" strokeLinejoin="round" />
+      <path d="M6 8h4.5M6 10.5h3" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 function IconQa(): JSX.Element {

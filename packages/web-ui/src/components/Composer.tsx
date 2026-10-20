@@ -88,12 +88,28 @@ export function Composer({
   const selected = matches[Math.min(picked, matches.length - 1)];
 
   // Grow with the content, up to a cap, instead of scrolling a two-line box.
+  // Measured again whenever the box's width changes, not only its text: a
+  // composer that mounts inside a panel still sliding open measures its
+  // placeholder squeezed into a sliver, and kept that height — a tall empty
+  // box with the caret at the bottom — until the first keystroke.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
-  }, [text]);
+    const fit = () => {
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+    };
+    fit();
+    if (typeof ResizeObserver === 'undefined') return;
+    let width = el.clientWidth;
+    const watch = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fit();
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [text, placeholder, disabled, busy]);
 
   useEffect(() => {
     if (!busy) ref.current?.focus();

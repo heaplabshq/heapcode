@@ -1,3 +1,4 @@
+import { forgetMcpTrust, isTrusted, trustFor, trustMcp } from './mcpTrust.js';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -25,10 +26,13 @@ import {
   type StoredMessage,
   type ToolCall,
   type ChatSendParams,
+  type ChatMessage,
+  type ModelRole,
   type DocumentExtractParams,
   type DocumentExtractResult,
   type ToolExecuteParams,
   type ToolResult,
+  type ToolDefinition,
 } from '@heapcode/core';
 import {
   JsonConversationStore,
@@ -137,8 +141,15 @@ import type {
   ChatState,
 } from './protocol.js';
 import { chatSystemPrompt } from './prompt.js';
+import type { ChatChangePreview, ChatPersona } from './persona.js';
 import { withNow } from './now.js';
-import { CHAT_TOOL_NAMES, chatToolsFor, folderToolDefinitions, permissionFor } from './tools.js';
+import {
+  CHAT_TOOL_NAMES,
+  chatToolsFor,
+  folderToolDefinitions,
+  generalToolDefinitions,
+  permissionFor,
+} from './tools.js';
 import { BROWSER_READ_TOOL_NAMES, browserTools, runBrowserTool } from '@heapcode/web-host/browserTools';
 import type { UiBrowserResult } from '@heapcode/web-host/protocol';
 
@@ -239,6 +250,11 @@ export interface ChatSessionDeps {
    * results depend on the operator's own memory is not a baseline.
    */
   memoryFile?: string;
+  /**
+   * Another product's assistant on this session — its tools, prompt and
+   * approvals instead of Heap Chat's folder roster. See persona.ts.
+   */
+  persona?: ChatPersona;
 }
 
 /**
@@ -260,6 +276,10 @@ export class ChatSession implements HostSession {
   private connection?: ServerConnection;
   private executor?: WorkspaceToolExecutor;
   private mcp?: McpManager;
+  /** `complete()` calls in flight, by runId: their text is theirs, never the transcript's. */
+  private readonly sideRuns = new Map<string, { text: string; onText?: (chunk: string) => void }>();
+  /** Persona changes whose preview failed: answered with the reason, never run. */
+  private readonly failedPreviews = new Map<string, string>();
   /** Connector tools allowed for the rest of this conversation. Never stored. */
   private allowedTools = new Set<string>();
   /**
@@ -362,7 +382,9 @@ export class ChatSession implements HostSession {
 
     // Ahead of the model check, because the sidebar asks for the conversation
     // list as soon as the page loads.
-    this.history ??= new JsonConversationStore(chatConversationsFile(this.root));
+    this.history ??= new JsonConversationStore(
+      this.deps.persona?.conversationsFile?.(this.root) ?? chatConversationsFile(this.root),
+    );
     this.conversation ??= { id: randomUUID(), title: 'New chat', updatedAt: Date.now(), messages: [] };
 
     const profile = await config.getActiveProfile();
@@ -424,8 +446,11 @@ export class ChatSession implements HostSession {
       // selection by these and calls `document/extract` back for each one —
       // the parsers live here, the indexer lives there.
       documentExtensions: DOCUMENT_EXTENSIONS,
+      // Before the first index run, which starts as soon as this resolves.
+      ...(this.deps.persona?.indexExclude ? { indexExclude: await this.deps.persona.indexExclude() } : {}),
     });
     this.registerDaemonHandlers(this.connection.peer);
+    this.forgetConnectionWhenItCloses(this.connection);
     void this.warmContextWindow();
     // Only with a folder. This used to run unconditionally against a root that
     // defaulted to the home directory, so opening the standalone command began
@@ -531,11 +556,73 @@ export class ChatSession implements HostSession {
    * forgotten, because a first build is minutes of embedding and `start()`
    * has a page waiting on it.
    */
+  /**
+   * Replace the paths the index must never read or embed, and drop any it
+   * already holds. A no-op before connecting: the next connect asks the
+   * persona for the list afresh.
+   */
+  async setIndexExclude(paths: string[]): Promise<void> {
+    // Not connected (the daemon retired): the next connect sends the
+    // persona's list in its hello, so there is nothing to push now.
+    await this.connection?.peer.request(METHODS.ragExclude, { paths });
+  }
+
+  /**
+   * The folder's meaning search, straight from the daemon's index — the same
+   * `--- path:from-to (score n) ---` blocks `semantic_search` returns. Empty
+   * before the session has connected, or with no embeddings model.
+   */
+  async semanticQuery(
+    text: string,
+    signal?: AbortSignal,
+    opts: { k?: number; hybridSearch?: boolean; rerank?: boolean } = {},
+  ): Promise<string> {
+    if (!text.trim()) return '';
+    // Reconnects if the daemon has gone away since — see forgetConnectionWhenItCloses.
+    if (!this.connection) await this.open().catch(() => undefined);
+    if (!this.connection) return '';
+    const r = await this.connection.peer.request<{ formatted?: string }>(METHODS.ragQuery, { text, ...opts }, signal);
+    return r.formatted ?? '';
+  }
+
+  /**
+   * Bring the meaning index up to date after the folder changed — Heapnotes
+   * calls this as notes are saved. Incremental: unchanged files keep their
+   * vectors. Reconnects first if the daemon has gone away.
+   */
+  async refreshIndex(): Promise<void> {
+    if (!this.root) return;
+    // A fresh connect indexes on its own (open() → startIndexing).
+    if (!this.connection) {
+      await this.open();
+      return;
+    }
+    await this.startIndexing();
+  }
+
   private async startIndexing(): Promise<void> {
     await this.connection?.peer.request(METHODS.ragIndex, { full: true }).catch(() => undefined);
     void this.indexStatus()
       .then((s) => this.ui?.notify(CHAT_METHODS.indexChanged, s))
       .catch(() => {});
+  }
+
+  /**
+   * Let go of a daemon link once it closes, so the next request reconnects.
+   *
+   * The daemon exits on its own — idle, or retiring because its bundle was
+   * rebuilt (an update does that). Holding the dead peer meant every later
+   * request failed with "connection closed" until the host was restarted;
+   * Heap Code's session learned this first (web-host session.ts). `start()`
+   * rebuilds from `this.connection` being undefined, so dropping the reference
+   * is the whole recovery. A run in flight is already lost with the socket.
+   */
+  private forgetConnectionWhenItCloses(connection: ServerConnection): void {
+    connection.peer.onClose(() => {
+      if (this.connection !== connection) return;
+      this.connection = undefined;
+      void this.pushState();
+    });
   }
 
   /**
@@ -850,6 +937,12 @@ export class ChatSession implements HostSession {
       return startMcpSignIn(this.mcp!, this.deps.mcpLogins, name, () => void this.pushState());
     });
 
+    ui.onRequest(CHAT_METHODS.forgetMcpTrust, async (raw) => {
+      const { name } = raw as { name: string };
+      forgetMcpTrust(String(name ?? ''));
+      return null;
+    });
+
     ui.onRequest(CHAT_METHODS.signOutMcpServer, async (raw) => {
       const { name } = raw as { name: string };
       await this.mcp?.signOut(name);
@@ -965,6 +1058,7 @@ export class ChatSession implements HostSession {
       // Names only. These are credentials, and this list is on screen.
       envKeys: Object.keys(server.env ?? {}),
       project: name in project,
+      ...(trustFor(name) ? { trusted: trustFor(name) } : {}),
     }));
   }
 
@@ -1035,7 +1129,7 @@ export class ChatSession implements HostSession {
           // whole argument. Only what is SENT is wrapped — `pendingDisplay`
           // and `persistTurn` above keep the person's own words, so the
           // transcript, the sidebar and chats.json never see this.
-          task: withNow(task),
+          task: await this.withTurnContext(withNow(task)),
           history,
           images,
           workspaceName: this.root ? basename(this.root) : '',
@@ -1048,14 +1142,16 @@ export class ChatSession implements HostSession {
           // file tools are not offered, so the model is not reaching for
           // something that cannot work and explaining the failure.
           tools: [
-            ...chatToolsFor(Boolean(this.root)),
+            ...this.roster(),
             // Look, never touch: the desktop Browser pane's read tools only.
             ...browserTools({ clientHasBrowser: this.clientHasBrowser, vision: resolveCapabilities(profile).vision, actions: false }),
             ...(this.mcp?.getToolDefinitions() ?? []),
           ],
           // Composed per run rather than cached: a fact remembered during this
           // conversation should be in scope for the next question in it.
-          systemPrompt: chatSystemPrompt(Boolean(this.root)) + memorySection(await this.memory.list().catch(() => [])),
+          systemPrompt:
+            (this.deps.persona?.systemPrompt() ?? chatSystemPrompt(Boolean(this.root))) +
+            memorySection(await this.memory.list().catch(() => [])),
           nativeToolCalls: this.deps.nativeToolCalls ?? resolveCapabilities(profile).nativeToolCalls,
           contextWindow,
           maxTokens: profile.maxTokens,
@@ -1114,6 +1210,17 @@ export class ChatSession implements HostSession {
     if (!target) return;
     this.connection?.peer.notify(METHODS.agentCancel, { runId: target });
     this.abort?.abort();
+  }
+
+  /** The persona's note about where the person is, ahead of their words — see ChatPersona.turnContext. */
+  private async withTurnContext(task: string): Promise<string> {
+    const context = await Promise.resolve(this.deps.persona?.turnContext?.()).catch(() => undefined);
+    if (!context) return task;
+    const at = task.lastIndexOf('</system-reminder>\n\n');
+    const reminder = `<system-reminder>\n${context}\n</system-reminder>\n\n`;
+    // After the clock's reminder, before the person's words.
+    const end = at === -1 ? 0 : at + '</system-reminder>\n\n'.length;
+    return task.slice(0, end) + reminder + task.slice(end);
   }
 
   /** The prose of the answer just produced — what grounding is computed against. */
@@ -1184,10 +1291,17 @@ export class ChatSession implements HostSession {
       const { call } = raw as { call: ToolCall };
       // Nothing on this roster changes the folder, so there is nothing to ask
       // about.
+      const persona = this.deps.persona;
+      if (persona && this.isPersonaTool(call.name)) {
+        if (persona.permission(call) === 'grant') return { granted: true };
+        return { granted: await this.askToChange(call) };
+      }
+      // A folder tool the persona does not offer: never, whatever its class.
+      if (persona && !this.onRoster(call.name) && !this.mcp?.isMcpTool(call.name)) return { granted: false };
       const outcome = permissionFor(
         call.name,
         Boolean(this.mcp?.isMcpTool(call.name)),
-        this.allowedTools.has(call.name),
+        this.allowedTools.has(call.name) || isTrusted(call.name),
       );
       if (outcome === 'grant') return { granted: true };
       if (outcome === 'deny') return { granted: false };
@@ -1236,6 +1350,15 @@ export class ChatSession implements HostSession {
       // The verification pass streams over the same channel. Its text is a
       // JSON verdict about the answer, not part of it, so it is collected
       // here and never reaches the transcript or the browser.
+      const side = this.sideRuns.get(params.runId);
+      if (side) {
+        const { event } = params;
+        if (event.type === 'text' || event.type === 'text_delta') {
+          side.text += event.text;
+          side.onText?.(event.text);
+        }
+        return;
+      }
       if (this.verifying && params.runId === this.verifying.runId) {
         const { event } = params;
         if (event.type === 'text' || event.type === 'text_delta') this.verifying.text += event.text;
@@ -1275,6 +1398,36 @@ export class ChatSession implements HostSession {
         request: (params) =>
           ui!.request<UiBrowserResult>(CHAT_METHODS.browser, { ...params, runId: this.activeRunId ?? '' }, signal),
       });
+    }
+    const persona = this.deps.persona;
+    if (persona && this.isPersonaTool(call.name)) {
+      const failed = this.failedPreviews.get(call.id);
+      if (failed !== undefined) {
+        this.failedPreviews.delete(call.id);
+        return { id: call.id, name: call.name, content: failed, isError: true };
+      }
+      return persona.execute(
+        call,
+        {
+          // The daemon's index itself — not the executor's `semantic_search`,
+          // which the daemon normally answers before it ever reaches a host,
+          // and which here would degrade to a word grep the persona can't use.
+          semanticSearch: async (query, s) => {
+            if (!this.connection) return { id: call.id, name: call.name, content: 'Not connected.', isError: true };
+            return { id: call.id, name: call.name, content: await this.semanticQuery(query, s ?? signal) };
+          },
+          vision: this.profile ? resolveCapabilities(this.profile).vision : false,
+        },
+        signal,
+      );
+    }
+    if (persona && !this.onRoster(call.name) && !this.mcp?.isMcpTool(call.name)) {
+      return {
+        id: call.id,
+        name: call.name,
+        content: `\`${call.name}\` is not available in ${persona.name}. Use the tools you were given.`,
+        isError: true,
+      };
     }
     if (!CHAT_TOOL_NAMES.has(call.name) && !this.mcp?.isMcpTool(call.name)) {
       return {
@@ -1526,8 +1679,58 @@ export class ChatSession implements HostSession {
     return this.send(text, runId, images);
   }
 
+  /**
+   * The tools this run offers. With a persona: its own, then the general ones
+   * except `create_artifact` (the persona's product makes real things, not
+   * side documents); Heap Chat's folder tools are never offered.
+   */
+  private roster(): ToolDefinition[] {
+    const persona = this.deps.persona;
+    if (!persona) return chatToolsFor(Boolean(this.root));
+    return [...persona.tools, ...generalToolDefinitions.filter((t) => t.name !== CREATE_ARTIFACT_TOOL.name)];
+  }
+
+  private isPersonaTool(name: string): boolean {
+    return Boolean(this.deps.persona?.tools.some((t) => t.name === name));
+  }
+
+  private onRoster(name: string): boolean {
+    return this.roster().some((t) => t.name === name) || BROWSER_READ_TOOL_NAMES.has(name);
+  }
+
+  /**
+   * A persona's change, put to the person with what it would do. Asked every
+   * time — "always allow" makes no sense for an edit whose content differs on
+   * every call. A preview that fails (a stale or ambiguous edit) is a refusal,
+   * and its reason goes back to the model through the denied call.
+   */
+  private async askToChange(call: ToolCall): Promise<boolean> {
+    if (!this.ui) return false;
+    let preview: ChatChangePreview | undefined;
+    try {
+      preview = await this.deps.persona?.preview?.(call);
+    } catch (err) {
+      // Nothing to approve: the change can't be made as asked. Let the call
+      // through to come back as that error — `executeTool` answers it without
+      // running anything — so the model reads why, not a bare "denied".
+      this.failedPreviews.set(call.id, err instanceof Error ? err.message : String(err));
+      return true;
+    }
+    const answer = await this.ui
+      .request<ChatPermissionResult>(CHAT_METHODS.permission, {
+        runId: this.activeRunId ?? '',
+        callId: call.id,
+        tool: call.name,
+        server: '',
+        args: call.args,
+        ...(preview ? { change: preview } : {}),
+      } satisfies ChatPermissionParams)
+      .catch(() => undefined);
+    return answer?.granted === true;
+  }
+
   private async askPermission(call: ToolCall): Promise<boolean> {
-    if (this.allowedTools.has(call.name)) return true;
+    if (this.allowedTools.has(call.name) || isTrusted(call.name)) return true;
     if (!this.ui) return false;
     const server = call.name.slice('mcp__'.length).split('__')[0] ?? '';
     const answer = await this.ui
@@ -1541,6 +1744,7 @@ export class ChatSession implements HostSession {
       .catch(() => undefined);
     if (!answer?.granted) return false;
     if (answer.remember) this.allowedTools.add(call.name);
+    if (answer.always) trustMcp(call.name, answer.always);
     return true;
   }
 
@@ -1577,6 +1781,10 @@ export class ChatSession implements HostSession {
    */
   private collectEvidence(name: string, args: Record<string, unknown> | undefined, content: string): void {
     if (!content.trim()) return;
+    if (this.deps.persona && this.isPersonaTool(name)) {
+      for (const row of this.deps.persona.evidence?.(name, args, content) ?? []) this.pushEvidence(row);
+      return;
+    }
     let source: string | undefined;
     switch (name) {
       case 'read_file':
@@ -1671,6 +1879,48 @@ export class ChatSession implements HostSession {
       return parseVerification(this.verifying.text);
     } finally {
       this.verifying = undefined;
+    }
+  }
+
+  /**
+   * One model reply outside the conversation — no tools, no history, not
+   * shown in the transcript. Heapnotes' ⌘J rewrites a selection with it.
+   * Runs on `role`'s model (default `chat`), streaming text to `onText`.
+   */
+  async complete(
+    messages: ChatMessage[],
+    opts: {
+      role?: ModelRole;
+      maxTokens?: number;
+      temperature?: number;
+      onText?: (chunk: string) => void;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<{ text: string; finishReason?: string }> {
+    await this.start();
+    const profile = (opts.role ? await this.deps.config.resolve(opts.role) : undefined) ?? this.profile!;
+    const runId = `complete_${randomUUID()}`;
+    const side = { text: '', ...(opts.onText ? { onText: opts.onText } : {}) };
+    this.sideRuns.set(runId, side);
+    const stop = () => this.connection?.peer.notify(METHODS.agentCancel, { runId });
+    opts.signal?.addEventListener('abort', stop, { once: true });
+    try {
+      const r = await this.connection!.peer.request<{ finishReason?: string }>(
+        METHODS.chatSend,
+        {
+          runId,
+          profileName: profile.name,
+          model: opts.role ? profile.model : this.model,
+          maxTokens: opts.maxTokens ?? profile.maxTokens ?? 2000,
+          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+          messages,
+        } satisfies ChatSendParams,
+        opts.signal,
+      );
+      return { text: side.text, ...(r?.finishReason ? { finishReason: r.finishReason } : {}) };
+    } finally {
+      opts.signal?.removeEventListener('abort', stop);
+      this.sideRuns.delete(runId);
     }
   }
 

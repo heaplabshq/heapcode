@@ -42,6 +42,9 @@ export class Session {
   /** Non-code extensions this host can extract — see HelloParams.documentExtensions. */
   readonly documentExtensions: readonly string[];
 
+  /** Never indexed, never embedded — see HelloParams.indexExclude. */
+  private indexExclude: Set<string>;
+
   private readonly keys = new Map<string, string>();
   private readonly profiles = new Map<string, ProviderProfileConfig>();
   /** Lazily built, cached per profile — createProvider is not free and a run may resolve the same profile repeatedly. */
@@ -72,9 +75,20 @@ export class Session {
     this.activeProfile = hello.activeProfile;
     this.localRoot = hello.localRoot ?? true;
     this.documentExtensions = (hello.documentExtensions ?? []).map((e) => e.toLowerCase());
+    this.indexExclude = new Set((hello.indexExclude ?? []).map(normalizeRel));
     this.roles = hello.roles ?? {};
     for (const profile of hello.profiles) this.profiles.set(profile.name, profile);
     for (const [name, key] of Object.entries(hello.keys ?? {})) this.keys.set(name, key);
+  }
+
+  isIndexExcluded(rel: string): boolean {
+    return this.indexExclude.has(normalizeRel(rel));
+  }
+
+  /** Replace the never-index list; returns it, for removing what's already in the index. */
+  setIndexExclude(paths: readonly string[]): string[] {
+    this.indexExclude = new Set(paths.map(normalizeRel));
+    return [...this.indexExclude];
   }
 
   getProfile(name: string): ProviderProfileConfig | undefined {
@@ -87,7 +101,9 @@ export class Session {
    * to the parent/active provider, matching what both hosts already did for
    * an unknown profile name (packages/cli/src/agent/delegate.ts:107-108).
    */
-  providerFor(profileName: string): { provider: Provider; profile: ProviderProfileConfig } | undefined {
+  providerFor(
+    profileName: string,
+  ): { provider: Provider; profile: ProviderProfileConfig } | undefined {
     const profile = this.profiles.get(profileName);
     if (!profile) return undefined;
     const cached = this.providers.get(profileName);
@@ -109,7 +125,11 @@ export class Session {
     profileName: string,
     requestKey?: KeyRequester,
   ): Promise<{ provider: Provider; profile: ProviderProfileConfig } | undefined> {
-    if (requestKey && !this.asked.has(profileName) && (!this.getProfile(profileName) || !this.hasKey(profileName))) {
+    if (
+      requestKey &&
+      !this.asked.has(profileName) &&
+      (!this.getProfile(profileName) || !this.hasKey(profileName))
+    ) {
       this.asked.add(profileName);
       await requestKey(profileName);
     }
@@ -280,4 +300,9 @@ export class Session {
     this.profiles.clear();
     this.asked.clear();
   }
+}
+
+/** Root-relative, `/`-separated, no leading `./` — how the index names files. */
+function normalizeRel(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^\.\//, '');
 }

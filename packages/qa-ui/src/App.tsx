@@ -42,6 +42,7 @@ const BASE = RPC_PATH.replace(/\/rpc$/, '');
 const RPC_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${RPC_PATH}`;
 const HAS_CODE = document.documentElement.dataset.sibling === 'code';
 const HAS_CHAT = servedProducts().includes('chat');
+const HAS_NOTES = servedProducts().includes('notes');
 
 type View = 'tests' | 'run' | 'record' | 'explore' | 'ask' | { detail: string };
 
@@ -327,7 +328,7 @@ export function App(): JSX.Element {
       <div className="body">
         <Sidebar
           brand="Heap QA"
-          toggle={HAS_CODE ? <ProductToggle current="qa" {...(HAS_CHAT ? { chatPath: '/chat/' } : {})} qaPath={`${BASE}/`} /> : undefined}
+          toggle={HAS_CODE ? <ProductToggle current="qa" {...(HAS_CHAT ? { chatPath: '/chat/' } : {})} qaPath={`${BASE}/`} {...(HAS_NOTES ? { notesPath: '/notes/' } : {})} /> : undefined}
           collapsed={railCollapsed}
           onToggleCollapsed={() =>
             setRailCollapsed((v) => {

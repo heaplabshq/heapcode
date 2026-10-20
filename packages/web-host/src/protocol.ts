@@ -779,6 +779,8 @@ export interface UiMcpServer {
    * someone's behalf.
    */
   project?: boolean;
+  /** "Always allow" given for its tools: all of them, or how many. */
+  trusted?: 'all' | number;
 }
 
 /** `ui/saveMcpServer` — add or replace a personal MCP server. */

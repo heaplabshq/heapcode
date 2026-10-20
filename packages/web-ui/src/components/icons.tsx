@@ -67,6 +67,13 @@ export const ICON_BROWSER = (
   </svg>
 );
 
+/** A disclosure arrow, pointing right when closed. Rotated by CSS when open. */
+export const ICON_CHEVRON = (
+  <svg {...S} width={12} height={12} strokeWidth={2} aria-hidden>
+    <path d="m9 5 7 7-7 7" />
+  </svg>
+);
+
 /** A window with an arrow out of it: open in a separate window. */
 export const ICON_POP_OUT = (
   <svg {...S} width={15} height={15}>

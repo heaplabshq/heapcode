@@ -68,6 +68,17 @@ function copyQaUi() {
 }
 copyQaUi();
 
+/** And Heapnotes' — see copyWebUi. */
+function copyNotesUi() {
+  const from = fileURLToPath(new URL('../notes-ui/dist', import.meta.url));
+  if (!existsSync(from)) {
+    console.warn('[build] packages/notes-ui/dist not found — Heapnotes in `heapcode web` will serve the API only.');
+    return;
+  }
+  cpSync(from, 'dist/notes', { recursive: true });
+}
+copyNotesUi();
+
 const ctx = await esbuild.context({
   // dist/daemon.js is the core server's entry point — the CLI autostarts it
   // detached when nothing is listening (docs/phase3-protocol-design.md §6).
@@ -75,7 +86,7 @@ const ctx = await esbuild.context({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node20',
+  target: 'node22',
   outdir: 'dist',
   // The createRequire line works around a well-known esbuild+ESM-output
   // limitation: bundled CJS deps that call require('some-builtin') (e.g.

@@ -1,4 +1,5 @@
 import type { ProviderProfileConfig } from '../config/profiles.js';
+import { AnthropicProvider } from './anthropic.js';
 import { AzureOpenAIProvider } from './azure.js';
 import { OpenAICompatibleProvider } from './openaiCompatible.js';
 import type { Provider, ProviderConfig } from './types.js';
@@ -16,6 +17,8 @@ export function createProvider(profile: ProviderProfileConfig, apiKey?: string):
   switch (profile.preset) {
     case 'azure-openai':
       return new AzureOpenAIProvider(config);
+    case 'anthropic':
+      return new AnthropicProvider(config);
     case 'openrouter':
       // OpenRouter uses these for app attribution; harmless elsewhere.
       config.headers = { 'x-title': 'Heap Code', ...config.headers };

@@ -13,6 +13,7 @@ export * from './types.js';
 export * from './errors.js';
 export * from './openaiCompatible.js';
 export * from './azure.js';
+export * from './anthropic.js';
 export * from './factory.js';
 export * from './presets.js';
 export * from './sse.js';

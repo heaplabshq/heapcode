@@ -42,6 +42,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.14.0",
     "@heapcode/repomap": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ignore": "^7.0.5",

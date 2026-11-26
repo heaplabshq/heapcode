@@ -5,7 +5,22 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { defaultSecretBackend, MacKeychain, SecretsStore, type SecretBackend } from '../src/config/secrets.js';
+import {
+  DPAPI_HEADER,
+  dpapiPowerShellArgs,
+  readDpapiSecretsSync,
+  readKeychainSecretsSync,
+  windowsPowerShell,
+} from '@heapcode/core/node';
+import {
+  defaultSecretBackend,
+  MacKeychain,
+  powershellDpapi,
+  SecretsStore,
+  WindowsDpapi,
+  type DpapiRunner,
+  type SecretBackend,
+} from '../src/config/secrets.js';
 
 /** An in-memory keychain that can be told to fail in each of the ways a real one does. */
 class FakeKeychain implements SecretBackend {
@@ -62,13 +77,112 @@ describe('defaultSecretBackend', () => {
     expect(defaultSecretBackend(real)).toBeNull();
   });
 
-  it('uses the macOS keychain for the real path on macOS only', () => {
+  it('picks the keychain on macOS, DPAPI on Windows, and the plain file elsewhere', () => {
     vi.stubEnv('HEAPCODE_HOME', '');
     vi.stubEnv('HEAPCODE_SECRETS', '');
-    const backend = defaultSecretBackend(real);
-    if (process.platform === 'darwin') expect(backend).toBeInstanceOf(MacKeychain);
-    else expect(backend).toBeNull();
+    const original = process.platform;
+    const as = (platform: string) => {
+      Object.defineProperty(process, 'platform', { value: platform });
+      try {
+        return defaultSecretBackend(real);
+      } finally {
+        Object.defineProperty(process, 'platform', { value: original });
+      }
+    };
+    expect(as('darwin')).toBeInstanceOf(MacKeychain);
+    const windows = as('win32');
+    expect(windows).toBeInstanceOf(WindowsDpapi);
+    expect(windows!.label).toContain(join(homedir(), '.heapcode', 'secrets.dpapi'));
+    expect(as('linux')).toBeNull();
   });
+});
+
+/** Stands in for PowerShell off Windows: reversible, and visibly not the plaintext. */
+const fakeDpapi: DpapiRunner = async (op, input) =>
+  op === 'Protect'
+    ? Buffer.from(`sealed:${input}`).toString('base64')
+    : Buffer.from(input, 'base64').toString('utf8').replace(/^sealed:/, '');
+
+describe('WindowsDpapi (plumbing, any OS)', () => {
+  it('reports nothing stored until written, then round-trips through a headed file with no plaintext in it', async () => {
+    const file = join(dir, 'secrets.dpapi');
+    const backend = new WindowsDpapi(file, fakeDpapi);
+    expect(await backend.read()).toBeUndefined();
+
+    await backend.write('c2VjcmV0LXZhbHVl');
+    expect(await backend.read()).toBe('c2VjcmV0LXZhbHVl');
+    const text = await readFile(file, 'utf8');
+    expect(text.startsWith(`${DPAPI_HEADER}\n`)).toBe(true);
+    expect(text).not.toContain('c2VjcmV0LXZhbHVl');
+    expect(existsSync(`${file}.${process.pid}.tmp`)).toBe(false);
+  });
+
+  it('moves keys out of secrets.json into secrets.dpapi', async () => {
+    await seedFile({ 'apiKey.claude': 'sk-ant-1' });
+    const file = join(dir, 'secrets.dpapi');
+    const store = new SecretsStore(path, new WindowsDpapi(file, fakeDpapi));
+    expect(await store.getApiKey('claude')).toBe('sk-ant-1');
+    expect(existsSync(path)).toBe(false);
+    expect(await readFile(file, 'utf8')).not.toContain('sk-ant-1');
+    expect(await new SecretsStore(path, new WindowsDpapi(file, fakeDpapi)).getApiKey('claude')).toBe('sk-ant-1');
+  });
+
+  it('falls back to the file, untouched, when the encrypted file cannot be decrypted', async () => {
+    const file = join(dir, 'secrets.dpapi');
+    await writeFile(file, `${DPAPI_HEADER}\nAAAA\n`);
+    await seedFile({ 'apiKey.claude': 'sk-ant-1' });
+    const failing: DpapiRunner = async () => {
+      throw new Error('DPAPI unprotect failed: Key not valid for use in specified state.');
+    };
+    const store = new SecretsStore(path, new WindowsDpapi(file, failing));
+    expect(await store.getApiKey('claude')).toBe('sk-ant-1');
+    expect(store.fallbackReason()).toMatch(/Key not valid/);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  it('rejects a secrets.dpapi in any other format', async () => {
+    const file = join(dir, 'secrets.dpapi');
+    await writeFile(file, '{"apiKey.x":"plaintext"}');
+    await expect(new WindowsDpapi(file, fakeDpapi).read()).rejects.toThrow(/Unrecognized/);
+  });
+
+  it('runs a fixed PowerShell script by absolute path, with no data on the command line', () => {
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    expect(windowsPowerShell()).toBe(join('C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'));
+    for (const op of ['Protect', 'Unprotect'] as const) {
+      const args = dpapiPowerShellArgs(op);
+      expect(args.slice(0, 4)).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand']);
+      const script = Buffer.from(args[4]!, 'base64').toString('utf16le');
+      expect(script).toContain(`ProtectedData]::${op}(`);
+      expect(script).toContain('DataProtectionScope]::CurrentUser');
+      expect(script).toContain('[Console]::In.ReadToEnd()');
+    }
+  });
+});
+
+// Real DPAPI through Windows PowerShell; runs on Windows (CI has a job for it).
+describe.runIf(process.platform === 'win32')('WindowsDpapi (real DPAPI)', () => {
+  it('encrypts and decrypts, including non-ASCII and a large value', async () => {
+    const value = Buffer.from(JSON.stringify({ 'apiKey.x': `sk-"q" ü ${'z'.repeat(100_000)}` })).toString('base64');
+    const sealed = await powershellDpapi('Protect', Buffer.from(value).toString('base64'));
+    expect(sealed).not.toContain(value.slice(0, 40));
+    expect(Buffer.from(await powershellDpapi('Unprotect', sealed), 'base64').toString()).toBe(value);
+  }, 60_000);
+
+  it('fails cleanly on data DPAPI did not produce', async () => {
+    await expect(powershellDpapi('Unprotect', Buffer.from('not a dpapi blob').toString('base64'))).rejects.toThrow(
+      /DPAPI unprotect failed/,
+    );
+  }, 60_000);
+
+  it("writes what the VS Code extension's synchronous reader reads", async () => {
+    await seedFile({ 'apiKey.claude': 'sk-ant-win' });
+    const file = join(dir, 'secrets.dpapi');
+    const store = new SecretsStore(path, new WindowsDpapi(file));
+    expect(await store.getApiKey('claude')).toBe('sk-ant-win');
+    expect(existsSync(path)).toBe(false);
+    expect(readDpapiSecretsSync(file)).toEqual({ 'apiKey.claude': 'sk-ant-win' });
+  }, 60_000);
 });
 
 describe('SecretsStore with a keychain', () => {
@@ -180,14 +294,16 @@ describe.runIf(process.platform === 'darwin' && !process.env.CI)('MacKeychain (r
 
   it('splits a large value across items, and clears the extra items when it shrinks', async () => {
     const keychain = new MacKeychain(service, 'secrets');
-    const big = Buffer.from('x'.repeat(9_000)).toString('base64'); // 12,000 chars -> 8 parts
+    const big = Buffer.from(JSON.stringify({ x: 'x'.repeat(9_000) })).toString('base64'); // ~12,000 chars -> 9 parts
     await keychain.write(big);
     expect(await keychain.read()).toBe(big);
-    expect(exists('secrets.8')).toBe(true);
+    expect(exists('secrets.9')).toBe(true);
+    // The VS Code extension's synchronous reader reassembles the same parts.
+    expect(readKeychainSecretsSync(service, 'secrets')).toEqual({ x: 'x'.repeat(9_000) });
     await keychain.write('small');
     expect(await keychain.read()).toBe('small');
     expect(exists('secrets.1')).toBe(false);
-    expect(exists('secrets.8')).toBe(false);
+    expect(exists('secrets.9')).toBe(false);
   });
 
   it('never puts the value in an error message', async () => {

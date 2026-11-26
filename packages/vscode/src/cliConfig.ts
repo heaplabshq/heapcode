@@ -1,7 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { globalDir } from '@heapcode/core/node';
+import { DPAPI_FILE, globalDir, readDpapiSecretsSync, readKeychainSecretsSync } from '@heapcode/core/node';
 import type { ModelRoleTable, ProviderConnection } from '@heapcode/core';
 
 /**
@@ -91,42 +90,55 @@ export function readCliConfig(): SharedCliConfig | undefined {
  */
 export function readCliApiKey(connectionName: string): string | undefined {
   const all =
-    readCached(secretsPath(), secrets, (text) => JSON.parse(text) as Record<string, string>) ?? readKeychainSecrets();
+    readCached(secretsPath(), secrets, (text) => JSON.parse(text) as Record<string, string>) ?? readOsStoreSecrets();
   return all?.[`apiKey.${connectionName}`] || undefined;
 }
 
 /** How long a keychain read is reused; a key added in a terminal shows up within this. */
 const KEYCHAIN_TTL_MS = 30_000;
-const keychain: { at?: number; value?: Record<string, string> } = {};
+const osStore: { at?: number; stamp?: number; value?: Record<string, string> } = {};
 
 /**
- * On macOS the CLI keeps its keys in the login keychain (host's
- * SecretsStore: service "heapcode", account "secrets", base64 JSON), and
- * deletes secrets.json once they are there. Read the same item, through the
- * same `security` tool, so the item's access list already trusts the reader
- * and no prompt appears. Synchronous because every caller here is; one
- * short-lived process per 30 s at most.
+ * Where the CLI keeps its keys once secrets.json is gone: the macOS login
+ * keychain, or a DPAPI-encrypted secrets.dpapi on Windows (host's
+ * SecretsStore; the format is shared through core/node/secretStorage.ts).
+ * Synchronous because every caller here is.
  *
- * Only for the real ~/.heapcode — the CLI never uses the keychain under a
+ * macOS reads through the same `security` tool that wrote the item, so its
+ * access list already trusts the reader and no prompt appears; at most one
+ * short-lived process per 30 s. Windows decrypts only when the file has
+ * changed, since starting PowerShell costs a few hundred milliseconds.
+ *
+ * Only for the real ~/.heapcode — the CLI never uses an OS store under a
  * HEAPCODE_HOME override, so neither does this.
  */
-function readKeychainSecrets(): Record<string, string> | undefined {
-  if (process.platform !== 'darwin' || process.env.HEAPCODE_HOME) return undefined;
-  if (keychain.at !== undefined && Date.now() - keychain.at < KEYCHAIN_TTL_MS) return keychain.value;
-  keychain.at = Date.now();
-  try {
-    const raw = execFileSync('/usr/bin/security', ['find-generic-password', '-s', 'heapcode', '-a', 'secrets', '-w'], {
-      encoding: 'utf8',
-      timeout: 5_000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    keychain.value = JSON.parse(Buffer.from(raw, 'base64').toString('utf8')) as Record<string, string>;
-  } catch {
+function readOsStoreSecrets(): Record<string, string> | undefined {
+  if (process.env.HEAPCODE_HOME) return undefined;
+  if (process.platform === 'darwin') {
+    if (osStore.at !== undefined && Date.now() - osStore.at < KEYCHAIN_TTL_MS) return osStore.value;
+    osStore.at = Date.now();
     // No item (the CLI hasn't moved its keys, or isn't installed), a locked
-    // keychain, or no `security`: same as having no CLI keys at all.
-    keychain.value = undefined;
+    // keychain: same as having no CLI keys at all.
+    osStore.value = readKeychainSecretsSync();
+    return osStore.value;
   }
-  return keychain.value;
+  if (process.platform === 'win32') {
+    const file = join(globalDir(), DPAPI_FILE);
+    let stamp: number;
+    try {
+      stamp = statSync(file).mtimeMs;
+    } catch {
+      osStore.stamp = undefined;
+      osStore.value = undefined;
+      return undefined;
+    }
+    if (osStore.stamp !== stamp) {
+      osStore.stamp = stamp;
+      osStore.value = readDpapiSecretsSync(file);
+    }
+    return osStore.value;
+  }
+  return undefined;
 }
 
 /** Test seam: drop what has been cached so a fresh read happens. */
@@ -135,6 +147,7 @@ export function __resetCliConfigCache(): void {
   config.value = undefined;
   secrets.stamp = undefined;
   secrets.value = undefined;
-  keychain.at = undefined;
-  keychain.value = undefined;
+  osStore.at = undefined;
+  osStore.stamp = undefined;
+  osStore.value = undefined;
 }

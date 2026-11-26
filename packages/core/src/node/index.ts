@@ -12,3 +12,4 @@
 export * from './fs.js';
 export * from './paths.js';
 export * from './mcpSignIn.js';
+export * from './secretStorage.js';

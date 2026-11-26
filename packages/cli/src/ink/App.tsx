@@ -1590,7 +1590,7 @@ export function App({
         `Daemon log  ${daemonLogFile()}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
-        `Secrets     ${secretsStore?.location() ?? secretsFile()}${secretsStore?.fallbackReason() ? ` (keychain unavailable: ${secretsStore.fallbackReason()})` : ''}`,
+        `Secrets     ${secretsStore?.location() ?? secretsFile()}${secretsStore?.fallbackReason() ? ` (secure store unavailable: ${secretsStore.fallbackReason()})` : ''}`,
         '',
         'Change with /model and /profile · add providers with "/profile add" · /index rebuilds search',
       ].join('\n'),

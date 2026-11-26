@@ -577,7 +577,7 @@ Keys: Esc interrupts the running agent · Ctrl+C clears typed input · Ctrl+C tw
       \\ then Enter inserts a newline instead of submitting · pasting multi-line text keeps it as one message
       @ mentions a file/folder · @workspace pulls in whole-repo context (semantic search, or a structural outline without an embeddings model)
 
-Config: ~/.heapcode/config.json (profiles)  ·  API keys in the macOS Keychain, else ~/.heapcode/secrets.json (chmod 600)  ·  ~/.heapcode/audit.json (local usage log)
+Config: ~/.heapcode/config.json (profiles)  ·  API keys in the macOS Keychain / ~/.heapcode/secrets.dpapi (Windows), else ~/.heapcode/secrets.json (chmod 600)  ·  ~/.heapcode/audit.json (local usage log)
 Per-project session state (history, checkpoints, search index — never in your repo, never at risk of being committed):
   ~/.heapcode/projects/<name>-<hash>/{conversations.json, permissions.json, shadow-git/, rag-index.json, repo-map.json}
 Per-project CONFIG (meant to live alongside your code, safe to commit and share with a team):

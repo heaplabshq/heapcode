@@ -178,8 +178,12 @@ describe('SecretsStore', () => {
     expect(await store.getApiKey('prod')).toBe('sk-test-123');
     expect(await store.getApiKey('other')).toBeUndefined();
 
-    const mode = (await stat(path)).mode & 0o777;
-    expect(mode).toBe(0o600);
+    // Windows has no POSIX modes (Node reports 0o666 for any writable file);
+    // there the OS store, not chmod, is what protects the keys.
+    if (process.platform !== 'win32') {
+      const mode = (await stat(path)).mode & 0o777;
+      expect(mode).toBe(0o600);
+    }
   });
 
   it('deleting a key removes only that profile\'s key', async () => {

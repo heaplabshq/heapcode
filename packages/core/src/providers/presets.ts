@@ -9,6 +9,7 @@ export interface ProviderCapabilities {
 
 export type PresetId =
   | 'openai'
+  | 'anthropic'
   | 'ollama'
   | 'ollama-cloud'
   | 'azure-openai'
@@ -59,6 +60,19 @@ export const providerPresets: readonly ProviderPreset[] = [
     local: false,
     apiKeyUrl: 'https://platform.openai.com/api-keys',
     capabilities: caps({ vision: true, maxContext: 128_000 }),
+  },
+  {
+    // Native Messages API client (providers/anthropic.ts), not the
+    // OpenAI-compatible one. No embeddings or FIM: those roles need another
+    // connection. maxContext is the smallest current window (Haiku 4.5);
+    // the models API reports each model's real one.
+    id: 'anthropic',
+    label: 'Anthropic (Claude)',
+    defaultBaseUrl: 'https://api.anthropic.com',
+    requiresApiKey: true,
+    local: false,
+    apiKeyUrl: 'https://platform.claude.com/settings/keys',
+    capabilities: caps({ embeddings: false, vision: true, maxContext: 200_000 }),
   },
   {
     id: 'ollama',

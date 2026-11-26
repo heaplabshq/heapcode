@@ -224,7 +224,11 @@ Keys: `Esc` interrupts the running agent · `Ctrl+C` clears typed input, twice e
 
 ```
 ~/.heapcode/config.json                                       Provider profiles, active profile, settings
-~/.heapcode/secrets.json                                      API keys, chmod 600, never an OS keychain
+macOS Keychain, service "heapcode"                            API keys and MCP sign-ins on macOS
+~/.heapcode/secrets.dpapi                                     ...on Windows, encrypted with DPAPI for your account
+~/.heapcode/secrets.json                                      ...elsewhere, chmod 600 — Linux, CI, SSH, or whenever the
+                                                                OS store can't be reached. Keys move out of it to the OS
+                                                                store automatically; HEAPCODE_SECRETS=file opts out
 ~/.heapcode/audit.json                                        Local usage log
 ~/.heapcode/projects/<name>-<hash>/                            Per-project session state: conversations, permissions,
                                                                 shadow-git checkpoint history, search index — never in

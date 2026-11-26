@@ -55,7 +55,7 @@ Heap Code does send anonymous usage telemetry by default (which features get use
 3. Recommended local models: chat `llama3.1:8b`+ · completion `qwen2.5-coder:1.5b` · embeddings `nomic-embed-text`.
 4. Open the Heap Code icon in the activity bar and start chatting; select code and hit `Cmd+I` to edit.
 
-API keys are stored in the OS keychain via VS Code SecretStorage — never in settings files. The CLI has no keychain dependency (so headless and CI machines work): it uses a `chmod 600` file under `~/.heapcode`.
+API keys are stored in the OS keychain via VS Code SecretStorage — never in settings files. The CLI keeps them in the macOS Keychain, or on Windows in a file encrypted with DPAPI for your Windows account (moved there automatically from the old plain file). Elsewhere — Linux, CI, SSH sessions, or a locked keychain — they stay in a `chmod 600` file under `~/.heapcode`, so headless machines still work. `HEAPCODE_SECRETS=file` keeps them in the plain file everywhere.
 
 ## Browser UI
 

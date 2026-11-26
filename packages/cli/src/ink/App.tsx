@@ -1590,7 +1590,7 @@ export function App({
         `Daemon log  ${daemonLogFile()}`,
         `Repo map    ${repoMapIndexer?.ready ? 'ready' : 'empty'}`,
         `Config      ${configFile()}`,
-        `Secrets     ${secretsFile()}`,
+        `Secrets     ${secretsStore?.location() ?? secretsFile()}${secretsStore?.fallbackReason() ? ` (secure store unavailable: ${secretsStore.fallbackReason()})` : ''}`,
         '',
         'Change with /model and /profile · add providers with "/profile add" · /index rebuilds search',
       ].join('\n'),
@@ -2371,7 +2371,7 @@ export function App({
             mask
             onSubmit={(value) => void pendingSecret.onSubmit(value)}
           />
-          <Text dimColor>stored in {secretsFile()} (chmod 600) · esc to cancel</Text>
+          <Text dimColor>stored in {secretsStore?.location() ?? `${secretsFile()} (chmod 600)`} · esc to cancel</Text>
         </Box>
       )}
       {setupActive && (

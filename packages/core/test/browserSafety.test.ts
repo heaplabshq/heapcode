@@ -134,6 +134,20 @@ function walk(entry: string): Closure {
 /** Subpaths a host without Node must be able to import. */
 const BROWSER_SAFE = ['./agent', './providers', './context'] as const;
 
+/**
+ * The npm packages the browser-safe surface may reach, each pinned to the one
+ * file allowed to import it, and each added only after checking it bundles
+ * for the browser. Keep it short: an entry's whole import graph ships in
+ * heapbrowse.
+ */
+const ALLOWED_DEPENDENCIES: Record<string, string> = {
+  // The official Anthropic SDK: fetch-based, supports browsers by design
+  // (`dangerouslyAllowBrowser`), and heapbrowse builds with it with no Node
+  // builtins in the output. Loaded by dynamic import, so it is a separate
+  // chunk that only an Anthropic connection ever fetches.
+  '@anthropic-ai/sdk': 'src/providers/anthropic.ts',
+};
+
 function entryFor(subpath: string): string {
   const entry = (pkg.exports as Record<string, { default: string }>)[subpath];
   if (!entry) throw new Error(`package.json has no "${subpath}" export`);
@@ -159,9 +173,10 @@ describe('browser-safe subpath exports', () => {
         // package is how Node coupling sneaks back in without the word "node"
         // appearing — `agent/mcp.ts` pulls `node:child_process` through the MCP
         // SDK's stdio transport. Adding one here means checking it bundles for
-        // the browser first.
+        // the browser first, then listing it in ALLOWED_DEPENDENCIES.
         const { external } = walk(entryFor(subpath));
-        expect(external.map((e) => `${e.importer} -> ${e.spec}`)).toEqual([]);
+        const unexpected = external.filter((e) => ALLOWED_DEPENDENCIES[e.spec] !== e.importer);
+        expect(unexpected.map((e) => `${e.importer} -> ${e.spec}`)).toEqual([]);
       });
 
       it('resolves every relative import', () => {

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { globalDir } from '@heapcode/core/node';
@@ -89,8 +90,43 @@ export function readCliConfig(): SharedCliConfig | undefined {
  * actually usable rather than a name that fails on first use.
  */
 export function readCliApiKey(connectionName: string): string | undefined {
-  const all = readCached(secretsPath(), secrets, (text) => JSON.parse(text) as Record<string, string>);
+  const all =
+    readCached(secretsPath(), secrets, (text) => JSON.parse(text) as Record<string, string>) ?? readKeychainSecrets();
   return all?.[`apiKey.${connectionName}`] || undefined;
+}
+
+/** How long a keychain read is reused; a key added in a terminal shows up within this. */
+const KEYCHAIN_TTL_MS = 30_000;
+const keychain: { at?: number; value?: Record<string, string> } = {};
+
+/**
+ * On macOS the CLI keeps its keys in the login keychain (host's
+ * SecretsStore: service "heapcode", account "secrets", base64 JSON), and
+ * deletes secrets.json once they are there. Read the same item, through the
+ * same `security` tool, so the item's access list already trusts the reader
+ * and no prompt appears. Synchronous because every caller here is; one
+ * short-lived process per 30 s at most.
+ *
+ * Only for the real ~/.heapcode — the CLI never uses the keychain under a
+ * HEAPCODE_HOME override, so neither does this.
+ */
+function readKeychainSecrets(): Record<string, string> | undefined {
+  if (process.platform !== 'darwin' || process.env.HEAPCODE_HOME) return undefined;
+  if (keychain.at !== undefined && Date.now() - keychain.at < KEYCHAIN_TTL_MS) return keychain.value;
+  keychain.at = Date.now();
+  try {
+    const raw = execFileSync('/usr/bin/security', ['find-generic-password', '-s', 'heapcode', '-a', 'secrets', '-w'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    keychain.value = JSON.parse(Buffer.from(raw, 'base64').toString('utf8')) as Record<string, string>;
+  } catch {
+    // No item (the CLI hasn't moved its keys, or isn't installed), a locked
+    // keychain, or no `security`: same as having no CLI keys at all.
+    keychain.value = undefined;
+  }
+  return keychain.value;
 }
 
 /** Test seam: drop what has been cached so a fresh read happens. */
@@ -99,4 +135,6 @@ export function __resetCliConfigCache(): void {
   config.value = undefined;
   secrets.stamp = undefined;
   secrets.value = undefined;
+  keychain.at = undefined;
+  keychain.value = undefined;
 }
